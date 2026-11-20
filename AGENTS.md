@@ -53,6 +53,14 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     trusts the fingerprint, `ChangedHost` until someone forgets the old key. No ssh-agent, no
     passwords. `terminal_api.py`: the terminal WebSocket (JSON input/resize in, binary output),
     trust/forget routes; audit open/close, never keystrokes.
+  - `guac.py`: the Guacamole protocol (instructions, handshake with guacd). `desktop_api.py`:
+    one-time tickets (POST, 60 s, bound to the session) carry the desktop password, so it is never
+    in a URL; the WebSocket (subprotocol `guacamole`) relays instructions between guacd and
+    guacamole-common-js, answers the tunnel's pings itself, and ends with the session like the
+    terminal. Tested against a fake guacd only (tests/test_desktop.py); guacd 1.6 must listen
+    on localhost (compose.yaml).
+  - In a WebSocket handler's `finally`, write the audit line before the first `await`: a cancelled
+    handler (page gone, server stopping) is ended at its next await.
   - Fail closed (`hub.py`): a broken config.yaml at start locks the API (`hub.locked`, 503);
     after sign-in was on (`<data>/signin-required`), a missing, empty, invalid or user-less
     config never turns it off. Config errors never include values (`_describe`), since

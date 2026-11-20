@@ -19,4 +19,15 @@ services:
       # KASTELLAN_DEMO: "1" # a made-up network with simulated results, to try it out
     volumes:
       - ./config:/config # config.yaml
-      - ./data:/data # history (one CSV file per day)
+      - ./data:/data # history, sign-in state, the hub's SSH key, the audit log
+
+  # Remote desktop (RDP, VNC): Apache Guacamole's daemon. Kastellan talks to it on localhost;
+  # it reaches the desktops. Leave it out if you don't use remote desktop.
+  guacd:
+    image: guacamole/guacd:1.6.0
+    container_name: kastellan-guacd
+    restart: unless-stopped
+    network_mode: host
+    # guacd has no sign-in of its own: it must listen on localhost only. The image starts
+    # `guacd -f -b 0.0.0.0 ... "$@"` (entrypoint.sh of 1.6.0); these arguments come last and win.
+    command: ["-b", "127.0.0.1", "-l", "4822"]

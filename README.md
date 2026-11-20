@@ -127,6 +127,26 @@ answers 503) rather than starting without sign-in. Once sign-in has been on, a c
 without users is refused too; to turn sign-in off on purpose, also delete
 `data/signin-required`.
 
+## Remote desktop
+
+A device with `desktop:` gets its screen in the browser, with mouse and keyboard (admins only,
+with sign-in on). It goes through Apache Guacamole's guacd, which compose.yaml starts next to
+Kastellan on localhost:4822 (`KASTELLAN_GUACD` to change).
+
+```yaml
+devices:
+  gaming-pc:
+    host: 192.168.15.20
+    kind: pc
+    desktop:
+      protocol: rdp   # Windows Pro; for Windows Home, macOS or Linux desktops: vnc
+      user: andreas   # suggested in the form
+```
+
+The password is asked for when connecting, used once, and never stored or put in a URL.
+Kastellan doesn't let the remote side reach the hub's files or printers. Opening and closing
+goes to the audit log. Not tested against real desktops yet.
+
 ## Security
 
 Run Kastellan only where your own network or VPN can reach it, never on the internet. The security design (keys instead of passwords, per-device limits, roles,

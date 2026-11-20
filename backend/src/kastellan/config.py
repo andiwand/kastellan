@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ruamel.yaml import YAML
@@ -107,6 +107,21 @@ class SshAccess(BaseModel):
     port: int = Field(default=22, ge=1, le=65535)
 
 
+class DesktopAccess(BaseModel):
+    """Remote desktop through guacd. The password is asked for when connecting, never stored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    protocol: Literal["rdp", "vnc"]
+    port: int | None = Field(default=None, ge=1, le=65535)  # None: 3389 for RDP, 5900 for VNC
+    user: str | None = None  # suggested in the connect form
+    # RDP: which security to negotiate; "any" lets the PC choose (NLA on current Windows).
+    security: Literal["any", "nla", "tls", "rdp"] = "any"
+    # Windows' own RDP certificate is self-signed, and guacd can't pin it; set false once the PC has
+    # a certificate guacd can verify.
+    ignore_cert: bool = True
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -119,6 +134,7 @@ class Device(BaseModel):
     # offline. None: by kind (pcs and laptops are not always on).
     always_on: bool | None = None
     ssh: SshAccess | None = None  # set to open a terminal on the device
+    desktop: DesktopAccess | None = None  # set to open its screen in the browser
     checks: list[Check] = Field(default_factory=lambda: [Check(type=CheckType.PING)])
 
     @model_validator(mode="after")

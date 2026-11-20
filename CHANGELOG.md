@@ -12,5 +12,6 @@
 - Sign-in with users and roles (admin, observer) from config.yaml, sessions, a brake on
   password guessing, and an audit log.
 - Terminal in the browser over SSH (xterm.js), with the hub's own key and pinned host keys.
+- Remote desktop (RDP, VNC) in the browser through guacd; not yet tested against real desktops.
 - Demo mode (`KASTELLAN_DEMO=1`): a made-up network with a day of simulated history.
 - Project website (`website/`).

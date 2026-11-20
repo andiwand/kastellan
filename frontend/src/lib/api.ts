@@ -24,6 +24,7 @@ export interface Device {
 	tags: string[];
 	always_on: boolean;
 	ssh: { user: string; port: number } | null;
+	desktop: { protocol: 'rdp' | 'vnc'; user: string | null } | null;
 	state: CheckState;
 	checks: CheckStatus[];
 }
@@ -105,6 +106,15 @@ export const api = {
 		call<{ state: string }>('POST', `/devices/${encodeURIComponent(device)}/ssh/trust`, {
 			fingerprint
 		}),
+	desktopTicket: (
+		device: string,
+		credentials: { username: string; password: string; domain: string }
+	) =>
+		call<{ ticket: string }>(
+			'POST',
+			`/devices/${encodeURIComponent(device)}/desktop/ticket`,
+			credentials
+		),
 	forgetHost: (device: string) =>
 		call<{ state: string }>('POST', `/devices/${encodeURIComponent(device)}/ssh/forget`)
 };

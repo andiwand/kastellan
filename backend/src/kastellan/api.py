@@ -15,6 +15,7 @@ from . import __version__, checks, stats
 from .auth_api import Guard
 from .auth_api import router as auth_router
 from .config import Check
+from .desktop_api import router as desktop_router
 from .hub import Hub
 from .monitor import CheckStatus
 from .settings import Settings
@@ -43,6 +44,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.add_middleware(Guard, hub=hub)
     app.include_router(auth_router(hub))
     app.include_router(terminal_router(hub))
+    app.include_router(desktop_router(hub))
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:
@@ -86,6 +88,9 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "tags": device.tags,
                     "always_on": device.always_on,
                     "ssh": device.ssh.model_dump() if device.ssh else None,
+                    "desktop": device.desktop.model_dump(include={"protocol", "user"})
+                    if device.desktop
+                    else None,
                     "state": status.state if status else "unknown",
                     "checks": [
                         check_view(check, status.checks.get(check.name) if status else None)

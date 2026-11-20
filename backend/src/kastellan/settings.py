@@ -17,6 +17,7 @@ class Settings:
     demo: bool = False  # a made-up network with simulated results, for trying the app
     # Names the hub may be reached by (besides IP addresses and localhost); see auth_api.Guard.
     hosts: tuple[str, ...] = ()
+    guacd: str = "127.0.0.1:4822"  # where guacd listens (remote desktop)
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -28,6 +29,7 @@ class Settings:
             port=int(os.environ.get("KASTELLAN_PORT", "8100")),
             log_level=os.environ.get("KASTELLAN_LOG_LEVEL", "info").lower(),
             demo=os.environ.get("KASTELLAN_DEMO", "") not in ("", "0", "false"),
+            guacd=os.environ.get("KASTELLAN_GUACD", "127.0.0.1:4822"),
             hosts=tuple(
                 h.strip().lower() for h in os.environ.get("KASTELLAN_HOSTS", "").split(",") if h.strip()
             ),
