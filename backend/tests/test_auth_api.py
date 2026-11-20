@@ -201,3 +201,19 @@ def test_unwritable_marker_locks(tmp_path: Path) -> None:
             assert c.get("/api/devices").status_code == 503
     finally:
         os.chmod(data, 0o700)
+
+
+def test_acknowledge_alarm_with_slashes(client: TestClient) -> None:
+    """Security/alarms review: keys of HTTP checks contain slashes and couldn't be acknowledged."""
+    from datetime import UTC, datetime
+
+    from kastellan.alarms import Problem, Severity
+
+    hub = client.app.state.hub
+    key = "service:box:http:http://box/x"
+    hub.alarms.update(
+        [Problem(key, Severity.WARNING, "box", "box: web", "box: web is down")], datetime.now(UTC)
+    )
+    signin(client, "ada", "admin password")
+    r = client.post(f"/api/alarms/{key}/ack", json={"note": "looking"}, headers=H)
+    assert r.status_code == 200 and r.json()["acknowledged_by"] == "ada"

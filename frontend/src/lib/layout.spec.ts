@@ -17,6 +17,8 @@ const device = (id: string, parent: string | null = null): Device => ({
 	containers: null,
 	containers_checked: null,
 	containers_error: null,
+	vulns: null,
+	exposed: false,
 	state: 'unknown',
 	checks: []
 });

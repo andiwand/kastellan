@@ -88,6 +88,20 @@ fixed, before the next one starts.
 8. **Opening device web interfaces through the hub** (a reverse proxy per device, on its own
    subdomain: path-based proxies break most device UIs).
 
+## VPN access (asked for on 2026-11-20)
+
+Today: OpenVPN on the OpenWrt router with its easy-rsa PKI on SV1, and WireGuard through wg-easy
+on SV1. Goal: one place to give and take away VPN access.
+
+- **OpenVPN**: Kastellan holds (or drives) the easy-rsa PKI: create a client (key + certificate),
+  revoke it, keep the CRL current on the OpenWrt server, and download a ready `.ovpn` (inline
+  certificates) or a QR code. The CA key stays on SV1 (or moves to the hub, encrypted); every
+  issue and revoke goes to the audit log; clients expire.
+- **WireGuard**: build on wg-easy's API rather than duplicating it (list, create, disable, delete
+  clients; config and QR from it); later possibly native WireGuard on OpenWrt.
+- One "VPN" page: who has access, by which method, last seen; revoke in one place.
+- Needs: SSH (or the agent) to SV1 and the router, so it comes after those are set up.
+
 ## Beyond the home network
 
 - **Devices in other networks** (a Hetzner VM, a server at a friend's place): any host or

@@ -19,6 +19,7 @@
 	import ActivityItem from '#lib/components/ActivityItem.svelte';
 	import ServicesTable from '#lib/components/ServicesTable.svelte';
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
+	import VulnsList from '#lib/components/VulnsList.svelte';
 
 	const id = $derived(page.params.id ?? '');
 	const device = $derived(store.byId.get(id));
@@ -220,6 +221,11 @@
 			rangeLabel={range.label}
 		/>
 	</div>
+
+	{#if device.vulns}
+		<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
+		<VulnsList vulns={device.vulns} exposed={device.exposed} />
+	{/if}
 
 	{#if device.containers || device.containers_error}
 		<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">

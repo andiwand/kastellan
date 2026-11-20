@@ -30,6 +30,8 @@ export interface Device {
 	containers: Container[] | null;
 	containers_checked: string | null;
 	containers_error: string | null;
+	vulns: Vulns | null;
+	exposed: boolean;
 	state: CheckState;
 	checks: CheckStatus[];
 }
@@ -64,6 +66,27 @@ export interface Alarms {
 	open: Alarm[];
 	muted: Record<string, string>;
 	channels: number;
+}
+
+export interface Finding {
+	id: string;
+	source: string;
+	summary: string;
+	score: number | null;
+	severity: 'critical' | 'high' | 'medium' | 'low' | 'unknown';
+	published: string | null;
+	url: string;
+	aliases: string[];
+	fixed_in: string | null;
+	exploited: boolean;
+	confidence: 'exact' | 'upstream';
+}
+
+export interface Vulns {
+	checked: string;
+	items: { where: string; product: string; findings: Finding[] }[];
+	unknown: string[];
+	errors: Record<string, string>;
 }
 
 export interface Health {

@@ -46,6 +46,7 @@ class DeviceStatus:
     containers: list[dict[str, Any]] | None = None  # from docker.py
     containers_checked: datetime | None = None
     containers_error: str | None = None
+    vulns: dict[str, Any] | None = None  # from the vulnerability sweep (hub, vulns.py)
 
     @property
     def state(self) -> State:

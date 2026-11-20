@@ -17,5 +17,8 @@
 - Docker containers and their updates from WUD, honest about what can't be checked.
 - Alarms and notifications (ntfy, webhooks): devices and services down, updates; one alarm for a
   device and what is behind it; acknowledge and mute.
+- Known vulnerabilities from NVD, OSV and CISA KEV for software, firmware and container images;
+  alarms by exposure; opt-in automatic container updates only for confirmed serious findings on
+  internet-facing devices.
 - Demo mode (`KASTELLAN_DEMO=1`): a made-up network with a day of simulated history.
 - Project website (`website/`).

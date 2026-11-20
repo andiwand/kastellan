@@ -32,6 +32,17 @@
 	// Amber while things only limp along, red once something that should be on is down.
 	const tone = $derived(counts.down ? 'critical' : counts.degraded ? 'warning' : 'good');
 	const checkCount = $derived(devices.reduce((n, d) => n + d.checks.length, 0));
+	let ackError = $state<string | null>(null);
+	// Known vulnerabilities that matter: exploited or critical, confirmed.
+	const urgentVulns = $derived(
+		devices.flatMap((d) =>
+			(d.vulns?.items ?? []).flatMap((i) =>
+				i.findings
+					.filter((f) => f.confidence === 'exact' && (f.exploited || f.severity === 'critical'))
+					.map((f) => ({ device: d, f, product: i.product }))
+			)
+		)
+	);
 	// Container updates over all Docker hosts, and what can't be checked.
 	const updates = $derived(
 		devices.flatMap((d) =>
@@ -163,6 +174,20 @@
 				{/each}
 			</ul>
 		{/if}
+		{#if urgentVulns.length}
+			<div class="relative mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+				<span class="font-medium" style:color="var(--critical-text)">
+					{urgentVulns.length} serious {urgentVulns.length === 1
+						? 'vulnerability'
+						: 'vulnerabilities'}:
+				</span>
+				{#each urgentVulns.slice(0, 4) as { device, f, product } (`${device.id}/${f.id}/${product}`)}
+					<a href="/devices/{device.id}" class="text-muted hover:text-text">
+						{device.name}: {f.id}{f.exploited ? ' (exploited)' : ''}
+					</a>
+				{/each}
+			</div>
+		{/if}
 		{#if updates.length || unchecked}
 			<div class="relative mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
 				{#if updates.length}
@@ -197,6 +222,9 @@
 						: 'no notify: channels in config.yaml'}
 				</p>
 			</div>
+			{#if ackError}
+				<p class="mb-2 text-xs" style:color="var(--critical-text)">{ackError}</p>
+			{/if}
 			<ul class="card divide-y divide-line">
 				{#each store.alarms.open as alarm (alarm.key)}
 					<li class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
@@ -216,7 +244,11 @@
 						{:else if store.me?.role === 'admin'}
 							<button
 								onclick={async () => {
-									await api.acknowledge(alarm.key);
+									try {
+										await api.acknowledge(alarm.key);
+									} catch (e) {
+										ackError = (e as Error).message;
+									}
 									store.refreshHistory();
 								}}
 								class="h-7 rounded-lg border border-line px-2.5 text-xs font-medium hover:border-line-strong"

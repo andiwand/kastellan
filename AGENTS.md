@@ -46,6 +46,16 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     sends info events once. `notify.py`: ntfy and webhooks with `min` and `quiet` hours (critical
     always). `alarms_api.py`: list, acknowledge, mute, test. The hub evaluates every 30 s.
   - Version-log keys starting with `@` are not checks: `@firmware`, `@container <key>`.
+  - `vulns.py`: products (`from_software`, `from_image`; CPE for NVD, ecosystem/package for
+    OSV) and `Sources` (NVD with its rate limit, OSV, CISA KEV; cached a day in `<data>/vulns/`).
+    `None` from a lookup means "couldn't ask", never "safe". A missing patch level is `-` in a
+    CPE, never `*` (that matched 29 CVEs for OpenSSH 9.8 instead of 1). A distribution's package
+    revision makes NVD findings `confidence="upstream"`. `vuln_policy.py`: the table from
+    findings to alarms, and `auto_update_reason` (all conditions or nothing). The hub sweeps two
+    minutes after start and every `vulns.every_hours`.
+  - Alarms only from fresh results (after `hub.started`, not overdue); folding to the top-most
+    down ancestor; `RESOLVE_AFTER` hysteresis; silent resolves for muted, removed or folded
+    devices. Failed notifications wait in `hub._outbox` and are retried with backoff for a day.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)

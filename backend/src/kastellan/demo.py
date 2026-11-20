@@ -170,6 +170,7 @@ INFO = {
 def _c(name, image, tag, update_to=None, unchecked=None, state="running"):
     return {
         "key": name,
+        "wud_id": name,
         "name": name,
         "image": image,
         "tag": tag,

@@ -11,23 +11,25 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 from pydantic import ValidationError
 from ruamel.yaml.error import YAMLError
 
 from . import config as config_mod
-from . import demo, docker, notify
-from .alarms import Alarms, Message, evaluate
+from . import demo, docker, notify, vulns
+from .alarms import Alarms, Message, Problem, Severity, evaluate
 from .audit import Audit
 from .auth import Sessions
-from .config import Config, Device, Role
+from .config import Config, Device, NotifyChannel, Role
 from .desktop_api import Tickets
 from .drivers import DRIVERS
 from .history import History
-from .monitor import Monitor, run_check
+from .monitor import DeviceStatus, Monitor, run_check
 from .settings import Settings
 from .ssh import Keys
 from .terminals import Terminals
 from .versions import Versions
+from .vuln_policy import assess, auto_update_reason
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
 DRIVER_EVERY = 600
 ALARMS_EVERY = 30
+VULNS_FIRST = 120  # seconds after start: the first checks and polls have run
 
 
 class ConfigProblem(Exception):
@@ -78,6 +81,9 @@ class Hub:
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)
         self._events_since = datetime.now(UTC)
+        self.started = datetime.now(UTC)  # alarms use only results from after this
+        self._outbox: list[tuple[NotifyChannel, Message, datetime, int]] = []
+        self.vuln_sources = vulns.Sources(data / "vulns")
         self._container_seen: dict[tuple[str, str], tuple[str, int]] = {}
         runner = self.demo.run if self.demo else run_check
         self.monitor = Monitor(self.history, runner, self.versions)
@@ -207,6 +213,7 @@ class Hub:
             asyncio.create_task(self._watch_config(), name="watch config"),
             asyncio.create_task(self._expire_tickets(), name="expire tickets"),
             asyncio.create_task(self._watch_alarms(), name="alarms"),
+            asyncio.create_task(self._watch_vulns(), name="vulnerabilities"),
             asyncio.create_task(self._prune(), name="prune history"),
         ]
 
@@ -318,19 +325,45 @@ class Hub:
             self.versions.record(now, id, "@firmware", last[0] if last else None, firmware)
 
     async def _watch_alarms(self) -> None:
-        """Turn what is known into alarms and info events, and send them (alarms.py, notify.py)."""
+        """Turn what is known into alarms and info events, and send them (alarms.py, notify.py).
+        What can't be delivered is retried with growing pauses, for up to a day."""
+        first = True
         while True:
             await asyncio.sleep(ALARMS_EVERY)
             try:
                 now = datetime.now(UTC)
-                problems = evaluate(self.config, self.monitor.status, now, self.alarms.muted)
-                messages = self.alarms.update(problems, now) + self._events(now)
-                await notify.send(self.config.notify, messages, now)
+                problems = evaluate(self.config, self.monitor.status, now, self.alarms.muted, self.started)
+                problems += self._vuln_problems()
+                # Muted or removed devices: their alarms end without a "back up".
+                quiet = {d for d, until in self.alarms.muted.items() if until > now}
+                quiet |= {a.device for a in self.alarms.open.values() if a.device not in self.config.devices}
+                messages = self.alarms.update(problems, now, quiet) + self._events(now, send=not first)
+                first = False
+                failed = await notify.send(self.config.notify, messages, now)
+                self._outbox.extend((c, m, now, 1) for c, m in failed)
+                await self._retry_outbox(now)
             except Exception:
                 log.exception("evaluating the alarms failed")
 
-    def _events(self, now: datetime) -> list[Message]:
-        """Info events: container updates that appeared, software and firmware that changed."""
+    async def _retry_outbox(self, now: datetime) -> None:
+        due, later = [], []
+        for channel, message, first_try, tries in self._outbox:
+            if (now - first_try).total_seconds() > 86400:
+                log.warning("giving up on a notification after a day: %s", message.title)
+            elif (now - first_try).total_seconds() >= ALARMS_EVERY * 2 ** min(tries, 6):
+                due.append((channel, message, first_try, tries))
+            else:
+                later.append((channel, message, first_try, tries))
+        self._outbox = later
+        for channel, message, first_try, tries in due:
+            if channel not in self.config.notify:
+                continue  # the channel was removed from config.yaml
+            if await notify.send([channel], [message], now):
+                self._outbox.append((channel, message, first_try, tries + 1))
+
+    def _events(self, now: datetime, send: bool = True) -> list[Message]:
+        """Info events: container updates that appeared, software and firmware that changed.
+        On the first look after starting, they are only remembered: they aren't news."""
         out: list[Message] = []
         for id, status in self.monitor.status.items():
             device = self.config.devices.get(id)
@@ -338,22 +371,143 @@ class Hub:
                 continue
             for c in status.containers or []:
                 if c.get("update"):
-                    key = f"update:{id}:{c.get('key', c['name'])}:{c.get('update_to')}"
-                    title = f"{device.name}: {c['name']} can be updated to {c.get('update_to')}"
-                    if m := self.alarms.event(key, title, f"{c['image']}:{c['tag']}", id, now):
+                    target = c.get("update_to") or "a newer image"
+                    key = f"update:{id}:{c.get('key', c['name'])}:{target}"
+                    title = f"{device.name}: {c['name']} can be updated to {target}"
+                    if m := self.alarms.event(key, title, f"{c['image']}:{c['tag']}", id, now, send):
                         out.append(m)
-        for change in self.versions.changes(self._events_since):
+            for item in (status.vulns or {}).get("items", []):
+                for f in item.get("findings", []):
+                    if not assess(device, f).message:
+                        continue
+                    key = f"vuln:{id}:{item['where']}:{f['id']}"
+                    note = " (your distribution may have fixed it)" if f.get("confidence") != "exact" else ""
+                    title = f"{device.name}: {f['id']} in {item['product']}{note}"
+                    if m := self.alarms.event(key, title, f.get("summary", "")[:300], id, now, send):
+                        out.append(m)
+        # A minute of overlap: the log keeps whole seconds; seen_events keeps it from repeating.
+        for change in self.versions.changes(self._events_since - timedelta(seconds=60)):
             device = self.config.devices.get(change["device"])
             name = device.name if device else change["device"]
             key = f"version:{change['device']}:{change['check']}:{change['to']}"
             what = change["check"].removeprefix("@")
             title = f"{name}: {what} updated"
             if m := self.alarms.event(
-                key, title, f"{change['from']} → {change['to']}", change["device"], now
+                key, title, f"{change['from']} → {change['to']}", change["device"], now, send
             ):
                 out.append(m)
         self._events_since = now
         return out
+
+    def _vuln_problems(self) -> list[Problem]:
+        """Alarms from known vulnerabilities, by vuln_policy.py's table."""
+        out: list[Problem] = []
+        for id, status in self.monitor.status.items():
+            device = self.config.devices.get(id)
+            if device is None or not status.vulns:
+                continue
+            for item in status.vulns.get("items", []):
+                for f in item.get("findings", []):
+                    severity = assess(device, f).alarm
+                    if severity is None:
+                        continue
+                    what = "exploited " if f.get("exploited") else ""
+                    title = f"{device.name}: {what}{f['id']} in {item['product']}"
+                    facing = ", internet-facing" if device.exposed else ""
+                    detail = f"{f.get('severity')}{facing}: {f.get('summary', '')[:200]}"
+                    out.append(
+                        Problem(f"vuln:{id}:{item['where']}:{f['id']}", severity, id, title, title, detail)
+                    )
+        return out
+
+    async def _watch_vulns(self) -> None:
+        """Look up what every device runs in the vulnerability sources (vulns.py), shortly after
+        starting (once the first checks and polls have run) and then every few hours."""
+        await asyncio.sleep(VULNS_FIRST)
+        while True:
+            settings = self.config.vulns
+            if settings.enabled and not self.demo:
+                try:
+                    await self._sweep_vulns()
+                except Exception:
+                    log.exception("the vulnerability sweep failed")
+            await asyncio.sleep(settings.every_hours * 3600)
+
+    async def _sweep_vulns(self) -> None:
+        sources = self.vuln_sources
+        sources.nvd_api_key = self.config.vulns.nvd_api_key
+        async with httpx.AsyncClient(headers={"User-Agent": "kastellan"}) as client:
+            await sources.refresh_kev(client)
+            for id, device in list(self.config.devices.items()):
+                status = self.monitor.status.get(id)
+                if status is None:
+                    continue
+                items, unknown = [], []
+                for where, product in self._products(status):
+                    found = await sources.lookup(client, product)
+                    if found is None:
+                        unknown.append(product.label)
+                        continue
+                    items.append(
+                        {"where": where, "product": product.label, "findings": [asdict(f) for f in found]}
+                    )
+                status.vulns = {
+                    "checked": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "items": items,
+                    "unknown": unknown,  # couldn't be asked: not "no vulnerabilities"
+                    "errors": dict(sources.errors),
+                }
+                await self._auto_update(id, device, status)
+
+    def _products(self, status: DeviceStatus) -> list[tuple[str, vulns.Product]]:
+        """What a device runs that a vulnerability source knows: services' software, firmware,
+        container images."""
+        out: list[tuple[str, vulns.Product]] = []
+        for name, check in status.checks.items():
+            product = vulns.from_software(*vulns.parse_software(check.software)) if check.software else None
+            if product:
+                out.append((f"service {name}", product))
+        firmware = (status.info or {}).get("firmware")
+        if firmware and (product := vulns.from_software(*vulns.parse_software(firmware))):
+            out.append(("firmware", product))
+        for c in status.containers or []:
+            if product := vulns.from_image(c["image"], c["tag"]):
+                out.append((f"container {c.get('key', c['name'])}", product))
+        return out
+
+    async def _auto_update(self, id: str, device: Device, status: DeviceStatus) -> None:
+        """Update a container by itself only where vuln_policy.auto_update_reason allows it."""
+        if not (device.docker and device.docker.trigger and device.auto_update):
+            return
+        findings = {item["where"]: item["findings"] for item in (status.vulns or {}).get("items", [])}
+        for c in status.containers or []:
+            key = c.get("key", c["name"])
+            reason = auto_update_reason(device, c, findings.get(f"container {key}", []))
+            if reason is None:
+                continue
+            done = f"auto:{id}:{key}:{c.get('update_to')}"
+            if done in self.alarms.seen_events:
+                continue  # once per new image
+            self.alarms.event(done, "", "", id, datetime.now(UTC), send=False)
+            try:
+                await docker.run_trigger(device.docker.wud, c["wud_id"], device.docker.trigger)
+                outcome, severity = "started", Severity.WARNING
+            except Exception as e:
+                outcome, severity = f"failed: {type(e).__name__}", Severity.CRITICAL
+            self.audit.record(
+                "update.auto",
+                None,
+                None,
+                device=id,
+                container=key,
+                to=c.get("update_to"),
+                reason=reason,
+                outcome=outcome,
+            )
+            title = f"{device.name}: updating {c['name']} to {c.get('update_to')} ({outcome})"
+            await notify.send(
+                self.config.notify, [Message(severity, title, f"because of {reason}", id)], datetime.now(UTC)
+            )
 
     async def _expire_tickets(self) -> None:
         """A ticket holds a desktop password until used; unused ones go after their minute."""

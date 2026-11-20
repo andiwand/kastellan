@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -37,7 +38,7 @@ def router(hub: Hub) -> APIRouter:
             "channels": len(hub.config.notify),
         }
 
-    @api.post("/alarms/{key}/ack")
+    @api.post("/alarms/{key:path}/ack")
     def acknowledge(key: str, body: Ack, request: Request) -> dict[str, Any]:
         w = require_admin(request)
         alarm = hub.alarms.acknowledge(key, w.user, body.note, datetime.now(UTC))
@@ -58,9 +59,14 @@ def router(hub: Hub) -> APIRouter:
         )
         return {"device": id, "muted_until": until}
 
+    last_test = [0.0]
+
     @api.post("/notify/test")
     async def test(request: Request) -> dict[str, int]:
         w = require_admin(request)
+        if time.monotonic() - last_test[0] < 60:
+            raise HTTPException(429, "one test a minute")
+        last_test[0] = time.monotonic()
         if not hub.config.notify:
             raise HTTPException(400, "no notify: channels in config.yaml")
         message = Message(Severity.CRITICAL, "Kastellan test", f"sent by {w.user or 'an admin'}")

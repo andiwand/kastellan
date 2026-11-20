@@ -7,16 +7,17 @@
         quiet: "22:00-07:00"                    # only critical then
       - webhook: https://example.org/hook       # POST, JSON body (title, body, severity, ...)
 
-Messages carry device names and what is wrong; nothing secret. A channel that fails is logged
-and retried with the next message, never blocking the hub.
+Messages carry device names and what is wrong; nothing secret. Quiet hours are in the hub's local
+time (TZ). `send` returns what could not be delivered; the hub retries it with growing pauses
+(the outage that matters most, the internet line, is when ntfy.sh can't be reached).
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from datetime import datetime, time
-from typing import Any
 
 import httpx
 
@@ -33,7 +34,7 @@ def in_quiet_hours(quiet: str | None, now: datetime) -> bool:
         return False
     start_text, _, end_text = quiet.partition("-")
     start, end = time.fromisoformat(start_text.strip()), time.fromisoformat(end_text.strip())
-    t = now.time()
+    t = now.astimezone().time()  # local time: "22:00-07:00" means the evening where the hub is
     return start <= t < end if start <= end else t >= start or t < end  # e.g. 22:00-07:00
 
 
@@ -43,26 +44,39 @@ def wants(channel: NotifyChannel, message: Message, now: datetime) -> bool:
     return message.severity is Severity.CRITICAL or not in_quiet_hours(channel.quiet, now)
 
 
-async def send(channels: list[NotifyChannel], messages: list[Message], now: datetime) -> None:
-    """Send each message to each channel that wants it; failures are logged, not raised."""
+async def send(
+    channels: list[NotifyChannel], messages: list[Message], now: datetime
+) -> list[tuple[NotifyChannel, Message]]:
+    """Send each message to each channel that wants it; returns what failed (to retry)."""
     if not channels or not messages:
-        return
+        return []
+    jobs = [(c, m) for m in messages for c in channels if wants(c, m, now)]
+    if not jobs:
+        return []
     async with httpx.AsyncClient(timeout=10) as client:
-        jobs = [
-            _send_one(client, channel, message)
-            for message in messages
-            for channel in channels
-            if wants(channel, message, now)
-        ]
-        await asyncio.gather(*jobs)
+        results = await asyncio.gather(*(_send_one(client, c, m) for c, m in jobs))
+    return [job for job, ok in zip(jobs, results, strict=True) if not ok]
 
 
-async def _send_one(client: httpx.AsyncClient, channel: NotifyChannel, message: Message) -> None:
-    title = ("✓ " if message.resolved else "") + message.title
+def _where(channel: NotifyChannel) -> str:
+    """A channel for the log, without its secret part (an ntfy topic is the secret)."""
+    url = httpx.URL(channel.ntfy or channel.webhook or "")
+    return f"{'ntfy' if channel.ntfy else 'webhook'} at {url.host}"
+
+
+def _header(text: str) -> str:
+    """A header value that survives proxies: ASCII as is, else RFC 2047 (ntfy decodes it)."""
+    if text.isascii():
+        return text
+    return "=?UTF-8?B?" + base64.b64encode(text.encode()).decode() + "?="
+
+
+async def _send_one(client: httpx.AsyncClient, channel: NotifyChannel, message: Message) -> bool:
+    title = message.title  # alarms.py writes it whole ("... is back up", "Resolved: ...")
     try:
         if channel.ntfy:
-            headers: dict[str, Any] = {
-                "Title": title.encode("utf-8"),
+            headers = {
+                "Title": _header(title),
                 "Priority": "default" if message.resolved else PRIORITY[message.severity],
                 "Tags": "white_check_mark" if message.resolved else message.severity.value,
             }
@@ -70,9 +84,8 @@ async def _send_one(client: httpx.AsyncClient, channel: NotifyChannel, message: 
                 headers["Authorization"] = f"Bearer {channel.token}"
             r = await client.post(channel.ntfy, content=(message.body or title).encode(), headers=headers)
         else:
-            assert channel.webhook
             r = await client.post(
-                channel.webhook,
+                channel.webhook or "",
                 json={
                     "title": title,
                     "body": message.body,
@@ -82,5 +95,7 @@ async def _send_one(client: httpx.AsyncClient, channel: NotifyChannel, message: 
                 },
             )
         r.raise_for_status()
-    except (httpx.HTTPError, AssertionError) as e:
-        log.warning("notification to %s failed: %s", channel.ntfy or channel.webhook, e)
+        return True
+    except Exception as e:  # any failure is reported and retried, never raised into the hub
+        log.warning("notification to %s failed: %s", _where(channel), type(e).__name__)
+        return False

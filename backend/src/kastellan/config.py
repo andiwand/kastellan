@@ -130,6 +130,9 @@ class DockerSource(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     wud: str = Field(pattern=r"^https?://[^\s]+$")
+    # A WUD trigger that updates a container (e.g. docker.local); only used for automatic updates
+    # that vulns.py allows (see `auto_update`).
+    trigger: str | None = Field(default=None, pattern=r"^[a-z]+\.[A-Za-z0-9_-]+$")
 
 
 class Device(BaseModel):
@@ -150,6 +153,9 @@ class Device(BaseModel):
     # Reachable from the internet (a port forward, a public server): known vulnerabilities in
     # what it runs count as urgent, and may trigger automatic updates (see vulns.py).
     exposed: bool = False
+    # Let Kastellan update a container by itself, only when the device is exposed and a confirmed
+    # high, critical or exploited vulnerability has a fix (see vulns.py). Off by default.
+    auto_update: bool = False
     checks: list[Check] = Field(default_factory=lambda: [Check(type=CheckType.PING)])
 
     @model_validator(mode="after")
@@ -215,7 +221,23 @@ class NotifyChannel(BaseModel):
     def _one_target(self) -> Self:
         if (self.ntfy is None) == (self.webhook is None):
             raise ValueError("a notify channel is either ntfy: <url> or webhook: <url>")
+        if self.quiet:
+            from datetime import time
+
+            try:
+                for part in self.quiet.split("-"):
+                    time.fromisoformat(part)
+            except ValueError as e:
+                raise ValueError(f"quiet: {self.quiet!r} is not HH:MM-HH:MM") from e
         return self
+
+
+class VulnSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    every_hours: float = Field(default=6, ge=1)
+    nvd_api_key: str | None = None  # optional: faster NVD lookups
 
 
 class Config(BaseModel):
@@ -228,6 +250,7 @@ class Config(BaseModel):
     users: dict[str, User] = Field(default_factory=dict)
     alarms: AlarmSettings = Field(default_factory=AlarmSettings)
     notify: list[NotifyChannel] = Field(default_factory=list)
+    vulns: VulnSettings = Field(default_factory=VulnSettings)
 
     @model_validator(mode="after")
     def _ids_and_parents(self) -> Self:

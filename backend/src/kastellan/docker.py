@@ -33,6 +33,7 @@ FULL_VERSION = re.compile(r"^v?\d+\.\d+\.\d+")
 @dataclass(frozen=True)
 class Container:
     key: str  # unique per host: WUD's watcher and the container's name
+    wud_id: str  # WUD's id for the container (to run a trigger on it)
     name: str
     image: str  # "andiwand/norn"
     tag: str  # "0.10.0", "latest"
@@ -85,6 +86,7 @@ def from_wud(item: dict[str, Any]) -> Container:
     watcher = _text(item.get("watcher") or "local", 50)
     return Container(
         key=name if watcher == "local" else f"{watcher}/{name}",
+        wud_id=_text(item.get("id"), 100),
         name=name,
         image=_text(image.get("name") or "?", 200),
         tag=tag,
@@ -123,3 +125,12 @@ async def read_wud(url: str) -> list[Container]:
 
 def as_dicts(containers: list[Container]) -> list[dict[str, Any]]:
     return [asdict(c) for c in containers]
+
+
+async def run_trigger(url: str, wud_id: str, trigger: str) -> None:
+    """Ask WUD to run one of its triggers (e.g. docker.local, which pulls and recreates) on one
+    container. Raises when WUD refuses."""
+    kind, _, name = trigger.partition(".")
+    async with asyncio.timeout(600), httpx.AsyncClient(timeout=600) as client:
+        r = await client.post(f"{url.rstrip('/')}/api/containers/{wud_id}/triggers/{kind}/{name}")
+        r.raise_for_status()

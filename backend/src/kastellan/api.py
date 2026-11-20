@@ -99,6 +99,8 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "containers": status.containers if status else None,
                     "containers_checked": status.containers_checked if status else None,
                     "containers_error": status.containers_error if status else None,
+                    "vulns": status.vulns if status else None,
+                    "exposed": device.exposed,
                     "checks": [
                         check_view(check, status.checks.get(check.name) if status else None)
                         for check in device.checks

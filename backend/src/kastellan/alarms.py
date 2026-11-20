@@ -4,11 +4,20 @@ Rules (defaults in config.yaml's `alarms:`):
 
 - critical: a device that should always be on is down for `down_after` seconds (3 min);
 - warning: a service (a non-ping check) of such a device is down that long;
+- vulnerabilities: see vuln_policy.py (exploited or critical on an exposed device: critical);
 - info: a container has an update, a device's firmware or a service's software changed.
 
-A device that is down hides the devices behind it (its `parent` chain): one alarm says "wifi2 is
-down, and 3 devices behind it are unreachable", not four alarms. A muted device raises nothing.
-An alarm resolves by itself when the problem is gone (and says so, for critical and warning).
+Care is taken not to wake anyone for nothing:
+
+- Only fresh results count: from after the hub started, and not stale (a check that stopped
+  reporting is unknown, neither up nor down). No alarm from history just after a restart.
+- A device that is down covers everything behind it (its `parent` chain, to the top-most device
+  that is down): one alarm. A muted device that is down still covers what is behind it.
+- Devices behind a device that just came back wait one check interval before they can alarm
+  on their own (their checks may not have run since).
+- An alarm resolves only when its problem has been gone for `resolve_after` seconds (90 s), so a
+  flapping service doesn't send "down"/"back up" all night.
+- Resolving because a device was muted, removed, or folded into its parent's alarm is silent.
 
 `evaluate` is a pure function of what is known now; `Alarms` keeps the open ones in
 <data>/alarms.json and every alarm in <data>/alarms.log, and decides what to send (notify.py).
@@ -20,15 +29,18 @@ import json
 import logging
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from .config import Config
-from .monitor import DeviceStatus
+from .config import Check, Config
+from .monitor import CheckStatus, DeviceStatus
 
 log = logging.getLogger(__name__)
+
+RESOLVE_AFTER = 90  # seconds a problem must be gone before its alarm resolves
+EVENTS_KEPT_DAYS = 60
 
 
 class Severity(StrEnum):
@@ -48,81 +60,120 @@ class Problem:
     key: str
     severity: Severity
     device: str
+    name: str  # what it is about, for "... is back up"
     title: str
     detail: str = ""
     since: datetime | None = None
     hidden: list[str] = field(default_factory=list)  # devices behind it, folded into this one
 
 
-def _down_since(status: DeviceStatus, names: list[str]) -> datetime | None:
-    """When all of these checks went down (the latest of their `since`), if all are down."""
-    checks = [status.checks.get(n) for n in names]
-    if not checks or any(c is None or c.up is not False for c in checks):
-        return None
-    times = [c.since for c in checks if c and c.since]
-    return max(times) if times else None
+def _fresh(c: CheckStatus | None, check: Check, interval: float, started: datetime, now: datetime) -> bool:
+    """A result that says something now: after the hub started, and not overdue."""
+    if c is None or c.up is None or c.checked is None or c.checked < started:
+        return False
+    return (now - c.checked).total_seconds() <= 3 * (check.interval or interval) + 60
 
 
 def evaluate(
-    config: Config, status: dict[str, DeviceStatus], now: datetime, muted: dict[str, datetime]
+    config: Config,
+    status: dict[str, DeviceStatus],
+    now: datetime,
+    muted: dict[str, datetime],
+    started: datetime,
 ) -> list[Problem]:
-    """The problems now (critical and warning; info events come from Alarms.events)."""
+    """The problems now (critical and warning)."""
     after = timedelta(seconds=config.alarms.down_after)
+    interval = config.check_interval
 
     def is_muted(id: str) -> bool:
         return id in muted and muted[id] > now
 
-    # Devices that are down (all checks down for long enough, and should be on).
+    def fresh_checks(id: str) -> list[tuple[Check, CheckStatus]] | None:
+        st = status.get(id)
+        device = config.devices[id]
+        if st is None:
+            return None
+        pairs = [(c, st.checks.get(c.name)) for c in device.checks]
+        if not all(_fresh(s, c, interval, started, now) for c, s in pairs):
+            return None
+        return [(c, s) for c, s in pairs if s is not None]
+
+    # Devices that are down: every check down, all fresh, long enough; and should be on.
     down: dict[str, datetime] = {}
     for id, device in config.devices.items():
-        st = status.get(id)
-        if st is None or not device.always_on or is_muted(id):
+        if not device.always_on:
             continue
-        since = _down_since(st, [c.name for c in device.checks])
+        pairs = fresh_checks(id)
+        if not pairs or any(s.up for _, s in pairs):
+            continue
+        since = max((s.since for _, s in pairs if s.since), default=None)
         if since is not None and now - since >= after:
             down[id] = since
 
-    def ancestor_down(id: str) -> str | None:
-        seen: set[str] = set()
+    def chain(id: str) -> list[str]:
+        """id's parents, nearest first (cycles cut)."""
+        out: list[str] = []
         parent = config.devices[id].parent
-        while parent and parent not in seen:
-            seen.add(parent)
-            if parent in down:
-                return parent
-            parent = config.devices[parent].parent if parent in config.devices else None
-        return None
+        while parent and parent in config.devices and parent not in out and parent != id:
+            out.append(parent)
+            parent = config.devices[parent].parent
+        return out
+
+    def top_down_ancestor(id: str) -> str | None:
+        downs = [p for p in chain(id) if p in down]
+        return downs[-1] if downs else None
+
+    def parent_settling(id: str) -> bool:
+        """A parent came back less than a check interval ago: its children's checks may not have
+        run since; wait before they alarm on their own."""
+        for p in chain(id):
+            st = status.get(p)
+            if st is None:
+                continue
+            ups = [s.since for s in st.checks.values() if s.up and s.since]
+            if ups and (now - max(ups)).total_seconds() < interval + 30:
+                return True
+        return False
 
     problems: list[Problem] = []
     hidden: dict[str, list[str]] = {}
     for id in down:
-        if top := ancestor_down(id):
+        if top := top_down_ancestor(id):
             hidden.setdefault(top, []).append(id)
     for id, since in down.items():
-        if ancestor_down(id):
+        if top_down_ancestor(id) or is_muted(id) or parent_settling(id):
             continue
         device = config.devices[id]
         behind = sorted(hidden.get(id, []))
         title = f"{device.name} is down"
         if behind:
             title += f", and {len(behind)} {'device' if len(behind) == 1 else 'devices'} behind it"
-        problems.append(Problem(f"down:{id}", Severity.CRITICAL, id, title, "", since, behind))
+        problems.append(Problem(f"down:{id}", Severity.CRITICAL, id, device.name, title, "", since, behind))
 
-    # Services down on devices that are otherwise up.
+    # Services down on devices that are otherwise up (and not behind a device that is down).
     for id, device in config.devices.items():
-        st = status.get(id)
-        if st is None or id in down or not device.always_on or is_muted(id) or ancestor_down(id):
+        if id in down or not device.always_on or is_muted(id) or top_down_ancestor(id) or parent_settling(id):
             continue
+        st = status.get(id)
         for check in device.checks:
-            if check.type == "ping":
+            if check.type == "ping" or st is None:
                 continue
             c = st.checks.get(check.name)
-            if c is not None and c.up is False and c.since and now - c.since >= after:
+            if (
+                _fresh(c, check, interval, started, now)
+                and c
+                and c.up is False
+                and c.since
+                and now - c.since >= after
+            ):
+                name = f"{device.name}: {check.name}"
                 problems.append(
                     Problem(
                         f"service:{id}:{check.name}",
                         Severity.WARNING,
                         id,
-                        f"{device.name}: {check.name} is down",
+                        name,
+                        f"{name} is down",
                         c.detail,
                         c.since,
                     )
@@ -143,6 +194,8 @@ class Alarm:
     acknowledged_by: str | None = None
     acknowledged_note: str | None = None
     acknowledged_at: str | None = None
+    name: str = ""  # for "... is back up"
+    gone_since: str | None = None  # when its problem was last missing (resolves after a while)
 
 
 @dataclass
@@ -162,7 +215,7 @@ class Alarms:
         self.log_path = folder / "alarms.log"
         self.open: dict[str, Alarm] = {}
         self.muted: dict[str, datetime] = {}
-        self.seen_events: set[str] = set()  # info events already sent
+        self.seen_events: dict[str, str] = {}  # info events already sent: key → when
         self._load()
 
     def _load(self) -> None:
@@ -170,7 +223,8 @@ class Alarms:
             data = json.loads(self.path.read_text())
             self.open = {k: Alarm(**v) for k, v in data.get("open", {}).items()}
             self.muted = {k: datetime.fromisoformat(v) for k, v in data.get("muted", {}).items()}
-            self.seen_events = set(data.get("seen_events", []))
+            seen = data.get("seen_events", {})
+            self.seen_events = seen if isinstance(seen, dict) else {k: "" for k in seen}
         except (OSError, ValueError, TypeError) as e:
             if self.path.exists():
                 log.warning("cannot read %s (%s); starting without open alarms", self.path, e)
@@ -179,7 +233,7 @@ class Alarms:
         data = {
             "open": {k: asdict(a) for k, a in self.open.items()},
             "muted": {k: v.isoformat() for k, v in self.muted.items()},
-            "seen_events": sorted(self.seen_events)[-2000:],
+            "seen_events": self.seen_events,
         }
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,18 +243,22 @@ class Alarms:
         except OSError as e:
             log.warning("cannot save the alarms: %s", e)
 
-    def _log(self, what: str, alarm: Alarm, now: datetime, **extra: Any) -> None:
-        line = json.dumps({"time": now.isoformat(timespec="seconds"), "what": what, **asdict(alarm), **extra})
+    def _log(self, entry: dict[str, Any]) -> None:
         try:
             with self.log_path.open("a") as f:
-                f.write(line + "\n")
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as e:
             log.warning("cannot write the alarm log: %s", e)
 
-    def update(self, problems: list[Problem], now: datetime) -> list[Message]:
-        """Open new alarms, update changed ones, resolve gone ones; returns what to send."""
+    def update(self, problems: list[Problem], now: datetime, quiet: set[str] | None = None) -> list[Message]:
+        """Open new alarms, update changed ones, resolve those whose problem has been gone for
+        RESOLVE_AFTER seconds. `quiet`: devices whose alarms resolve without a message (muted,
+        removed). Returns what to send."""
         messages: list[Message] = []
+        quiet = quiet or set()
+        changed = False
         current = {p.key: p for p in problems}
+        folded = {f"down:{h}" for p in problems for h in p.hidden}
         for key, p in current.items():
             alarm = self.open.get(key)
             if alarm is None:
@@ -213,51 +271,76 @@ class Alarms:
                     now.isoformat(timespec="seconds"),
                     p.since.isoformat(timespec="seconds") if p.since else None,
                     p.hidden,
+                    name=p.name,
                 )
                 self.open[key] = alarm
-                self._log("opened", alarm, now)
+                self._log({"time": alarm.opened, "what": "opened", **asdict(alarm)})
                 body = p.detail or (f"Unreachable behind it: {', '.join(p.hidden)}" if p.hidden else "")
                 messages.append(Message(p.severity, p.title, body, p.device))
-            elif alarm.title != p.title or alarm.hidden != p.hidden:
-                alarm.title, alarm.hidden, alarm.detail = p.title, p.hidden, p.detail  # more behind it
-        for key in [k for k in self.open if k not in current and not k.startswith("event:")]:
-            alarm = self.open.pop(key)
-            self._log("resolved", alarm, now)
+                changed = True
+            elif alarm.gone_since or alarm.title != p.title or alarm.hidden != p.hidden:
+                alarm.title, alarm.hidden, alarm.detail, alarm.gone_since = p.title, p.hidden, p.detail, None
+                changed = True
+        for key, alarm in list(self.open.items()):
+            if key in current:
+                continue
+            silent = key in folded or alarm.device in quiet
+            if not silent:
+                if alarm.gone_since is None:
+                    alarm.gone_since = now.isoformat(timespec="seconds")
+                    changed = True
+                    continue
+                if (now - datetime.fromisoformat(alarm.gone_since)).total_seconds() < RESOLVE_AFTER:
+                    continue
+            del self.open[key]
+            changed = True
+            self._log(
+                {
+                    "time": now.isoformat(timespec="seconds"),
+                    "what": "resolved",
+                    "silent": silent,
+                    **asdict(alarm),
+                }
+            )
+            if silent:
+                continue
             opened = datetime.fromisoformat(alarm.since or alarm.opened)
             minutes = max(1, round((now - opened).total_seconds() / 60))
-            messages.append(
-                Message(
-                    Severity(alarm.severity),
-                    alarm.title.replace(" is down", " is back up", 1).split(", and ")[0],
-                    f"after {minutes} min",
-                    alarm.device,
-                    resolved=True,
-                )
+            title = (
+                f"{alarm.name or alarm.device} is back up"
+                if key.startswith(("down:", "service:"))
+                else f"Resolved: {alarm.title}"
             )
-        if messages:
+            messages.append(
+                Message(Severity(alarm.severity), title, f"after {minutes} min", alarm.device, resolved=True)
+            )
+        if changed:
             self.save()
         return messages
 
-    def event(self, key: str, title: str, body: str, device: str | None, now: datetime) -> Message | None:
-        """An info event (an update, a new version), sent once."""
+    def event(
+        self, key: str, title: str, body: str, device: str | None, now: datetime, send: bool = True
+    ) -> Message | None:
+        """An info event (an update, a new version), sent once. With send=False it is only
+        remembered (the first look after starting: what was already there isn't news)."""
         if key in self.seen_events:
             return None
-        self.seen_events.add(key)
+        self.seen_events[key] = now.isoformat(timespec="seconds")
+        cutoff = (now - timedelta(days=EVENTS_KEPT_DAYS)).isoformat()
+        self.seen_events = {k: t for k, t in self.seen_events.items() if t >= cutoff or k == key}
         self.save()
-        with open(self.log_path, "a") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "time": now.isoformat(timespec="seconds"),
-                        "what": "event",
-                        "key": key,
-                        "title": title,
-                        "body": body,
-                        "device": device,
-                    }
-                )
-                + "\n"
-            )
+        if not send:
+            return None
+        self._log(
+            {
+                "time": now.isoformat(timespec="seconds"),
+                "what": "event",
+                "key": key,
+                "title": title,
+                "body": body,
+                "device": device,
+            }
+        )
         return Message(Severity.INFO, title, body, device)
 
     def acknowledge(self, key: str, user: str | None, note: str, now: datetime) -> Alarm | None:
@@ -266,7 +349,7 @@ class Alarms:
             return None
         alarm.acknowledged_by, alarm.acknowledged_note = user or "?", note[:500]
         alarm.acknowledged_at = now.isoformat(timespec="seconds")
-        self._log("acknowledged", alarm, now)
+        self._log({"time": alarm.acknowledged_at, "what": "acknowledged", **asdict(alarm)})
         self.save()
         return alarm
 
@@ -276,3 +359,7 @@ class Alarms:
         else:
             self.muted[device] = until
         self.save()
+
+
+def stamp(now: datetime | None = None) -> datetime:
+    return now or datetime.now(UTC)

@@ -177,6 +177,39 @@ notify:
   - webhook: https://example.org/hook         # JSON: title, body, severity, device
 ```
 
+## Vulnerabilities and automatic updates
+
+Kastellan looks up what your devices run in public vulnerability databases: **NVD** (CVEs by
+product and version), **OSV** (packages, e.g. Home Assistant), and CISA's **KEV** catalogue of
+vulnerabilities exploited in the wild. It uses what it already knows: SSH and web server
+banners, firmware from drivers, container images with a version tag. Results show on each
+device and are refreshed every 6 hours (cached for a day). Only product names and versions are
+sent to these services.
+
+Mark devices reachable from the internet with `exposed: true`. Then:
+
+| finding                         | exposed device | internal device |
+|---------------------------------|----------------|-----------------|
+| exploited (KEV) or critical     | critical alarm | warning alarm   |
+| high                            | warning alarm  | message         |
+| medium, low                     | shown          | shown           |
+
+When software reports a distribution's package revision (OpenSSH on Ubuntu), the distribution
+may have fixed a bug without changing the upstream version: such findings say "maybe fixed by
+your distribution", are messages at most, and never trigger anything.
+
+Automatic updates are off. With `auto_update: true` on a device, and a WUD trigger
+(`docker: {wud: ..., trigger: docker.local}`), Kastellan updates a container by itself only when
+the device is `exposed`, a confirmed high, critical or exploited vulnerability is in that
+container, and WUD offers a newer image. It does so once per new image, writes it to the audit
+log and tells you.
+
+```yaml
+vulns:
+  every_hours: 6
+  nvd_api_key: ...      # optional, faster NVD lookups
+```
+
 ## Security
 
 Run Kastellan only where your own network or VPN can reach it, never on the internet. The security design (keys instead of passwords, per-device limits, roles,
