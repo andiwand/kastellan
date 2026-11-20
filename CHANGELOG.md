@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased (0.1.0)
+## 0.1.0 (2026-11-20)
+
+The first release. Early: the checks, history, alarms and vulnerability lookups run on a real
+home network; the terminal, remote desktop, VPN and SSH access setup are new and have seen few
+real devices yet.
 
 - Checks: ping, TCP and HTTP per device, on an interval; config.yaml reloads by itself.
 - History as daily CSV files, with retention; state survives restarts.
@@ -20,7 +24,11 @@
 - Known vulnerabilities from NVD, OSV and CISA KEV for software, firmware and container images;
   alarms by exposure; opt-in automatic container updates only for confirmed serious findings on
   internet-facing devices.
-- VPN access: WireGuard clients through wg-easy, OpenVPN through easy-rsa (restricted scripts), with
-  config downloads and QR codes.
+- VPN access: WireGuard clients through wg-easy, OpenVPN through easy-rsa, with config downloads
+  and QR codes. OpenVPN in two modes: restricted (small scripts bound to their own key) or direct
+  (over the normal login); the VPN page checks the hosts, shows the install commands and can run them.
+- SSH access setup from the device page: Kastellan's key for an existing user, or a user of its own
+  with sudo; the commands to copy, or run once with a login and password that are never kept.
+- Docker image for amd64 and arm64: `ghcr.io/andiwand/kastellan`.
 - Demo mode (`KASTELLAN_DEMO=1`): a made-up network with a day of simulated history.
 - Project website (`website/`).

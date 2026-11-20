@@ -1,4 +1,4 @@
-# Kastellan with `docker compose up -d --build`, then open http://<this machine>:8100
+# Kastellan with `docker compose up -d`, then open http://<this machine>:8100
 # Reach it only from your own network or VPN; it is not meant to face the internet.
 #
 # Host networking lets the checks see the network as the host does (ping, local names).
@@ -6,8 +6,8 @@
 
 services:
   kastellan:
-    build: .
-    image: kastellan:local
+    image: ghcr.io/andiwand/kastellan:0.1.0
+    # build: . # or build it from this checkout
     container_name: kastellan
     restart: unless-stopped
     network_mode: host

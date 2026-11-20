@@ -241,16 +241,13 @@
   <div class="start-copy">
     <p class="kicker">Try it</p>
     <h2 id="start-title">Run the demo <b>in a minute</b></h2>
-    <p>No release yet. From a checkout of the repository, with <a href="https://docs.astral.sh/uv/">uv</a> and Node.js installed, the demo shows a made-up home network with a day of history. Nothing on your network is contacted.</p>
-    <p class="note">For your own network, put a <code>config.yaml</code> in <code>data/</code> and leave out <code>KASTELLAN_DEMO</code>.</p>
+    <p>With Docker, one command starts the demo. It shows a made-up home network with a day of history. Nothing on your network is contacted.</p>
+    <p class="note">For your own network, use the <a href="https://github.com/andiwand/kastellan/blob/main/compose.yaml">compose.yaml</a> with a <code>config.yaml</code> in <code>config/</code>. Or build it from a checkout with uv and Node.js.</p>
   </div>
   <div class="code">
     <div class="code-bar"><span>Terminal</span><button class="copy" data-copy="run" type="button">Copy</button></div>
-<pre id="run"><code>git clone https://github.com/andiwand/kastellan
-cd kastellan/frontend &amp;&amp; npm install &amp;&amp; npm run build
-cp -r build ../backend/src/kastellan/web
-cd ../backend
-KASTELLAN_DEMO=1 uv run kastellan
+<pre id="run"><code>docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 \
+  ghcr.io/andiwand/kastellan:0.1.0
 <span class="c"># then open http://localhost:8100</span></code></pre>
   </div>
 </section>

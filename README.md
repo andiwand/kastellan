@@ -28,8 +28,13 @@ drivers, updates, backups). See [PLAN.md](PLAN.md).
 
 ## Try it
 
-Kastellan has no release yet. From a checkout, with [uv](https://docs.astral.sh/uv/) and
-Node.js 24:
+With Docker, the demo in one line:
+
+```sh
+docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 ghcr.io/andiwand/kastellan:0.1.0
+```
+
+From a checkout, with [uv](https://docs.astral.sh/uv/) and Node.js 24:
 
 ```sh
 cd frontend && npm install && npm run build && cp -r build ../backend/src/kastellan/web
@@ -39,7 +44,7 @@ cd ../backend && KASTELLAN_DEMO=1 uv run kastellan
 Open http://localhost:8100. Demo mode shows a made-up network with a day of simulated history;
 nothing on your network is contacted.
 
-With Docker: `docker compose up -d --build` (see [compose.yaml](compose.yaml)).
+For your own network with Docker: `docker compose up -d` (see [compose.yaml](compose.yaml)).
 
 ## Your own network
 
