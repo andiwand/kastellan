@@ -6,7 +6,7 @@
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
-	import DeviceGraph from '#lib/components/DeviceGraph.svelte';
+	import NetworkMap from '#lib/components/NetworkMap.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import List from '@lucide/svelte/icons/list';
 	import Workflow from '@lucide/svelte/icons/workflow';
@@ -79,7 +79,8 @@
 	<div>
 		<h1 class="text-2xl font-semibold tracking-tight">Devices</h1>
 		<p class="mt-1 text-sm text-muted">
-			Everything Kastellan watches, as a list or as a graph of how it hangs together.
+			Everything Kastellan watches, as a list or by network: what is at home, what is outside, and
+			what can be reached from the internet.
 		</p>
 	</div>
 	{#if store.me?.role === 'admin'}
@@ -137,7 +138,7 @@
 		role="tablist"
 		aria-label="View"
 	>
-		{#each [{ id: 'list', label: 'List', icon: List }, { id: 'graph', label: 'Graph', icon: Workflow }] as const as v (v.id)}
+		{#each [{ id: 'list', label: 'List', icon: List }, { id: 'graph', label: 'Networks', icon: Workflow }] as const as v (v.id)}
 			<button
 				role="tab"
 				aria-selected={view === v.id}
@@ -159,7 +160,7 @@
 		{#if store.devices === null}
 			<div class="card h-96 animate-pulse"></div>
 		{:else}
-			<DeviceGraph {devices} {matching} />
+			<NetworkMap {devices} {matching} />
 		{/if}
 	</div>
 {:else}

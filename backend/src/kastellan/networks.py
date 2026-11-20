@@ -122,6 +122,8 @@ def public_ways(device: Device, address: str | None, statuses: dict[str, Any]) -
     """The checks that reach this device from the internet's side: by a public name or address."""
     out = []
     for check in device.checks:
+        if check.type == "ping":
+            continue  # not a service: no way in
         target = _target_host(device, check)
         if not (public_name(target) or is_public(target)):
             continue

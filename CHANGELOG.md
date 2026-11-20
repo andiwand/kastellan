@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The graph shows networks: a zone per network (home, other sites, the internet), devices in
+  two networks on the boundary between them (the router between home and the internet, found
+  by itself), a globe on what can be reached from the internet, and the ways in listed.
+  `networks:` names networks; `network:` puts a device in one or several.
 - More notification channels: Gotify, Telegram and e-mail (SMTP with TLS or STARTTLS).
 - SSH keys: every device's authorized_keys on its page (Kastellan's own marked), removing a
   key; rotating Kastellan's key from the new Access page (added and tried everywhere first,

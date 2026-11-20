@@ -47,7 +47,7 @@ def test_ways_in_from_the_internet() -> None:
     ways = public_ways(nas, "192.168.15.20", {"public": CheckStatus(up=True, address="198.51.100.7")})
     assert ways == [{"check": "public", "target": "https://nas.example.org", "address": "198.51.100.7"}]
     vps = CONFIG.devices["vps"]
-    assert [w["check"] for w in public_ways(vps, "203.0.113.20", {})] == ["ping"]
+    assert public_ways(vps, "203.0.113.20", {}) == []  # a ping is no way in
 
 
 def test_unknown_network_names_are_refused() -> None:

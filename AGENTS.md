@@ -85,6 +85,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     hub key (`Rotator`: next key added + verified with `connect(only=...)` everywhere, then
     `Keys.promote_next`, then the old key removed; state in `<data>/ssh/rotation.json`;
     `Keys.connect` offers current, next and old keys meanwhile).
+  - `networks.py`: which networks a device is in (by address: `networks:` cidrs, else its private
+    /24; public addresses are the internet; `network:` names them, also several; the hub's
+    default gateway is also on the internet), and its `public_ways` (checks by a public name or
+    address). `hub._resolve_hosts` resolves names every 5 min. The web app's NetworkMap draws a
+    zone per network and devices in two on the boundary.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)

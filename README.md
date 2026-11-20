@@ -17,8 +17,21 @@ drivers, updates, backups). See [PLAN.md](PLAN.md).
   last 24 hours as a strip, and the ups and downs of the day.
 - **Calm by default**: a PC or laptop that is off is *offline*, not *down*.
 - **Device pages**: response times, uptime over 1 h / 24 h / 7 d, and the activity of each check.
-- **List or graph**: the devices as a searchable list, or as a graph of what is connected
-  through what (infrastructure only; which access point a laptop uses isn't drawn).
+- **List or networks**: the devices as a searchable list, or by network: each network a zone
+  (home, a second site, the internet), devices in two networks on the boundary between them
+  (your router between home and the internet), and a globe on what can be reached from the
+  internet, with every way in listed (a public name, and the device it leads to). Networks come
+  from the addresses; name them, or put a device in several, in config.yaml:
+
+  ```yaml
+  networks:
+    home: {name: Home, cidr: 192.168.15.0/24}
+    flat: {name: Holiday flat, cidr: 10.0.5.0/24}
+  devices:
+    vpn:
+      host: 192.168.15.10
+      network: [home, internet]   # on the boundary
+  ```
 - **Certificates and ways in**: every `https` check also looks at the certificate (valid or why
   not, when it ends, who issued it), and a check by name shows the address it led to. Give a
   service one check per way in, say its address at home and its public domain, to see each
