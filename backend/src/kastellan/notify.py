@@ -1,4 +1,5 @@
-"""Sending alarms: ntfy and webhooks, each with a minimum severity and quiet hours.
+"""Sending alarms: ntfy, webhooks, Gotify, Telegram and e-mail, each with a minimum severity
+and quiet hours.
 
     notify:
       - ntfy: https://ntfy.sh/my-secret-topic   # or your own ntfy server
@@ -6,6 +7,13 @@
         min: warning                            # info, warning or critical
         quiet: "22:00-07:00"                    # only critical then
       - webhook: https://example.org/hook       # POST, JSON body (title, body, severity, ...)
+      - gotify: https://gotify.example.org      # with an application token
+        token: A1b2...
+      - telegram: 123456789                     # the chat id; the bot's token:
+        token: "123456:ABC-..."
+      - email: me@example.org
+        smtp: smtps://kastellan%40example.org:password@mail.example.org:465   # or smtp://...:587
+        sender: kastellan@example.org           # From (default: the smtp user)
 
 Messages carry device names and what is wrong; nothing secret. Quiet hours are in the hub's local
 time (TZ). `send` returns what could not be delivered; the hub retries it with growing pauses
@@ -17,7 +25,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import smtplib
+import ssl
 from datetime import datetime, time
+from email.message import EmailMessage
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -45,7 +57,10 @@ def wants(channel: NotifyChannel, message: Message, now: datetime) -> bool:
 
 
 async def send(
-    channels: list[NotifyChannel], messages: list[Message], now: datetime
+    channels: list[NotifyChannel],
+    messages: list[Message],
+    now: datetime,
+    transport: httpx.AsyncBaseTransport | None = None,  # tests
 ) -> list[tuple[NotifyChannel, Message]]:
     """Send each message to each channel that wants it; returns what failed (to retry)."""
     if not channels or not messages:
@@ -53,15 +68,20 @@ async def send(
     jobs = [(c, m) for m in messages for c in channels if wants(c, m, now)]
     if not jobs:
         return []
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10, transport=transport) as client:
         results = await asyncio.gather(*(_send_one(client, c, m) for c, m in jobs))
     return [job for job, ok in zip(jobs, results, strict=True) if not ok]
 
 
 def _where(channel: NotifyChannel) -> str:
-    """A channel for the log, without its secret part (an ntfy topic is the secret)."""
-    url = httpx.URL(channel.ntfy or channel.webhook or "")
-    return f"{'ntfy' if channel.ntfy else 'webhook'} at {url.host}"
+    """A channel for the log, without its secret part (an ntfy topic, a token, a password)."""
+    kind = channel.kind
+    if kind == "telegram":
+        return "telegram"
+    if kind == "email":
+        return f"email via {urlsplit(channel.smtp or '').hostname}"
+    url = httpx.URL(channel.ntfy or channel.webhook or channel.gotify or "")
+    return f"{kind} at {url.host}"
 
 
 def _header(text: str) -> str:
@@ -71,31 +91,90 @@ def _header(text: str) -> str:
     return "=?UTF-8?B?" + base64.b64encode(text.encode()).decode() + "?="
 
 
+GOTIFY_PRIORITY = {Severity.INFO: 2, Severity.WARNING: 5, Severity.CRITICAL: 8}
+MARK = {Severity.INFO: "\N{INFORMATION SOURCE}\ufe0f", Severity.WARNING: "⚠️", Severity.CRITICAL: "🔴"}
+
+
 async def _send_one(client: httpx.AsyncClient, channel: NotifyChannel, message: Message) -> bool:
     title = message.title  # alarms.py writes it whole ("... is back up", "Resolved: ...")
     try:
-        if channel.ntfy:
-            headers = {
-                "Title": _header(title),
-                "Priority": "default" if message.resolved else PRIORITY[message.severity],
-                "Tags": "white_check_mark" if message.resolved else message.severity.value,
-            }
-            if channel.token:
-                headers["Authorization"] = f"Bearer {channel.token}"
-            r = await client.post(channel.ntfy, content=(message.body or title).encode(), headers=headers)
-        else:
-            r = await client.post(
-                channel.webhook or "",
-                json={
-                    "title": title,
-                    "body": message.body,
-                    "severity": message.severity.value,
-                    "device": message.device,
-                    "resolved": message.resolved,
-                },
-            )
+        match channel.kind:
+            case "ntfy":
+                headers = {
+                    "Title": _header(title),
+                    "Priority": "default" if message.resolved else PRIORITY[message.severity],
+                    "Tags": "white_check_mark" if message.resolved else message.severity.value,
+                }
+                if channel.token:
+                    headers["Authorization"] = f"Bearer {channel.token}"
+                r = await client.post(
+                    channel.ntfy or "", content=(message.body or title).encode(), headers=headers
+                )
+            case "gotify":
+                r = await client.post(
+                    (channel.gotify or "").rstrip("/") + "/message",
+                    headers={"X-Gotify-Key": channel.token or ""},
+                    json={
+                        "title": title,
+                        "message": message.body or title,
+                        "priority": 2 if message.resolved else GOTIFY_PRIORITY[message.severity],
+                    },
+                )
+            case "telegram":
+                mark = "✅" if message.resolved else MARK[message.severity]
+                r = await client.post(
+                    f"https://api.telegram.org/bot{channel.token}/sendMessage",
+                    json={
+                        "chat_id": channel.telegram,
+                        "text": f"{mark} {title}" + (f"\n{message.body}" if message.body else ""),
+                        "disable_web_page_preview": True,
+                    },
+                )
+            case "email":
+                await asyncio.wait_for(asyncio.to_thread(_mail, channel, message), 30)
+                return True
+            case _:
+                r = await client.post(
+                    channel.webhook or "",
+                    json={
+                        "title": title,
+                        "body": message.body,
+                        "severity": message.severity.value,
+                        "device": message.device,
+                        "resolved": message.resolved,
+                    },
+                )
         r.raise_for_status()
         return True
     except Exception as e:  # any failure is reported and retried, never raised into the hub
+        # Only the kind of error: a Telegram URL carries the bot's token, an SMTP error the login.
         log.warning("notification to %s failed: %s", _where(channel), type(e).__name__)
         return False
+
+
+def _mail(channel: NotifyChannel, message: Message) -> None:
+    """One e-mail over SMTP: smtps:// is TLS from the start, smtp:// must offer STARTTLS (never
+    sent in clear: it carries the login)."""
+    url = urlsplit(channel.smtp or "")
+    user, password = unquote(url.username or ""), unquote(url.password or "")
+    sender = channel.sender or (user if "@" in user else f"kastellan@{url.hostname}")
+    mail = EmailMessage()
+    mail["Subject"] = (
+        "Resolved: " if message.resolved and not message.title.startswith("Resolved") else ""
+    ) + (message.title)
+    mail["From"] = sender
+    mail["To"] = channel.email or ""
+    mail.set_content((message.body or message.title) + "\n\n-- Kastellan\n")
+    context = ssl.create_default_context()
+    if url.scheme == "smtps":
+        smtp: smtplib.SMTP = smtplib.SMTP_SSL(
+            url.hostname or "", url.port or 465, timeout=20, context=context
+        )
+    else:
+        smtp = smtplib.SMTP(url.hostname or "", url.port or 587, timeout=20)
+    with smtp:
+        if url.scheme == "smtp":
+            smtp.starttls(context=context)
+        if user:
+            smtp.login(user, password)
+        smtp.send_message(mail)

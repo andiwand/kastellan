@@ -75,6 +75,20 @@ devices:
 
 Kastellan picks up changes to the file by itself. Run it without `KASTELLAN_DEMO`.
 
+Or change it in the app, once sign-in is on (see [Sign-in](#sign-in); while it is off, anyone
+who reaches the page would be an admin, so the app doesn't write the file then):
+
+- **Devices**: "Add device" on the device list, "Edit" on a device's page: name, address,
+  kind, tags, always on, and its services (ping, ports, web addresses). The id (`nas`) stays:
+  the history is filed under it.
+- **Config**: the whole file in an editor, for alarms, notifications, VPN and users.
+
+Either way the file stays yours: comments and order are kept, a change is checked by the same
+rules as loading it (a mistake says which line, and nothing is saved), saving over a change
+made in the meantime is refused, and the version before goes to `data/config-backups/` (the
+last 30). Every change is in the audit log. In Docker, the config folder must be writable by
+the container's user.
+
 Notes:
 
 - **Ping without root.** Kastellan pings unprivileged. macOS allows that; on Linux (and in
@@ -212,7 +226,16 @@ notify:
     min: warning              # info, warning, critical
     quiet: "22:00-07:00"      # only critical at night
   - webhook: https://example.org/hook         # JSON: title, body, severity, device
+  - gotify: https://gotify.example.org         # with an application token
+    token: A1b2c3
+  - telegram: 123456789                        # the chat id; the token is the bot's
+    token: "123456:ABC-..."
+  - email: me@example.org
+    smtp: smtps://bot%40example.org:password@mail.example.org:465   # or smtp://...:587 (STARTTLS)
 ```
+
+E-mail is never sent in clear: `smtps://` is TLS from the start, `smtp://` must offer STARTTLS.
+Tokens and passwords stay out of the log and are masked in the audit log.
 
 ## Vulnerabilities and automatic updates
 
@@ -277,6 +300,17 @@ the commands for either way you prefer: **one login** (Kastellan's key added to 
 account) or **a user of its own** (`kastellan`, with sudo without a password for installs). Copy
 them, or let Kastellan run them once with a login and password you type: used for that one
 connection and never stored. The key line carries `from="<the hub's address>"`.
+
+**SSH keys** on a device are listed on its page (admins): every account's `authorized_keys`
+when Kastellan's login is root or may use sudo, else the login's own; Kastellan's keys are
+marked. A signed-in admin can remove any other key (audited). Other users' files are read and
+written *as those users*, so a link in someone's home can't redirect root.
+
+**Rotating Kastellan's key** (the Access page): a new key is added to every device with an
+`ssh:` login and tried there; once it works everywhere (or you choose to go on without a device
+that failed), Kastellan switches to it and removes the old key from each device, then deletes
+the old private key. Until then both keys work, so nothing breaks half-way, and the progress
+survives a restart. The VPN key (bound to its scripts) isn't rotated this way yet.
 
 **OpenVPN** works in one of two modes (`vpn.openvpn.mode`):
 

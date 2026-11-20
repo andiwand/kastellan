@@ -33,7 +33,7 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, ClassVar, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -174,6 +174,17 @@ class Device(BaseModel):
     # Let Kastellan update a container by itself, only when the device is exposed and a confirmed
     # high, critical or exploited vulnerability has a fix (see vulns.py). Off by default.
     auto_update: bool = False
+    # Which networks it is in, when its address doesn't say (networks.py): one of `networks:`, or
+    # several (a router: [home, internet]; a VPN server: [home, vpn]). "internet" is built in.
+    network: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_network(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("network"), str):
+            data = {**data, "network": [data["network"]]}
+        return data
+
     checks: list[Check] = Field(default_factory=lambda: [Check(type=CheckType.PING)])
 
     @model_validator(mode="after")
@@ -226,20 +237,43 @@ class AlarmSettings(BaseModel):
 
 
 class NotifyChannel(BaseModel):
-    """Where alarms go (notify.py). One of ntfy or webhook."""
+    """Where alarms go (notify.py): exactly one of ntfy, webhook, gotify, telegram or email."""
 
     model_config = ConfigDict(extra="forbid")
 
     ntfy: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")
     webhook: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")
-    token: str | None = None  # ntfy access token
+    gotify: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")  # the server
+    telegram: str | int | None = None  # the chat id (a bot's token in `token`)
+    email: str | None = Field(default=None, pattern=r"^[^@\s,]+@[^@\s,]+$")  # to whom
+    # smtp://user:password@host:587 (STARTTLS) or smtps://...:465 (TLS); for email.
+    smtp: str | None = Field(default=None, pattern=r"^smtps?://[^\s]+$")
+    sender: str | None = Field(default=None, pattern=r"^[^@\s,]+@[^@\s,]+$")  # email: From
+    token: str | None = None  # ntfy access token, Gotify app token, Telegram bot token
     min: Literal["info", "warning", "critical"] = "warning"
     quiet: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$")  # only critical then
 
+    KINDS: ClassVar[tuple[str, ...]] = ("ntfy", "webhook", "gotify", "telegram", "email")
+
+    @property
+    def kind(self) -> str:
+        return next(k for k in self.KINDS if getattr(self, k) is not None)
+
     @model_validator(mode="after")
     def _one_target(self) -> Self:
-        if (self.ntfy is None) == (self.webhook is None):
-            raise ValueError("a notify channel is either ntfy: <url> or webhook: <url>")
+        if sum(getattr(self, k) is not None for k in self.KINDS) != 1:
+            raise ValueError("a notify channel is one of ntfy:, webhook:, gotify:, telegram: or email:")
+        if self.gotify is not None and not self.token:
+            raise ValueError("gotify: needs token: (an application token from Gotify)")
+        if self.telegram is not None:
+            if not self.token or not re.match(r"^\d+:[\w-]+$", self.token):
+                raise ValueError("telegram: needs token: (the bot's, like 123456:ABC-...)")
+            if not re.match(r"^-?\d+$|^@\w+$", str(self.telegram)):
+                raise ValueError("telegram: is the chat id (a number, or @channelname)")
+        if self.email is not None and not self.smtp:
+            raise ValueError("email: needs smtp: (smtp://user:password@host:587 or smtps://...:465)")
+        if (self.smtp or self.sender) and self.email is None:
+            raise ValueError("smtp: and sender: are for email: channels")
         if self.quiet:
             from datetime import time
 
@@ -248,6 +282,26 @@ class NotifyChannel(BaseModel):
                     time.fromisoformat(part)
             except ValueError as e:
                 raise ValueError(f"quiet: {self.quiet!r} is not HH:MM-HH:MM") from e
+        return self
+
+
+class NetworkSettings(BaseModel):
+    """A local network by name (networks.py): devices whose address is in `cidr` are in it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = ""
+    cidr: str | None = None
+
+    @model_validator(mode="after")
+    def _cidr(self) -> Self:
+        if self.cidr is not None:
+            import ipaddress
+
+            try:
+                ipaddress.ip_network(self.cidr, strict=False)
+            except ValueError as e:
+                raise ValueError(f"cidr: {self.cidr!r} is not a network like 192.168.1.0/24") from e
         return self
 
 
@@ -322,6 +376,7 @@ class Config(BaseModel):
     notify: list[NotifyChannel] = Field(default_factory=list)
     vulns: VulnSettings = Field(default_factory=VulnSettings)
     vpn: VpnSettings = Field(default_factory=VpnSettings)
+    networks: dict[str, NetworkSettings] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _vpn_devices(self) -> Self:
@@ -342,6 +397,9 @@ class Config(BaseModel):
                 raise ValueError(f"device id {id!r}: use lowercase letters, digits, - and _")
             if not device.name:
                 device.name = id
+            for net in device.network:
+                if net != "internet" and net not in self.networks:
+                    raise ValueError(f"device {id!r}: network {net!r} is not in networks: (or internet)")
             if device.parent is not None and device.parent not in self.devices:
                 raise ValueError(f"device {id!r}: parent {device.parent!r} is not a device")
         return self

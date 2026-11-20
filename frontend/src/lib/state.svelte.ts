@@ -22,6 +22,16 @@ class Store {
 	updated = $state<number | null>(null);
 	now = $state(Date.now());
 
+	/** May change config.yaml: a signed-in admin, not in demo mode. Null: why not (for a hint). */
+	editBlocked = $derived(
+		this.me?.role !== 'admin'
+			? 'admins only'
+			: !this.me.user
+				? 'turn on sign-in to change the config from here (add a user to config.yaml)'
+				: this.health?.demo
+					? "demo mode's network can't be changed"
+					: null
+	);
 	byId = $derived(new Map((this.devices ?? []).map((d) => [d.id, d])));
 
 	#timers: ReturnType<typeof setInterval>[] = [];

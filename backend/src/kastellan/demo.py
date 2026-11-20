@@ -83,6 +83,18 @@ CONFIG = {
                 {"http": "https://home.example.net", "name": "home assistant (public)"},
             ],
         },
+        # Outside: a small server on the internet, with the family website.
+        "vps": {
+            "name": "Website server",
+            "host": "203.0.113.20",
+            "kind": "server",
+            "exposed": True,
+            "checks": [
+                "ping",
+                {"tcp": 22, "name": "ssh"},
+                {"http": "https://www.example.net", "name": "website"},
+            ],
+        },
         "pi": {
             "name": "Raspberry Pi",
             "host": "pi.lan",
@@ -217,6 +229,21 @@ CONTAINERS = {
 
 def config() -> Config:
     return Config.model_validate(CONFIG)
+
+
+HUB_ADDRESS = "192.168.178.5"
+GATEWAY = "192.168.178.1"  # the FRITZ!Box
+
+
+def addresses(hosts: set[str]) -> dict[str, str | None]:
+    """Made-up addresses: names at home are in 192.168.178.0/24, the rest as written."""
+    out: dict[str, str | None] = {}
+    for host in sorted(hosts):
+        if host.endswith(".lan"):
+            out[host] = f"192.168.178.{20 + zlib.crc32(host.encode()) % 200}"
+        else:
+            out[host] = host
+    return out
 
 
 class Demo:

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- More notification channels: Gotify, Telegram and e-mail (SMTP with TLS or STARTTLS).
+- SSH keys: every device's authorized_keys on its page (Kastellan's own marked), removing a
+  key; rotating Kastellan's key from the new Access page (added and tried everywhere first,
+  then switched, then the old one removed).
+- An unidentified device (kind other) shows a question mark instead of a box.
+- Change the config in the app (signed-in admins): add, edit and remove devices and their
+  services in forms, and the whole config.yaml in an editor. Comments kept, checked before
+  saving, conflicts refused, backups kept, every change audited.
 - Certificates: every https check shows its certificate (valid or why not, when it ends, the
   issuer); alarms for public names (critical when not valid, a warning 14 days before it ends),
   `tls: true/false` per check. A check by name shows the address it led to, so each way into a

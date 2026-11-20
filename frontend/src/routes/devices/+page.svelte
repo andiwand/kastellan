@@ -10,6 +10,8 @@
 	import Search from '@lucide/svelte/icons/search';
 	import List from '@lucide/svelte/icons/list';
 	import Workflow from '@lucide/svelte/icons/workflow';
+	import Plus from '@lucide/svelte/icons/plus';
+	import DeviceEditor from '#lib/components/DeviceEditor.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 
@@ -17,6 +19,7 @@
 	let query = $state('');
 	let filter = $state<Filter>('all');
 	let input: HTMLInputElement | undefined = $state();
+	let adding = $state(false);
 
 	const devices = $derived(store.devices ?? []);
 	const matches = (status: Status, f: Filter) =>
@@ -79,7 +82,21 @@
 			Everything Kastellan watches, as a list or as a graph of how it hangs together.
 		</p>
 	</div>
+	{#if store.me?.role === 'admin'}
+		<button
+			onclick={() => (adding = true)}
+			disabled={store.editBlocked !== null}
+			title={store.editBlocked ?? 'Add a device to config.yaml'}
+			class="inline-flex h-9 items-center gap-2 rounded-xl bg-accent px-3.5 text-sm font-medium text-accent-ink shadow-card transition-opacity hover:opacity-90 disabled:opacity-50"
+		>
+			<Plus class="size-4" /> Add device
+		</button>
+	{/if}
 </div>
+
+{#if adding}
+	<DeviceEditor onclose={() => (adding = false)} />
+{/if}
 
 <div class="mt-6 flex flex-wrap items-center gap-3">
 	<label class="relative w-full sm:w-auto sm:max-w-sm sm:flex-1">

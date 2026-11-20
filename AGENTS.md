@@ -67,6 +67,24 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     dropbear (`/etc/openwrt_release`) gets plain lines, OpenSSH `from=` (and `restrict`).
   - A command run over SSH with nothing to send gets `stdin=asyncssh.DEVNULL`: with `input=""`
     asyncssh leaves stdin open and a script that reads it waits forever.
+  - `tls.py`: the certificate an https check meets (its own handshake, one overall time limit,
+    cached 10 min, failures 2 min); `checks._http` waits for it at most 0.4 s, so it never makes a
+    service down. `Check.watch_cert`: public names, `verify: true` or `tls: true` raise alarms;
+    `evaluate(..., unjudged)` lists certificate alarms that can't be judged now, which the hub
+    carries (they end only when a good certificate is seen).
+  - `config_edit.py` + `config_api.py`: changing config.yaml from the app. **Every write to
+    config.yaml goes through `config_edit.write`** (backup in `<data>/config-backups/`, atomic
+    replace) after `hub.check` (the load rules, including "sign-in never turns itself off"),
+    then `hub.save_config` reloads at once. Device forms edit the YAML in place (ruamel
+    round-trip): only `FORM_FIELDS` change, defaults aren't written, unchanged checks keep their
+    comments. Only signed-in admins (`require_signin`), never in demo mode; nobody saves away
+    their own admin role; a version hash refuses saving over a change made meanwhile; the audit
+    log gets the diff with password hashes masked.
+  - `sshkeys.py` + `sshkeys_api.py`: authorized_keys on devices (listed over the `ssh:` login;
+    other users' files read and changed *as them* via `su`), removing a key, and rotating the
+    hub key (`Rotator`: next key added + verified with `connect(only=...)` everywhere, then
+    `Keys.promote_next`, then the old key removed; state in `<data>/ssh/rotation.json`;
+    `Keys.connect` offers current, next and old keys meanwhile).
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)

@@ -21,12 +21,16 @@
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
 	import VulnsList from '#lib/components/VulnsList.svelte';
 	import AccessSetup from '#lib/components/AccessSetup.svelte';
+	import DeviceEditor from '#lib/components/DeviceEditor.svelte';
+	import DeviceKeys from '#lib/components/DeviceKeys.svelte';
+	import Pencil from '@lucide/svelte/icons/pencil';
 
 	const id = $derived(page.params.id ?? '');
 	const device = $derived(store.byId.get(id));
 	const status = $derived(device ? statusOf(device) : 'waiting');
 	const parent = $derived(device?.parent ? store.byId.get(device.parent) : undefined);
 	const children = $derived((store.devices ?? []).filter((d) => d.parent === id));
+	let editing = $state(false);
 	const webUi = $derived(
 		device?.checks.find((c) => c.type === 'http')?.target as string | undefined
 	);
@@ -177,6 +181,16 @@
 					<MonitorPlay class="size-4 text-muted" /> Desktop
 				</a>
 			{/if}
+			{#if store.me?.role === 'admin'}
+				<button
+					onclick={() => (editing = true)}
+					disabled={store.editBlocked !== null}
+					title={store.editBlocked ?? 'Change its name, address and services'}
+					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong disabled:opacity-50"
+				>
+					<Pencil class="size-4 text-muted" /> Edit
+				</button>
+			{/if}
 			{#if webUi}
 				<a
 					href={webUi}
@@ -225,6 +239,9 @@
 
 	{#if store.me?.role === 'admin'}
 		<AccessSetup device={device.id} canSetUp={!!store.me.user} />
+		{#if device.ssh}
+			<DeviceKeys device={device.id} canChange={!!store.me.user} />
+		{/if}
 	{/if}
 
 	{#if device.vulns}
@@ -324,4 +341,8 @@
 			{/if}
 		</section>
 	</div>
+{/if}
+
+{#if editing && device}
+	<DeviceEditor id={device.id} onclose={() => (editing = false)} />
 {/if}

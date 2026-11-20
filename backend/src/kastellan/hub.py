@@ -14,10 +14,12 @@ from typing import Any
 
 import httpx
 from pydantic import ValidationError
+from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import config as config_mod
-from . import demo, docker, notify, vulns
+from . import config_edit, demo, docker, notify, vulns
+from .access import hub_address
 from .alarms import Alarms, Message, Problem, Severity, evaluate
 from .audit import Audit
 from .auth import Sessions
@@ -25,7 +27,9 @@ from .config import Config, Device, NotifyChannel, Role
 from .desktop_api import Tickets
 from .drivers import DRIVERS
 from .history import History
+from .hub_errors import yaml_problem
 from .monitor import DeviceStatus, Monitor, run_check
+from .networks import Resolver, default_gateway
 from .secrets import Secrets
 from .settings import Settings
 from .ssh import Keys
@@ -36,6 +40,7 @@ from .vuln_policy import assess, auto_update_reason
 
 log = logging.getLogger(__name__)
 
+RESOLVE_EVERY = 300  # seconds between looking up device names
 RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
 DRIVER_EVERY = 600
@@ -100,6 +105,9 @@ class Hub:
         self._loaded = False  # a config has been loaded since the start
         self.locked: str | None = None  # why the API refuses everything (fail closed), or None
         self.signin_required = settings.data / "signin-required"
+        self.resolver = Resolver()
+        self.own_address: str | None = None  # the hub's address on its network
+        self.gateway: str | None = None  # its default gateway: on the boundary to the internet
 
     def reload(self) -> None:
         """Read config.yaml. An invalid file keeps the last good config and reports the error.
@@ -144,6 +152,29 @@ class Hub:
         )
         self._apply(config)
         log.info("config: %d devices, %d users", len(config.devices), len(config.users))
+
+    def check(self, text: str) -> Config:
+        """A candidate config.yaml (from the app's editor), by the same rules as loading it, or
+        ConfigProblem: what is wrong (with the line, for YAML)."""
+        try:
+            data = YAML(typ="safe").load(text) if text.strip() else {}
+            config = Config.model_validate(data or {})
+        except ValidationError as e:
+            raise ConfigProblem(_describe(e)) from e
+        except YAMLError as e:
+            raise ConfigProblem(yaml_problem(e)) from e
+        except ValueError as e:
+            raise ConfigProblem(_first_line(str(e))) from e
+        if not config.users and self._signin_was_on():
+            raise ConfigProblem("it has no users, but sign-in is on; that would lock everyone out")
+        return config
+
+    def save_config(self, old: str, new: str) -> None:
+        """Write config.yaml (checked by check() first), keep the old one, and load it now."""
+        if self.demo:
+            raise ConfigProblem("demo mode shows a made-up network; its config can't be changed")
+        config_edit.write(self.settings.config, self.settings.data / "config-backups", old, new)
+        self.reload()
 
     def _load(self) -> Config:
         """The config to use now, or ConfigProblem."""
@@ -224,6 +255,7 @@ class Hub:
             asyncio.create_task(self._watch_vulns(), name="vulnerabilities"),
             asyncio.create_task(self._renew_crl(), name="renew the OpenVPN CRL"),
             asyncio.create_task(self._prune(), name="prune history"),
+            asyncio.create_task(self._resolve_hosts(), name="resolve device names"),
         ]
 
     async def stop(self) -> None:
@@ -235,6 +267,28 @@ class Hub:
         await self.monitor.stop()
         if self._demo_dir:
             shutil.rmtree(self._demo_dir, ignore_errors=True)
+
+    async def _resolve_hosts(self) -> None:
+        """Device names to addresses (for which network each is in), and the hub's own address,
+        every few minutes; soon after a config change too."""
+        seen: frozenset[str] = frozenset()
+        last = 0.0
+        while True:
+            hosts = frozenset(d.host for d in self.config.devices.values())
+            now = asyncio.get_running_loop().time()
+            if hosts != seen or now - last > RESOLVE_EVERY:
+                try:
+                    if self.demo:  # the made-up network has made-up addresses
+                        self.resolver.addresses = demo.addresses(set(hosts))
+                        self.own_address, self.gateway = demo.HUB_ADDRESS, demo.GATEWAY
+                    else:
+                        await self.resolver.refresh(set(hosts))
+                        self.own_address = await asyncio.to_thread(hub_address, "1.1.1.1", 53)
+                        self.gateway = default_gateway()
+                except Exception:
+                    log.exception("resolving device names failed")
+                seen, last = hosts, now
+            await asyncio.sleep(5)
 
     async def _watch_config(self) -> None:
         while True:

@@ -46,8 +46,32 @@ export interface Device {
 	containers_error: string | null;
 	vulns: Vulns | null;
 	exposed: boolean;
+	address: string | null; // its host, resolved
+	networks: NetworkRef[]; // several: it sits on the boundary between them
+	network_assumed: boolean; // its name didn't resolve: taken to be in the hub's network
+	public_ways: PublicWay[]; // checks that reach it by a public name or address
 	state: CheckState;
 	checks: CheckStatus[];
+}
+
+export interface NetworkRef {
+	id: string; // "internet" for the internet
+	name: string;
+	cidr: string | null;
+	local: boolean;
+}
+
+export interface PublicWay {
+	check: string;
+	target: string | number | null;
+	address: string | null; // where the public name led
+}
+
+export interface Networks {
+	hub: NetworkRef | null; // where Kastellan runs
+	hub_address: string | null;
+	gateway: string | null;
+	named: { id: string; name: string; cidr: string | null }[];
 }
 
 export interface Container {
@@ -186,6 +210,64 @@ export type Change =
 	| { kind: 'state'; time: string; device: string; check: string; up: boolean; detail: string }
 	| { kind: 'version'; time: string; device: string; check: string; from: string; to: string };
 
+/** A check as config.yaml has it (the forms). */
+export interface CheckForm {
+	type: 'ping' | 'tcp' | 'http';
+	target: string | number | null;
+	name: string;
+	expect?: number | null;
+	verify?: boolean;
+	tls?: boolean | null;
+	interval?: number | null;
+	timeout?: number | null;
+}
+
+/** A device as config.yaml has it: what the form edits; the rest of it stays as it is. */
+export interface DeviceForm {
+	id?: string;
+	name: string;
+	host: string;
+	kind: string;
+	tags: string[];
+	always_on: boolean | null; // null: by kind
+	exposed: boolean;
+	checks: CheckForm[];
+	version?: string; // the file's, when the form was filled: saving refuses if it changed
+}
+
+/** A key allowed to log in on a device (one line of an authorized_keys). */
+export interface AuthorizedKey {
+	user: string;
+	file: string;
+	type: string;
+	fingerprint: string;
+	comment: string;
+	options: string;
+	kastellan: string | null; // one of Kastellan's own keys: which
+}
+
+export interface RotationStep {
+	added: boolean;
+	removed: boolean;
+	error: string | null;
+}
+
+export interface Rotation {
+	started: string;
+	stage: 'adding' | 'removing' | 'done';
+	finished: string | null;
+	devices: Record<string, RotationStep>;
+}
+
+export interface HubKeys {
+	public_key: string;
+	fingerprint: string;
+	made: string;
+	next: string | null;
+	rotation: Rotation | null;
+	devices: string[]; // with an ssh: login
+}
+
 /** The hub answered 401: nobody is signed in (or the session ended). */
 export class SignedOut extends Error {}
 
@@ -265,6 +347,32 @@ export const api = {
 		),
 	ovpnInstall: (role: string) =>
 		call<{ output: string }>('POST', `/vpn/openvpn/setup/${role}/install`),
+	config: () => get<{ text: string; version: string; error: string | null }>('/config'),
+	checkConfig: (text: string) =>
+		call<{ ok: boolean; error: string | null }>('POST', '/config/check', { text }),
+	saveConfig: (text: string, version: string) =>
+		call<{ version: string }>('PUT', '/config', { text, version }),
+	deviceForm: (id: string) => get<DeviceForm>(`/devices/${encodeURIComponent(id)}/form`),
+	addDevice: (form: DeviceForm & { id: string }) => call<{ id: string }>('POST', '/devices', form),
+	changeDevice: (id: string, form: DeviceForm) =>
+		call<{ id: string }>('PUT', `/devices/${encodeURIComponent(id)}`, form),
+	deleteDevice: (id: string, version?: string) =>
+		call<{ id: string }>(
+			'DELETE',
+			`/devices/${encodeURIComponent(id)}${version ? `?version=${encodeURIComponent(version)}` : ''}`
+		),
+	networks: () => get<Networks>('/networks'),
+	hubKeys: () => get<HubKeys>('/ssh/keys'),
+	deviceKeys: (id: string) =>
+		get<{ everyone: boolean; login: string; keys: AuthorizedKey[] }>(
+			`/devices/${encodeURIComponent(id)}/keys`
+		),
+	removeKey: (id: string, key: { user: string; file: string; fingerprint: string }) =>
+		call<{ removed: number }>('POST', `/devices/${encodeURIComponent(id)}/keys/remove`, key),
+	rotateStart: () => call<{ rotation: Rotation | null }>('POST', '/ssh/rotate/start'),
+	rotateFinish: (anyway = false) =>
+		call<{ rotation: Rotation | null }>('POST', '/ssh/rotate/finish', { anyway }),
+	rotateCancel: () => call<{ rotation: null }>('POST', '/ssh/rotate/cancel'),
 	acknowledge: (key: string, note = '') =>
 		call<Alarm>('POST', `/alarms/${encodeURIComponent(key)}/ack`, { note }),
 	mute: (device: string, minutes: number) =>

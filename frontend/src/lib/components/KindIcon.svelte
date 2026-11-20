@@ -7,7 +7,9 @@
 	import Laptop from '@lucide/svelte/icons/laptop';
 	import Printer from '@lucide/svelte/icons/printer';
 	import Cctv from '@lucide/svelte/icons/cctv';
-	import Box from '@lucide/svelte/icons/box';
+	// Anything else (kind: other) is mostly what isn't identified yet: a plain question mark.
+	// (A 3D box read as a parcel, a chip was too busy at this size.)
+	import CircleQuestionMark from '@lucide/svelte/icons/circle-question-mark';
 
 	let { kind, class: klass = 'size-4' }: { kind: string; class?: string } = $props();
 
@@ -20,8 +22,8 @@
 		laptop: Laptop,
 		printer: Printer,
 		camera: Cctv
-	} as Record<string, typeof Box>;
-	const Icon = $derived(icons[kind] ?? Box);
+	} as Record<string, typeof CircleQuestionMark>;
+	const Icon = $derived(icons[kind] ?? CircleQuestionMark);
 </script>
 
 <Icon class={klass} strokeWidth={1.75} />

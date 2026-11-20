@@ -16,12 +16,16 @@ from .access_api import router as access_router
 from .alarms_api import router as alarms_router
 from .auth_api import Guard
 from .auth_api import router as auth_router
-from .config import Check
+from .config import Check, Device
+from .config_api import router as config_router
 from .desktop_api import router as desktop_router
 from .hub import Hub
 from .monitor import CheckStatus
+from .networks import Network, network_of, networks_of, public_ways
 from .settings import Settings
+from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
+from .tls import public_name
 from .vpn_api import router as vpn_router
 
 WEB = Path(__file__).parent / "web"
@@ -51,6 +55,8 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(alarms_router(hub))
     app.include_router(vpn_router(hub))
     app.include_router(access_router(hub))
+    app.include_router(config_router(hub))
+    app.include_router(sshkeys_router(hub))
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:
@@ -87,6 +93,38 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             view |= {"up": None, "detail": "no recent result", "stale": True}
         return view
 
+    def hub_network() -> Network | None:
+        return network_of(hub.config, hub.own_address)
+
+    def where(device: Device, status: Any) -> dict[str, Any]:
+        """Which networks the device is in, and its ways in from the internet (networks.py)."""
+        address = hub.resolver.address(device.host)
+        nets = networks_of(hub.config, device, address, hub.gateway)
+        assumed = False
+        if not nets and not public_name(device.host) and (own := hub_network()):
+            # A name only the network knows, which the hub couldn't resolve: most likely the
+            # hub's own network.
+            nets, assumed = [own], True
+        return {
+            "address": address,
+            "networks": [n.view() for n in nets],
+            "network_assumed": assumed,
+            "public_ways": public_ways(device, address, status.checks if status else {}),
+        }
+
+    @app.get("/api/networks")
+    def networks() -> dict[str, Any]:
+        """The hub's own network (where Kastellan runs), and the ones named in config.yaml."""
+        own = hub_network()
+        return {
+            "hub": own.view() if own else None,
+            "hub_address": hub.own_address,
+            "gateway": hub.gateway,
+            "named": [
+                {"id": id, "name": n.name or id, "cidr": n.cidr} for id, n in hub.config.networks.items()
+            ],
+        }
+
     @app.get("/api/devices")
     def devices() -> list[dict[str, Any]]:
         out = []
@@ -113,6 +151,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "containers_error": status.containers_error if status else None,
                     "vulns": status.vulns if status else None,
                     "exposed": device.exposed,
+                    **where(device, status),
                     "checks": [
                         check_view(check, status.checks.get(check.name) if status else None)
                         for check in device.checks

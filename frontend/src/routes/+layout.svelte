@@ -8,6 +8,8 @@
 	import List from '@lucide/svelte/icons/list';
 	import Layers from '@lucide/svelte/icons/layers';
 	import KeyRound from '@lucide/svelte/icons/key-round';
+	import FileCog from '@lucide/svelte/icons/file-cog';
+	import ShieldCheck from '@lucide/svelte/icons/shield-check';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import SignIn from '#lib/components/SignIn.svelte';
@@ -21,8 +23,14 @@
 		{ href: '/', label: 'Overview', icon: LayoutDashboard },
 		{ href: '/devices', label: 'Devices', icon: List },
 		{ href: '/services', label: 'Services', icon: Layers },
-		{ href: '/vpn', label: 'VPN', icon: KeyRound }
+		{ href: '/vpn', label: 'VPN', icon: KeyRound },
+		{ href: '/access', label: 'Access', icon: ShieldCheck },
+		{ href: '/config', label: 'Config', icon: FileCog }
 	] as { href: string; label: string; short?: string; icon: typeof List }[];
+	// Config and access are for admins (password hashes, keys).
+	const shownNav = $derived(
+		nav.filter((i) => !['/config', '/access'].includes(i.href) || store.me?.role === 'admin')
+	);
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
 	const attention = $derived((store.devices ?? []).filter(needsAttention).length);
@@ -57,7 +65,7 @@
 				<span class="text-[15px] font-semibold tracking-tight">Kastellan</span>
 			</a>
 			<nav class="flex flex-col gap-0.5 px-3 pt-2" aria-label="Main">
-				{#each nav as item (item.href)}
+				{#each shownNav as item (item.href)}
 					<a
 						href={item.href}
 						class="group flex h-9 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors {active(
@@ -178,10 +186,11 @@
 
 		<!-- Tab bar (narrow screens) -->
 		<nav
-			class="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden"
+			style:grid-template-columns="repeat({shownNav.length}, minmax(0, 1fr))"
+			class="fixed inset-x-0 bottom-0 z-30 grid border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden"
 			aria-label="Main"
 		>
-			{#each nav as item (item.href)}
+			{#each shownNav as item (item.href)}
 				<a
 					href={item.href}
 					class="relative flex h-16 flex-col items-center justify-center gap-1 text-[11px] font-medium {active(

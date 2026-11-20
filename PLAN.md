@@ -79,8 +79,10 @@ fixed, before the next one starts.
    **SSH access management** rides on the same access: which keys may log in where (every
    host's `authorized_keys`, with each key's name and age), and **key rotation as one guided
    action**: make a new key, add it everywhere, prove it works on each host, then remove the old
-   one, host by host, with a way back while both work. Every step in the audit log. Later, an
-   SSH CA (short-lived certificates) instead of keys spread over hosts.
+   one, host by host, with a way back while both work. Every step in the audit log. Done
+   (2026-11-20): listing and removing keys per device, rotating the hub key; not yet: the VPN
+   key's rotation, key age (authorized_keys has no dates), an SSH CA (short-lived certificates)
+   instead of keys spread over hosts.
 4. **Remote desktop**: guacd 1.6 as a sidecar container, RDP (Windows Pro) and VNC (Windows
    Home, macOS, Linux desktops), full mouse and keyboard, through guacamole-common-js.
 5. **Drivers**: one module per kind of device, declaring what it can do (as Norn's camera
