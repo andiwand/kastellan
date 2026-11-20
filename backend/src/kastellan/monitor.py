@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from . import checks
+from . import checks, tls
 from .config import Check, Config, Device
 from .history import History, Row
 from .versions import Versions
@@ -36,6 +36,8 @@ class CheckStatus:
     since_exact: bool = True
     software: str | None = None  # what the service says it is, e.g. "OpenSSH 10.2p1 (Ubuntu)"
     software_since: datetime | None = None  # when we first saw this software
+    cert: tls.Cert | None = None  # https: the certificate it presents (tls.py)
+    address: str | None = None  # http to a name: the address it led to
 
 
 @dataclass
@@ -65,6 +67,10 @@ async def run_check(id: str, device: Device, check: Check) -> checks.Result:
     return await checks.run(device.host, check)
 
 
+def key_changed(old: dict[tuple[str, str], str], key: tuple[str, str], target: str) -> bool:
+    return key in old and old[key] != target
+
+
 def target_of(device: Device, check: Check) -> str:
     """What a check looks at, to tell a reused check name from the same check."""
     return f"{check.type}:{device.host}:{check.target or ''}"
@@ -84,6 +90,7 @@ class Monitor:
         self.versions = versions
         self.status: dict[str, DeviceStatus] = {}
         self._targets: dict[tuple[str, str], str] = {}
+        self._urls: dict[tuple[str, str], object] = {}  # each check's target as configured
         self._hosts: dict[str, str] = {}
         self._software_seen: dict[tuple[str, str], tuple[str, int]] = {}
         self._tasks: dict[tuple[str, str], tuple[asyncio.Task[None], Device, Check, float]] = {}
@@ -120,9 +127,16 @@ class Monitor:
         for id in list(self.status):
             if id not in config.devices:
                 del self.status[id]
+        old = self._targets
         self._targets = {
             (id, c.name): target_of(device, c) for id, device in config.devices.items() for c in device.checks
         }
+        self._urls = {(id, c.name): c.target for id, device in config.devices.items() for c in device.checks}
+        for (id, name), target in self._targets.items():
+            st = self.status.get(id)
+            c = st.checks.get(name) if st else None
+            if c and key_changed(old, (id, name), target):
+                c.cert = c.address = None  # about what it pointed at before
         for id, device in config.devices.items():
             status = self.status.setdefault(id, DeviceStatus())
             if device.docker is None or self._hosts.get(id, device.host) != device.host:
@@ -221,6 +235,12 @@ class Monitor:
             result.detail,
             now,
         )
+        https = str(self._urls.get((id, name), "")).startswith("https://")
+        if result.cert is not None or not result.up or not https:
+            # A certificate seen before stays while the service answers but a look at it failed
+            # (too slow, once); not when the service is down, or the check isn't https.
+            status.cert = result.cert
+        status.address = result.address
         self._note_software(now, id, name, result)
         try:
             self.history.append(Row(now, id, name, result.up, result.latency_ms, result.detail))

@@ -19,7 +19,8 @@
           - http: http://nas.lan:8096/health
             name: jellyfin
 
-A check is `ping`, `tcp: <port>` or `http: <url>`. A device without `checks` is pinged.
+A check is `ping`, `tcp: <port>` or `http: <url>`. A device without `checks` is pinged. An https
+check also looks at the certificate; `tls:` decides whether it can raise alarms (tls.py).
 
     users:
       andreas:
@@ -33,9 +34,12 @@ import re
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ruamel.yaml import YAML
+
+from .tls import public_name
 
 ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
@@ -70,6 +74,9 @@ class Check(BaseModel):
     # credentials, so it does not verify them unless asked to.
     verify: bool = False
     expect: int | None = None  # http: this status, else any status below 500 counts as up
+    # https: alarm when the certificate is not valid or ends soon. Default: for names on the
+    # internet (not addresses, not .lan, .local, .home.arpa, ...) and checks with verify: true.
+    tls: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -95,9 +102,20 @@ class Check(BaseModel):
             raise ValueError("http needs a URL starting with http:// or https://")
         if not self.name:
             self.name = self.type.value if self.type is CheckType.PING else f"{self.type.value}:{self.target}"
+        if self.tls and not (isinstance(self.target, str) and self.target.startswith("https://")):
+            raise ValueError("tls: true is for https checks")
         if self.name.startswith("@"):
             raise ValueError("check names can't start with @ (kept for firmware and containers)")
         return self
+
+    @property
+    def watch_cert(self) -> bool:
+        """Whether this check's certificate can raise an alarm."""
+        if not (isinstance(self.target, str) and self.target.startswith("https://")):
+            return False
+        if self.tls is not None:
+            return self.tls
+        return self.verify or public_name(urlsplit(self.target).hostname or "")
 
 
 class SshAccess(BaseModel):
@@ -204,6 +222,7 @@ class AlarmSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     down_after: int = Field(default=180, ge=30)  # seconds down before an alarm
+    cert_days: int = Field(default=14, ge=1, le=365)  # a watched certificate ending sooner: warning
 
 
 class NotifyChannel(BaseModel):

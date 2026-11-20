@@ -72,10 +72,18 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         if status is None:
             return view
         view |= vars(status)
+        now = datetime.now(UTC)
+        if status.cert:
+            cert = status.cert.view(now)
+            days, watched = cert["days_left"], check.watch_cert
+            # What the alarm rules make of it (alarms.py), for the page's colours.
+            soon = days is not None and days < hub.config.alarms.cert_days
+            cert |= {"watched": watched, "problem": watched and (not cert["valid"] or soon)}
+            view["cert"] = cert
         # A result much older than the interval means the loop is stuck: say so, don't show the
         # old answer as current.
         interval = check.interval or hub.config.check_interval
-        if status.checked and (datetime.now(UTC) - status.checked).total_seconds() > 3 * interval + 60:
+        if status.checked and (now - status.checked).total_seconds() > 3 * interval + 60:
             view |= {"up": None, "detail": "no recent result", "stale": True}
         return view
 

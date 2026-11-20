@@ -4,6 +4,8 @@ Rules (defaults in config.yaml's `alarms:`):
 
 - critical: a device that should always be on is down for `down_after` seconds (3 min);
 - warning: a service (a non-ping check) of such a device is down that long;
+- certificates of watched https checks (`tls`, by default names on the internet): critical when
+  not valid (expired, wrong name, not trusted), warning `cert_days` (14) before they end;
 - vulnerabilities: see vuln_policy.py (exploited or critical on an exposed device: critical);
 - info: a container has an update, a device's firmware or a service's software changed.
 
@@ -80,8 +82,12 @@ def evaluate(
     now: datetime,
     muted: dict[str, datetime],
     started: datetime,
+    unjudged: set[str] | None = None,
 ) -> list[Problem]:
-    """The problems now (critical and warning)."""
+    """The problems now (critical and warning). `unjudged` gets the keys of certificate
+    problems that can't be judged now (the certificate can't be seen: the service or device is
+    down, or behind one that is, or no fresh result): their open alarms stay as they are
+    (Alarms.carry), as an alarm about a certificate ends when a good one is seen."""
     after = timedelta(seconds=config.alarms.down_after)
     interval = config.check_interval
 
@@ -160,6 +166,8 @@ def evaluate(
             if check.type == "ping" or st is None:
                 continue
             c = st.checks.get(check.name)
+            if check.watch_cert and c and c.cert and not c.cert.valid:
+                continue  # down because its certificate isn't valid: that alarm says it
             if (
                 _fresh(c, check, interval, started, now)
                 and c
@@ -179,6 +187,39 @@ def evaluate(
                         c.since,
                     )
                 )
+
+    # Certificates of watched checks.
+    for id, device in config.devices.items():
+        if is_muted(id):
+            continue  # its alarms end quietly (Alarms.update)
+        st = status.get(id)
+        for check in device.checks:
+            if not check.watch_cert:
+                continue
+            key = f"cert:{id}:{check.name}"
+            c = st.checks.get(check.name) if st else None
+            if (
+                id in down
+                or top_down_ancestor(id)
+                or not (c and c.cert and _fresh(c, check, interval, started, now))
+            ):
+                if unjudged is not None:
+                    unjudged.add(key)
+                continue
+            cert, name = c.cert, f"{device.name}: {check.name}"
+            days = (cert.expires - now).total_seconds() / 86400 if cert.expires else None
+            if not cert.valid:
+                severity, title = Severity.CRITICAL, f"{name}: certificate not valid"
+                detail = cert.error or ""
+            elif days is not None and days < config.alarms.cert_days:
+                left = "less than a day" if days < 1 else f"{int(days)} {'day' if int(days) == 1 else 'days'}"
+                severity, title = Severity.WARNING, f"{name}: certificate ends in {left}"
+                detail = f"{cert.expires:%Y-%m-%d %H:%M} UTC"
+                detail += f", from {cert.issuer}" if cert.issuer else ""
+            else:
+                continue
+            # No `since`: how long the service has been up says nothing about the certificate.
+            problems.append(Problem(key, severity, id, name, title, detail))
     return problems
 
 
@@ -324,6 +365,8 @@ class Alarms:
             title = (
                 f"{alarm.name or alarm.device} is back up"
                 if key.startswith(("down:", "service:"))
+                else f"{alarm.name}: certificate is fine again"
+                if key.startswith("cert:")
                 else f"Resolved: {alarm.title}"
             )
             messages.append(

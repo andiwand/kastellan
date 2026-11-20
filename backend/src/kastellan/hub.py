@@ -341,9 +341,13 @@ class Hub:
             await asyncio.sleep(ALARMS_EVERY)
             try:
                 now = datetime.now(UTC)
-                problems = evaluate(self.config, self.monitor.status, now, self.alarms.muted, self.started)
+                unjudged: set[str] = set()
+                problems = evaluate(
+                    self.config, self.monitor.status, now, self.alarms.muted, self.started, unjudged
+                )
                 problems += self._vuln_problems()
                 problems += self.alarms.carry(self._vuln_keys_unknown())
+                problems += self.alarms.carry(unjudged)
                 # Muted or removed devices: their alarms end without a "back up".
                 quiet = {d for d, until in self.alarms.muted.items() if until > now}
                 quiet |= {a.device for a in self.alarms.open.values() if a.device not in self.config.devices}

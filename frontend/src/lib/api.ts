@@ -13,6 +13,20 @@ export interface CheckStatus {
 	stale?: boolean;
 	software?: string | null;
 	software_since?: string | null;
+	cert?: Cert | null;
+	address?: string | null; // http to a name: the address it led to
+}
+
+/** The certificate an https service presents (tls.py). */
+export interface Cert {
+	valid: boolean;
+	error: string | null;
+	expires: string | null;
+	days_left: number | null;
+	issuer: string | null;
+	names: string[];
+	watched: boolean; // its alarms are on (a public name, or `tls: true`)
+	problem: boolean; // watched, and not valid or ending soon
 }
 
 export interface Device {

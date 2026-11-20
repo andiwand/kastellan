@@ -19,6 +19,10 @@ drivers, updates, backups). See [PLAN.md](PLAN.md).
 - **Device pages**: response times, uptime over 1 h / 24 h / 7 d, and the activity of each check.
 - **List or graph**: the devices as a searchable list, or as a graph of what is connected
   through what (infrastructure only; which access point a laptop uses isn't drawn).
+- **Certificates and ways in**: every `https` check also looks at the certificate (valid or why
+  not, when it ends, who issued it), and a check by name shows the address it led to. Give a
+  service one check per way in, say its address at home and its public domain, to see each
+  path working. See [Certificates](#certificates).
 - **Docker updates**: `docker: {wud: http://host:3000}` reads the containers and their updates
   from [WUD](https://getwud.github.io/wud/), and says which it can't check (a registry WUD
   doesn't know, or a `latest`-style tag whose digest WUD doesn't watch).
@@ -164,6 +168,33 @@ login. Prefer `security: nla`, and give the PC a certificate guacd trusts, then 
 `ignore_cert: false`. guacd itself has no sign-in: anything on the hub's host can use it, which is
 why it listens on localhost only.
 
+## Certificates
+
+Every `https` check looks at the certificate the service presents, with a handshake of its own
+next to the request: valid (a trusted chain, for this name, not expired) or why not, when it
+ends, and who issued it. The services table shows it under the address, and a check to a name
+shows the address the name led to.
+
+Alarms come only for certificates that should be valid: names on the internet (not addresses,
+and not `.lan`, `.local`, `.home.arpa`, `.internal`, `.fritz.box`, ...), and checks with
+`verify: true`. A certificate that is not valid is critical; one that ends within
+`alarms.cert_days` (14) is a warning. A device at home with a self-signed certificate is normal
+and stays grey. Set `tls: true` or `tls: false` on a check to decide yourself.
+
+```yaml
+  sv1:
+    host: 192.168.15.10
+    checks:
+      - http: http://192.168.15.10:8473      # Norn at home
+        name: norn
+      - http: https://norn.example.org       # Norn by its public name (certificate watched)
+        name: norn (public)
+```
+
+Checked from home, a public name shows whether it works *from home* (through the router's
+public address and back in, or a local DNS entry: "via ..." says which); it doesn't prove the
+service is reachable from the internet.
+
 ## Alarms and notifications
 
 Kastellan raises an alarm when a device that should always be on is down for 3 minutes
@@ -175,6 +206,7 @@ them, and mute a device for an hour. Every alarm goes to `data/alarms.log`.
 ```yaml
 alarms:
   down_after: 180             # seconds
+  cert_days: 14               # warn this many days before a watched certificate ends
 notify:
   - ntfy: https://ntfy.sh/your-secret-topic   # or your own ntfy server
     min: warning              # info, warning, critical

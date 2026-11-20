@@ -22,8 +22,12 @@ It stands on its own; it does not talk to Norn.
   SSH**, and either way through a narrow API that can only do named things:
   - The agent: read-only by default; what it may do is set on the device's side (a hub that is
     taken over gets only what each device allowed). Actions are named and enabled one by one
-    (restart container X, apply updates), never arbitrary commands. On Docker hosts it runs as a
-    container and reaches Docker through a filtering socket proxy (lists, no privileged starts).
+    (restart container X, apply updates), never arbitrary commands.
+  - How it is installed depends on the device, whatever makes sense there (decided
+    2026-11-20): natively (one Go binary and a systemd/procd unit or Windows service, installed
+    from the device page over SSH or by hand) wherever it should also administer; as a container
+    on Docker hosts where it only watches (the host's /proc, /sys read-only, Docker through a
+    filtering socket proxy). The hub's own host needs no agent: the hub can read it directly.
   - Without an agent: an SSH key restricted in authorized_keys
     (`restrict,command="kastellan-collect"`) that can only run one fixed read-only script.
   - The terminal is separate: human access, opened by a signed-in admin, as a normal user (sudo
@@ -107,8 +111,11 @@ on SV1. Goal: one place to give and take away VPN access.
   the list and graph, and alarms say which site. Hosts behind NAT come in through the agent.
 - **Outside services we depend on** (the ISP, DNS resolvers, a mail provider, the domain's
   web server): devices of kind `external`, whose host is a name. New checks: `dns` (does the
-  name resolve, to what), `tls` (certificate valid, days to expiry, as an alarm before it ends),
-  and HTTP with an expected text. Their uptime shows like everything else, so an outage outside
+  name resolve, to what) and HTTP with an expected text. Done: every https check sees its
+  certificate (valid, why not, days left; alarms for public names), and a check by name shows the
+  address it led to, so the ways into a service (at home, its public domain) are watched one by
+  one. Checking from outside (is it reachable from the internet) needs a vantage point outside:
+  later, through an agent elsewhere. Their uptime shows like everything else, so an outage outside
   can be told from one inside.
 
 ## Notifications and alarms

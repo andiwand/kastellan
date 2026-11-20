@@ -27,6 +27,8 @@ devices:
         name: jellyfin
         expect: 200 # this status exactly
         interval: 30
+      - http: https://media.example.org # the same service by its public name: its certificate
+        name: jellyfin (public) #         is watched (valid, and not ending within 14 days)
 
   laptop:
     host: laptop.lan

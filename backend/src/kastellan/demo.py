@@ -13,11 +13,13 @@ import math
 import random
 import zlib
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 
 from .checks import Result
 from .config import Check, Config, Device
 from .history import History, Row
 from .software import Software
+from .tls import Cert, public_name
 from .versions import Versions
 
 CONFIG = {
@@ -77,6 +79,8 @@ CONFIG = {
                 {"tcp": 22, "name": "ssh"},
                 {"http": "https://homeserver.lan:8006", "name": "proxmox"},
                 {"http": "http://homeserver.lan:8123", "name": "home assistant"},
+                # The same service by its public name: out to the internet address and back in.
+                {"http": "https://home.example.net", "name": "home assistant (public)"},
             ],
         },
         "pi": {
@@ -238,10 +242,21 @@ class Demo:
         software = self.software(id, check.name, ago)
         if check.type == "http":
             latency += rng.uniform(8, 30)
-            return Result(True, round(latency, 2), "HTTP 200", software)
+            return Result(True, round(latency, 2), "HTTP 200", software, *self.cert(str(check.target)))
         if check.type == "tcp":
             latency += rng.uniform(0.1, 0.6)
         return Result(True, round(latency, 2), software=software)
+
+    def cert(self, url: str) -> tuple[Cert | None, str | None]:
+        """A public name: a Let's Encrypt certificate ending soon (an alarm to show), reached
+        through the internet address. At home: self-signed, as devices are."""
+        host = urlsplit(url).hostname or ""
+        if not url.startswith("https://"):
+            return None, None
+        if public_name(host):
+            ends = self.t0 + timedelta(days=9, hours=5)
+            return Cert(True, None, ends, "Let's Encrypt", (host,)), "203.0.113.7"
+        return Cert(False, "self-signed certificate", self.t0 + timedelta(days=3650), host, (host,)), None
 
     @staticmethod
     def software(id: str, check: str, ago: float) -> Software | None:

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Certificates: every https check shows its certificate (valid or why not, when it ends, the
+  issuer); alarms for public names (critical when not valid, a warning 14 days before it ends),
+  `tls: true/false` per check. A check by name shows the address it led to, so each way into a
+  service (at home, by its public domain) can be watched.
+
 ## 0.1.0 (2026-11-20)
 
 The first release. Early: the checks, history, alarms and vulnerability lookups run on a real

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
+import ipaddress
 import time
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 from icmplib import async_ping
 from icmplib.exceptions import ICMPLibError, SocketPermissionError
 
+from . import tls
 from .config import Check, CheckType
 from .software import Software, from_greeting, from_http
 
@@ -21,10 +25,15 @@ class Result:
     latency_ms: float | None = None
     detail: str = ""
     software: Software | None = None  # what the service says it is, when it says
+    cert: tls.Cert | None = None  # https: the certificate it presents
+    address: str | None = None  # http to a name: the address it led to
 
 
 GREETING_WAIT = 0.8  # seconds a TCP check listens for a server that speaks first (SSH, FTP, SMTP)
 
+
+# Certificate looks still running (references, so they aren't collected half-way).
+_probes: set[asyncio.Task[tls.Cert | None]] = set()
 
 RETRY_AFTER = 2.0  # seconds before a failed check is tried once more
 
@@ -98,17 +107,63 @@ async def _tcp(host: str, check: Check) -> Result:
 
 
 async def _http(check: Check) -> Result:
+    """The page, and for https its certificate (its own handshake, run alongside). For a name,
+    also the address it led to: which way a domain goes (inside, or out and back in)."""
     assert isinstance(check.target, str)
+    url = urlsplit(check.target)
+    host = url.hostname or ""
+    port = url.port or (443 if url.scheme == "https" else 80)
+    cert = None
+    if url.scheme == "https":
+        # Its own handshake, alongside the request and within the same time; see _cert_of.
+        cert = asyncio.create_task(tls.certificate(host, port, host, check.timeout))
+        _probes.add(cert)
+        cert.add_done_callback(_probes.discard)
     start = time.perf_counter()
+    address: str | None = None
     async with httpx.AsyncClient(verify=check.verify, timeout=check.timeout) as client:
         try:
             response = await client.get(check.target)
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            stream = response.extensions.get("network_stream")
+            with contextlib.suppress(Exception):
+                address = str(stream.get_extra_info("server_addr")[0])
+            status = response.status_code
+            up = status == check.expect if check.expect is not None else status < 500
+            result = Result(up, latency, f"HTTP {status}", _software(response) if up else None)
         except httpx.HTTPError as e:
-            return Result(False, detail=f"{type(e).__name__}: {e}".rstrip(": "))
-    latency = round((time.perf_counter() - start) * 1000, 2)
-    status = response.status_code
-    up = status == check.expect if check.expect is not None else status < 500
-    return Result(up, latency, f"HTTP {status}", _software(response) if up else None)
+            result = Result(False, detail=f"{type(e).__name__}: {e}".rstrip(": "))
+    if _is_address(host):
+        address = None  # the target is the address already
+    elif address is None:
+        address = await _resolve(host, port)
+    return dataclasses.replace(result, cert=await _cert_of(cert) if cert else None, address=address)
+
+
+async def _cert_of(task: asyncio.Task[tls.Cert | None]) -> tls.Cert | None:
+    """The certificate if the look at it is done in a moment more; it never decides up or down."""
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), 0.4)
+    except TimeoutError:
+        return None  # keeps going in the background, and is cached for the next run
+
+
+def _is_address(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+async def _resolve(host: str, port: int) -> str | None:
+    """Where a name points now, for a check that got no answer (or None). Briefly: together
+    with _cert_of it stays inside the check's second of slack (run_once)."""
+    try:
+        infos = await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(host, port), 0.4)
+    except (OSError, TimeoutError):
+        return None
+    return str(infos[0][4][0]) if infos else None
 
 
 def _software(response: httpx.Response) -> Software | None:

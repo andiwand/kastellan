@@ -7,6 +7,7 @@
 	import StatusBadge from './StatusBadge.svelte';
 	import UptimeStrip from './UptimeStrip.svelte';
 	import KindIcon from './KindIcon.svelte';
+	import CertNote from './CertNote.svelte';
 
 	/** Services with what they run, their state, how long, and their uptime. With `showDevice`,
 	 * each row names its device (the Services page); without, it is one device's page. */
@@ -72,6 +73,16 @@
 						<p class="truncate font-mono text-xs text-faint" title={target(check)}>
 							{target(check)}
 						</p>
+						{#if check.cert || check.address}
+							<div class="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-faint">
+								{#if check.cert}<CertNote cert={check.cert} />{/if}
+								{#if check.address}
+									<span class="truncate font-mono" title="the address this name led to">
+										via {check.address}
+									</span>
+								{/if}
+							</div>
+						{/if}
 					</div>
 				</div>
 				<div class="hidden min-w-0 lg:block">
