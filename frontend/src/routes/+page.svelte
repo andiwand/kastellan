@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { store } from '#lib/state.svelte.js';
 	import { deviceBuckets, needsAttention, statusOf, uptimeOf, type Status } from '#lib/status.js';
-	import { ago, dayClock, ms, percent, since } from '#lib/format.js';
+	import { ago, dayClock, ms, percent, stateFor } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
 	import StatusDot from '#lib/components/StatusDot.svelte';
@@ -146,7 +146,7 @@
 								<span class="text-faint"> — {check.detail}</span>
 							</span>
 							<span class="tabular shrink-0 text-xs text-muted">
-								{check.since ? `for ${since(check.since, store.now)}` : 'for over 24 h'}
+								{check.since ? `for ${stateFor(check, store.now)}` : ''}
 							</span>
 							<ChevronRight class="size-4 shrink-0 text-faint" />
 						</a>

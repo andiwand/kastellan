@@ -87,6 +87,18 @@
 		{/if}
 	</header>
 
+	{#if store.health?.ping_refused}
+		<div
+			class="flex items-center gap-2 border-b border-line px-4 py-2.5 text-sm lg:px-8"
+			style:background="color-mix(in srgb, var(--warning) 10%, var(--surface))"
+			style:color="var(--warning-text)"
+		>
+			<TriangleAlert class="size-4 shrink-0" />
+			The hub is not allowed to ping, so ping checks fail. On Linux: sysctl net.ipv4.ping_group_range="0
+			2147483647".
+		</div>
+	{/if}
+
 	{#if store.error}
 		<div
 			class="flex items-center gap-2 border-b border-line px-4 py-2.5 text-sm lg:px-8"

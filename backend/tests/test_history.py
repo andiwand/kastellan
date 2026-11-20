@@ -31,3 +31,18 @@ def test_series_and_changes() -> None:
     s = series(rows, start, timedelta(minutes=30), 2)
     assert s == {"nas": {"ping": [{"uptime": 0.6667, "latency_ms": 2.0}, {"uptime": 1.0, "latency_ms": 2.0}]}}
     assert [(c["up"], c["time"].minute) for c in changes(rows)] == [(True, 35), (False, 10)]
+
+
+def test_survives_a_half_written_line(tmp_path: Path) -> None:
+    history = History(tmp_path)
+    now = datetime.now(UTC).replace(microsecond=0)
+    history.append(Row(now, "nas", "ping", True, 1.0, ""))
+    path = next(tmp_path.glob("*.csv"))
+    with path.open("a") as f:
+        f.write("2026-11-20T10:0")  # the crash
+    history.append(Row(now, "nas", "ping", False, None, "no reply"))
+    with path.open("a") as f:
+        f.write("\0\0\0\n")  # a power cut
+    history.append(Row(now, "nas", "ping", True, 2.0, ""))
+    rows = list(history.read(now - timedelta(minutes=1)))
+    assert [r.up for r in rows] == [True, False, True]

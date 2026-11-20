@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
+from ruamel.yaml.error import YAMLError
 
 from . import config as config_mod
 from . import demo
@@ -49,9 +50,13 @@ class Hub:
             return
         path = self.settings.config
         try:
-            self._mtime = path.stat().st_mtime if path.exists() else None
+            stat = path.stat() if path.exists() else None
+            if stat is not None and stat.st_size == 0 and self.config.devices:
+                # Most likely an editor between truncating and writing; look again shortly.
+                return
+            self._mtime = stat.st_mtime if stat else None
             config = config_mod.load(path)
-        except (OSError, ValueError, ValidationError) as e:
+        except (OSError, ValueError, ValidationError, YAMLError) as e:
             self.config_error = str(e)
             log.error("config.yaml is invalid, keeping the last good one: %s", e)
             return
@@ -64,7 +69,10 @@ class Hub:
         if first:
             # Before the first checks run: the last day's history says what each check was doing.
             self.monitor.prepare(config)
-            self.monitor.restore(self.history.read(datetime.now(UTC) - timedelta(days=1)))
+            try:
+                self.monitor.restore(self.history.read(datetime.now(UTC) - timedelta(days=1)))
+            except Exception:
+                log.exception("cannot restore the state from the history; starting fresh")
         self.monitor.apply(config)
 
     async def start(self) -> None:
@@ -98,10 +106,17 @@ class Hub:
             except OSError:
                 continue
             if mtime != self._mtime:
-                self.reload()
+                try:
+                    self.reload()
+                except Exception:
+                    # Never stop watching: the next save of the file gets another chance.
+                    log.exception("reloading config.yaml failed")
 
     async def _prune(self) -> None:
         while True:
-            for path in self.history.prune(self.config.retention_days):
-                log.info("history: deleted %s", path.name)
+            try:
+                for path in self.history.prune(self.config.retention_days):
+                    log.info("history: deleted %s", path.name)
+            except OSError as e:
+                log.warning("cannot prune the history: %s", e)
             await asyncio.sleep(PRUNE_EVERY)

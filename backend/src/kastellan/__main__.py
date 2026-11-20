@@ -23,6 +23,8 @@ def main() -> None:
     logging.basicConfig(
         level=settings.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    # Every HTTP check would otherwise log a line; the monitor logs what matters (ups and downs).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level=settings.log_level)
 
 

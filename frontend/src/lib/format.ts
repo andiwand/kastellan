@@ -51,3 +51,14 @@ export function dayClock(iso: string | Date): string {
 	if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
 	return `${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${time}`;
 }
+
+/** How long a check has been in its state: "12 min", or "at least 3 h" when the state began
+ * before the oldest result the hub still had at its last start. */
+export function stateFor(
+	check: { since?: string | null; since_exact?: boolean },
+	now = Date.now()
+) {
+	if (!check.since) return '';
+	const d = since(check.since, now);
+	return check.since_exact === false ? `at least ${d}` : d;
+}

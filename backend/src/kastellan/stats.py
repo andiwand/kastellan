@@ -33,7 +33,11 @@ def series(
         i = int((row.time - start) / step)
         if not 0 <= i < count:
             continue
-        bucket = out.setdefault(row.device, {}).setdefault(row.check, [Bucket() for _ in range(count)])[i]
+        checks = out.setdefault(row.device, {})
+        buckets = checks.get(row.check)
+        if buckets is None:  # not setdefault: that would build the list for every row
+            buckets = checks[row.check] = [Bucket() for _ in range(count)]
+        bucket = buckets[i]
         bucket.checks += 1
         if row.up:
             bucket.up += 1

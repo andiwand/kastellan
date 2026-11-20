@@ -26,6 +26,17 @@ class Row:
     detail: str
 
 
+def _end_line(path: Path) -> None:
+    """A crash can leave the last line half written; start on a fresh line so the damage stays
+    in that one line."""
+    with path.open("rb+") as f:
+        if f.seek(0, 2) == 0:
+            return
+        f.seek(-1, 2)
+        if f.read(1) != b"\n":
+            f.write(b"\n")
+
+
 class History:
     def __init__(self, folder: Path) -> None:
         self.folder = folder
@@ -45,6 +56,8 @@ class History:
         for day, day_rows in by_day.items():
             path = self._file(day)
             new = not path.exists()
+            if not new:
+                _end_line(path)
             with path.open("a", newline="") as f:
                 writer = csv.writer(f)
                 if new:
@@ -67,28 +80,44 @@ class History:
         while day <= today:
             path = self._file(day)
             if path.exists():
-                with path.open(newline="") as f:
-                    for r in csv.DictReader(f):
-                        if device is not None and r["device"] != device:
-                            continue
-                        t = datetime.fromisoformat(r["time"])
-                        if t < since:
-                            continue
-                        yield Row(
-                            t,
-                            r["device"],
-                            r["check"],
-                            r["up"] == "1",
-                            float(r["latency_ms"]) if r["latency_ms"] else None,
-                            r["detail"],
-                        )
+                yield from self._read_file(path, since, device)
             day += timedelta(days=1)
+
+    @staticmethod
+    def _read_file(path: Path, since: datetime, device: str | None) -> Iterator[Row]:
+        # NUL bytes (a power cut mid-write) would stop the csv module; drop them, and skip any
+        # line that does not parse rather than losing the whole day.
+        with path.open(newline="", errors="replace") as f:
+            # For one device, skip other devices' lines before parsing them (the costly part).
+            needle = f",{device}," if device is not None else None
+            lines = (
+                line.replace("\0", "") for n, line in enumerate(f) if n == 0 or not needle or needle in line
+            )
+            for r in csv.DictReader(lines):
+                if device is not None and r.get("device") != device:
+                    continue
+                try:
+                    t = datetime.fromisoformat(r["time"])
+                    if t < since:
+                        continue
+                    latency = r["latency_ms"]
+                    row = Row(
+                        t,
+                        r["device"],
+                        r["check"],
+                        r["up"] == "1",
+                        float(latency) if latency else None,
+                        r["detail"] or "",
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                yield row
 
     def prune(self, keep_days: int, today: date | None = None) -> list[Path]:
         """Delete the files older than keep_days; returns what it deleted."""
         if not self.folder.exists():
             return []
-        cutoff = (today or date.today()) - timedelta(days=keep_days)
+        cutoff = (today or datetime.now(UTC).date()) - timedelta(days=keep_days)  # files are UTC days
         gone = []
         for path in self.folder.glob("*.csv"):
             try:

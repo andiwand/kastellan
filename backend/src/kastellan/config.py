@@ -59,8 +59,8 @@ class Check(BaseModel):
     type: CheckType
     target: str | int | None = None  # the port for tcp, the URL for http
     name: str = ""
-    interval: float | None = None  # seconds; None: the global check_interval
-    timeout: float = 5
+    interval: float | None = Field(default=None, ge=5)  # seconds; None: the global check_interval
+    timeout: float = Field(default=5, gt=0, le=60)
     # Devices on a home network mostly have self-signed certificates, and a check sends no
     # credentials, so it does not verify them unless asked to.
     verify: bool = False
@@ -82,8 +82,8 @@ class Check(BaseModel):
 
     @model_validator(mode="after")
     def _complete(self) -> Self:
-        if self.type is CheckType.TCP and not isinstance(self.target, int):
-            raise ValueError("tcp needs a port number")
+        if self.type is CheckType.TCP and not (isinstance(self.target, int) and 1 <= self.target <= 65535):
+            raise ValueError("tcp needs a port number (1 to 65535)")
         if self.type is CheckType.HTTP and not (
             isinstance(self.target, str) and self.target.startswith(("http://", "https://"))
         ):
@@ -119,8 +119,8 @@ class Device(BaseModel):
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    check_interval: float = 60
-    retention_days: int = 30
+    check_interval: float = Field(default=60, ge=5)
+    retention_days: int = Field(default=30, ge=1)
     devices: dict[str, Device] = Field(default_factory=dict)
 
     @model_validator(mode="after")

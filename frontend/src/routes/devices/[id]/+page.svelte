@@ -3,7 +3,7 @@
 	import { api, type Change, type Series } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { statusOf, uptimeOf } from '#lib/status.js';
-	import { dayClock, ms, percent, since } from '#lib/format.js';
+	import { dayClock, ms, percent, stateFor } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
@@ -35,14 +35,20 @@
 	let chosen = $state<string | null>(null);
 	let copied = $state(false);
 
+	let loadError = $state<string | null>(null);
+	let latest = 0;
 	async function load() {
-		const r = range;
-		const device = id;
-		const [s, c] = await Promise.all([
-			api.series(r.hours, r.buckets, device),
-			api.changes(r.hours, device, 50)
-		]);
-		if (r === range && device === id) [series, changes] = [s, c];
+		// Only the newest request may write: an older one finishing late must not win.
+		const mine = ++latest;
+		try {
+			const [s, c] = await Promise.all([
+				api.series(range.hours, range.buckets, id),
+				api.changes(range.hours, id, 50)
+			]);
+			if (mine === latest) [series, changes, loadError] = [s, c, null];
+		} catch (e) {
+			if (mine === latest) loadError = e instanceof Error ? e.message : String(e);
+		}
 	}
 	$effect(() => {
 		void range;
@@ -153,6 +159,12 @@
 		</div>
 	</div>
 
+	{#if loadError}
+		<p class="mt-3 text-sm" style:color="var(--critical-text)">
+			Cannot load the history: {loadError}. Showing what was loaded before.
+		</p>
+	{/if}
+
 	<div class="mt-3 grid gap-3 md:grid-cols-2">
 		{#each device.checks as check (check.name)}
 			{@const buckets = checkSeries[check.name] ?? []}
@@ -178,7 +190,7 @@
 					<div>
 						<dt class="text-muted">{check.up ? 'Up for' : 'Down for'}</dt>
 						<dd class="tabular mt-0.5 text-sm font-medium">
-							{check.up == null ? '–' : check.since ? since(check.since, store.now) : 'over 24 h'}
+							{check.up == null ? '–' : stateFor(check, store.now) || '–'}
 						</dd>
 					</div>
 					<div>

@@ -30,6 +30,8 @@ class CheckStatus:
     detail: str = ""
     checked: datetime | None = None
     since: datetime | None = None  # when `up` last changed
+    # False when `since` is only the oldest result we know of (after a restart): "for at least".
+    since_exact: bool = True
 
 
 @dataclass
@@ -61,16 +63,24 @@ class Monitor:
         self._tasks: dict[tuple[str, str], tuple[asyncio.Task[None], Device, Check, float]] = {}
 
     def apply(self, config: Config) -> None:
-        """Start, keep or stop check loops so they match the config. Unchanged checks keep running."""
+        """Start, keep or stop check loops so they match the config. A loop keeps running unless
+        its own check, interval or the device's host changed (a new name or tag restarts nothing)."""
         wanted: dict[tuple[str, str], tuple[Device, Check, float]] = {}
         for id, device in config.devices.items():
             for check in device.checks:
                 wanted[(id, check.name)] = (device, check, check.interval or config.check_interval)
 
+        def same(a: tuple[Device, Check, float], b: tuple[Device, Check, float]) -> bool:
+            return (a[0].host, a[1], a[2]) == (b[0].host, b[1], b[2])
+
         for key, (task, device, check, interval) in list(self._tasks.items()):
-            if wanted.get(key) != (device, check, interval):
+            new = wanted.get(key)
+            if new is None or not same(new, (device, check, interval)) or task.done():
                 task.cancel()
                 del self._tasks[key]
+                if new is not None and new[0].host != device.host:
+                    # Another address: what we knew about the old one says nothing.
+                    self.status.get(key[0], DeviceStatus()).checks.pop(key[1], None)
 
         for key, (device, check, interval) in wanted.items():
             if key not in self._tasks:
@@ -99,10 +109,11 @@ class Monitor:
             if status is None or row.check not in status.checks:
                 continue
             check = status.checks[row.check]
-            if check.up is not None and check.up != row.up:
-                check.since = row.time
-            # The first row of the window: the state began before it, at an unknown time
-            # (since stays None: "longer than the history shows").
+            if check.up is None:
+                # The oldest result we have: the state began then or earlier.
+                check.since, check.since_exact = row.time, False
+            elif check.up != row.up:
+                check.since, check.since_exact = row.time, True
             check.up, check.latency_ms, check.detail, check.checked = (
                 row.up,
                 row.latency_ms,
@@ -119,8 +130,14 @@ class Monitor:
 
     async def _loop(self, id: str, device: Device, check: Check, interval: float) -> None:
         while True:
-            result = await self.runner(id, device, check)
-            self._record(id, check.name, result)
+            try:
+                result = await self.runner(id, device, check)
+                self._record(id, check.name, result)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A loop must never die quietly; the stale `checked` time shows it in the app.
+                log.exception("check %s %s failed", id, check.name)
             await asyncio.sleep(interval)
 
     def _record(self, id: str, name: str, result: checks.Result) -> None:
@@ -129,7 +146,7 @@ class Monitor:
         if status.up != result.up:
             if status.up is not None:
                 log.info("%s %s is %s (%s)", id, name, "up" if result.up else "down", result.detail)
-            status.since = now
+            status.since, status.since_exact = now, True
         status.up, status.latency_ms, status.detail, status.checked = (
             result.up,
             result.latency_ms,

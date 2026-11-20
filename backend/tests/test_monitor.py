@@ -12,7 +12,6 @@ async def test_monitor_follows_config(tmp_path: Path) -> None:
     monitor = Monitor(History(tmp_path))
     config = Config.model_validate(
         {
-            "check_interval": 0.05,
             "devices": {
                 "box": {
                     "host": "127.0.0.1",
@@ -21,6 +20,7 @@ async def test_monitor_follows_config(tmp_path: Path) -> None:
             },
         }
     )
+    config.check_interval = 0.05  # below what config.yaml may say, to keep the test fast
     async with server:
         monitor.apply(config)
         for _ in range(100):
@@ -54,9 +54,32 @@ def test_restore_keeps_since(tmp_path: Path) -> None:
         ]
     )
     check = monitor.status["nas"].checks["ping"]
-    assert check.up is False and check.since == t + timedelta(minutes=1)
+    assert check.up is False and check.since == t + timedelta(minutes=1) and check.since_exact
     assert "gone" not in monitor.status
 
     monitor.prepare(Config.model_validate({"devices": {"pi": {"host": "pi.lan"}}}))
     monitor.restore([Row(t, "pi", "ping", True, 1.0, "")])
-    assert monitor.status["pi"].checks["ping"].since is None  # began before the history
+    pi = monitor.status["pi"].checks["ping"]
+    assert pi.since == t and not pi.since_exact  # began then or before
+
+
+async def test_only_changed_checks_restart(tmp_path: Path) -> None:
+    monitor = Monitor(History(tmp_path))
+    base = {"host": "127.0.0.1", "checks": [{"tcp": 1, "name": "a"}, {"tcp": 2, "name": "b"}]}
+    monitor.apply(Config.model_validate({"devices": {"x": base}}))
+    tasks = {k: v[0] for k, v in monitor._tasks.items()}
+
+    renamed = {**base, "name": "Renamed", "tags": ["new"]}
+    monitor.apply(Config.model_validate({"devices": {"x": renamed}}))
+    assert {k: v[0] for k, v in monitor._tasks.items()} == tasks  # nothing restarted
+
+    changed = {**base, "checks": [{"tcp": 1, "name": "a"}, {"tcp": 3, "name": "b"}]}
+    monitor.apply(Config.model_validate({"devices": {"x": changed}}))
+    assert monitor._tasks[("x", "a")][0] is tasks[("x", "a")]
+    assert monitor._tasks[("x", "b")][0] is not tasks[("x", "b")]
+
+    monitor.status["x"].checks["a"].up = True
+    moved = {**changed, "host": "127.0.0.2"}
+    monitor.apply(Config.model_validate({"devices": {"x": moved}}))
+    assert monitor.status["x"].checks["a"].up is None  # a new address starts unknown
+    await monitor.stop()

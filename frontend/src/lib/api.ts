@@ -9,6 +9,8 @@ export interface CheckStatus {
 	detail?: string;
 	checked?: string | null;
 	since?: string | null;
+	since_exact?: boolean;
+	stale?: boolean;
 }
 
 export interface Device {
@@ -27,6 +29,7 @@ export interface Health {
 	ok: boolean;
 	version: string;
 	config_error: string | null;
+	ping_refused: string | null;
 	demo: boolean;
 }
 

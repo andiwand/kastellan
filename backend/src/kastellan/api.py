@@ -11,8 +11,10 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from . import __version__, stats
+from . import __version__, checks, stats
+from .config import Check
 from .hub import Hub
+from .monitor import CheckStatus
 from .settings import Settings
 
 WEB = Path(__file__).parent / "web"
@@ -42,8 +44,21 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             "ok": True,
             "version": __version__,
             "config_error": hub.config_error,
+            "ping_refused": checks.ping_refused,
             "demo": hub.demo is not None,
         }
+
+    def check_view(check: Check, status: CheckStatus | None) -> dict[str, Any]:
+        view: dict[str, Any] = {"name": check.name, "type": check.type, "target": check.target}
+        if status is None:
+            return view
+        view |= vars(status)
+        # A result much older than the interval means the loop is stuck: say so, don't show the
+        # old answer as current.
+        interval = check.interval or hub.config.check_interval
+        if status.checked and (datetime.now(UTC) - status.checked).total_seconds() > 3 * interval + 60:
+            view |= {"up": None, "detail": "no recent result", "stale": True}
+        return view
 
     @app.get("/api/devices")
     def devices() -> list[dict[str, Any]]:
@@ -61,16 +76,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "always_on": device.always_on,
                     "state": status.state if status else "unknown",
                     "checks": [
-                        {
-                            "name": check.name,
-                            "type": check.type,
-                            "target": check.target,
-                            **(
-                                vars(status.checks[check.name])
-                                if status and check.name in status.checks
-                                else {}
-                            ),
-                        }
+                        check_view(check, status.checks.get(check.name) if status else None)
                         for check in device.checks
                     ],
                 }

@@ -39,15 +39,20 @@ export function needsAttention(device: Device) {
 	return s === 'down' || s === 'degraded';
 }
 
-/** One device's buckets from its checks' buckets: the worst check decides, latency from the
- * first check that has one (ping, usually). */
+/** One device's buckets from its checks' buckets: the mean of its checks' uptimes, so a bucket
+ * is fully up only when every check was, fully down only when none was, and in between (degraded)
+ * when some checks failed, which matches the device's badge. Latency from the first check that has
+ * one (ping, usually). */
 export function deviceBuckets(checks: Record<string, Bucket[]> | undefined): Bucket[] {
 	const lists = Object.values(checks ?? {});
 	if (!lists.length) return [];
 	return lists[0].map((_, i) => {
 		const ups = lists.map((l) => l[i]?.uptime).filter((u): u is number => u != null);
 		const lat = lists.map((l) => l[i]?.latency_ms).find((v) => v != null) ?? null;
-		return { uptime: ups.length ? Math.min(...ups) : null, latency_ms: lat };
+		return {
+			uptime: ups.length ? ups.reduce((a, b) => a + b, 0) / ups.length : null,
+			latency_ms: lat
+		};
 	});
 }
 

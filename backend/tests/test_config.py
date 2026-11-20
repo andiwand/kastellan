@@ -51,8 +51,16 @@ def test_missing_file_is_empty(tmp_path: Path) -> None:
         {"a": {"host": "x", "checks": [{"http": "example.com"}]}},  # http without a scheme
         {"a": {"host": "x", "checks": ["ping", "ping"]}},  # duplicate names
         {"a": {"host": "x", "checks": [{"ping": None, "tcp": 22}]}},  # two kinds
+        {"a": {"host": "x", "checks": [{"tcp": 70000}]}},  # no such port
+        {"a": {"host": "x", "checks": [{"tcp": 22, "interval": 0}]}},  # a busy loop
+        {"a": {"host": "x", "checks": [{"tcp": 22, "timeout": -1}]}},
     ],
 )
 def test_invalid(devices: dict) -> None:
     with pytest.raises(ValidationError):
         Config.model_validate({"devices": devices})
+
+
+def test_global_interval_must_be_sane() -> None:
+    with pytest.raises(ValidationError):
+        Config.model_validate({"check_interval": 0})

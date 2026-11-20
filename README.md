@@ -61,6 +61,17 @@ devices:
 
 Kastellan picks up changes to the file by itself. Run it without `KASTELLAN_DEMO`.
 
+Notes:
+
+- **Ping without root.** Kastellan pings unprivileged. macOS allows that; on Linux (and in
+  Docker with host networking) the host must allow it once:
+  `sysctl -w net.ipv4.ping_group_range="0 2147483647"` (persist it in `/etc/sysctl.d/`). The
+  app shows a banner when ping is refused.
+- **Windows** answers no ping by default. Check a port instead: `tcp: 3389` (remote desktop)
+  or `tcp: 445` (file sharing), and set `kind: pc` so a PC that is off counts as offline.
+- **False alarms.** Ping sends three packets and any reply counts; a failed port or HTTP check
+  is tried once more after two seconds before it counts as down.
+
 Settings (environment): `KASTELLAN_CONFIG` (default `data/config.yaml`), `KASTELLAN_DATA`
 (default: the config's folder), `KASTELLAN_HOST`, `KASTELLAN_PORT` (8100),
 `KASTELLAN_LOG_LEVEL`, `KASTELLAN_DEMO`.

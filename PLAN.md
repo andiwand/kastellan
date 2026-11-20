@@ -47,17 +47,48 @@ device page, devices as a list or a graph), demo mode, restoring state from the 
 
 ## Next
 
-1. **Terminal in the browser**: SSH via asyncssh + xterm.js, keys held by the hub.
-2. **Remote desktop**: guacd as a sidecar container, RDP (Windows Pro) and VNC (Windows Home,
-   macOS, Linux desktops), full mouse and keyboard.
-3. **Sign-in and roles** (observer / admin) and the audit log, before 1 and 2 ship.
-4. **Drivers**: one module per kind of device, declaring what it can do (as Norn's camera
-   drivers). First FRITZ!Box (TR-064: clients, mesh, Wi-Fi, firmware, config export), OpenWrt
-   (ubus), printers (IPP/SNMP: toner, state).
-5. **Docker image updates**: which containers on which host run an outdated image (registry
-   digests, as WUD/Diun do).
-6. **Opening device web interfaces through the hub** (a reverse proxy per device, on its own
+The order agreed on 2026-11-20. After each stage an independent review, and its findings
+fixed, before the next one starts.
+
+1. **Services, versions and their uptime.** Each check keeps what the service tells about
+   itself without credentials: the SSH banner (`OpenSSH_10.2p1 Ubuntu`), the HTTP `Server`
+   header (`Tasmota/14.4.0`), and so on. The device page lists the services with version, up
+   since and uptime; a version change is an event ("OpenSSH 9.8 → 9.9"). Deeper data comes with
+   the later stages: Docker containers and systemd services over SSH (stage 3), firmware
+   through drivers (stage 5), newer versions (stage 6).
+2. **Sign-in and roles** (observer / admin) and the audit log.
+3. **Terminal in the browser**: SSH via asyncssh + xterm.js, keys held by the hub, host keys
+   pinned. Refuses to run while sign-in is off. Also lists Docker containers (image, version,
+   started) and systemd services (active since) of Linux hosts.
+4. **Remote desktop**: guacd 1.6 as a sidecar container, RDP (Windows Pro) and VNC (Windows
+   Home, macOS, Linux desktops), full mouse and keyboard, through guacamole-common-js.
+5. **Drivers**: one module per kind of device, declaring what it can do (as Norn's camera
+   drivers). The home network has OpenWrt (router + 2 APs: ubus/rpcd over HTTPS, or SSH) and a
+   FRITZ!Box (TR-064): clients, mesh, Wi-Fi, firmware, config export.
+6. **Docker image updates**: which containers on which host run an outdated image. SV1 already
+   runs WUD (What's Up Docker), so read its API first instead of asking registries ourselves.
+7. **Notifications and alarms** (see below).
+8. **Opening device web interfaces through the hub** (a reverse proxy per device, on its own
    subdomain: path-based proxies break most device UIs).
+
+## Notifications and alarms
+
+Alarms come from what the monitor already knows; notifications deliver them.
+
+- **Alarm rules**, with sensible defaults and overrides per device in config.yaml:
+  - an always-on device down for N minutes (default 3), a check down for N minutes;
+  - recovered (once an alarm fired);
+  - flapping (more than N changes in an hour) as one alarm, not many;
+  - later: disk nearly full, certificate expiring, a new version with a known vulnerability on
+    an internet-facing device, an unknown device appearing on the network.
+- **No alarm storms**: when a device is down, the devices behind it (its `parent` chain) are
+  reported as one alarm ("AP 1 down, 4 devices behind it unreachable"), not five.
+- **Delivery**: web push to the installed app (as in Norn), and ntfy / Gotify / e-mail /
+  Telegram through one small interface. Per user: which channels, minimum severity, quiet hours
+  (critical still comes through).
+- **State**: alarms are open, acknowledged (with who and a note) or resolved; the app shows
+  open alarms first, and they go to the audit log. Kept in a file, like the rest.
+- Mute a device or a check for a time (maintenance), from the app.
 
 ## Later
 
@@ -71,4 +102,3 @@ device page, devices as a list or a graph), demo mode, restoring state from the 
 - Discovery (ARP, mDNS, the router's client list) to suggest devices for config.yaml.
 - Topology from LLDP / the router's mesh view instead of hand-written parents (infrastructure
   only: which access point a client uses is not worth drawing).
-- Notifications (web push, e-mail) when an always-on device goes down.
