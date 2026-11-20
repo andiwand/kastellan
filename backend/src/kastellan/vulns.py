@@ -31,8 +31,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
+
+from . import cvss, software
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +44,7 @@ OSV_URL = "https://api.osv.dev/v1/query"
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 CACHE_SECONDS = 24 * 3600
 MAX_BYTES = 20 * 1024 * 1024
-DISTROS = ("ubuntu", "debian", "raspbian", "alpine", "fedora", "rhel", "centos", "suse")
+DISTROS = tuple(d.lower() for d in software.DISTROS)
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,7 @@ class Product:
 
     label: str  # "OpenSSH 10.2p1"
     cpe: str | None = None  # cpe:2.3:a:openbsd:openssh:10.2:p1:*:*:*:*:*:*
+    more_cpes: tuple[str, ...] = ()  # the same product under older vendor names
     osv: tuple[str, str, str] | None = None  # (ecosystem, package, version)
     distro: str | None = None  # a distribution's package revision, if the software said one
 
@@ -71,16 +75,17 @@ class Finding:
 
 # --- What a piece of software is, in the sources' terms -------------------------------------
 
-# Software name (as software.py reports it) → CPE vendor:product. Extend as devices show up.
-CPES = {
+# Software name (as software.py reports it) → CPE vendor:product; several when NVD filed the
+# product under other names over the years (all are asked). Extend as devices show up.
+CPES: dict[str, str | tuple[str, ...]] = {
     "openssh": "openbsd:openssh",
-    "dropbear": "dropbear_ssh_project:dropbear_ssh",
-    "nginx": "f5:nginx",
+    "dropbear": ("dropbear_ssh_project:dropbear_ssh", "matt_johnston:dropbear_ssh_server"),
+    "nginx": ("f5:nginx", "nginx:nginx"),
     "apache": "apache:http_server",
     "lighttpd": "lighttpd:lighttpd",
     "exim": "exim:exim",
     "postfix": "postfix:postfix",
-    "vsftpd": "vsftpd_project:vsftpd",
+    "vsftpd": ("vsftpd_project:vsftpd", "beasts:vsftpd"),
     "proftpd": "proftpd:proftpd",
     "fritz!os": "avm:fritz\\!os",
 }
@@ -120,20 +125,32 @@ def from_software(name: str, version: str | None, extra: str | None = None) -> P
         return Product(f"FRITZ!OS {version}", cpe=cpe)
     if key not in CPES or not version:
         return None
-    cpe = _cpe(CPES[key], version)
-    if cpe is None:
+    names = CPES[key] if isinstance(CPES[key], tuple) else (CPES[key],)
+    cpes = [c for c in (_cpe(n, version) for n in names) if c]
+    if not cpes:
         return None
-    distro = extra if extra and any(d in extra.lower() for d in DISTROS) and "-" in extra else None
-    return Product(f"{name} {version}", cpe=cpe, distro=distro)
+    # Any distribution named: it may have patched the bug without changing the upstream version.
+    distro = extra if extra and any(d in extra.lower() for d in DISTROS) else None
+    return Product(f"{name} {version}", cpe=cpes[0], more_cpes=tuple(cpes[1:]), distro=distro)
+
+
+EXACT_TAG = re.compile(r"^v?(\d+\.\d+\.\d+)(?:-[a-z][\w.]*)?$")  # 1.27.3, v2.14.1, 1.27.3-alpine
+
+
+def image_known(image: str) -> bool:
+    return (IMAGES.get(image) or IMAGES.get(image.removeprefix("library/"))) is not None
 
 
 def from_image(image: str, tag: str) -> Product | None:
-    """A container image with a version tag, if a source knows the product."""
+    """A container image with an exact version tag (x.y.z, maybe with a suffix like -alpine), if a
+    source knows the product. Moving tags (7.4, 16, latest) are not looked up: a range like
+    "before 7.4.6" would match 7.4 although it runs the newest 7.4.x."""
     known = IMAGES.get(image) or IMAGES.get(image.removeprefix("library/"))
-    if known is None or not VERSION.match(tag):
+    m = EXACT_TAG.match(tag)
+    if known is None or not m:
         return None
     kind, target = known
-    version = tag.lstrip("v")
+    version = m.group(1)
     if kind == "cpe":
         cpe = _cpe(target, version)
         return Product(f"{image}:{tag}", cpe=cpe) if cpe else None
@@ -192,35 +209,64 @@ def parse_nvd(data: dict[str, Any]) -> list[Finding]:
     return out
 
 
-def parse_osv(data: dict[str, Any]) -> list[Finding]:
-    out = []
+def version_key(version: str) -> tuple[int, ...]:
+    """Enough to order release numbers: 2026.11.3 > 2026.11.2, 10.10.7 > 10.9.0."""
+    return tuple(int(n) for n in re.findall(r"\d+", version)[:6])
+
+
+SEVERITY_ORDER = ["unknown", "low", "medium", "high", "critical"]
+
+
+def parse_osv(data: dict[str, Any], version: str = "") -> list[Finding]:
+    """OSV answers, one finding per CVE (OSV lists the same bug once per database: GHSA, PYSEC,
+    GO; they are merged, keeping the most severe). Severity from the entry's label, else from its
+    CVSS vector; `fixed_in` is the first fix above the running version."""
+    merged: dict[str, Finding] = {}
     for v in data.get("vulns") or []:
-        v = v or {}
+        v = v if isinstance(v, dict) else {}
         aliases = [str(a) for a in v.get("aliases") or []][:10]
-        cve = next((a for a in aliases if a.startswith("CVE-")), None)
-        level = str((v.get("database_specific") or {}).get("severity") or "").lower()
-        severity = {"moderate": "medium"}.get(level, level) or "unknown"
-        fixed = None
-        for affected in v.get("affected") or []:
-            for r in (affected or {}).get("ranges") or []:
-                for event in (r or {}).get("events") or []:
-                    if (event or {}).get("fixed"):
-                        fixed = str(event["fixed"])[:40]
         vid = str(v.get("id") or "?")
-        out.append(
-            Finding(
-                id=cve or vid,
-                source="osv",
-                summary=str(v.get("summary") or v.get("details") or "")[:400],
-                score=None,
-                severity=severity if severity in ("critical", "high", "medium", "low") else "unknown",
-                published=str(v.get("published") or "")[:10] or None,
-                url=f"https://osv.dev/vulnerability/{vid}",
-                aliases=[a for a in [vid, *aliases] if a != (cve or vid)],
-                fixed_in=fixed,
-            )
+        cve = next((a for a in [vid, *aliases] if a.startswith("CVE-")), None)
+        level = str((v.get("database_specific") or {}).get("severity") or "").lower()
+        severity = {"moderate": "medium"}.get(level, level)
+        score = None
+        for entry in v.get("severity") or []:
+            if isinstance(entry, dict) and str(entry.get("type", "")).startswith("CVSS_V3"):
+                score = cvss.base_score(str(entry.get("score") or ""))
+                if score is not None:
+                    break
+        if severity not in SEVERITY_ORDER[1:]:
+            severity = _severity(score)
+        fixes = [
+            str(event["fixed"])[:40]
+            for affected in v.get("affected") or []
+            for r in (affected or {}).get("ranges") or []
+            for event in (r or {}).get("events") or []
+            if isinstance(event, dict) and event.get("fixed")
+        ]
+        above = sorted(
+            (f for f in fixes if not version or version_key(f) > version_key(version)), key=version_key
         )
-    return out
+        finding = Finding(
+            id=cve or vid,
+            source="osv",
+            summary=str(v.get("summary") or v.get("details") or "")[:400],
+            score=score,
+            severity=severity,
+            published=str(v.get("published") or "")[:10] or None,
+            url=f"https://osv.dev/vulnerability/{vid}",
+            aliases=[a for a in [vid, *aliases] if a != (cve or vid)],
+            fixed_in=above[0] if above else None,
+        )
+        known = merged.get(finding.id)
+        if known is None:
+            merged[finding.id] = finding
+            continue
+        known.aliases = sorted({*known.aliases, *finding.aliases})[:10]
+        if SEVERITY_ORDER.index(finding.severity) > SEVERITY_ORDER.index(known.severity):
+            known.severity, known.score = finding.severity, finding.score
+        known.fixed_in = known.fixed_in or finding.fixed_in
+    return list(merged.values())
 
 
 async def _get_json(client: httpx.AsyncClient, method: str, url: str, **kwargs: Any) -> Any:
@@ -246,12 +292,23 @@ class Sources:
         self._nvd_next = 0.0
         self._nvd_lock = asyncio.Lock()
         self.errors: dict[str, str] = {}  # source → last problem, for the app
+        self._dirty = False
+        self.kev_error: str | None = None
         try:
             self._cache = json.loads((folder / "cache.json").read_text())
             kev = json.loads((folder / "kev.json").read_text())
             self._kev, self._kev_fetched = set(kev["ids"]), float(kev["fetched"])
         except (OSError, ValueError, KeyError, TypeError):
             pass
+
+    def flush(self) -> None:
+        """Write the cache once per sweep; entries older than a week go."""
+        if not self._dirty:
+            return
+        cutoff = time.time() - 7 * 86400
+        self._cache = {k: v for k, v in self._cache.items() if v.get("fetched", 0) >= cutoff}
+        self._save()
+        self._dirty = False
 
     def _save(self) -> None:
         try:
@@ -272,10 +329,11 @@ class Sources:
                 str(v.get("cveID")) for v in data.get("vulnerabilities") or [] if isinstance(v, dict)
             }
             self._kev_fetched = time.time()
-            self.errors.pop("kev", None)
+            self.kev_error = None
             self._save()
         except (httpx.HTTPError, ValueError, TimeoutError) as e:
-            self.errors["kev"] = f"CISA KEV: {e or type(e).__name__}"
+            # The copy on disk is used; the app says the "exploited" marks may be out of date.
+            self.kev_error = f"CISA KEV: {e or type(e).__name__}"
 
     async def lookup(self, client: httpx.AsyncClient, product: Product) -> list[Finding] | None:
         """Findings for a product; None when no source could be asked (not "none found")."""
@@ -285,35 +343,53 @@ class Sources:
             findings = [Finding(**f) for f in cached["findings"]]
         else:
             findings = await (
-                self._nvd(client, product.cpe) if product.cpe else self._osv(client, product.osv)
+                self._nvd(client, [product.cpe, *product.more_cpes])
+                if product.cpe
+                else self._osv(client, product.osv)
             )
             if findings is None:
                 return [Finding(**f) for f in cached["findings"]] if cached else None
             self._cache[key] = {"fetched": time.time(), "findings": [asdict(f) for f in findings]}
-            self._save()
+            self._dirty = True
         for f in findings:
             f.exploited = f.id in self._kev or any(a in self._kev for a in f.aliases)
             if product.distro and f.source == "nvd":
                 f.confidence = "upstream"
         return findings
 
-    async def _nvd(self, client: httpx.AsyncClient, cpe: str | None) -> list[Finding] | None:
+    async def _nvd(self, client: httpx.AsyncClient, cpes: list[str]) -> list[Finding] | None:
+        """All pages for all names of the product; None if any page is missing (a partial list
+        would look like fewer vulnerabilities than there are)."""
+        found: dict[str, Finding] = {}
+        for cpe in cpes:
+            start = 0
+            while True:
+                data = await self._nvd_page(client, cpe, start)
+                if data is None:
+                    return None
+                for f in parse_nvd(data):
+                    found.setdefault(f.id, f)
+                total, per_page = int(data.get("totalResults") or 0), int(data.get("resultsPerPage") or 0)
+                start += per_page
+                if per_page <= 0 or start >= total:
+                    break
+        return list(found.values())
+
+    async def _nvd_page(self, client: httpx.AsyncClient, cpe: str, start: int) -> dict[str, Any] | None:
         async with self._nvd_lock:  # NVD: 5 requests per 30 s without a key, 50 with one
             wait = self._nvd_next - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
             self._nvd_next = time.monotonic() + (0.7 if self.nvd_api_key else 6.5)
             headers = {"apiKey": self.nvd_api_key} if self.nvd_api_key else {}
+            params: dict[str, Any] = {"virtualMatchString": cpe, "resultsPerPage": 2000, "startIndex": start}
             try:
-                data = await _get_json(
-                    client,
-                    "GET",
-                    NVD_URL,
-                    params={"virtualMatchString": cpe, "resultsPerPage": 200},
-                    headers=headers,
-                )
+                # noRejected is a flag without a value; httpx can't mix that with params, so the
+                # query is built here.
+                url = f"{NVD_URL}?noRejected&{urlencode(params)}"
+                data = await _get_json(client, "GET", url, headers=headers)
                 self.errors.pop("nvd", None)
-                return parse_nvd(data)
+                return data if isinstance(data, dict) else None
             except (httpx.HTTPError, ValueError, TimeoutError) as e:
                 self.errors["nvd"] = f"NVD: {e or type(e).__name__}"
                 return None
@@ -329,7 +405,7 @@ class Sources:
                 json={"package": {"name": package, "ecosystem": ecosystem}, "version": version},
             )
             self.errors.pop("osv", None)
-            return parse_osv(data)
+            return parse_osv(data, version)
         except (httpx.HTTPError, ValueError, TimeoutError) as e:
             self.errors["osv"] = f"OSV: {e or type(e).__name__}"
             return None

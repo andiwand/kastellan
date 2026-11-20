@@ -30,11 +30,23 @@ def test_auto_update_only_when_everything_agrees() -> None:
     allowed = device(
         exposed=True, auto_update=True, docker={"wud": "http://w:3000", "trigger": "docker.local"}
     )
-    container = {"name": "ha", "update": True, "unchecked": None}
+    container = {
+        "name": "ha",
+        "update": True,
+        "unchecked": None,
+        "tag": "2026.11.2",
+        "update_to": "2026.11.3",
+    }
     assert auto_update_reason(allowed, container, [CRITICAL]) is not None
     assert auto_update_reason(allowed, container, [MEDIUM]) is None  # not serious enough
     assert auto_update_reason(allowed, container, [UPSTREAM]) is None  # not confirmed
     assert auto_update_reason(allowed, {**container, "update": False}, [CRITICAL]) is None  # no fix
+    major = {**container, "tag": "16.4.0", "update_to": "17.0.1"}
+    assert auto_update_reason(allowed, major, [CRITICAL]) is None  # 16 → 17 may need a migration
+    not_fixed = {**CRITICAL, "fixed_in": "2026.12.0"}
+    assert auto_update_reason(allowed, container, [not_fixed]) is None  # 2026.11.3 doesn't fix it
+    rebuild = {**container, "tag": "latest", "update_to": "newer build"}
+    assert auto_update_reason(allowed, rebuild, [CRITICAL]) is not None
     off = device(exposed=True, docker={"wud": "http://w:3000", "trigger": "docker.local"})
     assert auto_update_reason(off, container, [CRITICAL]) is None  # auto_update not set
     internal = device(auto_update=True, docker={"wud": "http://w:3000", "trigger": "docker.local"})
@@ -61,3 +73,39 @@ async def test_hub_turns_findings_into_alarms(tmp_path) -> None:
     [problem] = hub._vuln_problems()
     assert problem.severity is Severity.CRITICAL and "exploited CVE-1" in problem.title
     await hub.monitor.stop()
+
+
+async def test_vuln_alarms_survive_a_restart(tmp_path) -> None:
+    """Review: every restart sent "Resolved" and then re-alarmed every vulnerability."""
+    from datetime import UTC, datetime, timedelta
+
+    from kastellan.alarms import RESOLVE_AFTER
+    from kastellan.hub import Hub
+    from kastellan.monitor import CheckStatus, DeviceStatus
+    from kastellan.settings import Settings
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  gw:\n    host: 1.2.3.4\n    exposed: true\n    checks: [{tcp: 22, name: ssh}]\n"
+    )
+    hub = Hub(Settings(config=config, data=tmp_path))
+    hub.reload()
+    status = hub.monitor.status["gw"] = DeviceStatus(checks={"ssh": CheckStatus(software="OpenSSH 9.8")})
+    status.vulns = {
+        "items": [{"where": "service ssh", "product": "OpenSSH 9.8", "findings": [EXPLOITED]}],
+        "unknown": [],
+    }
+    now = datetime.now(UTC)
+    assert len(hub.alarms.update(hub._vuln_problems(), now)) == 1  # opened
+    await hub.monitor.stop()
+
+    # The restart: a new hub, nothing swept yet.
+    again = Hub(Settings(config=config, data=tmp_path))
+    again.reload()
+    again.monitor.status["gw"] = DeviceStatus(checks={"ssh": CheckStatus(software="OpenSSH 9.8")})
+    later = now + timedelta(seconds=RESOLVE_AFTER + 60)
+    problems = again._vuln_problems() + again.alarms.carry(again._vuln_keys_unknown())
+    assert again.alarms.update(problems, now + timedelta(seconds=30)) == []
+    assert again.alarms.update(problems, later) == []  # no "Resolved"
+    assert "vuln:gw:service ssh:CVE-1" in again.alarms.open
+    await again.monitor.stop()

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# kastellan-pki: the only thing Kastellan's key may run on the host with the OpenVPN PKI.
+#
+# Install (on the PKI host, e.g. SV1):
+#   sudo install -m 755 kastellan-pki /usr/local/bin/kastellan-pki
+#   sudo useradd --system --create-home kastellan   # a user that owns (or may use) the PKI
+#   In ~kastellan/.ssh/authorized_keys, the hub's key, bound to this script:
+#     restrict,command="/usr/local/bin/kastellan-pki" ssh-ed25519 AAAA... kastellan-hub
+#   /etc/kastellan-pki.conf (optional):
+#     EASYRSA_DIR=/etc/openvpn/easy-rsa      # where ./easyrsa and pki/ are
+#     TEMPLATE=/etc/kastellan-pki/client.ovpn  # client config with {{ca}} {{cert}} {{key}} {{tls}}
+#     TLS_KEY=/etc/openvpn/server/tc.key        # tls-crypt/tls-auth key to inline, if used
+#
+# Commands (in SSH_ORIGINAL_COMMAND, nothing else is run):
+#   list                 one line per certificate: status, expiry, serial, name (tab-separated)
+#   issue NAME DAYS      a new client certificate and key (no passphrase), valid DAYS days
+#   revoke NAME          revoke it and renew the CRL
+#   crl                  the current CRL (PEM)
+#   export NAME          the client's .ovpn, with its certificate and key inline
+set -euo pipefail
+umask 077
+
+EASYRSA_DIR=/etc/openvpn/easy-rsa
+TEMPLATE=/etc/kastellan-pki/client.ovpn
+TLS_KEY=
+CONF=${KASTELLAN_PKI_CONF:-/etc/kastellan-pki.conf}  # sshd passes no client environment
+[ -r "$CONF" ] && . "$CONF"
+
+read -r -a args <<< "${SSH_ORIGINAL_COMMAND:-}"
+command=${args[0]:-}
+name=${args[1]:-}
+days=${args[2]:-}
+
+fail() { echo "kastellan-pki: $*" >&2; exit 2; }
+check_name() { [[ $name =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]] || fail "bad name"; }
+[ ${#args[@]} -le 3 ] || fail "too many arguments"
+
+cd "$EASYRSA_DIR" || fail "no $EASYRSA_DIR"
+
+case $command in
+  list)
+    # pki/index.txt: status, expiry, revocation date, serial, file, subject (/CN=name)
+    awk -F'\t' '{ cn=$6; sub(/.*\/CN=/, "", cn); sub(/\/.*/, "", cn); print $1 "\t" $2 "\t" $4 "\t" cn }' pki/index.txt
+    ;;
+  issue)
+    check_name
+    [[ $days =~ ^[0-9]{1,4}$ ]] && [ "$days" -ge 1 ] || fail "bad days"
+    [ ! -e "pki/issued/$name.crt" ] || fail "$name exists"
+    EASYRSA_CERT_EXPIRE=$days ./easyrsa --batch build-client-full "$name" nopass >/dev/null 2>&1 || fail "easyrsa failed"
+    echo "issued $name"
+    ;;
+  revoke)
+    check_name
+    [ -e "pki/issued/$name.crt" ] || fail "no $name"
+    ./easyrsa --batch revoke "$name" >/dev/null 2>&1 || fail "revoke failed"
+    ./easyrsa --batch gen-crl >/dev/null 2>&1 || fail "gen-crl failed"
+    echo "revoked $name"
+    ;;
+  crl)
+    cat pki/crl.pem
+    ;;
+  export)
+    check_name
+    [ -e "pki/issued/$name.crt" ] && [ -e "pki/private/$name.key" ] || fail "no $name"
+    [ -r "$TEMPLATE" ] || fail "no template $TEMPLATE"
+    tls=""
+    [ -n "$TLS_KEY" ] && [ -r "$TLS_KEY" ] && tls=$(cat "$TLS_KEY")
+    # Inline blocks: replace each {{...}} line with the file's contents.
+    awk -v ca=pki/ca.crt -v crt="pki/issued/$name.crt" -v key="pki/private/$name.key" -v tls="$tls" '
+      function dump(f,   line) { while ((getline line < f) > 0) print line; close(f) }
+      function pem(f,   line, inside) {   # easy-rsa .crt files start with a text dump: PEM only
+        while ((getline line < f) > 0) {
+          if (line ~ /-----BEGIN CERTIFICATE-----/) inside = 1
+          if (inside) print line
+          if (line ~ /-----END CERTIFICATE-----/) inside = 0
+        }
+        close(f)
+      }
+      /\{\{ca\}\}/   { pem(ca); next }
+      /\{\{cert\}\}/ { pem(crt); next }
+      /\{\{key\}\}/  { dump(key); next }
+      /\{\{tls\}\}/  { if (tls != "") print tls; next }
+      { print }' "$TEMPLATE"
+    ;;
+  *)
+    fail "unknown command"
+    ;;
+esac

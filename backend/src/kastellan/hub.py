@@ -82,7 +82,8 @@ class Hub:
         self.alarms = Alarms(data)
         self._events_since = datetime.now(UTC)
         self.started = datetime.now(UTC)  # alarms use only results from after this
-        self._outbox: list[tuple[NotifyChannel, Message, datetime, int]] = []
+        # (channel, message, first try, last try, tries) for notifications that failed
+        self._outbox: list[tuple[NotifyChannel, Message, datetime, datetime, int]] = []
         self.vuln_sources = vulns.Sources(data / "vulns")
         self._container_seen: dict[tuple[str, str], tuple[str, int]] = {}
         runner = self.demo.run if self.demo else run_check
@@ -334,32 +335,68 @@ class Hub:
                 now = datetime.now(UTC)
                 problems = evaluate(self.config, self.monitor.status, now, self.alarms.muted, self.started)
                 problems += self._vuln_problems()
+                problems += self.alarms.carry(self._vuln_keys_unknown())
                 # Muted or removed devices: their alarms end without a "back up".
                 quiet = {d for d, until in self.alarms.muted.items() if until > now}
                 quiet |= {a.device for a in self.alarms.open.values() if a.device not in self.config.devices}
                 messages = self.alarms.update(problems, now, quiet) + self._events(now, send=not first)
                 first = False
-                failed = await notify.send(self.config.notify, messages, now)
-                self._outbox.extend((c, m, now, 1) for c, m in failed)
+                await self._send(messages, now)
                 await self._retry_outbox(now)
             except Exception:
                 log.exception("evaluating the alarms failed")
 
+    async def _send(self, messages: list[Message], now: datetime) -> None:
+        """Send, and keep what failed for _retry_outbox."""
+        failed = await notify.send(self.config.notify, messages, now)
+        self._outbox.extend((c, m, now, now, 1) for c, m in failed)
+
     async def _retry_outbox(self, now: datetime) -> None:
+        """Retry failed notifications: after 1, 2, 4 ... 32 minutes from the last try, for a day;
+        all due ones at once, within one time limit (a dead ntfy must not hold up the alarms)."""
         due, later = [], []
-        for channel, message, first_try, tries in self._outbox:
+        for channel, message, first_try, last_try, tries in self._outbox:
             if (now - first_try).total_seconds() > 86400:
                 log.warning("giving up on a notification after a day: %s", message.title)
-            elif (now - first_try).total_seconds() >= ALARMS_EVERY * 2 ** min(tries, 6):
+            elif channel not in self.config.notify:
+                continue  # the channel was removed from config.yaml
+            elif (now - last_try).total_seconds() >= ALARMS_EVERY * 2 ** min(tries, 6):
                 due.append((channel, message, first_try, tries))
             else:
-                later.append((channel, message, first_try, tries))
+                later.append((channel, message, first_try, last_try, tries))
         self._outbox = later
-        for channel, message, first_try, tries in due:
-            if channel not in self.config.notify:
-                continue  # the channel was removed from config.yaml
-            if await notify.send([channel], [message], now):
-                self._outbox.append((channel, message, first_try, tries + 1))
+        if not due:
+            return
+
+        async def one(channel: NotifyChannel, message: Message) -> bool:
+            return not await notify.send([channel], [message], now)
+
+        try:
+            async with asyncio.timeout(20):
+                results = await asyncio.gather(*(one(c, m) for c, m, _, _ in due))
+        except TimeoutError:
+            results = [False] * len(due)
+        for (channel, message, first_try, tries), ok in zip(due, results, strict=True):
+            if not ok:
+                self._outbox.append((channel, message, first_try, now, tries + 1))
+
+    def _vuln_keys_unknown(self) -> set[str]:
+        """Open vulnerability alarms whose ground isn't known right now: the device hasn't been
+        swept since the hub started, or its product couldn't be looked up. They stay as they are
+        (no "Resolved" after every restart, no re-alarm after the next sweep)."""
+        keep = set()
+        for key, alarm in self.alarms.open.items():
+            if not key.startswith("vuln:"):
+                continue
+            status = self.monitor.status.get(alarm.device)
+            vulns_now = status.vulns if status else None
+            if vulns_now is None:
+                keep.add(key)
+                continue
+            where = key.split(":", 2)[2].rsplit(":", 1)[0]
+            if where in {u.get("where") for u in vulns_now.get("unknown", []) if isinstance(u, dict)}:
+                keep.add(key)
+        return keep
 
     def _events(self, now: datetime, send: bool = True) -> list[Message]:
         """Info events: container updates that appeared, software and firmware that changed.
@@ -376,15 +413,22 @@ class Hub:
                     title = f"{device.name}: {c['name']} can be updated to {target}"
                     if m := self.alarms.event(key, title, f"{c['image']}:{c['tag']}", id, now, send):
                         out.append(m)
+            # New findings worth a message: one message per device, not one per finding.
+            new: list[str] = []
             for item in (status.vulns or {}).get("items", []):
                 for f in item.get("findings", []):
                     if not assess(device, f).message:
                         continue
                     key = f"vuln:{id}:{item['where']}:{f['id']}"
-                    note = " (your distribution may have fixed it)" if f.get("confidence") != "exact" else ""
-                    title = f"{device.name}: {f['id']} in {item['product']}{note}"
-                    if m := self.alarms.event(key, title, f.get("summary", "")[:300], id, now, send):
-                        out.append(m)
+                    is_new = key not in self.alarms.seen_events
+                    self.alarms.event(key, "", "", id, now, send=False)  # remember, or keep remembering
+                    if is_new and send:
+                        note = " (maybe fixed by the distribution)" if f.get("confidence") != "exact" else ""
+                        new.append(f"{f['id']} in {item['product']}{note}")
+            if new:
+                noun = "vulnerability" if len(new) == 1 else "vulnerabilities"
+                title = f"{device.name}: {len(new)} new known {noun}"
+                out.append(Message(Severity.INFO, title, "; ".join(new[:8]), id))
         # A minute of overlap: the log keeps whole seconds; seen_events keeps it from repeating.
         for change in self.versions.changes(self._events_since - timedelta(seconds=60)):
             device = self.config.devices.get(change["device"])
@@ -442,22 +486,42 @@ class Hub:
                 status = self.monitor.status.get(id)
                 if status is None:
                     continue
-                items, unknown = [], []
-                for where, product in self._products(status):
-                    found = await sources.lookup(client, product)
-                    if found is None:
-                        unknown.append(product.label)
-                        continue
-                    items.append(
-                        {"where": where, "product": product.label, "findings": [asdict(f) for f in found]}
-                    )
-                status.vulns = {
-                    "checked": datetime.now(UTC).isoformat(timespec="seconds"),
-                    "items": items,
-                    "unknown": unknown,  # couldn't be asked: not "no vulnerabilities"
-                    "errors": dict(sources.errors),
-                }
-                await self._auto_update(id, device, status)
+                try:
+                    await self._sweep_device(client, id, device, status)
+                except Exception:
+                    log.exception("the vulnerability sweep of %s failed", id)
+            sources.flush()
+
+    async def _sweep_device(
+        self, client: httpx.AsyncClient, id: str, device: Device, status: DeviceStatus
+    ) -> None:
+        sources = self.vuln_sources
+        items, unknown, errors = [], [], {}
+        for where, product in self._products(status):
+            sources.errors.clear()
+            found = await sources.lookup(client, product)
+            errors |= sources.errors
+            if found is None:
+                unknown.append({"where": where, "product": product.label})
+                continue
+            items.append({"where": where, "product": product.label, "findings": [asdict(f) for f in found]})
+        status.vulns = {
+            "checked": datetime.now(UTC).isoformat(timespec="seconds"),
+            "items": items,
+            "unknown": unknown,  # couldn't be asked: not "no vulnerabilities"
+            "not_looked_up": self._not_looked_up(status),  # no source knows them (or no exact version)
+            "errors": errors,
+            "kev": sources.kev_error,
+        }
+        await self._auto_update(id, device, status)
+
+    def _not_looked_up(self, status: DeviceStatus) -> list[str]:
+        """What runs here but can't be looked up: a known image on a moving tag (latest, 7.4)."""
+        out = []
+        for c in status.containers or []:
+            if vulns.image_known(c["image"]) and vulns.from_image(c["image"], c["tag"]) is None:
+                out.append(f"{c['image']}:{c['tag']}")
+        return out
 
     def _products(self, status: DeviceStatus) -> list[tuple[str, vulns.Product]]:
         """What a device runs that a vulnerability source knows: services' software, firmware,
@@ -485,7 +549,7 @@ class Hub:
             reason = auto_update_reason(device, c, findings.get(f"container {key}", []))
             if reason is None:
                 continue
-            done = f"auto:{id}:{key}:{c.get('update_to')}"
+            done = f"auto:{id}:{key}:{c.get('update_to')}:{c.get('update_digest', '')}"
             if done in self.alarms.seen_events:
                 continue  # once per new image
             self.alarms.event(done, "", "", id, datetime.now(UTC), send=False)

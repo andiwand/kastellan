@@ -41,6 +41,7 @@ class Container:
     state: str  # running, exited, ...
     update: bool
     update_to: str | None  # the newer tag, or "newer build" for the same tag
+    update_digest: str  # the newer image's digest (short), to tell one rebuild from the next
     unchecked: str | None  # why WUD can't tell (or hasn't yet), or None
     registry: str | None
 
@@ -94,6 +95,7 @@ def from_wud(item: dict[str, Any]) -> Container:
         state=_text(item.get("status") or "?", 40),
         update=update,
         update_to=update_to,
+        update_digest=_text(result.get("digest") or "", 80).removeprefix("sha256:")[:12],
         unchecked=unchecked,
         registry=_text(_obj(image.get("registry")).get("name"), 60) or None,
     )

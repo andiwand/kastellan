@@ -130,8 +130,9 @@ def evaluate(
             st = status.get(p)
             if st is None:
                 continue
-            ups = [s.since for s in st.checks.values() if s.up and s.since]
-            if ups and (now - max(ups)).total_seconds() < interval + 30:
+            # Only reachability counts (a flapping service must not hold the children back).
+            ping = st.checks.get("ping")
+            if ping and ping.up and ping.since and (now - ping.since).total_seconds() < interval + 30:
                 return True
         return False
 
@@ -278,9 +279,23 @@ class Alarms:
                 body = p.detail or (f"Unreachable behind it: {', '.join(p.hidden)}" if p.hidden else "")
                 messages.append(Message(p.severity, p.title, body, p.device))
                 changed = True
-            elif alarm.gone_since or alarm.title != p.title or alarm.hidden != p.hidden:
-                alarm.title, alarm.hidden, alarm.detail, alarm.gone_since = p.title, p.hidden, p.detail, None
-                changed = True
+            else:
+                if p.severity.rank > Severity(alarm.severity).rank:
+                    # Worse than when it opened (a CVE became known as exploited): say so again.
+                    alarm.severity = p.severity.value
+                    messages.append(Message(p.severity, p.title, p.detail, p.device))
+                    self._log(
+                        {"time": now.isoformat(timespec="seconds"), "what": "escalated", **asdict(alarm)}
+                    )
+                    changed = True
+                if alarm.gone_since or alarm.title != p.title or alarm.hidden != p.hidden:
+                    alarm.title, alarm.hidden, alarm.detail, alarm.gone_since = (
+                        p.title,
+                        p.hidden,
+                        p.detail,
+                        None,
+                    )
+                    changed = True
         for key, alarm in list(self.open.items()):
             if key in current:
                 continue
@@ -318,12 +333,26 @@ class Alarms:
             self.save()
         return messages
 
+    def carry(self, keys: set[str]) -> list[Problem]:
+        """Open alarms to keep as they are, because what decides them isn't known right now (a
+        device not swept yet after a restart, a source that couldn't be asked)."""
+        out = []
+        for key in keys:
+            a = self.open.get(key)
+            if a is not None:
+                since = datetime.fromisoformat(a.since) if a.since else None
+                out.append(
+                    Problem(key, Severity(a.severity), a.device, a.name, a.title, a.detail, since, a.hidden)
+                )
+        return out
+
     def event(
         self, key: str, title: str, body: str, device: str | None, now: datetime, send: bool = True
     ) -> Message | None:
         """An info event (an update, a new version), sent once. With send=False it is only
         remembered (the first look after starting: what was already there isn't news)."""
         if key in self.seen_events:
+            self.seen_events[key] = now.isoformat(timespec="seconds")  # still there: keep knowing it
             return None
         self.seen_events[key] = now.isoformat(timespec="seconds")
         cutoff = (now - timedelta(days=EVENTS_KEPT_DAYS)).isoformat()

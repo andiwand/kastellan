@@ -69,6 +69,7 @@ def transport(fail: set[str] | None = None) -> httpx.MockTransport:
             return httpx.Response(503)
         if "nvd" in request.url.host:
             assert request.url.params["virtualMatchString"].startswith("cpe:2.3:")
+            assert "noRejected" in str(request.url)
             return httpx.Response(200, json=NVD)
         if "osv" in request.url.host:
             assert json.loads(request.content)["package"]["ecosystem"] == "PyPI"
@@ -113,3 +114,40 @@ async def test_unreachable_source_is_unknown_not_safe(tmp_path: Path) -> None:
     async with httpx.AsyncClient(transport=transport(fail={"services.nvd.nist.gov"})) as client:
         assert await sources.lookup(client, from_software("OpenSSH", "9.8")) is None
     assert "nvd" in sources.errors
+
+
+def test_osv_merges_databases_and_scores_vectors() -> None:
+    from kastellan.vulns import parse_osv
+
+    data = {
+        "vulns": [
+            {
+                "id": "GHSA-1",
+                "aliases": ["CVE-2024-1"],
+                "database_specific": {"severity": "HIGH"},
+                "affected": [{"ranges": [{"events": [{"fixed": "1.2.0"}, {"fixed": "1.1.9"}]}]}],
+            },
+            {
+                "id": "PYSEC-2024-9",
+                "aliases": ["CVE-2024-1"],
+                "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+            },
+            {
+                "id": "GO-2024-7",
+                "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:N/A:H"}],
+            },
+        ]
+    }
+    found = {f.id: f for f in parse_osv(data, "1.1.5")}
+    assert set(found) == {"CVE-2024-1", "GO-2024-7"}  # one finding per CVE, not one per database
+    assert found["CVE-2024-1"].severity == "critical" and found["CVE-2024-1"].score == 9.8
+    assert found["CVE-2024-1"].fixed_in == "1.1.9"  # the first fix above 1.1.5
+    assert found["GO-2024-7"].severity == "medium"  # from its vector, not "unknown"
+
+
+def test_moving_tags_are_not_looked_up() -> None:
+    assert from_image("library/redis", "7.4") is None  # "before 7.4.6" would wrongly match
+    assert from_image("library/redis", "7.4.6") is not None
+    assert from_image("library/nginx", "1.27.3-alpine") is not None
+    assert from_software("nginx", "1.24.0", "Ubuntu").distro == "Ubuntu"  # any distribution counts
+    assert len(from_software("nginx", "1.24.0").more_cpes) == 1  # also NVD's older vendor name

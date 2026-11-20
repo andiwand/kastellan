@@ -85,8 +85,10 @@ export interface Finding {
 export interface Vulns {
 	checked: string;
 	items: { where: string; product: string; findings: Finding[] }[];
-	unknown: string[];
+	unknown: { where: string; product: string }[];
+	not_looked_up?: string[];
 	errors: Record<string, string>;
+	kev?: string | null;
 }
 
 export interface Health {

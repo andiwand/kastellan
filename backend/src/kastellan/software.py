@@ -51,7 +51,28 @@ _KNOWN_GREETINGS = [
     (re.compile(r"\bExim\s+([\d.]+)", re.I), "Exim"),
     (re.compile(r"\bDovecot\b", re.I), "Dovecot"),
 ]
-_DISTROS = ("Ubuntu", "Debian", "Raspbian", "FreeBSD", "Alpine", "Fedora", "Red Hat", "OpenWrt")
+# Distributions that patch software without changing its upstream version (vulns.py relies on it).
+DISTROS = (
+    "Ubuntu",
+    "Debian",
+    "Raspbian",
+    "FreeBSD",
+    "Alpine",
+    "Fedora",
+    "Red Hat",
+    "RHEL",
+    "CentOS",
+    "Rocky",
+    "AlmaLinux",
+    "SUSE",
+    "OpenWrt",
+    "Arch",
+    "Gentoo",
+    "NetBSD",
+    "OpenBSD",
+    "Amazon",
+)
+_DISTROS = DISTROS
 
 
 def from_greeting(text: str) -> Software | None:

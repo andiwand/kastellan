@@ -4,6 +4,7 @@
 	import { store } from '#lib/state.svelte.js';
 	import ShieldAlert from '@lucide/svelte/icons/shield-alert';
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
+	import Shield from '@lucide/svelte/icons/shield';
 	import ExternalLink from '@lucide/svelte/icons/external-link';
 
 	/** Known vulnerabilities in what a device runs, most serious first, honest about doubt. */
@@ -33,9 +34,12 @@
 			{#if count}
 				<ShieldAlert class="size-4" style="color: var(--warning-text)" />
 				{count} known {count === 1 ? 'vulnerability' : 'vulnerabilities'}
-			{:else}
+			{:else if vulns.items.length}
 				<ShieldCheck class="size-4" style="color: var(--good-text)" />
-				No known vulnerabilities in what could be looked up
+				None known for {vulns.items.map((i) => i.product).join(', ')}
+			{:else}
+				<Shield class="size-4 text-faint" />
+				Nothing here could be looked up
 			{/if}
 			{#if exposed}<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs font-normal">
 					internet-facing
@@ -101,7 +105,23 @@
 
 	{#if vulns.unknown.length}
 		<p class="mt-3 text-xs" style:color="var(--warning-text)">
-			Couldn't be looked up just now: {vulns.unknown.join(', ')}. That's not the same as safe.
+			Couldn't be looked up just now: {vulns.unknown.map((u) => u.product).join(', ')}
+			{#if Object.keys(vulns.errors).length}({Object.values(vulns.errors).join('; ')}){/if}. That's
+			not the same as safe.
 		</p>
 	{/if}
+	{#if vulns.kev}
+		<p class="mt-2 text-xs" style:color="var(--warning-text)">
+			{vulns.kev}: the "exploited" marks may be out of date.
+		</p>
+	{/if}
+	{#if vulns.not_looked_up?.length}
+		<p class="mt-2 text-xs text-muted">
+			Not looked up (a moving tag, no exact version): {vulns.not_looked_up.join(', ')}.
+		</p>
+	{/if}
+	<p class="mt-3 text-[11px] text-faint">
+		Only what Kastellan can identify is looked up: services that name their version, firmware,
+		images with an exact tag. NVD lags behind with recent CVEs.
+	</p>
 </div>

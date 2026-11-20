@@ -240,6 +240,29 @@ class VulnSettings(BaseModel):
     nvd_api_key: str | None = None  # optional: faster NVD lookups
 
 
+class WireGuardSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    wg_easy: str = Field(pattern=r"^https?://[^\s]+$")  # wg-easy's address, e.g. http://sv1:51821
+    user: str = "admin"
+    password_secret: str = "wg-easy"  # data/secrets/<name> (kastellan secret set wg-easy)
+
+
+class OpenVpnSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pki: str  # the device with the easy-rsa PKI and kastellan-pki (its ssh: user)
+    server: str | None = None  # the OpenVPN server's device with kastellan-crl (its ssh: user)
+    days: int = Field(default=365, ge=1, le=3650)  # how long new client certificates last
+
+
+class VpnSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    wireguard: WireGuardSource | None = None
+    openvpn: OpenVpnSource | None = None
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -251,6 +274,17 @@ class Config(BaseModel):
     alarms: AlarmSettings = Field(default_factory=AlarmSettings)
     notify: list[NotifyChannel] = Field(default_factory=list)
     vulns: VulnSettings = Field(default_factory=VulnSettings)
+    vpn: VpnSettings = Field(default_factory=VpnSettings)
+
+    @model_validator(mode="after")
+    def _vpn_devices(self) -> Self:
+        ovpn = self.vpn.openvpn
+        for role, id in (("pki", ovpn.pki if ovpn else None), ("server", ovpn.server if ovpn else None)):
+            if id is None:
+                continue
+            if id not in self.devices or self.devices[id].ssh is None:
+                raise ValueError(f"vpn.openvpn.{role}: {id!r} must be a device with ssh:")
+        return self
 
     @model_validator(mode="after")
     def _ids_and_parents(self) -> Self:

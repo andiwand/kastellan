@@ -178,6 +178,7 @@ def _c(name, image, tag, update_to=None, unchecked=None, state="running"):
         "state": state,
         "update": update_to is not None,
         "update_to": update_to,
+        "update_digest": "",
         "unchecked": unchecked,
         "registry": "hub",
     }

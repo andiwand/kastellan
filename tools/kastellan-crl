@@ -1,0 +1,22 @@
+#!/bin/sh
+# kastellan-crl: the only thing Kastellan's key may run on the OpenVPN server (OpenWrt): take a
+# new CRL on stdin and put it in place. OpenVPN reads the CRL at every connection.
+#
+# Install (on the OpenVPN server):
+#   install -m 755 kastellan-crl /usr/bin/kastellan-crl
+#   In /etc/dropbear/authorized_keys (OpenWrt), the hub's key, bound to this script:
+#     command="/usr/bin/kastellan-crl",no-port-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... kastellan-hub
+#   and in the OpenVPN server config: crl-verify /etc/openvpn/crl.pem
+#   (CRL can be overridden in /etc/kastellan-crl.conf)
+set -eu
+umask 022
+CRL=/etc/openvpn/crl.pem
+CONF=${KASTELLAN_CRL_CONF:-/etc/kastellan-crl.conf}  # sshd passes no client environment
+[ -r "$CONF" ] && . "$CONF"
+
+[ "${SSH_ORIGINAL_COMMAND:-}" = "install" ] || { echo "kastellan-crl: only 'install'" >&2; exit 2; }
+tmp="$CRL.new"
+head -c 1048576 > "$tmp"
+grep -q "^-----BEGIN X509 CRL-----" "$tmp" && grep -q "^-----END X509 CRL-----" "$tmp" || { rm -f "$tmp"; echo "kastellan-crl: not a CRL" >&2; exit 2; }
+mv "$tmp" "$CRL"
+echo "installed"
