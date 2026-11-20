@@ -221,8 +221,8 @@
 						<input class={input} bind:value={tags} placeholder="docker, ubuntu (comma-separated)" />
 					</label>
 				</div>
-				<label class="flex items-start gap-2.5 text-sm">
-					<input type="checkbox" bind:checked={form.exposed} class="mt-[3px] size-4 shrink-0" />
+				<label class="choice text-sm">
+					<input type="checkbox" bind:checked={form.exposed} />
 					<span>
 						Reachable from the internet
 						<span class="block text-xs text-muted">

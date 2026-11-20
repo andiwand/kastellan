@@ -161,7 +161,7 @@
 								class="{small} ml-auto"
 								onclick={() => show({ kind: 'network', group: g.id, ssid: net.ssid })}
 							>
-								Change on all…
+								Change on all
 							</button>
 						{/if}
 					</li>
@@ -188,7 +188,7 @@
 								class="{small} ml-auto"
 								onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: true })}
 							>
-								Set on all…
+								Set on all
 							</button>
 						{/if}
 					</li>
@@ -200,7 +200,7 @@
 								class="{small} ml-auto"
 								onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: false })}
 							>
-								Set one up…
+								Set one up
 							</button>
 						{/if}
 					</li>
@@ -216,7 +216,7 @@
 						</span>
 					</span>
 					<button class={small} onclick={() => show({ kind: 'root', group: g.id })}>
-						Set on all…
+						Set on all
 					</button>
 				</div>
 			{/if}

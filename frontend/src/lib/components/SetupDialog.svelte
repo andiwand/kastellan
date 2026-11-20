@@ -1,4 +1,5 @@
 <script lang="ts">
+	import CodeBlock from '#lib/components/CodeBlock.svelte';
 	import { untrack } from 'svelte';
 	import { streamSetup, type SetupOutcome } from '#lib/api.js';
 	import X from '@lucide/svelte/icons/x';
@@ -181,20 +182,7 @@
 					<summary class="cursor-pointer text-xs text-muted">
 						Or run it yourself (Kastellan never sees a login)
 					</summary>
-					<div class="mt-2 flex justify-end">
-						<button
-							class="inline-flex h-7 items-center gap-1 rounded-md border border-line px-2 text-xs hover:border-line-strong"
-							onclick={async () => {
-								await navigator.clipboard.writeText(script);
-								copied = true;
-								setTimeout(() => (copied = false), 1500);
-							}}
-						>
-							<Copy class="size-3.5" />{copied ? 'Copied' : 'Copy'}
-						</button>
-					</div>
-					<pre
-						class="mt-1 max-h-60 overflow-auto rounded-lg bg-surface-2 p-3 font-mono text-[11px] leading-relaxed">{script}</pre>
+					<CodeBlock text={script} maxHeight="max-h-60" class="mt-2" />
 				</details>
 			{:else}
 				<p class="flex items-center gap-2 text-sm">

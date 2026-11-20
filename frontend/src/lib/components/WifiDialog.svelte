@@ -115,7 +115,7 @@
 								oninput={(e) => set(iface.section, 'key', e.currentTarget.value)}
 							/>
 						</label>
-						<label class="flex items-center gap-2 text-sm sm:col-span-2">
+						<label class="choice text-sm sm:col-span-2">
 							<input
 								type="checkbox"
 								checked={(edits[iface.section]?.disabled ?? iface.disabled) !== '1'}
@@ -140,7 +140,7 @@
 								oninput={(e) => set(radio.section, 'channel', e.currentTarget.value)}
 							/>
 						</label>
-						<label class="flex items-center gap-2 self-end text-sm">
+						<label class="choice self-end text-sm">
 							<input
 								type="checkbox"
 								checked={(edits[radio.section]?.disabled ?? radio.disabled) !== '1'}

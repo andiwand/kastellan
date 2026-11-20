@@ -70,7 +70,7 @@
 	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 	{#if !setup && !error}<p class="mt-2 text-xs text-muted">Loading…</p>{/if}
 	{#if setup}
-		<p class="mt-2 text-xs leading-relaxed text-muted">
+		<p class="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
 			A user <b>kastellan-act</b> that can do nothing by itself. Each ability you tick is one root-owned
 			script with one sudo rule; what you don't tick isn't installed, so it can't be run, whatever the
 			hub asks. Every action goes to the host's syslog and Kastellan's audit log.
@@ -85,31 +85,26 @@
 			{:else}<span class="text-muted">Not set up.</span>{/if}
 		</p>
 
-		<fieldset class="mt-3 space-y-1.5">
+		<fieldset class="mt-3 flex flex-col gap-2">
 			{#each Object.entries(setup.abilities) as [ability, description] (ability)}
-				<label class="flex items-start gap-2.5 text-sm">
-					<input
-						type="checkbox"
-						class="mt-[3px] size-4 shrink-0"
-						value={ability}
-						bind:group={chosen}
-					/>
+				<label class="choice text-sm">
+					<input type="checkbox" value={ability} bind:group={chosen} />
 					<span>{description}</span>
 				</label>
 			{/each}
 		</fieldset>
 		{#if containerAbilities}
-			<div class="mt-3 text-sm">
-				<p class="text-xs text-muted">On which containers:</p>
-				<label class="mt-1 flex items-center gap-2">
-					<input type="radio" bind:group={all} value={false} /> Only these:
+			<fieldset class="mt-4 flex flex-col gap-2 text-sm">
+				<legend class="mb-2 text-xs font-medium text-muted">On which containers</legend>
+				<label class="choice">
+					<input type="radio" bind:group={all} value={false} /> Only these
 				</label>
 				{#if !all}
-					<div class="mt-1 ml-6 flex flex-wrap gap-x-4 gap-y-1">
+					<div class="ml-6.5 grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-3">
 						{#each containers as name (name)}
-							<label class="flex items-center gap-1.5 font-mono text-xs">
+							<label class="choice font-mono text-xs">
 								<input type="checkbox" value={name} bind:group={picked} />
-								{name}
+								<span class="truncate">{name}</span>
 							</label>
 						{/each}
 						{#if containers.length === 0}<span class="text-xs text-faint">
@@ -117,7 +112,7 @@
 							</span>{/if}
 					</div>
 				{/if}
-				<label class="flex items-center gap-2">
+				<label class="choice">
 					<input type="radio" bind:group={all} value={true} /> All of them, also ones added later
 				</label>
 				{#if uneven}
@@ -126,7 +121,7 @@
 						list.
 					</p>
 				{/if}
-			</div>
+			</fieldset>
 		{/if}
 		<div class="mt-4 flex justify-end">
 			<button
@@ -135,7 +130,7 @@
 				title={ready ? '' : 'tick at least one container'}
 				onclick={() => (installing = true)}
 			>
-				Set up exactly this…
+				Set up exactly this
 			</button>
 		</div>
 	{/if}

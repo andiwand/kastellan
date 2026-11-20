@@ -63,7 +63,7 @@
 	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 	{#if !setup && !error}<p class="mt-2 text-xs text-muted">Loading…</p>{/if}
 	{#if setup}
-		<p class="mt-2 text-xs leading-relaxed text-muted">
+		<p class="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
 			A login <b>kastellan</b> in the device's own access control (rpcd, as LuCI uses it), with a password
 			only Kastellan knows. It may read the device's state, and only what you tick here; the device refuses
 			everything else. Kastellan talks to it over HTTPS and pins its certificate.
@@ -81,13 +81,8 @@
 		</p>
 		<fieldset class="mt-3 space-y-1.5">
 			{#each Object.entries(setup.abilities) as [ability, description] (ability)}
-				<label class="flex items-start gap-2.5 text-sm">
-					<input
-						type="checkbox"
-						class="mt-[3px] size-4 shrink-0"
-						value={ability}
-						bind:group={chosen}
-					/>
+				<label class="choice text-sm">
+					<input type="checkbox" value={ability} bind:group={chosen} />
 					<span>{description}</span>
 				</label>
 			{/each}
@@ -98,7 +93,7 @@
 				{#if known.length}
 					<div class="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
 						{#each known as name (name)}
-							<label class="flex items-center gap-2 font-mono text-xs">
+							<label class="choice font-mono text-xs">
 								<input type="checkbox" value={name} bind:group={services} />
 								{name}
 							</label>
@@ -120,7 +115,7 @@
 				class="inline-flex h-8 items-center rounded-lg border border-line px-3 text-xs font-medium hover:border-line-strong"
 				onclick={() => (installing = true)}
 			>
-				Set up exactly this…
+				Set up exactly this
 			</button>
 		</div>
 	{/if}

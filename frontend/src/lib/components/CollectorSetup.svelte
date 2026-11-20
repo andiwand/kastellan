@@ -51,7 +51,7 @@
 	{#if note}<p class="mt-2 text-xs" style:color="var(--good-text)">{note}</p>{/if}
 	{#if !setup && !error}<p class="mt-2 text-xs text-muted">Loading…</p>{/if}
 	{#if setup}
-		<p class="mt-2 text-xs leading-relaxed text-muted">
+		<p class="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
 			A user <b>{setup.user}</b> that can do one thing: run a read-only script as root, which
 			reports disks and their space, RAID, disk health, temperatures, failed services, system
 			updates and Docker containers (never their settings or passwords). Kastellan's collect key may
@@ -74,7 +74,7 @@
 					<button class={button} onclick={test} disabled={busy}>Try it now</button>
 				{/if}
 				<button class={button} onclick={() => (installing = true)}>
-					{setup.configured ? 'Install again…' : 'Install…'}
+					{setup.configured ? 'Install again' : 'Install'}
 				</button>
 			</span>
 		</div>

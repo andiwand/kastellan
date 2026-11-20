@@ -60,7 +60,7 @@ async def connect(
         raise HTTPException(504, "the device didn't answer in time") from e
     except (OSError, asyncssh.Error) as e:
         audit(outcome="unreachable")
-        raise HTTPException(502, f"can't reach {host}: {type(e).__name__}") from e
+        raise HTTPException(502, f"can't reach {host} on port {body.port}: {reason(e)}") from e
 
 
 async def _lines(conn: asyncssh.SSHClientConnection, script: str, body: Login) -> AsyncIterator[str | int]:
@@ -231,6 +231,13 @@ def add_device_key(
     hub.save_config(old, new)
     hub.audit.record("config.device.change", user, address, device=id, changes=config_edit.diff(old, new))
     return True
+
+
+def reason(e: BaseException) -> str:
+    """What went wrong, in the system's words ("Connect call failed ('10.0.0.2', 22)",
+    "No route to host"), not only the kind of error."""
+    why = e.strerror if isinstance(e, OSError) and e.strerror else str(e)
+    return (why or type(e).__name__)[:200]
 
 
 def stream_work(

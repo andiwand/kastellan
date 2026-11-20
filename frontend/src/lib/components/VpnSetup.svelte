@@ -1,4 +1,5 @@
 <script lang="ts">
+	import CodeBlock from '#lib/components/CodeBlock.svelte';
 	import { api, type Setup } from '#lib/api.js';
 	import Check from '@lucide/svelte/icons/check';
 	import X from '@lucide/svelte/icons/x';
@@ -56,7 +57,7 @@
 	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !setup && check()}
 >
 	<summary class="cursor-pointer text-sm font-medium">Setup on the hosts</summary>
-	<p class="mt-2 text-xs leading-relaxed text-muted">
+	<p class="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
 		{#if setup?.mode === 'direct'}
 			Mode <b>direct</b>: nothing is installed; Kastellan sends its scripts over each host's normal
 			login. Simpler, but that login can do anything. Switch to <code>mode: restricted</code> and install
@@ -117,15 +118,8 @@
 				</div>
 				{#if shown[host.role]}
 					<div class="mt-2">
-						<div class="flex items-center justify-between text-xs text-muted">
-							<span>Run as root on {host.host}:</span>
-							<button class={button} onclick={() => copy(host.role, host.script)}>
-								<Copy class="size-3.5" />
-								{copied === host.role ? 'Copied' : 'Copy'}
-							</button>
-						</div>
-						<pre
-							class="mt-1 max-h-80 overflow-auto rounded-lg bg-surface-2 p-3 font-mono text-[11px] leading-relaxed">{host.script}</pre>
+						<p class="text-xs text-muted">Run as root on {host.host}:</p>
+						<CodeBlock text={host.script} maxHeight="max-h-80" class="mt-1" />
 					</div>
 				{/if}
 				{#if output[host.role]}

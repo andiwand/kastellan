@@ -95,8 +95,8 @@
 						one device first, and see that it comes back right.
 					</p>
 				{/if}
-				<label class="flex items-start gap-2">
-					<input type="checkbox" class="mt-[3px] size-4 shrink-0" bind:checked={understood} />
+				<label class="choice">
+					<input type="checkbox" bind:checked={understood} />
 					<span>I can get to the device if it doesn't come back (cable, or its reset button).</span>
 				</label>
 			{:else}

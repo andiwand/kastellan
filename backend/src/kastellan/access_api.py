@@ -15,7 +15,7 @@ from pydantic import Field
 from . import setup_run
 from .access import USER, hub_address, setup_script
 from .auth_api import client_address, require_admin, require_signin
-from .setup_run import Login
+from .setup_run import Login, reason
 from .ssh import ChangedHost, Target, UnknownHost
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ def router(hub: Hub) -> APIRouter:
         except ChangedHost as e:
             note("Host key trusted", False, str(e))
         except Exception as e:
-            note("Host key trusted", False, f"can't reach {device.host}: {type(e).__name__}")
+            note("Host key trusted", False, f"can't reach {device.host}: {reason(e)}")
         return {
             "user": user,
             "port": port,

@@ -160,7 +160,7 @@
 						Cancel
 					</button>
 					{#if missing.length}
-						<label class="flex items-center gap-2 text-xs text-muted">
+						<label class="choice text-xs text-muted">
 							<input type="checkbox" bind:checked={anyway} />
 							Switch anyway: Kastellan can't log in to {missing.map(name).join(', ')} then
 						</label>

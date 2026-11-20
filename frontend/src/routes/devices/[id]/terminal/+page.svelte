@@ -1,4 +1,5 @@
 <script lang="ts">
+	import CodeBlock from '#lib/components/CodeBlock.svelte';
 	import { onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { api } from '#lib/api.js';
@@ -276,20 +277,7 @@
 						Add the hub's key to <code class="font-mono text-xs">~/.ssh/authorized_keys</code> of
 						{device?.ssh?.user} on {device?.host}:
 					</p>
-					<div class="mt-2 flex items-start gap-2">
-						<code class="min-w-0 flex-1 rounded-lg bg-surface-2 p-2.5 font-mono text-xs break-all">
-							{problem.publicKey}
-						</code>
-						<button
-							onclick={() =>
-								problem?.kind === 'no-key' && problem.publicKey && copy(problem.publicKey)}
-							class="rounded-lg border border-line p-2 text-muted hover:text-text"
-							aria-label="Copy the key"
-						>
-							<Copy class="size-4" />
-						</button>
-					</div>
-					{#if copied}<p class="mt-1 text-xs" style:color="var(--good-text)">Copied.</p>{/if}
+					<CodeBlock text={problem.publicKey} wrap class="mt-2" />
 				{/if}
 			{:else if problem.kind === 'exit'}
 				<p class="text-muted">

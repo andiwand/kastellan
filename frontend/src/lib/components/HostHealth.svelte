@@ -218,7 +218,7 @@
 				{#if upgrade && report.updates.available}
 					{#if upgrading === null}
 						<button class="ml-1 text-xs underline" onclick={() => (upgrading = 'ask')}>
-							Install…
+							Install
 						</button>
 					{:else if upgrading === 'ask'}
 						<span class="ml-1 text-xs">
@@ -244,7 +244,7 @@
 						<span class="ml-1 text-xs text-muted">(asked for)</span>
 					{:else if reboot && !confirming}
 						<button class="ml-1 text-xs underline" onclick={() => (confirming = true)}>
-							Reboot…
+							Reboot
 						</button>
 					{:else if reboot}
 						<span class="ml-1 text-xs">

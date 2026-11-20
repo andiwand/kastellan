@@ -126,3 +126,50 @@ body {
 		}
 	}
 }
+
+/* Checkboxes and radio buttons: one size, the accent color. */
+input[type='checkbox'],
+input[type='radio'] {
+	width: 1rem;
+	height: 1rem;
+	margin: 0;
+	flex-shrink: 0;
+	accent-color: var(--accent);
+}
+
+/* A choice: the box, then its text; the box sits on the middle of the text's first line, at
+   whatever size the text is. */
+.choice {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.625rem;
+}
+.choice > input {
+	margin-top: calc((1lh - 1rem) / 2);
+}
+
+/* Fold-outs: a small chevron instead of the browser's triangle. */
+details > summary {
+	list-style: none;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+}
+details > summary::-webkit-details-marker {
+	display: none;
+}
+details > summary::before {
+	content: '';
+	width: 0.42rem;
+	height: 0.42rem;
+	flex-shrink: 0;
+	border-right: 1.5px solid currentColor;
+	border-bottom: 1.5px solid currentColor;
+	opacity: 0.55;
+	transform: translateX(1px) rotate(-45deg);
+	transition: transform 0.15s;
+}
+details[open] > summary::before {
+	transform: translateY(-2px) rotate(45deg);
+}

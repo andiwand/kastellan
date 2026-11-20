@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from .access import hub_address
 from .auth_api import client_address, require_admin, require_signin, who
+from .setup_run import reason
 from .ssh import ChangedHost, Target, UnknownHost
 from .vpn.openvpn import NAME, OpenVpn, install_script
 from .vpn.wireguard import WgEasy
@@ -250,7 +251,7 @@ def router(hub: Hub) -> APIRouter:
             note("Host key trusted", False, str(e))
             return out
         except Exception as e:
-            note("Host key trusted", False, f"can't reach {device.host}: {type(e).__name__}")
+            note("Host key trusted", False, f"can't reach {device.host}: {reason(e)}")
             return out
         if ovpn.mode == "restricted":
             # Ask the installed script something harmless; its answer proves it is bound to the key.

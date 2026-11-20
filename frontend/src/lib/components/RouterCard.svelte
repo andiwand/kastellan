@@ -121,7 +121,7 @@
 				<span class="text-xs text-muted">(supported: {fw.stable} and {fw.oldstable})</span>
 				{#if canChange}
 					<button class="{button} ml-2" onclick={() => (firmwareOpen = true)}>
-						Update firmware…
+						Update firmware
 					</button>
 				{/if}
 			{:else}
@@ -216,7 +216,7 @@
 		</p>
 		{#if canChange}
 			<span class="ml-auto flex gap-2">
-				<button class={button} onclick={() => (wifiOpen = true)}>Wi-Fi settings…</button>
+				<button class={button} onclick={() => (wifiOpen = true)}>Wi-Fi settings</button>
 				{#if confirmReboot}
 					<span class="text-xs">
 						Reboot it?
@@ -226,7 +226,7 @@
 						<button class="ml-1 underline" onclick={() => (confirmReboot = false)}>No</button>
 					</span>
 				{:else}
-					<button class={button} onclick={() => (confirmReboot = true)}>Reboot…</button>
+					<button class={button} onclick={() => (confirmReboot = true)}>Reboot</button>
 				{/if}
 			</span>
 		{/if}

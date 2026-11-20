@@ -1,4 +1,5 @@
 <script lang="ts">
+	import CodeBlock from '#lib/components/CodeBlock.svelte';
 	import { api, type Access } from '#lib/api.js';
 	import Check from '@lucide/svelte/icons/check';
 	import X from '@lucide/svelte/icons/x';
@@ -52,14 +53,14 @@
 							style="color: var(--good-text)"
 						/>{:else}<X class="mt-px size-3.5 shrink-0" style="color: var(--critical-text)" />{/if}
 					<span>
-						{c.name}{#if c.detail}<span class="text-muted"> · {c.detail}</span>{/if}
+						{c.name}{#if c.detail}<span class="text-muted">{' · '}{c.detail}</span>{/if}
 					</span>
 				</li>
 			{/each}
 		</ul>
 
 		<div
-			class="mt-4 flex gap-1 rounded-xl border border-line bg-surface p-1 text-sm"
+			class="mt-4 inline-flex max-w-full gap-1 rounded-xl border border-line bg-surface p-1 text-sm"
 			role="tablist"
 		>
 			{#each [['existing', `One login: ${access.user}`], ['dedicated', 'A user of its own: kastellan']] as [id, label] (id)}
@@ -67,7 +68,7 @@
 					role="tab"
 					aria-selected={way === id}
 					onclick={() => (way = id as typeof way)}
-					class="h-8 flex-1 rounded-lg px-3 text-xs font-medium {way === id
+					class="h-8 rounded-lg px-3 text-xs font-medium whitespace-nowrap {way === id
 						? 'bg-surface-3 text-text'
 						: 'text-muted hover:text-text'}"
 				>
@@ -75,7 +76,7 @@
 				</button>
 			{/each}
 		</div>
-		<p class="mt-2 text-xs leading-relaxed text-muted">
+		<p class="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
 			{#if way === 'existing'}
 				Kastellan uses your existing account <b>{access.user}</b> for everything. Run this as {access.user}.
 			{:else}
@@ -84,23 +85,11 @@
 			{/if}
 			{#if access.hub_ip}The key only works from the hub's address ({access.hub_ip}).{/if}
 		</p>
-		<div class="mt-2 flex justify-end">
-			<button
-				class={button}
-				disabled={!access.scripts[way]}
-				onclick={() => copy(access!.scripts[way] ?? '')}
-			>
-				<Copy class="size-3.5" />
-				{copied ? 'Copied' : 'Copy'}
-			</button>
-		</div>
-		<pre
-			class="mt-1 max-h-72 overflow-auto rounded-lg bg-surface-2 p-3 font-mono text-[11px] leading-relaxed">{access
-				.scripts[way]}</pre>
+		<CodeBlock text={access.scripts[way] ?? ''} class="mt-2" />
 
 		{#if way === 'dedicated'}
-			<label class="mt-3 flex items-start gap-2 text-xs">
-				<input type="checkbox" bind:checked={understood} class="mt-0.5" />
+			<label class="choice mt-3 text-xs">
+				<input type="checkbox" bind:checked={understood} />
 				<span>The user <b>kastellan</b> gets sudo without a password on this device.</span>
 			</label>
 		{/if}
@@ -110,7 +99,7 @@
 				disabled={way === 'dedicated' && !understood}
 				onclick={() => (setting = true)}
 			>
-				Set it up with your login…
+				Set it up with your login
 			</button>
 		</div>
 	{/if}
