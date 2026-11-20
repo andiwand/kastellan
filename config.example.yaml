@@ -1,0 +1,34 @@
+# Kastellan's configuration: the devices on your network and how to check them.
+# Copy to data/config.yaml (or /config/config.yaml in Docker). Changes are picked up by themselves.
+
+check_interval: 60 # seconds between checks, unless a check sets its own `interval`
+retention_days: 30 # how long the history (one CSV file per day) is kept
+
+devices:
+  router:
+    name: FRITZ!Box 7590
+    host: 192.168.178.1
+    kind: router # router, access-point, switch, server, pc, laptop, printer, camera, other
+    checks:
+      - ping
+      - http: https://192.168.178.1 # any answer below 500 counts as up
+        name: web
+
+  nas:
+    host: nas.lan
+    kind: server
+    parent: router # what it is connected through, for the network map
+    tags: [docker]
+    checks:
+      - ping
+      - tcp: 22
+        name: ssh
+      - http: http://nas.lan:8096/health
+        name: jellyfin
+        expect: 200 # this status exactly
+        interval: 30
+
+  laptop:
+    host: laptop.lan
+    kind: laptop # pcs and laptops are offline when off, not down (always_on: false)
+    parent: router

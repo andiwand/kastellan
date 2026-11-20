@@ -1,0 +1,58 @@
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from kastellan.config import CheckType, Config, load
+
+
+def test_shorthands_and_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+devices:
+  router:
+    host: 192.168.178.1
+    kind: router
+    checks:
+      - ping
+      - http: https://192.168.178.1
+  nas:
+    host: nas.lan
+    parent: router
+    checks:
+      - tcp: 22
+        name: ssh
+  printer:
+    host: printer.lan
+"""
+    )
+    config = load(path)
+    router, nas, printer = config.devices["router"], config.devices["nas"], config.devices["printer"]
+    assert router.name == "router"
+    assert [(c.type, c.name) for c in router.checks] == [
+        (CheckType.PING, "ping"),
+        (CheckType.HTTP, "http:https://192.168.178.1"),
+    ]
+    assert nas.checks[0].target == 22 and nas.checks[0].name == "ssh"
+    assert [c.type for c in printer.checks] == [CheckType.PING]
+
+
+def test_missing_file_is_empty(tmp_path: Path) -> None:
+    assert load(tmp_path / "nope.yaml").devices == {}
+
+
+@pytest.mark.parametrize(
+    "devices",
+    [
+        {"a": {"host": "x", "parent": "b"}},  # unknown parent
+        {"A": {"host": "x"}},  # bad id
+        {"a": {"host": "x", "checks": [{"tcp": "ssh"}]}},  # tcp without a port
+        {"a": {"host": "x", "checks": [{"http": "example.com"}]}},  # http without a scheme
+        {"a": {"host": "x", "checks": ["ping", "ping"]}},  # duplicate names
+        {"a": {"host": "x", "checks": [{"ping": None, "tcp": 22}]}},  # two kinds
+    ],
+)
+def test_invalid(devices: dict) -> None:
+    with pytest.raises(ValidationError):
+        Config.model_validate({"devices": devices})

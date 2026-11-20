@@ -1,0 +1,31 @@
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from kastellan.api import create_app
+from kastellan.settings import Settings
+
+
+def test_devices_and_health(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("devices:\n  router:\n    host: 127.0.0.1\n    kind: router\n")
+    with TestClient(create_app(Settings(config=config, data=tmp_path))) as client:
+        assert client.get("/api/health").json()["config_error"] is None
+        [router] = client.get("/api/devices").json()
+        assert router["id"] == "router" and router["kind"] == "router"
+        assert [c["name"] for c in router["checks"]] == ["ping"]
+        assert client.get("/api/devices/nope/history").status_code == 404
+        assert client.get("/api/nope").status_code == 404
+
+
+def test_demo(tmp_path: Path) -> None:
+    settings = Settings(config=tmp_path / "none.yaml", data=tmp_path, demo=True)
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/health").json()["demo"]
+        devices = {d["id"]: d for d in client.get("/api/devices").json()}
+        assert devices["gaming-pc"]["always_on"] is False
+        series = client.get("/api/series", params={"hours": 24, "buckets": 24}).json()
+        assert len(series["devices"]["nas"]["jellyfin"]) == 24
+        changes = client.get("/api/changes").json()
+        assert any(c["device"] == "printer" for c in changes)
+    assert not (tmp_path / "checks").exists()  # demo history stays out of the real data

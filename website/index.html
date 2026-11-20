@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kastellan · every device on your network, in one place</title>
+<meta name="description" content="Kastellan is a self-hosted hub that watches every device on your home network: routers, access points, servers, PCs, printers and cameras. Is it up, since when, and how is it connected. Open source, on your own hardware.">
+<meta name="theme-color" content="#0a0c10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta property="og:title" content="Kastellan">
+<meta property="og:description" content="Every device on your network, in one place. Self-hosted and open source.">
+<meta property="og:image" content="img/overview-dark.webp">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+<script src="site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<!-- Icons (Lucide, ISC license) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-router" viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6.01 18H6M10.01 18H10M15 10v4M17.84 7.17a4 4 0 0 0-5.66 0M20.66 4.34a8 8 0 0 0-11.31 0"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M12 20h.01M2 8.82a15 15 0 0 1 20 0M5 12.859a10 10 0 0 1 14 0M8.5 16.429a5 5 0 0 1 7 0"/></symbol>
+    <symbol id="i-network" viewBox="0 0 24 24"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01M6 18h.01"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-laptop" viewBox="0 0 24 24"><path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2zM20.054 15.987H3.946"/></symbol>
+    <symbol id="i-printer" viewBox="0 0 24 24"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/></symbol>
+    <symbol id="i-cctv" viewBox="0 0 24 24"><path d="M16.75 12h3.632a1 1 0 0 1 .894 1.447l-2.034 4.069a1 1 0 0 1-1.708.134l-2.124-2.97M17.106 9.053a1 1 0 0 1 .447 1.341l-3.106 6.211a1 1 0 0 1-1.342.447L3.61 12.3a2.92 2.92 0 0 1-1.3-3.91L3.69 5.6a2.92 2.92 0 0 1 3.92-1.3zM2 19h3.76a2 2 0 0 0 1.8-1.1L9 15M2 21v-4M7 9h.01"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M12 19h8M4 17l6-6-6-6"/></symbol>
+    <symbol id="i-desktop" viewBox="0 0 24 24"><path d="M15.033 9.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56V7.648a.645.645 0 0 1 .967-.56zM12 17v4M8 21h8"/><rect x="2" y="3" width="20" height="14" rx="2"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1zM9 12l2 2 4-4"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2zM14 2v5a1 1 0 0 0 1 1h5M10 9H8M16 13H8M16 17H8"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5"/></symbol>
+    <symbol id="i-backup" viewBox="0 0 24 24"><path d="M12 2v8M16 6l-4 4-4-4"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 18h.01M10 18h.01"/></symbol>
+    <symbol id="i-radar" viewBox="0 0 24 24"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34M4 6h.01M2.29 9.62A10 10 0 1 0 21.31 8.35M16.24 7.76A6 6 0 1 0 8.23 16.67M12 18h.01M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="#top"><img src="favicon.svg" alt="" width="28" height="28"><span>Kastellan</span></a>
+    <nav class="topbar-links" aria-label="Sections">
+      <a href="#tour">Tour</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#security">Security</a>
+      <a href="https://github.com/andiwand/kastellan">GitHub</a>
+    </nav>
+    <a class="button small primary" href="#start">Try it</a>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero" id="top">
+  <div class="hero-bg" aria-hidden="true"></div>
+  <div class="wrap hero-copy">
+    <p class="eyebrow"><span class="dot"></span> Open source · self-hosted · early days</p>
+    <h1>Every device on your network.<br><span>One place to keep watch.</span></h1>
+    <p class="lead">Kastellan watches your router, access points, servers, PCs, printers and cameras, and answers the first question of every evening: <em>is everything all right?</em> If not, it tells you what, since when, and what it hangs off.</p>
+    <div class="cta">
+      <a class="button primary" href="#start">Run the demo <span aria-hidden="true">→</span></a>
+      <a class="button ghost" href="#roadmap">Where it's going</a>
+    </div>
+  </div>
+
+  <div class="wrap hero-shot reveal">
+    <figure class="browser">
+      <div class="browser-bar"><i></i><i></i><i></i><span class="url">kastellan.lan</span></div>
+      <picture>
+        <source srcset="img/overview-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/overview-light.webp" width="2720" height="1700" alt="The overview: one device needs attention, the NAS's Jellyfin answers HTTP 502 for 9 minutes; below, every device with its last 24 hours as a strip of bars.">
+      </picture>
+    </figure>
+    <figure class="phone">
+      <picture>
+        <source srcset="img/phone-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/phone-light.webp" width="780" height="1688" alt="The same overview on a phone.">
+      </picture>
+    </figure>
+  </div>
+
+  <div class="wrap kinds" aria-label="What it watches">
+    <span><svg><use href="#i-router"/></svg>Routers</span>
+    <span><svg><use href="#i-wifi"/></svg>Mesh &amp; access points</span>
+    <span><svg><use href="#i-network"/></svg>Switches</span>
+    <span><svg><use href="#i-server"/></svg>Servers &amp; NAS</span>
+    <span><svg><use href="#i-monitor"/></svg>PCs</span>
+    <span><svg><use href="#i-laptop"/></svg>Laptops</span>
+    <span><svg><use href="#i-printer"/></svg>Printers</span>
+    <span><svg><use href="#i-cctv"/></svg>Cameras</span>
+  </div>
+</section>
+
+<section class="wrap tour" id="tour">
+  <article class="feature reveal">
+    <div class="feature-copy">
+      <p class="kicker">Overview</p>
+      <h2>The answer first, <b>the details one tap away</b></h2>
+      <p>The first line says whether anything needs you. Below it: exactly which check failed, how it failed, and for how long. Every device carries its last 24 hours as a strip; a hiccup at 3 a.m. is a bar you can point at.</p>
+      <ul class="points">
+        <li><b>Calm by default.</b> A laptop that's asleep is offline, not an alarm. Only devices that should always be on can be "down".</li>
+        <li><b>Amber and red mean different things.</b> A service that limps is amber; a server that's gone is red.</li>
+      </ul>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source srcset="img/devices-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/devices-light.webp" width="2720" height="1700" alt="The device list in network order with status, checks, a 24-hour uptime strip and ping per device.">
+      </picture>
+    </figure>
+  </article>
+
+  <article class="feature flip reveal">
+    <div class="feature-copy">
+      <p class="kicker">Network map</p>
+      <h2>See how it <b>hangs together</b></h2>
+      <p>Say what each device is plugged into, and Kastellan draws the network: the router, the switch in the office, the mesh repeaters and everything behind them. When something breaks, its branch lights up, so a dead repeater doesn't look like five dead devices.</p>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source srcset="img/map-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/map-light.webp" width="2720" height="1700" alt="The network map: the router on the left, the switch and two repeaters in the middle, servers, laptops and cameras on the right; the NAS branch in amber.">
+      </picture>
+    </figure>
+  </article>
+
+  <article class="feature reveal">
+    <div class="feature-copy">
+      <p class="kicker">Device</p>
+      <h2>Every check, <b>every hiccup</b></h2>
+      <p>Ping, TCP ports and HTTP endpoints, each with its response time, how long it's been up and its uptime over an hour, a day or a week. The activity list shows exactly when something dropped out and came back.</p>
+      <ul class="points">
+        <li><b>Open the web interface</b> of a router or camera straight from its page.</li>
+        <li><b>Restarts don't forget.</b> "Down for 9 min" survives a hub update.</li>
+      </ul>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source srcset="img/device-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/device-light.webp" width="2720" height="1700" alt="The garden camera: ping and RTSP checks with uptime strips showing a few dropouts, a response-time chart over 24 hours, and the activity list.">
+      </picture>
+    </figure>
+  </article>
+</section>
+
+<section class="wrap files reveal" aria-labelledby="files-title">
+  <div class="files-copy">
+    <p class="kicker">Plain files</p>
+    <h2 id="files-title">One YAML file. <b>No database.</b></h2>
+    <p>Your network is described in <code>config.yaml</code>, a file you can read, diff and back up. Kastellan notices when it changes. The history is a CSV file per day, so you can open it in anything and delete old days by deleting files.</p>
+  </div>
+  <div class="code">
+    <div class="code-bar"><span>config.yaml</span><button class="copy" data-copy="cfg" type="button">Copy</button></div>
+<pre id="cfg"><code><span class="k">devices</span>:
+  <span class="k">fritzbox</span>:
+    <span class="k">name</span>: FRITZ!Box 7590
+    <span class="k">host</span>: 192.168.178.1
+    <span class="k">kind</span>: router
+    <span class="k">checks</span>:
+      - ping
+      - <span class="k">http</span>: https://192.168.178.1
+  <span class="k">nas</span>:
+    <span class="k">host</span>: nas.lan
+    <span class="k">kind</span>: server
+    <span class="k">parent</span>: fritzbox        <span class="c"># for the map</span>
+    <span class="k">checks</span>:
+      - ping
+      - <span class="k">tcp</span>: 22
+        <span class="k">name</span>: ssh
+      - <span class="k">http</span>: http://nas.lan:8096/health
+        <span class="k">name</span>: jellyfin
+  <span class="k">laptop</span>:
+    <span class="k">host</span>: laptop.lan
+    <span class="k">kind</span>: laptop             <span class="c"># off is fine</span></code></pre>
+  </div>
+</section>
+
+<section class="wrap roadmap" id="roadmap" aria-labelledby="roadmap-title">
+  <p class="kicker center">Roadmap</p>
+  <h2 id="roadmap-title" class="center">From watching <b>to looking after</b></h2>
+  <p class="section-lead center">Kastellan is young. Today it watches; the plan is a single place to look after everything on the network, built on proven tools rather than reinventing them.</p>
+
+  <div class="stages">
+    <div class="stage now reveal">
+      <h3><span class="badge">Works today</span></h3>
+      <ul>
+        <li><svg><use href="#i-radar"/></svg><div><b>Reachability checks</b><span>Ping, TCP ports and HTTP for every device and service.</span></div></li>
+        <li><svg><use href="#i-file"/></svg><div><b>History</b><span>Uptime and response time per check, kept as daily CSV files.</span></div></li>
+        <li><svg><use href="#i-network"/></svg><div><b>Network map</b><span>Drawn from what each device is connected through.</span></div></li>
+        <li><svg><use href="#i-desktop"/></svg><div><b>Demo mode</b><span>A made-up network to try everything without touching yours.</span></div></li>
+      </ul>
+    </div>
+    <div class="stage next reveal">
+      <h3><span class="badge">Next</span></h3>
+      <ul>
+        <li><svg><use href="#i-terminal"/></svg><div><b>Terminal in the browser</b><span>SSH to any server, with xterm.js and keys the hub holds.</span></div></li>
+        <li><svg><use href="#i-desktop"/></svg><div><b>Remote desktop</b><span>RDP and VNC with mouse and keyboard, through Apache Guacamole.</span></div></li>
+        <li><svg><use href="#i-router"/></svg><div><b>Device drivers</b><span>Talk to a FRITZ!Box, OpenWrt, printers: firmware, clients, settings.</span></div></li>
+        <li><svg><use href="#i-refresh"/></svg><div><b>Docker updates</b><span>Which containers run an outdated image, and on which host.</span></div></li>
+        <li><svg><use href="#i-key"/></svg><div><b>Roles</b><span>Observers see everything; only admins open sessions or change things.</span></div></li>
+      </ul>
+    </div>
+    <div class="stage later reveal">
+      <h3><span class="badge">Later</span></h3>
+      <ul>
+        <li><svg><use href="#i-laptop"/></svg><div><b>A small agent</b><span>For Windows, macOS and laptops away from home; it reports in, no open ports.</span></div></li>
+        <li><svg><use href="#i-wifi"/></svg><div><b>Wi-Fi &amp; mesh</b><span>See and keep network and Wi-Fi settings in sync across the mesh.</span></div></li>
+        <li><svg><use href="#i-backup"/></svg><div><b>Backups &amp; jobs</b><span>Config exports, full backups with restic, any task on a schedule.</span></div></li>
+        <li><svg><use href="#i-server"/></svg><div><b>Firmware &amp; resources</b><span>Disk, CPU and memory; firmware versions against the newest.</span></div></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="security" id="security" aria-labelledby="security-title">
+  <div class="wrap">
+    <p class="kicker">Security</p>
+    <h2 id="security-title">It holds the keys, <b>so it's built like a keep</b></h2>
+    <p class="section-lead">A tool that can reach every device is the most valuable thing on the network. These are the rules it's designed around.</p>
+    <div class="rules">
+      <div class="rule reveal"><svg><use href="#i-lock"/></svg><h3>Behind your VPN</h3><p>Kastellan is meant for the inside of your network, reached through WireGuard or Tailscale, never published to the internet.</p></div>
+      <div class="rule reveal"><svg><use href="#i-key"/></svg><h3>Keys, not passwords</h3><p>SSH keys or short-lived certificates for servers; mutual TLS for agents. Stored secrets are encrypted at rest.</p></div>
+      <div class="rule reveal"><svg><use href="#i-shield"/></svg><h3>Each device sets its limits</h3><p>An agent decides on its own side what the hub may do: watch only, open a shell, share the screen.</p></div>
+      <div class="rule reveal"><svg><use href="#i-refresh"/></svg><h3>No surprise updates</h3><p>Updates are suggested, not installed. Automatically only when a known vulnerability meets a device that faces the internet.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap start" id="start" aria-labelledby="start-title">
+  <div class="start-copy">
+    <p class="kicker">Try it</p>
+    <h2 id="start-title">Run the demo <b>in a minute</b></h2>
+    <p>No release yet. From a checkout of the repository, with <a href="https://docs.astral.sh/uv/">uv</a> and Node.js installed, the demo shows a made-up home network with a day of history. Nothing on your network is contacted.</p>
+    <p class="note">For your own network, put a <code>config.yaml</code> in <code>data/</code> and leave out <code>KASTELLAN_DEMO</code>.</p>
+  </div>
+  <div class="code">
+    <div class="code-bar"><span>Terminal</span><button class="copy" data-copy="run" type="button">Copy</button></div>
+<pre id="run"><code>git clone https://github.com/andiwand/kastellan
+cd kastellan/frontend &amp;&amp; npm install &amp;&amp; npm run build
+cp -r build ../backend/src/kastellan/web
+cd ../backend
+KASTELLAN_DEMO=1 uv run kastellan
+<span class="c"># then open http://localhost:8100</span></code></pre>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <div class="foot-brand"><img src="favicon.svg" alt="" width="22" height="22"> Kastellan</div>
+    <p>A <i>Kastellan</i> was the keeper of a castle: the one with the keys to every room. MIT licensed, made at home.</p>
+    <a href="https://github.com/andiwand/kastellan">GitHub</a>
+  </div>
+</footer>
+</body>
+</html>

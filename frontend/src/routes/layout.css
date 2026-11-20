@@ -1,0 +1,126 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+
+/* Kastellan's tokens. The look follows the system (light or dark); both are designed, neither is
+   a flipped copy. Status colors are fixed and always come with an icon and a word. */
+:root {
+	color-scheme: light;
+	--bg: #f5f6f8;
+	--surface: #ffffff;
+	--surface-2: #f0f2f5;
+	--surface-3: #e6e9ee;
+	--line: rgb(17 24 39 / 0.08);
+	--line-strong: rgb(17 24 39 / 0.14);
+	--text: #10141c;
+	--muted: #5f6878;
+	--faint: #8d95a3;
+	--accent: #3b63f3;
+	--accent-soft: rgb(59 99 243 / 0.1);
+	--accent-ink: #ffffff;
+	--good: #0ca30c;
+	--good-text: #067a06;
+	--warning: #fab219;
+	--warning-text: #9a6400;
+	--critical: #d03b3b;
+	--critical-text: #b42b2b;
+	--offline: #a4abb7;
+	--empty: #e3e6eb;
+	--grid: #e1e0d9;
+	/* Healthy cells in uptime strips: calm, so the problems are what stands out. */
+	--good-soft: color-mix(in srgb, var(--good) 42%, var(--surface));
+	--shadow: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.04);
+	--shadow-lg: 0 12px 32px -12px rgb(16 24 40 / 0.18), 0 2px 6px rgb(16 24 40 / 0.05);
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		color-scheme: dark;
+		--bg: #0a0c10;
+		--surface: #111419;
+		--surface-2: #171b22;
+		--surface-3: #1f242d;
+		--line: rgb(255 255 255 / 0.07);
+		--line-strong: rgb(255 255 255 / 0.13);
+		--text: #e8ebf0;
+		--muted: #949cab;
+		--faint: #677080;
+		--accent: #7b97ff;
+		--accent-soft: rgb(123 151 255 / 0.14);
+		--accent-ink: #0a0f24;
+		--good-text: #3fcf5c;
+		--warning-text: #fab219;
+		--critical-text: #f06a6a;
+		--offline: #4d5563;
+		--empty: #232831;
+		--grid: #2c2c2a;
+		--good-soft: color-mix(in srgb, var(--good) 45%, var(--surface));
+		--shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+		--shadow-lg: 0 16px 40px -16px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.3);
+	}
+}
+
+@theme inline {
+	--color-bg: var(--bg);
+	--color-surface: var(--surface);
+	--color-surface-2: var(--surface-2);
+	--color-surface-3: var(--surface-3);
+	--color-line: var(--line);
+	--color-line-strong: var(--line-strong);
+	--color-text: var(--text);
+	--color-muted: var(--muted);
+	--color-faint: var(--faint);
+	--color-accent: var(--accent);
+	--color-accent-soft: var(--accent-soft);
+	--color-accent-ink: var(--accent-ink);
+	--font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+	--font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+	--shadow-card: var(--shadow);
+	--shadow-pop: var(--shadow-lg);
+}
+
+html {
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	text-rendering: optimizeLegibility;
+}
+
+body {
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font-sans);
+	font-feature-settings: 'ss01', 'cv11';
+}
+
+/* Numbers that update in place keep their width. */
+.tabular {
+	font-variant-numeric: tabular-nums;
+}
+
+.card {
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: 14px;
+	box-shadow: var(--shadow);
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+	border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.pulse {
+		animation: pulse 2.4s ease-in-out infinite;
+	}
+	@keyframes pulse {
+		0%,
+		100% {
+			box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 45%, transparent);
+		}
+		50% {
+			box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent);
+		}
+	}
+}

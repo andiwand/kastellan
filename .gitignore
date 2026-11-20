@@ -1,0 +1,13 @@
+.DS_Store
+
+# Local run data (config.yaml, history)
+/data/
+
+# Python
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+backend/dist/
+# The web app, copied in for the package
+backend/src/kastellan/web/

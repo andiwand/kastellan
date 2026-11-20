@@ -1,0 +1,116 @@
+"""The HTTP API under /api, and the web app (a single-page app) for every other path."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+
+from . import __version__, stats
+from .hub import Hub
+from .settings import Settings
+
+WEB = Path(__file__).parent / "web"
+
+
+def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
+    hub = hub or Hub(settings)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await hub.start()
+        yield
+        await hub.stop()
+
+    app = FastAPI(
+        title="Kastellan",
+        version=__version__,
+        lifespan=lifespan,
+        docs_url="/api/docs",
+        openapi_url="/api/openapi.json",
+    )
+    app.state.hub = hub
+
+    @app.get("/api/health")
+    def health() -> dict[str, Any]:
+        return {
+            "ok": True,
+            "version": __version__,
+            "config_error": hub.config_error,
+            "demo": hub.demo is not None,
+        }
+
+    @app.get("/api/devices")
+    def devices() -> list[dict[str, Any]]:
+        out = []
+        for id, device in hub.config.devices.items():
+            status = hub.monitor.status.get(id)
+            out.append(
+                {
+                    "id": id,
+                    "name": device.name,
+                    "host": device.host,
+                    "kind": device.kind,
+                    "parent": device.parent,
+                    "tags": device.tags,
+                    "always_on": device.always_on,
+                    "state": status.state if status else "unknown",
+                    "checks": [
+                        {
+                            "name": check.name,
+                            "type": check.type,
+                            "target": check.target,
+                            **(
+                                vars(status.checks[check.name])
+                                if status and check.name in status.checks
+                                else {}
+                            ),
+                        }
+                        for check in device.checks
+                    ],
+                }
+            )
+        return out
+
+    @app.get("/api/devices/{id}/history")
+    def history(id: str, hours: float = 24) -> list[dict[str, Any]]:
+        if id not in hub.config.devices:
+            raise HTTPException(404, "no such device")
+        since = datetime.now(UTC) - timedelta(hours=min(hours, 24 * 90))
+        return [vars(row) for row in hub.history.read(since, device=id)]
+
+    @app.get("/api/series")
+    def series(hours: float = 24, buckets: int = 48, device: str | None = None) -> dict[str, Any]:
+        """Uptime and mean latency in `buckets` equal slices of the last `hours`, per device and check."""
+        hours = min(max(hours, 0.25), 24 * 90)
+        buckets = min(max(buckets, 1), 500)
+        step = timedelta(hours=hours) / buckets
+        start = datetime.now(UTC) - timedelta(hours=hours)
+        data = stats.series(hub.history.read(start, device=device), start, step, buckets)
+        return {"start": start, "step_seconds": step.total_seconds(), "devices": data}
+
+    @app.get("/api/changes")
+    def changes(hours: float = 24, device: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """When checks went up or down, newest first."""
+        since = datetime.now(UTC) - timedelta(hours=min(hours, 24 * 90))
+        return stats.changes(hub.history.read(since, device=device))[:limit]
+
+    @app.get("/api/{path:path}")
+    def no_api(path: str) -> None:
+        raise HTTPException(404, "no such API")
+
+    @app.get("/{path:path}")
+    def web(path: str) -> FileResponse:
+        if not WEB.exists():
+            raise HTTPException(404, "the web app is not built; run `npm run dev` in frontend/")
+        file = (WEB / path).resolve()
+        if path and file.is_file() and file.is_relative_to(WEB.resolve()):
+            return FileResponse(file)
+        return FileResponse(WEB / "index.html")
+
+    return app
