@@ -3,7 +3,7 @@
 	import { api, type Change, type Series } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { statusOf, uptimeOf } from '#lib/status.js';
-	import { dayClock, ms, percent, stateFor } from '#lib/format.js';
+	import { ms, percent, stateFor } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
@@ -12,8 +12,8 @@
 	import ExternalLink from '@lucide/svelte/icons/external-link';
 	import Copy from '@lucide/svelte/icons/copy';
 	import Check from '@lucide/svelte/icons/check';
-	import ArrowUp from '@lucide/svelte/icons/arrow-up';
-	import ArrowDown from '@lucide/svelte/icons/arrow-down';
+	import ActivityItem from '#lib/components/ActivityItem.svelte';
+	import ServicesTable from '#lib/components/ServicesTable.svelte';
 
 	const id = $derived(page.params.id ?? '');
 	const device = $derived(store.byId.get(id));
@@ -144,7 +144,7 @@
 
 	<!-- Range -->
 	<div class="mt-8 flex items-center justify-between">
-		<h2 class="text-sm font-semibold">Checks</h2>
+		<h2 class="text-sm font-semibold">Services</h2>
 		<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
 			{#each ranges as r (r.label)}
 				<button
@@ -165,53 +165,14 @@
 		</p>
 	{/if}
 
-	<div class="mt-3 grid gap-3 md:grid-cols-2">
-		{#each device.checks as check (check.name)}
-			{@const buckets = checkSeries[check.name] ?? []}
-			{@const checkStatus =
-				check.up == null ? 'waiting' : check.up ? 'up' : device.always_on ? 'down' : 'offline'}
-			<div class="card p-4">
-				<div class="flex items-start justify-between gap-3">
-					<div class="min-w-0">
-						<p class="text-sm font-medium">{check.name}</p>
-						<p class="truncate font-mono text-xs text-faint">
-							{check.type}{check.type === 'ping' ? '' : ` ${check.target}`}
-						</p>
-					</div>
-					<StatusBadge status={checkStatus} />
-				</div>
-				<dl class="mt-4 grid grid-cols-3 gap-2 text-xs">
-					<div>
-						<dt class="text-muted">{check.up ? 'Response' : 'Reason'}</dt>
-						<dd class="tabular mt-0.5 truncate text-sm font-medium">
-							{check.up ? ms(check.latency_ms) : check.detail || '–'}
-						</dd>
-					</div>
-					<div>
-						<dt class="text-muted">{check.up ? 'Up for' : 'Down for'}</dt>
-						<dd class="tabular mt-0.5 text-sm font-medium">
-							{check.up == null ? '–' : stateFor(check, store.now) || '–'}
-						</dd>
-					</div>
-					<div>
-						<dt class="text-muted">Uptime {range.label}</dt>
-						<dd class="tabular mt-0.5 text-sm font-medium">{percent(uptimeOf(buckets))}</dd>
-					</div>
-				</dl>
-				{#if series && buckets.length}
-					<div class="mt-4">
-						<UptimeStrip
-							{buckets}
-							start={series.start}
-							step={series.step_seconds}
-							alwaysOn={device.always_on}
-							height="h-5"
-							label="{check.name} uptime"
-						/>
-					</div>
-				{/if}
-			</div>
-		{/each}
+	<div class="mt-3">
+		<ServicesTable
+			rows={device.checks.map((check) => ({ device: device!, check }))}
+			buckets={(_, name) => checkSeries[name] ?? []}
+			start={series?.start ?? null}
+			step={series?.step_seconds ?? 0}
+			rangeLabel={range.label}
+		/>
 	</div>
 
 	<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">
@@ -257,35 +218,8 @@
 					</p>
 				{:else}
 					<ol class="max-h-[22rem] overflow-y-auto">
-						{#each changes as change (`${change.time}/${change.check}`)}
-							<li class="flex gap-3 rounded-lg px-3 py-2.5">
-								<span
-									class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full"
-									style:background="color-mix(in srgb, {change.up
-										? 'var(--good)'
-										: device.always_on
-											? 'var(--critical)'
-											: 'var(--offline)'} 16%, transparent)"
-									style:color={change.up
-										? 'var(--good-text)'
-										: device.always_on
-											? 'var(--critical-text)'
-											: 'var(--muted)'}
-								>
-									{#if change.up}<ArrowUp class="size-3" strokeWidth={2.5} />{:else}<ArrowDown
-											class="size-3"
-											strokeWidth={2.5}
-										/>{/if}
-								</span>
-								<span class="min-w-0 flex-1 text-sm leading-snug">
-									<span class="font-medium">{change.check}</span>
-									<span class="text-muted">{change.up ? 'back up' : 'down'}</span>
-									{#if !change.up && change.detail}<span class="text-faint">
-											· {change.detail}
-										</span>{/if}
-									<span class="tabular block text-xs text-faint">{dayClock(change.time)}</span>
-								</span>
-							</li>
+						{#each changes as change (`${change.kind}/${change.time}/${change.check}`)}
+							<li><ActivityItem {change} {device} /></li>
 						{/each}
 					</ol>
 				{/if}

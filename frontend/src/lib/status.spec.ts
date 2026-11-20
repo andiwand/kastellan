@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deviceBuckets, bucketStatus } from './status';
+import { deviceBuckets, bucketStatus, mergeBuckets } from './status';
 import { stateFor } from './format';
 
 describe('deviceBuckets', () => {
@@ -29,5 +29,18 @@ describe('stateFor', () => {
 		);
 		expect(stateFor({ since: '2026-01-01T11:48:00Z', since_exact: true }, now)).toBe('12 min');
 		expect(stateFor({ since: null }, now)).toBe('');
+	});
+});
+
+describe('mergeBuckets', () => {
+	it('averages neighbours and keeps empty stretches empty', () => {
+		const b = (uptime: number | null, latency_ms: number | null = null) => ({ uptime, latency_ms });
+		expect(mergeBuckets([b(1, 2), b(0), b(null), b(null), b(1, 4)], 2)).toEqual([
+			b(0.5, 2),
+			b(null),
+			b(1, 4)
+		]);
+		const same = [b(1)];
+		expect(mergeBuckets(same, 1)).toBe(same);
 	});
 });

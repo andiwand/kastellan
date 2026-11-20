@@ -83,3 +83,28 @@ async def test_only_changed_checks_restart(tmp_path: Path) -> None:
     monitor.apply(Config.model_validate({"devices": {"x": moved}}))
     assert monitor.status["x"].checks["a"].up is None  # a new address starts unknown
     await monitor.stop()
+
+
+async def test_software_changes_are_logged(tmp_path: Path) -> None:
+    from kastellan.checks import Result
+    from kastellan.software import Software
+    from kastellan.versions import Versions
+
+    versions = Versions(tmp_path / "versions.log")
+    monitor = Monitor(History(tmp_path), versions=versions)
+    monitor.prepare(Config.model_validate({"devices": {"sv1": {"host": "x", "checks": [{"tcp": 22}]}}}))
+    monitor._record("sv1", "tcp:22", Result(True, 1.0, software=Software("OpenSSH", "9.8")))
+    monitor._record("sv1", "tcp:22", Result(True, 1.0))  # said nothing this time: keep what we know
+    monitor._record("sv1", "tcp:22", Result(True, 1.0, software=Software("OpenSSH", "9.9")))
+    assert monitor.status["sv1"].checks["tcp:22"].software == "OpenSSH 9.9"
+    from datetime import UTC, datetime
+
+    [change] = versions.changes(datetime(2000, 1, 1, tzinfo=UTC))
+    assert (change["from"], change["to"]) == ("OpenSSH 9.8", "OpenSSH 9.9")
+    assert versions.latest()[("sv1", "tcp:22")][0] == "OpenSSH 9.9"
+
+    # After a restart the hub knows the software before the first check runs.
+    fresh = Monitor(History(tmp_path), versions=versions)
+    fresh.prepare(Config.model_validate({"devices": {"sv1": {"host": "x", "checks": [{"tcp": 22}]}}}))
+    fresh.restore_software(versions.latest())
+    assert fresh.status["sv1"].checks["tcp:22"].software == "OpenSSH 9.9"

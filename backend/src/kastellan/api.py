@@ -102,9 +102,23 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
 
     @app.get("/api/changes")
     def changes(hours: float = 24, device: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        """When checks went up or down, newest first."""
+        """When checks went up or down, and when a service's software changed."""
         since = datetime.now(UTC) - timedelta(hours=min(hours, 24 * 90))
-        return stats.changes(hub.history.read(since, device=device))[:limit]
+        # Ups and downs, and software updates ("OpenSSH 9.8 → 9.9"), newest first.
+        events = stats.changes(hub.history.read(since, device=device))
+        events += [
+            {
+                "kind": "version",
+                "time": e["time"],
+                "device": e["device"],
+                "check": e["check"],
+                "from": e["from"],
+                "to": e["to"],
+            }
+            for e in hub.versions.changes(since, device)
+        ]
+        events.sort(key=lambda e: e["time"], reverse=True)
+        return events[:limit]
 
     @app.get("/api/{path:path}")
     def no_api(path: str) -> None:

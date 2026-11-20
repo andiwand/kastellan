@@ -17,7 +17,10 @@ async def test_tcp_up_and_down() -> None:
 async def test_http_status() -> None:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await reader.readuntil(b"\r\n\r\n")
-        writer.write(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        writer.write(
+            b"HTTP/1.1 401 Unauthorized\r\nServer: nginx/1.24.0 (Ubuntu)\r\n"
+            b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+        )
         await writer.drain()
         writer.close()
 
@@ -27,6 +30,7 @@ async def test_http_status() -> None:
         login_page = await checks.run("127.0.0.1", Check.model_validate({"http": url}))
         strict = await checks.run("127.0.0.1", Check.model_validate({"http": url, "expect": 200}))
     assert login_page.up and login_page.detail == "HTTP 401"
+    assert str(login_page.software) == "nginx 1.24.0 (Ubuntu)"
     assert not strict.up
 
 
@@ -34,3 +38,17 @@ async def test_ping_localhost() -> None:
     result = await checks.run("127.0.0.1", Check.model_validate("ping"))
     # Unprivileged ICMP may be off in a sandbox; then the result must still be a clean failure.
     assert result.up or result.detail
+
+
+async def test_tcp_reads_a_greeting() -> None:
+    async def greet(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.write(b"SSH-2.0-OpenSSH_9.8\r\n")
+        await writer.drain()
+        await asyncio.sleep(0.2)
+        writer.close()
+
+    server = await asyncio.start_server(greet, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server:
+        result = await checks.run("127.0.0.1", Check.model_validate({"tcp": port}))
+    assert result.up and str(result.software) == "OpenSSH 9.8"

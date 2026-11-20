@@ -60,6 +60,7 @@ def changes(rows: Iterable[Row]) -> list[dict[str, object]]:
         if key in last and last[key] != row.up:
             out.append(
                 {
+                    "kind": "state",
                     "time": row.time,
                     "device": row.device,
                     "check": row.check,

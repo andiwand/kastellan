@@ -17,8 +17,9 @@ from . import config as config_mod
 from . import demo
 from .config import Config
 from .history import History
-from .monitor import Monitor
+from .monitor import Monitor, run_check
 from .settings import Settings
+from .versions import Versions
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +39,9 @@ class Hub:
             data = Path(tempfile.mkdtemp(prefix="kastellan-demo-"))
         self._demo_dir = data if self.demo else None
         self.history = History(data / "checks")
-        self.monitor = Monitor(self.history, self.demo.run) if self.demo else Monitor(self.history)
+        self.versions = Versions(data / "versions.log")
+        runner = self.demo.run if self.demo else run_check
+        self.monitor = Monitor(self.history, runner, self.versions)
         self._mtime: float | None = None
         self._tasks: list[asyncio.Task[None]] = []
 
@@ -71,6 +74,7 @@ class Hub:
             self.monitor.prepare(config)
             try:
                 self.monitor.restore(self.history.read(datetime.now(UTC) - timedelta(days=1)))
+                self.monitor.restore_software(self.versions.latest())
             except Exception:
                 log.exception("cannot restore the state from the history; starting fresh")
         self.monitor.apply(config)
@@ -78,7 +82,7 @@ class Hub:
     async def start(self) -> None:
         if self.demo:
             log.info("demo mode: a made-up network, simulated results; config.yaml is not read")
-            await asyncio.to_thread(self.demo.backfill, self.history, demo.config())
+            await asyncio.to_thread(self.demo.backfill, self.history, demo.config(), self.versions)
         self.reload()
         self._tasks = [
             asyncio.create_task(self._watch_config(), name="watch config"),

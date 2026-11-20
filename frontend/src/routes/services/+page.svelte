@@ -1,0 +1,102 @@
+<script lang="ts">
+	import { store } from '#lib/state.svelte.js';
+	import ServicesTable from '#lib/components/ServicesTable.svelte';
+	import Search from '@lucide/svelte/icons/search';
+
+	type Filter = 'all' | 'problems' | 'versioned';
+	let query = $state('');
+	let filter = $state<Filter>('all');
+
+	// Every port and web check on every device; ping only tells whether the device is there.
+	const all = $derived(
+		(store.devices ?? []).flatMap((device) =>
+			device.checks.filter((c) => c.type !== 'ping').map((check) => ({ device, check }))
+		)
+	);
+	const problem = (r: (typeof all)[number]) => r.check.up === false && r.device.always_on;
+	const rows = $derived(
+		all
+			.filter((r) => {
+				const q = query.trim().toLowerCase();
+				const text = `${r.device.name} ${r.device.host} ${r.check.name} ${r.check.target} ${r.check.software ?? ''}`;
+				const kept =
+					filter === 'all' ||
+					(filter === 'problems' && problem(r)) ||
+					(filter === 'versioned' && !!r.check.software);
+				return kept && (!q || text.toLowerCase().includes(q));
+			})
+			.sort(
+				(a, b) =>
+					Number(problem(b)) - Number(problem(a)) ||
+					a.device.name.localeCompare(b.device.name) ||
+					a.check.name.localeCompare(b.check.name)
+			)
+	);
+	const counts = $derived({
+		all: all.length,
+		problems: all.filter(problem).length,
+		versioned: all.filter((r) => r.check.software).length
+	});
+	const filters: { id: Filter; label: string }[] = [
+		{ id: 'all', label: 'All' },
+		{ id: 'problems', label: 'Problems' },
+		{ id: 'versioned', label: 'With version' }
+	];
+</script>
+
+<svelte:head><title>Services · Kastellan</title></svelte:head>
+
+<h1 class="text-2xl font-semibold tracking-tight">Services</h1>
+<p class="mt-1 text-sm text-muted">
+	What runs where, which software it says it is, and how long it has been up.
+</p>
+
+<div class="mt-6 flex flex-wrap items-center gap-3">
+	<label class="relative w-full sm:w-auto sm:max-w-sm sm:flex-1">
+		<Search
+			class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint"
+		/>
+		<input
+			bind:value={query}
+			type="search"
+			placeholder="Search device, service, software"
+			class="h-10 w-full rounded-xl border border-line bg-surface pr-3 pl-9 text-sm shadow-card outline-none placeholder:text-faint focus:border-accent"
+		/>
+	</label>
+	<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card" role="tablist">
+		{#each filters as f (f.id)}
+			<button
+				role="tab"
+				aria-selected={filter === f.id}
+				onclick={() => (filter = f.id)}
+				class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors {filter ===
+				f.id
+					? 'bg-surface-3 text-text'
+					: 'text-muted hover:text-text'}"
+			>
+				{f.label}
+				<span class="tabular text-xs text-faint">{counts[f.id]}</span>
+			</button>
+		{/each}
+	</div>
+</div>
+
+<div class="mt-4">
+	{#if store.devices === null}
+		<div class="card h-64 animate-pulse"></div>
+	{:else if rows.length === 0}
+		<div class="card px-5 py-10 text-center text-sm text-muted">
+			{all.length
+				? 'No service matches.'
+				: 'No services yet: add tcp or http checks in config.yaml.'}
+		</div>
+	{:else}
+		<ServicesTable
+			{rows}
+			buckets={(device, check) => store.series?.devices[device]?.[check] ?? []}
+			start={store.series?.start ?? null}
+			step={store.series?.step_seconds ?? 0}
+			showDevice
+		/>
+	{/if}
+</div>

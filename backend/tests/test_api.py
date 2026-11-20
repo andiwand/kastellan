@@ -27,5 +27,9 @@ def test_demo(tmp_path: Path) -> None:
         series = client.get("/api/series", params={"hours": 24, "buckets": 24}).json()
         assert len(series["devices"]["nas"]["jellyfin"]) == 24
         changes = client.get("/api/changes").json()
-        assert any(c["device"] == "printer" for c in changes)
+        assert any(c["device"] == "printer" and c["kind"] == "state" for c in changes)
+        [update] = [c for c in changes if c["kind"] == "version"]
+        assert (update["device"], update["to"]) == ("homeserver", "OpenSSH 10.2p1 (Debian)")
+        ssh = next(c for c in devices["homeserver"]["checks"] if c["name"] == "ssh")
+        assert ssh["software"] == "OpenSSH 10.2p1 (Debian)"
     assert not (tmp_path / "checks").exists()  # demo history stays out of the real data

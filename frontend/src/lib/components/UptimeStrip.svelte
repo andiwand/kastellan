@@ -2,11 +2,12 @@
 	import type { Bucket } from '#lib/api.js';
 	import { bucketStatus, statusColor, statusLabel } from '#lib/status.js';
 	import { clock, ms, percent } from '#lib/format.js';
+	import { mergeBuckets } from '#lib/status.js';
 
 	let {
-		buckets,
+		buckets: raw,
 		start,
-		step,
+		step: rawStep,
 		alwaysOn = true,
 		height = 'h-6',
 		label = 'Uptime'
@@ -18,6 +19,13 @@
 		height?: string;
 		label?: string;
 	} = $props();
+
+	// Each bar needs a few pixels; when the strip is narrow, neighbouring buckets merge so it
+	// never overflows its column.
+	let width = $state(0);
+	const group = $derived(width ? Math.max(1, Math.ceil(raw.length / Math.floor(width / 5))) : 1);
+	const buckets = $derived(mergeBuckets(raw, group));
+	const step = $derived(rawStep * group);
 
 	let hover = $state<number | null>(null);
 	const t0 = $derived(Date.parse(start));
@@ -40,6 +48,7 @@
 
 <div
 	class="relative"
+	bind:clientWidth={width}
 	role="img"
 	aria-label="{label}: one bar per {Math.round(step / 60)} minutes"
 	onpointermove={(e) => {

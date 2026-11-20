@@ -12,6 +12,7 @@ from icmplib import async_ping
 from icmplib.exceptions import ICMPLibError, SocketPermissionError
 
 from .config import Check, CheckType
+from .software import Software, from_greeting, from_http
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,10 @@ class Result:
     up: bool
     latency_ms: float | None = None
     detail: str = ""
+    software: Software | None = None  # what the service says it is, when it says
+
+
+GREETING_WAIT = 0.8  # seconds a TCP check listens for a server that speaks first (SSH, FTP, SMTP)
 
 
 RETRY_AFTER = 2.0  # seconds before a failed check is tried once more
@@ -75,16 +80,21 @@ async def _ping(host: str, check: Check) -> Result:
 async def _tcp(host: str, check: Check) -> Result:
     start = time.perf_counter()
     try:
-        _, writer = await asyncio.wait_for(asyncio.open_connection(host, check.target), check.timeout)
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, check.target), check.timeout)
     except TimeoutError:
         return Result(False, detail="timed out")
     except OSError as e:
         return Result(False, detail=e.strerror or str(e))
     latency = (time.perf_counter() - start) * 1000
+    # Servers of some protocols greet first and name themselves; others stay silent, which is fine.
+    greeting = b""
+    with contextlib.suppress(TimeoutError, OSError):
+        greeting = await asyncio.wait_for(reader.read(256), GREETING_WAIT)
     writer.close()
     with contextlib.suppress(OSError):
         await writer.wait_closed()
-    return Result(True, round(latency, 2))
+    software = from_greeting(greeting.decode("ascii", errors="replace")) if greeting else None
+    return Result(True, round(latency, 2), software=software)
 
 
 async def _http(check: Check) -> Result:
@@ -98,4 +108,5 @@ async def _http(check: Check) -> Result:
     latency = round((time.perf_counter() - start) * 1000, 2)
     status = response.status_code
     up = status == check.expect if check.expect is not None else status < 500
-    return Result(up, latency, f"HTTP {status}")
+    body = response.text[:20000] if "html" in response.headers.get("content-type", "") else ""
+    return Result(up, latency, f"HTTP {status}", from_http(dict(response.headers), body))

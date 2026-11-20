@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 from .checks import Result
 from .config import Check, Config, Device
 from .history import History, Row
+from .software import Software
+from .versions import Versions
 
 CONFIG = {
     "check_interval": 15,
@@ -140,6 +142,22 @@ BASE_LATENCY = {
 }
 
 
+# What the services say they are. The home server's SSH got an update six hours ago.
+SOFTWARE = {
+    ("fritzbox", "web"): Software("FRITZ!Box"),
+    ("nas", "ssh"): Software("OpenSSH", "9.6p1", "Ubuntu"),
+    ("nas", "jellyfin"): Software("Jellyfin", "10.10.7"),
+    ("nas", "dsm"): Software("nginx"),
+    ("homeserver", "ssh"): Software("OpenSSH", "10.2p1", "Debian"),
+    ("homeserver", "proxmox"): Software("pve-api-daemon", "3.0"),
+    ("homeserver", "home assistant"): Software("Home Assistant"),
+    ("pi", "ssh"): Software("OpenSSH", "9.2p1", "Raspbian"),
+    ("macbook", "ssh"): Software("OpenSSH", "9.9"),
+    ("printer", "ipp"): None,
+}
+UPDATED = ("homeserver", "ssh", Software("OpenSSH", "10.0p2", "Debian"), 360)  # before, minutes ago
+
+
 def config() -> Config:
     return Config.model_validate(CONFIG)
 
@@ -164,12 +182,20 @@ class Demo:
         latency = base * wave * rng.uniform(0.8, 1.35)
         if rng.random() < 0.02:
             latency *= rng.uniform(2, 5)
+        software = self.software(id, check.name, ago)
         if check.type == "http":
             latency += rng.uniform(8, 30)
-            return Result(True, round(latency, 2), "HTTP 200")
+            return Result(True, round(latency, 2), "HTTP 200", software)
         if check.type == "tcp":
             latency += rng.uniform(0.1, 0.6)
-        return Result(True, round(latency, 2))
+        return Result(True, round(latency, 2), software=software)
+
+    @staticmethod
+    def software(id: str, check: str, ago: float) -> Software | None:
+        device, name, before, when = UPDATED
+        if (id, check) == (device, name) and ago > when:
+            return before
+        return SOFTWARE.get((id, check))
 
     def _down(self, id: str, check: str, ago: float, rng: random.Random) -> str:
         """Why the check fails at `ago` minutes before now, or ''."""
@@ -191,9 +217,26 @@ class Demo:
     async def run(self, id: str, device: Device, check: Check) -> Result:
         return self.result(id, check, datetime.now(UTC))
 
-    def backfill(self, history: History, config: Config, hours: float = 24, step: float = 60) -> None:
-        """Write simulated results for the past `hours`, one every `step` seconds."""
+    def backfill(
+        self,
+        history: History,
+        config: Config,
+        versions: Versions | None = None,
+        hours: float = 24,
+        step: float = 60,
+    ) -> None:
+        """Write simulated results for the past `hours`, one every `step` seconds, and the
+        software the services showed (with the one update) to the version log."""
         start = self.t0 - timedelta(hours=hours)
+        if versions is not None:
+            device, name, before, when = UPDATED
+            for (id, check), software in SOFTWARE.items():
+                first = before if (id, check) == (device, name) else software
+                if first is not None:
+                    versions.record(start, id, check, None, str(first))
+            versions.record(
+                self.t0 - timedelta(minutes=when), device, name, str(before), str(SOFTWARE[(device, name)])
+            )
         n = int(hours * 3600 / step)
         rows = []
         for i in range(n):

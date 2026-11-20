@@ -11,6 +11,8 @@ export interface CheckStatus {
 	since?: string | null;
 	since_exact?: boolean;
 	stale?: boolean;
+	software?: string | null;
+	software_since?: string | null;
 }
 
 export interface Device {
@@ -44,13 +46,10 @@ export interface Series {
 	devices: Record<string, Record<string, Bucket[]>>;
 }
 
-export interface Change {
-	time: string;
-	device: string;
-	check: string;
-	up: boolean;
-	detail: string;
-}
+/** Something that happened: a check went up or down, or a service's software changed. */
+export type Change =
+	| { kind: 'state'; time: string; device: string; check: string; up: boolean; detail: string }
+	| { kind: 'version'; time: string; device: string; check: string; from: string; to: string };
 
 async function get<T>(path: string, params: Record<string, string | number | undefined> = {}) {
 	const query = new URLSearchParams();

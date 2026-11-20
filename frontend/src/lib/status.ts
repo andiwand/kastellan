@@ -69,3 +69,20 @@ export function bucketStatus(uptime: number | null, alwaysOn: boolean): Status |
 	if (uptime <= 0.001) return alwaysOn ? 'down' : 'offline';
 	return 'degraded';
 }
+
+/** Merge every `group` neighbouring buckets into one: the mean of the known uptimes and
+ * latencies. A merged bucket without any data stays empty. */
+export function mergeBuckets(buckets: Bucket[], group: number): Bucket[] {
+	if (group <= 1) return buckets;
+	const out: Bucket[] = [];
+	for (let i = 0; i < buckets.length; i += group) {
+		const part = buckets.slice(i, i + group);
+		const ups = part.map((b) => b.uptime).filter((u): u is number => u != null);
+		const lats = part.map((b) => b.latency_ms).filter((v): v is number => v != null);
+		out.push({
+			uptime: ups.length ? ups.reduce((a, b) => a + b, 0) / ups.length : null,
+			latency_ms: lats.length ? lats.reduce((a, b) => a + b, 0) / lats.length : null
+		});
+	}
+	return out;
+}

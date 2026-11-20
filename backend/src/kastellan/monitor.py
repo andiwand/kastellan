@@ -12,6 +12,7 @@ from enum import StrEnum
 from . import checks
 from .config import Check, Config, Device
 from .history import History, Row
+from .versions import Versions
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ class CheckStatus:
     since: datetime | None = None  # when `up` last changed
     # False when `since` is only the oldest result we know of (after a restart): "for at least".
     since_exact: bool = True
+    software: str | None = None  # what the service says it is, e.g. "OpenSSH 10.2p1 (Ubuntu)"
+    software_since: datetime | None = None  # when we first saw this software
 
 
 @dataclass
@@ -56,9 +59,12 @@ async def run_check(id: str, device: Device, check: Check) -> checks.Result:
 
 
 class Monitor:
-    def __init__(self, history: History, runner: Runner = run_check) -> None:
+    def __init__(
+        self, history: History, runner: Runner = run_check, versions: Versions | None = None
+    ) -> None:
         self.history = history
         self.runner = runner
+        self.versions = versions
         self.status: dict[str, DeviceStatus] = {}
         self._tasks: dict[tuple[str, str], tuple[asyncio.Task[None], Device, Check, float]] = {}
 
@@ -121,6 +127,13 @@ class Monitor:
                 row.time,
             )
 
+    def restore_software(self, latest: dict[tuple[str, str], tuple[str, datetime]]) -> None:
+        """The software each check last saw, from the version log."""
+        for (id, name), (software, when) in latest.items():
+            check = self.status.get(id, DeviceStatus()).checks.get(name)
+            if check is not None:
+                check.software, check.software_since = software, when
+
     async def stop(self) -> None:
         tasks = [t for t, *_ in self._tasks.values()]
         for task in tasks:
@@ -153,6 +166,13 @@ class Monitor:
             result.detail,
             now,
         )
+        if result.software is not None and str(result.software) != status.software:
+            new = str(result.software)
+            if status.software is not None:
+                log.info("%s %s: %s → %s", id, name, status.software, new)
+            if self.versions is not None:
+                self.versions.record(now, id, name, status.software, new)
+            status.software, status.software_since = new, now
         try:
             self.history.append(Row(now, id, name, result.up, result.latency_ms, result.detail))
         except OSError as e:

@@ -23,6 +23,14 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `monitor.py`: one asyncio task per (device, check). `apply(config)` keeps unchanged loops
     running. `restore(rows)` takes the last known state from the history at start, so `since`
     survives restarts; `since` is None when the state began before the history.
+  - `software.py`: what a service says it is, without credentials: the greeting of
+    server-first protocols (SSH, FTP, SMTP; a TCP check listens `GREETING_WAIT` after connecting)
+    and an HTTP response's `Server` header, page title, known page markers (LuCI), then
+    `X-Powered-By`. Tested on real banners; add new ones to `tests/test_software.py`.
+  - `versions.py`: `<data>/versions.log` (JSON lines): first sighting and every change of a
+    service's software. The monitor writes it; `/api/changes` merges real changes
+    (`kind: "version"`) with ups and downs (`kind: "state"`); the hub restores the last software
+    per check from it at start.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)
@@ -44,7 +52,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     crosshair), `StatusBadge`/`StatusDot` (color always with a word), `KindIcon`, `Logo`.
   - `src/lib/layout.ts`: the graph's left-to-right tree layout, and `splitLinked` (devices with
     no link at all go in a grid under the tree).
-  - Routes: `/` overview, `/devices` (list, or graph with `?view=graph`; search and filters
+  - `ServicesTable` (service, software, status, response, for, uptime), used by the device page
+    and `/services`; `ActivityItem` (an up/down or a software update).
+  - `UptimeStrip` merges neighbouring buckets (`mergeBuckets`) so a bar keeps ~5 px; it never
+    overflows a narrow column.
+  - Routes: `/` overview, `/services` (every tcp/http check on every device), `/devices` (list, or graph with `?view=graph`; search and filters
     apply to both, the graph fades non-matches), `/devices/[id]`.
 - `website/`: the project website, plain HTML/CSS/JS, published by `.github/workflows/pages.yml`.
   Screenshots in `website/img/` come from demo mode, in light and dark (`<picture>`).

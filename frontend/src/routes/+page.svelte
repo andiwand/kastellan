@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { store } from '#lib/state.svelte.js';
 	import { deviceBuckets, needsAttention, statusOf, uptimeOf, type Status } from '#lib/status.js';
-	import { ago, dayClock, ms, percent, stateFor } from '#lib/format.js';
+	import { ago, ms, percent, stateFor } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
 	import StatusDot from '#lib/components/StatusDot.svelte';
@@ -9,8 +9,7 @@
 	import CircleCheck from '@lucide/svelte/icons/circle-check';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
-	import ArrowUp from '@lucide/svelte/icons/arrow-up';
-	import ArrowDown from '@lucide/svelte/icons/arrow-down';
+	import ActivityItem from '#lib/components/ActivityItem.svelte';
 
 	const devices = $derived(store.devices ?? []);
 	const counts = $derived(
@@ -217,47 +216,14 @@
 			<h2 class="mb-3 text-sm font-semibold">Last 24 hours</h2>
 			<div class="card p-2">
 				{#if store.changes.length === 0}
-					<p class="px-3 py-6 text-center text-sm text-muted">No ups and downs. A quiet day.</p>
+					<p class="px-3 py-6 text-center text-sm text-muted">
+						No ups and downs, no updates. A quiet day.
+					</p>
 				{:else}
 					<ol class="max-h-[34rem] overflow-y-auto">
-						{#each store.changes.slice(0, 40) as change (`${change.time}/${change.device}/${change.check}`)}
-							{@const device = store.byId.get(change.device)}
+						{#each store.changes.slice(0, 40) as change (`${change.kind}/${change.time}/${change.device}/${change.check}`)}
 							<li>
-								<a
-									href="/devices/{change.device}"
-									class="flex gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-surface-2"
-								>
-									<span
-										class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full"
-										style:background="color-mix(in srgb, {change.up
-											? 'var(--good)'
-											: device && !device.always_on
-												? 'var(--offline)'
-												: 'var(--critical)'} 16%, transparent)"
-										style:color={change.up
-											? 'var(--good-text)'
-											: device && !device.always_on
-												? 'var(--muted)'
-												: 'var(--critical-text)'}
-									>
-										{#if change.up}<ArrowUp class="size-3" strokeWidth={2.5} />{:else}<ArrowDown
-												class="size-3"
-												strokeWidth={2.5}
-											/>{/if}
-									</span>
-									<span class="min-w-0 flex-1 text-sm leading-snug">
-										<span class="font-medium">{device?.name ?? change.device}</span>
-										<span class="text-muted">
-											{change.check}
-											{change.up
-												? 'back up'
-												: device && !device.always_on
-													? 'went offline'
-													: 'went down'}
-										</span>
-										<span class="tabular block text-xs text-faint">{dayClock(change.time)}</span>
-									</span>
-								</a>
+								<ActivityItem {change} device={store.byId.get(change.device)} link />
 							</li>
 						{/each}
 					</ol>
