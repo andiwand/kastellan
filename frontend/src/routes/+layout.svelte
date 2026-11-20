@@ -11,6 +11,7 @@
 	import KeyRound from '@lucide/svelte/icons/key-round';
 	import FileCog from '@lucide/svelte/icons/file-cog';
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
+	import Wifi from '@lucide/svelte/icons/wifi';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import SignIn from '#lib/components/SignIn.svelte';
@@ -25,12 +26,15 @@
 		{ href: '/devices', label: 'Devices', icon: List },
 		{ href: '/services', label: 'Services', icon: Layers },
 		{ href: '/vpn', label: 'VPN', icon: KeyRound },
+		{ href: '/groups', label: 'Groups', icon: Wifi },
 		{ href: '/access', label: 'Access', icon: ShieldCheck },
 		{ href: '/config', label: 'Config', icon: FileCog }
 	] as { href: string; label: string; short?: string; icon: typeof List }[];
-	// Config and access are for admins (password hashes, keys).
+	// Config, access and groups are for admins (password hashes, keys, Wi-Fi settings).
 	const shownNav = $derived(
-		nav.filter((i) => !['/config', '/access'].includes(i.href) || store.me?.role === 'admin')
+		nav.filter(
+			(i) => !['/config', '/access', '/groups'].includes(i.href) || store.me?.role === 'admin'
+		)
 	);
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);

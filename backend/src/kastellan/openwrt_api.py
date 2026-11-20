@@ -55,6 +55,8 @@ def router(hub: Hub) -> APIRouter:
         device = hub.config.devices.get(id)
         if device is None:
             raise HTTPException(404, "no such device")
+        if configured and hub.demo:
+            raise HTTPException(409, "demo mode shows a made-up network; nothing is changed")
         if configured and device.openwrt is None:
             raise HTTPException(409, "no openwrt: for this device (set Kastellan's login up first)")
         return device
@@ -87,6 +89,8 @@ def router(hub: Hub) -> APIRouter:
 
     async def allowed(id: str) -> list[str] | None:
         """The abilities the device grants Kastellan's login now (None: can't tell)."""
+        if hub.demo:
+            return ["reboot", "services", "wifi"]
         try:
             access = await hub.ubus(id).call("session", "access", {})
         except Exception:
@@ -115,7 +119,7 @@ def router(hub: Hub) -> APIRouter:
     async def install(id: str, body: Install, request: Request) -> StreamingResponse:
         """Set the login up on the device (as root over SSH, with a password typed once)."""
         w = require_signin(request)
-        device = device_of(id)
+        device = device_of(id, configured=hub.demo)
         try:
             text = install_script(set(body.abilities), md5crypt(password_for(id)), body.services)
         except ValueError as e:

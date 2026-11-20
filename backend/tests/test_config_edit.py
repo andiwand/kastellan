@@ -325,3 +325,19 @@ def test_masking_any_yaml_style() -> None:
     for secret in ("scrypt$old", "scrypt$new", "hunter2", "hunter3", "admin:pw"):
         assert secret not in d
     assert "https://***@h/" in d
+
+
+def test_deleting_a_device_takes_it_out_of_its_groups() -> None:
+    from kastellan.config_edit import edit_device
+
+    text = """devices:
+  a: { host: 10.0.0.1, openwrt: {} }
+  b: { host: 10.0.0.2, openwrt: {} }
+groups:
+  aps: { devices: [a, b] }
+  solo: { devices: [b] }
+"""
+    out = edit_device(text, "b", None)
+    assert "solo" not in out and "devices: [a]" in out
+    out = edit_device(out, "a", None)
+    assert "groups" not in out

@@ -206,6 +206,40 @@ export interface WifiSettings {
 	}[];
 }
 
+/** A group of OpenWrt devices, lined up (openwrt/sync.py). Passwords only as fingerprints. */
+export interface GroupEntry {
+	device: string;
+	section: string;
+	radio: string | null;
+	band: string | null;
+	encryption: string | null;
+	key: string | null;
+	disabled: boolean;
+}
+export interface GroupSurvey {
+	id: string;
+	name: string;
+	members: string[];
+	errors: Record<string, string>;
+	radios: Record<string, { section: string; band: string | null; channel: string | null }[]>;
+	can_mesh: Record<string, boolean | null>;
+	networks: {
+		ssid: string;
+		on: GroupEntry[];
+		devices: string[];
+		missing: string[];
+		same_key: boolean;
+		same_encryption: boolean;
+	}[];
+	mesh: {
+		mesh_id: string;
+		on: GroupEntry[];
+		devices: string[];
+		missing: string[];
+		same_key: boolean;
+	}[];
+}
+
 export interface CollectSetup {
 	configured: boolean;
 	state: 'off' | 'waiting' | 'reading' | 'failing';
@@ -618,6 +652,8 @@ export const api = {
 		id: string,
 		changes: Record<string, Record<string, string | number | boolean | null>>
 	) => call<WifiSettings>('PUT', `/devices/${encodeURIComponent(id)}/openwrt/wifi`, { changes }),
+	groups: () => get<{ id: string; name: string; devices: string[] }[]>('/groups'),
+	group: (id: string) => get<GroupSurvey>(`/groups/${encodeURIComponent(id)}`),
 	hubKeys: () => get<HubKeys>('/ssh/keys'),
 	deviceKeys: (id: string) =>
 		get<{ everyone: boolean; login: string; keys: AuthorizedKey[] }>(

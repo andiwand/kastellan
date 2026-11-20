@@ -100,6 +100,13 @@ devices:
     kind: pc # may be off: offline, not down
     desktop: { protocol: rdp, user: andreas }
     checks: [{ tcp: 3389 }] # Windows answers no ping by default
+  ap-attic:
+    host: 192.168.1.3
+    kind: access-point
+    openwrt: {} # OpenWrt through its own API (set up from the device's page)
+
+groups: # OpenWrt devices whose Wi-Fi, mesh and root password are kept the same
+  aps: { name: Access points, devices: [ap-attic, ap-garden] }
 
 networks: # optional: names for networks, or devices in several (network: [home, vpn])
   home: { name: Home, cidr: 192.168.1.0/24 }
@@ -171,7 +178,8 @@ OpenWrt routers and access points show their state, Wi-Fi clients, package updat
 their release still gets fixes. Wi-Fi changes are applied with the device's own rollback (it
 undoes them if it can't be reached afterwards). Firmware moves one release series at a time: an
 image built for the model by OpenWrt's image builder with its packages, checked, tested on the
-device, installed keeping the settings.
+device, installed keeping the settings. A group of them (`groups:`) keeps Wi-Fi networks, the
+mesh and root's password the same: the Groups page shows where they differ and changes them on all.
 
 Host keys are pinned (trusted once on the page). Kastellan's own key can be rotated on the
 **Access** page: added and tried everywhere, then switched, then the old one removed.

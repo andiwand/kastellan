@@ -403,6 +403,16 @@ class VpnSettings(BaseModel):
     openvpn: OpenVpnSource | None = None
 
 
+class GroupSettings(BaseModel):
+    """OpenWrt devices whose settings are kept the same (openwrt/sync.py): Wi-Fi networks by
+    name, the mesh, root's password."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = ""
+    devices: list[str] = Field(min_length=1, max_length=64)
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -419,6 +429,22 @@ class Config(BaseModel):
     # calls stop, that service tells you the hub (or its host, or the internet line) is gone.
     heartbeat: str | None = Field(default=None, pattern=r"^https://[^\s]+$")
     networks: dict[str, NetworkSettings] = Field(default_factory=dict)
+    groups: dict[str, GroupSettings] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _groups(self) -> Self:
+        for gid, group in self.groups.items():
+            if not ID.match(gid):
+                raise ValueError(f"group id {gid!r}: use lowercase letters, digits, - and _")
+            for id in group.devices:
+                if id not in self.devices:
+                    raise ValueError(f"groups.{gid}: {id!r} is not a device")
+                if self.devices[id].openwrt is None:
+                    raise ValueError(f"groups.{gid}: {id!r} has no openwrt: (set its login up first)")
+            if len(set(group.devices)) != len(group.devices):
+                raise ValueError(f"groups.{gid}: a device is listed twice")
+            group.name = group.name or gid
+        return self
 
     @model_validator(mode="after")
     def _network_ids(self) -> Self:

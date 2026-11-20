@@ -28,6 +28,7 @@ import httpx
 NULL_SESSION = "0" * 32
 DENIED = -32002  # uhttpd: the session may not call that (or it has ended)
 MAX_RESPONSE = 8 * 1024 * 1024
+CONFIRM_AFTER = 5.0  # seconds between applying a Wi-Fi change and looking at the radios
 
 
 class ChangedCertificate(Exception):
@@ -499,12 +500,20 @@ def _clean(current: dict[str, Any], changes: dict[str, dict[str, Any]]) -> dict[
         clean = {
             k: check_value(k, v) for k, v in values.items() if k in allowed and v is not None and v != ""
         }
+        if kind == "wifi-iface" and sec is not None:
+            encryption = clean.get("encryption", sec.get("encryption") or "none")
+            if "key" in clean and encryption in ("none", "owe"):
+                raise ValueError(f"{section} is open (no password): choose an encryption too")
+            if encryption.startswith("sae") and re.fullmatch(r"[0-9a-fA-F]{64}", clean.get("key", "")):
+                raise ValueError("WPA3 takes a passphrase, not a 64-digit hex key")
         if clean:
             out[section] = clean
     return out
 
 
-async def change_wifi(ubus: Ubus, changes: dict[str, dict[str, Any]], confirm_after: float = 5) -> None:
+async def change_wifi(
+    ubus: Ubus, changes: dict[str, dict[str, Any]], confirm_after: float | None = None
+) -> None:
     """Set wireless options and apply them with a rollback (see apply_with_rollback)."""
     async with ubus.changing:
         s = await ubus.session_id(min_left=200)
@@ -524,7 +533,7 @@ async def change_wifi(ubus: Ubus, changes: dict[str, dict[str, Any]], confirm_af
         await apply_with_rollback(ubus, s, confirm_after)
 
 
-async def add_wifi_iface(ubus: Ubus, values: dict[str, Any], confirm_after: float = 5) -> str:
+async def add_wifi_iface(ubus: Ubus, values: dict[str, Any], confirm_after: float | None = None) -> str:
     """A new wifi-iface section (a mesh, say), checked, applied with a rollback. Its name."""
     allowed = {"device", "mode", "network", "mesh_fwding", *IFACE_FIELDS}
     clean: dict[str, str] = {}
@@ -560,15 +569,16 @@ async def _radios_up(ubus: Ubus, session: str) -> dict[str, bool]:
     }
 
 
-async def apply_with_rollback(ubus: Ubus, session: str, confirm_after: float = 5) -> None:
+async def apply_with_rollback(ubus: Ubus, session: str, confirm_after: float | None = None) -> None:
     """Apply the session's staged changes. The device undoes them by itself after 90 s unless
     confirmed, and Kastellan confirms only if it still answers and every radio that is meant to
     be on came up; otherwise it rolls back at once."""
+    wait = CONFIRM_AFTER if confirm_after is None else confirm_after
     before = await _radios_up(ubus, session)
     await ubus.call("uci", "apply", {"rollback": True, "timeout": 90}, session=session)
     broken: list[str] = []
     for _ in range(6):  # the radios restart: up to about half a minute
-        await asyncio.sleep(confirm_after)
+        await asyncio.sleep(wait)
         try:
             now = await _radios_up(ubus, session)
         except Exception:

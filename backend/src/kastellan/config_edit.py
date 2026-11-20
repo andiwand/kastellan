@@ -313,6 +313,16 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
                 rest = _take_tail(other)
                 del other["parent"]
                 _put_tail(other, rest)
+        groups = doc.get("groups")  # nor stay in a group; a group left empty goes too
+        if isinstance(groups, CommentedMap):
+            for gid in list(groups):
+                members = groups[gid].get("devices") if isinstance(groups[gid], dict) else None
+                if isinstance(members, list) and id in members:
+                    members.remove(id)
+                    if not members:
+                        del groups[gid]
+            if not len(groups):
+                del doc["groups"]
     else:
         if new and id in devices:
             raise ValueError(f"there is a device {id!r} already")

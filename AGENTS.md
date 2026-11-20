@@ -112,6 +112,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     apply with rollback + confirm; `firmware.py` advises one series step at a time from
     `.versions.json` and builds images via sysupgrade.openwrt.org. `hub._poll_routers` every
     120 s into `status.router`. Tests use a fake rpcd that enforces the real ACL.
+    `openwrt/sync.py` + `groups_api.py`: `groups:` read live (no stored desired state), networks
+    lined up by SSID, passwords as HMAC fingerprints (secret `group-fingerprints`); changes go
+    device by device as streamed jobs (`setup_run.stream_work`).
   - `setup_run.py`: running a setup once with a typed login (sudo, sudo with another password, or
     su with root's password over a pty), streamed as text, the last line `KASTELLAN-DONE {json}`;
     passwords are masked in every output line; `add_device_key` writes collect:/act:/ssh: after.

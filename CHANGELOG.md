@@ -1,13 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-20)
+
+Looking after things, not only watching them: Linux hosts through narrow doors you open
+yourself, and OpenWrt routers and access points through their own API. Tested against fakes that
+behave like the real thing (a fake Docker API, a fake rpcd enforcing the real access list), not
+yet on every real device.
 
 - OpenWrt: routers and access points through their own API with a login of Kastellan's that may
   only what you tick (read always; reboot, Wi-Fi settings, firmware, chosen services). Their state, Wi-Fi clients,
   services (running, at boot), package updates; an alarm when their release no longer gets security fixes. Wi-Fi changes
   with the device's own rollback; firmware one release series at a time, built for the model by
   OpenWrt's image builder, tested on the device, settings kept.
-
+- Groups of OpenWrt devices (`groups:` in config.yaml, the Groups page): their Wi-Fi networks
+  lined up by name, where passwords or encryption differ or a network is missing; a network's
+  name, password and encryption, the mesh (set where it is, added on a chosen radio where it
+  isn't) and root's password changed on every member at once, each with its own rollback.
 - Setting up a door (collector, actor, SSH access) in a dialog: your login, root through sudo
   (also with another password) or su with root's password, the output live, then done; or the
   commands to run yourself.

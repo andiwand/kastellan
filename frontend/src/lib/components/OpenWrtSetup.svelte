@@ -105,7 +105,8 @@
 						{/each}
 					</div>
 					<p class="mt-1 text-xs text-faint">
-						rpcd and uhttpd (Kastellan's way in) can only be restarted, never stopped.
+						rpcd and uhttpd (Kastellan's way in), the firewall and the network can only be
+						restarted, never stopped.
 					</p>
 				{:else}
 					<p class="mt-1 text-xs text-muted">

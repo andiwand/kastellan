@@ -118,7 +118,7 @@
 					{fw.supported ? 'A newer release:' : `OpenWrt ${fw.series} gets no more security fixes;`}
 					next step {fw.next_step}
 				</span>
-				<span class="text-xs text-muted">(current: {fw.stable} and {fw.oldstable})</span>
+				<span class="text-xs text-muted">(supported: {fw.stable} and {fw.oldstable})</span>
 				{#if canChange}
 					<button class="{button} ml-2" onclick={() => (firmwareOpen = true)}>
 						Update firmware…

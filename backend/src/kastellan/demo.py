@@ -24,6 +24,7 @@ from .versions import Versions
 
 CONFIG = {
     "check_interval": 15,
+    "groups": {"aps": {"name": "Access points", "devices": ["repeater-living", "repeater-attic"]}},
     "devices": {
         "fritzbox": {
             "name": "FRITZ!Box 7590",
@@ -45,6 +46,7 @@ CONFIG = {
             "kind": "access-point",
             "parent": "fritzbox",
             "tags": ["mesh"],
+            "openwrt": {},
         },
         "repeater-attic": {
             "name": "Repeater attic",
@@ -52,6 +54,7 @@ CONFIG = {
             "kind": "access-point",
             "parent": "repeater-living",
             "tags": ["mesh"],
+            "openwrt": {},
         },
         "nas": {
             "name": "NAS",
@@ -434,3 +437,156 @@ class Demo:
                     r = self.result(id, check, t)
                     rows.append(Row(t, id, check.name, r.up, r.latency_ms, r.detail))
         history.extend(rows)
+
+
+# The demo's OpenWrt access points (see hub._poll_routers).
+def _router(hostname: str, model: str, version: str, clients: list[tuple[str, int]], up: int) -> dict:
+    return {
+        "board": {
+            "model": model,
+            "hostname": hostname,
+            "board_name": "cudy,wr3000-v1",
+            "release": {"version": version, "revision": "r23630-842932a63d", "target": "mediatek/filogic"},
+            "kernel": "5.15.137",
+            "rootfs_type": "squashfs",
+        },
+        "system": {"uptime": up, "load": [0.04, 0.06, 0.01], "memory": {"total": 2.6e8, "available": 1.9e8}},
+        "radios": [
+            {
+                "name": "radio0",
+                "up": True,
+                "disabled": False,
+                "band": "2g",
+                "channel": 6,
+                "htmode": "HE20",
+                "interfaces": [
+                    {
+                        "section": "default_radio0",
+                        "ifname": "phy0-ap0",
+                        "ssid": "Castle",
+                        "mode": "ap",
+                        "clients": [
+                            {"mac": "3c:22:fb:10:aa:01", "name": n, "signal": s} for n, s in clients[:1]
+                        ],
+                    }
+                ],
+            },
+            {
+                "name": "radio1",
+                "up": True,
+                "disabled": False,
+                "band": "5g",
+                "channel": 36,
+                "htmode": "HE80",
+                "interfaces": [
+                    {
+                        "section": "default_radio1",
+                        "ifname": "phy1-ap0",
+                        "ssid": "Castle",
+                        "mode": "ap",
+                        "clients": [
+                            {"mac": f"3c:22:fb:10:bb:0{i}", "name": n, "signal": s}
+                            for i, (n, s) in enumerate(clients[1:])
+                        ],
+                    },
+                    {
+                        "section": "mesh1",
+                        "ifname": "phy1-mesh0",
+                        "ssid": "castle-mesh",
+                        "mode": "mesh",
+                        "clients": [],
+                    },
+                ],
+            },
+        ],
+        "services": [
+            {"name": "dropbear", "enabled": True, "running": True},
+            {"name": "firewall", "enabled": True, "running": True},
+            {"name": "network", "enabled": True, "running": True},
+            {"name": "openvpn", "enabled": False, "running": False},
+            {"name": "rpcd", "enabled": True, "running": True},
+            {"name": "uhttpd", "enabled": True, "running": True},
+        ],
+        "services_allowed": ["dropbear", "openvpn"],
+        "packages": ["curl - 8.6.0-1 - 8.6.0-2", "libopenssl3 - 3.0.13-1 - 3.0.15-1"],
+        "packages_checked": None,
+        "firmware": {
+            "current": version,
+            "series": version.rsplit(".", 1)[0],
+            "supported": False,
+            "newest_in_series": "23.05.6",
+            "next_step": "23.05.6",
+            "stable": "25.12.6",
+            "oldstable": "24.10.8",
+        },
+        "errors": {},
+    }
+
+
+ROUTER = {
+    "repeater-living": _router(
+        "living",
+        "Cudy WR3000 v1",
+        "23.05.2",
+        [("Kitchen speaker", -61), ("Pixel 9", -48), ("MacBook", -55)],
+        9 * 86400,
+    ),
+    "repeater-attic": _router("attic", "Cudy WR3000 v1", "23.05.2", [("Camera attic", -70)], 9 * 86400),
+}
+
+
+def _entry(device: str, section: str, band: str, key: str = "k1") -> dict:
+    return {
+        "device": device,
+        "section": section,
+        "radio": "radio0" if band == "2g" else "radio1",
+        "band": band,
+        "encryption": "sae-mixed",
+        "key": key,
+        "disabled": False,
+    }
+
+
+GROUP = {
+    "members": ["repeater-attic", "repeater-living"],
+    "errors": {},
+    "radios": {
+        d: [
+            {"section": "radio0", "band": "2g", "channel": "6"},
+            {"section": "radio1", "band": "5g", "channel": "36"},
+        ]
+        for d in ("repeater-attic", "repeater-living")
+    },
+    "can_mesh": {"repeater-attic": True, "repeater-living": True},
+    "networks": [
+        {
+            "ssid": "Castle",
+            "on": [
+                _entry(d, f"default_radio{r}", b, "k1" if d == "repeater-living" else "k2")
+                for d in ("repeater-attic", "repeater-living")
+                for r, b in ((0, "2g"), (1, "5g"))
+            ],
+            "devices": ["repeater-attic", "repeater-living"],
+            "missing": [],
+            "same_key": False,
+            "same_encryption": True,
+        },
+        {
+            "ssid": "Castle guests",
+            "on": [_entry("repeater-living", "guest", "2g")],
+            "devices": ["repeater-living"],
+            "missing": ["repeater-attic"],
+            "same_key": True,
+            "same_encryption": True,
+        },
+    ],
+    "mesh": [
+        {
+            "mesh_id": "castle-mesh",
+            "on": [_entry(d, "mesh1", "5g") for d in ("repeater-attic", "repeater-living")],
+            "devices": ["repeater-attic", "repeater-living"],
+            "missing": [],
+            "same_key": True,
+        }
+    ],
+}

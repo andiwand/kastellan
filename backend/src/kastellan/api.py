@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 
 from . import __version__, checks, stats
 from .access_api import router as access_router
@@ -20,6 +21,7 @@ from .auth_api import router as auth_router
 from .config import Check, Device
 from .config_api import router as config_router
 from .desktop_api import router as desktop_router
+from .groups_api import router as groups_router
 from .host_api import router as host_router
 from .hub import Hub
 from .monitor import CheckStatus
@@ -52,6 +54,13 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         openapi_url="/api/openapi.json",
     )
     app.state.hub = hub
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Which field and why, never what was sent: it may be a password.
+        detail = [{k: e[k] for k in ("loc", "msg", "type") if k in e} for e in exc.errors()]
+        return JSONResponse({"detail": detail}, status_code=422)
+
     app.add_middleware(Guard, hub=hub)
     app.include_router(auth_router(hub))
     app.include_router(terminal_router(hub))
@@ -64,6 +73,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(host_router(hub))
     app.include_router(act_router(hub))
     app.include_router(openwrt_router(hub))
+    app.include_router(groups_router(hub))
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:

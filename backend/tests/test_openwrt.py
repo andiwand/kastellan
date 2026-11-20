@@ -89,6 +89,9 @@ class FakeRpcd:
         self.radio_up = True  # after applying
         self.applied = False
         self.rolled_back = False
+        self.mesh = True
+        self.break_on_apply = False
+        self.added = 0
 
     def file_allowed(self, path: str, function: str) -> bool:
         """rpcd's `file` scope: a path and what may be done with it."""
@@ -188,20 +191,37 @@ class FakeRpcd:
             ("rpc-sys", "packagelist"): {"packages": {"luci": "1", "wpad-basic-wolfssl": "1"}},
             ("rpc-sys", "upgrade_test"): {"code": 0},
             ("rpc-sys", "upgrade_start"): {},
+            ("rpc-sys", "password_set"): {},
+            ("luci", "getFeatures"): {
+                "wpasupplicant": {"sae": True} | ({} if self.mesh is None else {"mesh": self.mesh})
+            },
         }
         if (obj, method) == ("file", "exec") and args["command"].endswith("/service"):
             return httpx.Response(200, json={"result": [0, {"code": 0, "stdout": " ".join(args["params"])}]})
         if (obj, method) == ("uci", "set"):
             self.staged.setdefault(args["section"], {}).update(args["values"])
+        if (obj, method) == ("uci", "add"):
+            self.added += 1
+            name = f"cfg{self.added:02x}"
+            self.staged[name] = {".type": args["type"], **args["values"]}
+            return httpx.Response(200, json={"result": [0, {"section": name}]})
         if (obj, method) == ("uci", "apply"):
             self.applied = True
+            if self.break_on_apply:
+                self.radio_up = False
         if (obj, method) == ("uci", "rollback"):
-            self.rolled_back, self.staged = True, {}
-        if (obj, method) == ("network.wireless", "status") and self.applied and not self.radio_up:
-            return httpx.Response(200, json={"result": [0, {"radio0": {"up": False}}]})
+            self.rolled_back, self.staged, self.applied = True, {}, False
+        if (obj, method) == ("network.wireless", "status") and self.applied:
+            ifaces = {
+                **{n: v for n, v in self.wireless.items() if v.get(".type") == "wifi-iface"},
+                **self.staged,
+            }
+            radio = {"up": self.radio_up, "interfaces": [{"section": n, "ifname": f"if-{n}"} for n in ifaces]}
+            return httpx.Response(200, json={"result": [0, {"radio0": radio}]})
         if (obj, method) == ("uci", "confirm"):
             for sec, vals in self.staged.items():
-                self.wireless[sec].update(vals)
+                self.wireless.setdefault(sec, {}).update(vals)
+            self.staged = {}
         return httpx.Response(200, json={"result": [0, answers.get((obj, method), {})]})
 
 
@@ -477,3 +497,69 @@ async def test_pinning_checks_the_certificate_itself(tmp_path: Path) -> None:
         assert not any(got)  # the password was never sent
         pins.set("r", hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest())
         assert await u.session_id() == "s"  # expired, but the very certificate
+
+
+async def test_a_group_lined_up_and_changed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kastellan.openwrt import sync
+
+    monkeypatch.setattr(ow, "CONFIRM_AFTER", 0)
+
+    devices = {n: FakeRpcd(["kastellan-wifi", "kastellan-password"]) for n in ("wifi1", "wifi2", "wifi3")}
+    devices["wifi2"].wireless["default_radio0"]["key"] = "another1"
+    devices["wifi3"].wireless["default_radio0"]["ssid"] = "elsewhere"
+    devices["wifi3"].mesh = False
+    members = {n: ubus(tmp_path / n, r) for n, r in devices.items()}
+    found = await sync.survey(members, b"salt")
+    home = next(n for n in found["networks"] if n["ssid"] == "home")
+    assert home["devices"] == ["wifi1", "wifi2"] and home["missing"] == ["wifi3"]
+    assert not home["same_key"] and "secret1" not in json.dumps(found)
+    assert found["can_mesh"] == {"wifi1": True, "wifi2": True, "wifi3": False}
+
+    out = await sync.change_network(members, "home", {"key": "together1"})
+    assert out == {"wifi1": "done", "wifi2": "done", "wifi3": "doesn't have it"}
+    assert (await sync.survey(members, b"salt"))["networks"][0]["same_key"]
+
+    # A member that can't do mesh stops it before anything changes.
+    out = await sync.set_mesh(
+        members, "backhaul", "meshpass1", {"wifi1": "radio0", "wifi3": "radio0"}, wait=0
+    )
+    assert out["wifi3"].startswith("failed") and "wpad" in out["wifi3"] and out["wifi1"] == "not changed"
+    assert not any(m in ("set", "add") for d in devices.values() for _, m, _ in d.calls if _ == "uci")
+
+    out = await sync.set_mesh(
+        members, "backhaul", "meshpass1", {"wifi1": "radio0", "wifi2": "radio0"}, wait=0
+    )
+    assert out == {
+        "wifi1": "added on radio0",
+        "wifi2": "added on radio0",
+        "wifi3": "left out (no mesh, no radio chosen)",
+    }
+    mesh = next(s for s in devices["wifi1"].wireless.values() if s.get("mode") == "mesh")
+    assert mesh["mesh_id"] == "backhaul" and mesh["encryption"] == "sae"
+    for d in ("wifi1", "wifi2"):
+        assert [a for _, m, a in devices[d].calls if m == "apply"][-1] == {"rollback": True, "timeout": 120}
+
+    # A member that doesn't come back: undone on all.
+    devices["wifi2"].break_on_apply = True
+    out = await sync.set_mesh(members, "backhaul2", "meshpass2", {}, wait=0, deadline=0.05)
+    assert out["wifi1"].startswith("failed: undone on all") and devices["wifi1"].rolled_back
+    assert (
+        next(s for s in devices["wifi1"].wireless.values() if s.get("mode") == "mesh")["mesh_id"]
+        == "backhaul"
+    )
+    devices["wifi2"].break_on_apply, devices["wifi2"].radio_up = False, True
+    out = await sync.set_mesh(members, "backhaul2", "meshpass2", {}, wait=0)
+    assert out["wifi1"] == out["wifi2"] == "set"
+
+    # One fixed channel on every mesh radio.
+    devices["wifi2"].wireless["radio0"]["channel"] = "auto"
+    with pytest.raises(ValueError, match="fixed channel"):
+        await sync.set_mesh(members, "backhaul2", "meshpass2", {}, wait=0)
+    out = await sync.set_mesh(members, "backhaul2", "meshpass2", {}, channel="44", wait=0)
+    assert devices["wifi2"].wireless["radio0"]["channel"] == "44"
+
+    devices["wifi1"].mesh = None  # LuCI before 24.10 doesn't say
+    assert await sync.can_mesh(members["wifi1"]) is None
+
+    assert all(o.startswith("sent") for o in (await sync.set_root_password(members, "rootpass1")).values())
+    assert ("rpc-sys", "password_set", {"user": "root", "password": "rootpass1"}) in devices["wifi2"].calls

@@ -457,7 +457,11 @@ class Hub:
                     self._note_firmware(id, f"OpenWrt {firmware}", datetime.now(UTC))
 
         while True:
-            if not self.demo:
+            if self.demo:  # the made-up network's made-up access points
+                for id, report in demo.ROUTER.items():
+                    if status := self.monitor.status.get(id):
+                        status.router, status.router_checked = report, datetime.now(UTC)
+            else:
                 routers = [(id, d) for id, d in list(self.config.devices.items()) if d.openwrt]
                 await asyncio.gather(*(one(id, d) for id, d in routers), return_exceptions=True)
             await asyncio.sleep(ROUTER_EVERY)
