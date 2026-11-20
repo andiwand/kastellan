@@ -38,6 +38,7 @@ class CheckForm(BaseModel):
     tls: bool | None = None
     interval: float | None = Field(default=None, ge=5, le=86400)
     timeout: float | None = Field(default=None, gt=0, le=60)
+    exposed: bool = False
 
 
 class DeviceForm(BaseModel):
@@ -53,6 +54,65 @@ class DeviceForm(BaseModel):
 
 class NewDevice(DeviceForm):
     id: str = Field(min_length=1, max_length=64)
+
+
+KEEP = "__keep__"  # in a form: "leave this secret as it is" (it is never sent to the page)
+
+# The forms on the Config page, Groups and VPN: each a part of config.yaml, by top-level keys.
+SECTIONS: dict[str, tuple[str, ...]] = {
+    "general": ("check_interval", "retention_days", "heartbeat"),
+    "alarms": ("alarms",),
+    "notify": ("notify",),
+    "vulns": ("vulns",),
+    "vpn": ("vpn",),
+    "networks": ("networks",),
+    "groups": ("groups",),
+    "users": ("users",),
+}
+
+
+class SecretBody(BaseModel):
+    value: str = Field(min_length=1, max_length=4096)
+
+
+class SectionBody(BaseModel):
+    value: dict[str, Any]  # the section's top-level keys and their values
+    version: str  # from GET /api/settings: saving over a change made since is refused
+
+
+HIDDEN = "__keep__"
+
+
+def _hide_password(url: str) -> str:
+    """smtps://user:secret@host → smtps://user:__keep__@host (the page never gets it)."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    if parts.password is None:
+        return url
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit(parts._replace(netloc=f"{parts.username or ''}:{HIDDEN}@{host}"))
+
+
+def _restore_password(url: str, old: str) -> str:
+    """The password from `old` back into `url`, if the server and user stayed the same."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    new, was = urlsplit(url), urlsplit(old)
+    if (new.username, new.hostname, new.port) != (was.username, was.hostname, was.port):
+        raise HTTPException(400, "the mail server changed: enter its password again")
+    host = new.netloc.rsplit("@", 1)[1]
+    return urlunsplit(new._replace(netloc=f"{new.username or ''}:{was.password or ''}@{host}"))
+
+
+def _first_problem(e: Exception) -> str:
+    """A validation error as one line: where, and what."""
+    errors = getattr(e, "errors", None)
+    if callable(errors):
+        first = errors()[0]
+        where = ".".join(str(p) for p in first.get("loc", ()))
+        return f"{where}: {first.get('msg', '')}".strip(": ")
+    return str(e)
 
 
 def router(hub: Hub) -> APIRouter:
@@ -160,6 +220,187 @@ def router(hub: Hub) -> APIRouter:
             raise HTTPException(400, str(e)) from e
         return {"id": id, "version": save(request, w, old, text, what, device=id)}
 
+    # --- Settings as forms ---------------------------------------------------------------------
+
+    def has_secret(name: str) -> bool:
+        try:
+            hub.secrets.get(name)
+        except (KeyError, ValueError, OSError):
+            return False
+        return True
+
+    def _masked(config) -> dict[str, Any]:
+        """What the forms show: everything but secrets (tokens, keys, password hashes)."""
+        data = config.model_dump(mode="json")
+        for i, channel in enumerate(data["notify"]):
+            channel["_id"] = i  # which channel it is: its secrets go back to it only
+            if channel.get("token"):
+                channel["token"] = KEEP
+            if channel.get("smtp"):
+                channel["smtp"] = _hide_password(channel["smtp"])
+            if channel.get("webhook"):  # a Discord or Slack hook URL is its own secret
+                channel["webhook"] = KEEP
+        if data["vulns"].get("nvd_api_key"):
+            data["vulns"]["nvd_api_key"] = KEEP
+        data["users"] = {name: {"role": u["role"]} for name, u in data["users"].items()}
+        return {name: {key: data.get(key) for key in keys} for name, keys in SECTIONS.items()}
+
+    @api.get("/settings")
+    def get_settings(request: Request, response: Response) -> dict[str, Any]:
+        guard(request)
+        response.headers["Cache-Control"] = "no-store"
+        from .hub import ConfigProblem
+
+        text = current()
+        try:
+            config = hub.check(text)
+        except ConfigProblem as e:
+            raise HTTPException(409, f"config.yaml has a problem; fix it in the file: {e.message}") from e
+        names = {"wg-easy"} | ({config.vpn.wireguard.password_secret} if config.vpn.wireguard else set())
+        secrets = {name: has_secret(name) for name in names}
+        return {"version": config_edit.version_of(text), "sections": _masked(config), "secrets": secrets}
+
+    def _unmask(section: str, value: dict[str, Any], old_config) -> dict[str, Any]:
+        """Secrets left as KEEP get their current value back; users get password hashes."""
+        from .auth import hash_password
+
+        if section == "notify":
+            old = old_config.notify
+            for ch in value.get("notify") or []:
+                if not isinstance(ch, dict):
+                    raise HTTPException(400, "notify: a list of channels")
+                i = ch.pop("_id", None)
+                was = old[i] if isinstance(i, int) and 0 <= i < len(old) else None
+                kind = next(
+                    (k for k in ("ntfy", "webhook", "gotify", "telegram", "email") if ch.get(k)), None
+                )
+                # The same channel: the same kind, and (where it shows) the same address.
+                same = was is not None and was.kind == kind
+                if ch.get("webhook") == KEEP:
+                    ch["webhook"] = was.webhook if same and was else None
+                    if not ch["webhook"]:
+                        raise HTTPException(400, "a webhook channel needs its URL again")
+                target = ch.get(kind) if kind else None
+                same = same and str(getattr(was, kind)) == str(target)
+                if ch.get("token") == KEEP:
+                    if not same:
+                        raise HTTPException(
+                            400, f"the {kind or 'channel'} channel's address changed: enter its token again"
+                        )
+                    ch["token"] = was.token
+                if isinstance(ch.get("smtp"), str) and HIDDEN in ch["smtp"]:
+                    if not (same and was.smtp):
+                        raise HTTPException(400, "the mail server changed: enter its password again")
+                    ch["smtp"] = _restore_password(ch["smtp"], was.smtp)
+        if section == "vulns" and (value.get("vulns") or {}).get("nvd_api_key") == KEEP:
+            value["vulns"]["nvd_api_key"] = old_config.vulns.nvd_api_key
+        if section == "users":
+            users = {}
+            for name, u in (value.get("users") or {}).items():
+                if not isinstance(u, dict) or not re.match(r"^[a-z0-9][a-z0-9_.-]{0,31}$", str(name)):
+                    raise HTTPException(400, f"{name!r}: user names are lowercase letters, digits, . _ -")
+                password = u.get("password")
+                if password:
+                    if len(password) < 10:
+                        raise HTTPException(400, f"{name}: a password of at least 10 characters")
+                    stored = hash_password(password)
+                elif name in old_config.users:
+                    stored = old_config.users[name].password
+                else:
+                    raise HTTPException(400, f"{name}: a new user needs a password")
+                users[name] = {"role": u.get("role", "observer"), "password": stored}
+            value["users"] = users
+        return value
+
+    def _compact(section: str, value: dict[str, Any]) -> dict[str, Any]:
+        """Defaults left out, so config.yaml says only what differs."""
+        from .config import (
+            AlarmSettings,
+            Config,
+            GroupSettings,
+            NetworkSettings,
+            NotifyChannel,
+            VpnSettings,
+            VulnSettings,
+        )
+
+        def dump(model, v):
+            return model.model_validate(v).model_dump(mode="json", exclude_defaults=True)
+
+        try:
+            if section == "general":
+                defaults = Config()
+                return {
+                    k: (None if v in (None, "") or v == getattr(defaults, k) else v) for k, v in value.items()
+                }
+            if section == "alarms":
+                return {"alarms": dump(AlarmSettings, value.get("alarms") or {}) or None}
+            if section == "vulns":
+                return {"vulns": dump(VulnSettings, value.get("vulns") or {}) or None}
+            if section == "vpn":
+                return {"vpn": dump(VpnSettings, value.get("vpn") or {}) or None}
+            if section == "notify":
+                return {"notify": [dump(NotifyChannel, c) for c in value.get("notify") or []] or None}
+            if section == "networks":
+                nets = value.get("networks") or {}
+                return {"networks": {k: dump(NetworkSettings, v) for k, v in nets.items()} or None}
+            if section == "groups":
+                groups = value.get("groups") or {}
+                out = {k: dump(GroupSettings, v) for k, v in groups.items()}
+                for k, g in out.items():  # a name like the id says nothing more
+                    if g.get("name") == k:
+                        del g["name"]
+                return {"groups": out or None}
+        except ValueError as e:  # pydantic's ValidationError is one
+            raise HTTPException(400, _first_problem(e)) from e
+        return value
+
+    @api.put("/settings/{section}")
+    async def put_settings(section: str, body: SectionBody, request: Request) -> dict[str, Any]:
+        w = guard(request)
+        keys = SECTIONS.get(section)
+        if keys is None:
+            raise HTTPException(404, "no such section")
+        old = current()
+        if body.version != config_edit.version_of(old):
+            raise HTTPException(409, "config.yaml changed since the form was opened; open it again")
+        from .hub import ConfigProblem
+
+        try:
+            old_config = hub.check(old)
+        except ConfigProblem as e:
+            raise HTTPException(409, f"config.yaml has a problem; fix it in the file: {e.message}") from e
+        unknown = set(body.value) - set(keys)
+        if unknown:
+            raise HTTPException(400, f"not part of {section}: {', '.join(sorted(unknown))}")
+        try:
+            value = _compact(section, _unmask(section, dict(body.value), old_config))
+        except (AttributeError, TypeError) as e:  # a list where a mapping belongs, say
+            raise HTTPException(400, f"{section}: not the shape it has") from e
+        text = old
+        try:
+            for key in keys:
+                if key in value:
+                    text = config_edit.set_top(text, key, value[key])
+        except YAMLError as e:
+            raise HTTPException(400, f"config.yaml can't be read: {yaml_problem(e)}") from e
+        return {"version": save(request, w, old, text, f"settings.{section}")}
+
+    @api.put("/secrets/{name}")
+    async def put_secret(name: str, body: SecretBody, request: Request) -> dict[str, Any]:
+        """A secret (a password Kastellan uses, e.g. wg-easy's), written only: never shown."""
+        w = guard(request)
+        wg = hub.config.vpn.wireguard
+        if name not in {"wg-easy", *((wg.password_secret,) if wg else ())}:
+            # Only the ones the forms set; the others (OpenWrt logins, ...) are Kastellan's own.
+            raise HTTPException(403, "that secret isn't set from here")
+        try:
+            hub.secrets.set(name, body.value)
+        except (ValueError, OSError) as e:
+            raise HTTPException(400, str(e)) from e
+        hub.audit.record("secret.set", w.user, client_address(request.scope), secret=name)
+        return {"set": True}
+
     @api.post("/devices")
     async def add_device(body: NewDevice, request: Request) -> dict[str, Any]:
         return edit(request, body.id, form_fields(body), True, "device.add", body.version)
@@ -202,6 +443,7 @@ def router(hub: Hub) -> APIRouter:
                     "tls": c.tls,
                     "interval": c.interval,
                     "timeout": c.timeout,
+                    "exposed": c.exposed,
                 }
             )
         return {

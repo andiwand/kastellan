@@ -4,6 +4,7 @@ export interface CheckStatus {
 	name: string;
 	type: 'ping' | 'tcp' | 'http';
 	target: string | number | null;
+	exposed?: boolean; // reachable from the internet (this service)
 	up?: boolean | null;
 	latency_ms?: number | null;
 	detail?: string;
@@ -204,6 +205,55 @@ export interface WifiSettings {
 		mode: string | null;
 		network: string | string[] | null;
 	}[];
+}
+
+/** config.yaml's settings as forms (config_api.py); secrets come as KEEP, never their value. */
+export const KEEP = '__keep__';
+export interface NotifyChannelForm {
+	ntfy?: string | null;
+	webhook?: string | null;
+	gotify?: string | null;
+	telegram?: string | number | null;
+	email?: string | null;
+	smtp?: string | null;
+	sender?: string | null;
+	token?: string | null;
+	min: 'info' | 'warning' | 'critical';
+	quiet?: string | null;
+	_id?: number; // which channel it was when loaded: its secrets go back to it only
+}
+export interface Settings {
+	version: string;
+	secrets: Record<string, boolean>;
+	sections: {
+		general: { check_interval: number; retention_days: number; heartbeat: string | null };
+		alarms: {
+			alarms: {
+				down_after: number;
+				cert_days: number;
+				disk_warning: number;
+				disk_critical: number;
+				disk_temperature: number;
+			};
+		};
+		notify: { notify: NotifyChannelForm[] };
+		vulns: { vulns: { enabled: boolean; every_hours: number; nvd_api_key: string | null } };
+		vpn: {
+			vpn: {
+				wireguard: { wg_easy: string; user: string; password_secret: string } | null;
+				openvpn: {
+					mode: 'restricted' | 'direct';
+					pki: string;
+					server: string | null;
+					days: number;
+					[k: string]: unknown;
+				} | null;
+			};
+		};
+		networks: { networks: Record<string, { name: string; cidr: string | null }> };
+		groups: { groups: Record<string, { name: string; devices: string[] }> };
+		users: { users: Record<string, { role: 'admin' | 'observer'; password?: string }> };
+	};
 }
 
 /** A group of OpenWrt devices, lined up (openwrt/sync.py). Passwords only as fingerprints. */
@@ -418,6 +468,7 @@ export interface CheckForm {
 	tls?: boolean | null;
 	interval?: number | null;
 	timeout?: number | null;
+	exposed?: boolean; // this service is reachable from the internet
 }
 
 /** A device as config.yaml has it: what the form edits; the rest of it stays as it is. */
@@ -652,7 +703,13 @@ export const api = {
 		id: string,
 		changes: Record<string, Record<string, string | number | boolean | null>>
 	) => call<WifiSettings>('PUT', `/devices/${encodeURIComponent(id)}/openwrt/wifi`, { changes }),
-	groups: () => get<{ id: string; name: string; devices: string[] }[]>('/groups'),
+	groups: () =>
+		get<{ id: string; name: string; devices: string[]; openwrt: string[] }[]>('/groups'),
+	settings: () => get<Settings>('/settings'),
+	putSettings: (section: keyof Settings['sections'], value: object, version: string) =>
+		call<{ version: string }>('PUT', `/settings/${section}`, { value, version }),
+	putSecret: (name: string, value: string) =>
+		call<{ set: boolean }>('PUT', `/secrets/${encodeURIComponent(name)}`, { value }),
 	group: (id: string) => get<GroupSurvey>(`/groups/${encodeURIComponent(id)}`),
 	hubKeys: () => get<HubKeys>('/ssh/keys'),
 	deviceKeys: (id: string) =>

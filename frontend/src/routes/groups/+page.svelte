@@ -2,11 +2,41 @@
 	import { api, type GroupSurvey } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import JobDialog from '#lib/components/JobDialog.svelte';
+	import GroupDialog from '#lib/components/GroupDialog.svelte';
+	import StatusDot from '#lib/components/StatusDot.svelte';
+	import KindIcon from '#lib/components/KindIcon.svelte';
+	import { settings, copy } from '#lib/settings.svelte.js';
+	import { statusOf } from '#lib/status.js';
+	import Plus from '@lucide/svelte/icons/plus';
+	import { onMount } from 'svelte';
 
-	/** Groups of OpenWrt devices (`groups:` in config.yaml): their Wi-Fi networks lined up by
-	 * name, the mesh, root's password; each changed on every member at once. The devices are
-	 * the truth: nothing here is stored, it is read from them. */
-	let groups = $state<{ id: string; name: string; devices: string[] }[] | null>(null);
+	/** Groups of devices (`groups:` in config.yaml), any kind. For their OpenWrt members: Wi-Fi
+	 * networks lined up by name, the mesh, root's password, each changed on all at once. The
+	 * devices are the truth: nothing of that is stored, it is read from them. */
+	let groups = $state<{ id: string; name: string; devices: string[]; openwrt: string[] }[] | null>(
+		null
+	);
+	let editing = $state<{ id: string | null } | null>(null);
+	let deleting = $state<string | null>(null);
+	let deleteError = $state<string | null>(null);
+
+	async function remove(gid: string) {
+		if (!settings.data) return;
+		deleteError = null;
+		try {
+			const all = copy(settings.data.sections.groups.groups ?? {});
+			delete all[gid];
+			await settings.save('groups', { groups: all });
+			deleting = null;
+			await load();
+		} catch (e) {
+			deleteError = (e as Error).message;
+		}
+	}
+
+	onMount(() => {
+		if (canChange) settings.use();
+	});
 	let surveys = $state<Record<string, GroupSurvey | { error: string }>>({});
 	let error = $state<string | null>(null);
 
@@ -35,7 +65,7 @@
 		error = null;
 		try {
 			groups = await api.groups();
-			await Promise.all(groups.map((g) => survey(g.id)));
+			await Promise.all(groups.filter((g) => g.openwrt.length).map((g) => survey(g.id)));
 		} catch (e) {
 			error = (e as Error).message;
 		}
@@ -74,8 +104,7 @@
 	const input =
 		'h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm outline-none focus:border-accent';
 	const label = 'flex flex-col gap-1 text-xs font-medium text-muted';
-	const small =
-		'inline-flex h-8 items-center rounded-lg border border-line px-3 text-xs font-medium hover:border-line-strong disabled:opacity-50';
+	const small = 'btn btn-sm';
 	const ENCRYPTIONS = [
 		['sae', 'WPA3'],
 		['sae-mixed', 'WPA2/WPA3'],
@@ -89,140 +118,207 @@
 
 <svelte:head><title>Groups · Kastellan</title></svelte:head>
 
-<h1 class="text-2xl font-semibold tracking-tight">Groups</h1>
-<p class="mt-1 max-w-2xl text-sm text-muted">
-	OpenWrt devices whose Wi-Fi, mesh and root password are kept the same. Read from the devices
-	themselves; a change goes to every member with its rollback (the mesh to all of them at once, so
-	none is cut off). Passwords are only compared, never shown.
-</p>
+<div class="flex flex-wrap items-end justify-between gap-4">
+	<div>
+		<h1 class="text-2xl font-semibold tracking-tight">Groups</h1>
+		<p class="mt-1 max-w-2xl text-sm text-muted">
+			Devices that belong together, any kind. For OpenWrt members, a group also keeps Wi-Fi, the
+			mesh and root's password the same: read from the devices, changed on all of them with a
+			rollback. Passwords are only compared, never shown.
+		</p>
+	</div>
+	{#if canChange && store.editBlocked === null}
+		<button class="btn btn-primary" onclick={() => (editing = { id: null })}>
+			<Plus class="size-4" /> New group
+		</button>
+	{/if}
+</div>
 
 {#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
 {#if groups && !groups.length}
-	<div class="card mt-6 p-5 text-sm">
-		<p>No groups yet. Add one to config.yaml (devices with Kastellan's OpenWrt login):</p>
-		<pre class="mt-3 rounded-lg bg-surface-2 p-3 font-mono text-xs">groups:
-  aps:
-    name: Access points
-    devices: [wifi1, wifi2, wifi3]</pre>
+	<div class="card mt-6 p-8 text-center text-sm text-muted">
+		No groups yet. A group gathers devices that belong together: the access points, the servers of a
+		rack, the cameras.
 	</div>
 {/if}
 
 {#each groups ?? [] as g (g.id)}
 	{@const s = surveys[g.id]}
 	<section class="card mt-6 p-5">
-		<div class="flex flex-wrap items-baseline justify-between gap-2">
-			<h2 class="text-base font-semibold">{g.name}</h2>
-			<p class="text-xs text-muted">
-				{#each g.devices as id, i (id)}{i ? ', ' : ''}<a
-						class="hover:underline"
-						href="/devices/{id}"
-					>
-						{name(id)}
-					</a>{/each}
-				· <button class="underline" onclick={() => survey(g.id)}>read again</button>
-			</p>
-		</div>
-
-		{#if !s}
-			<p class="mt-3 text-sm text-muted">Reading the devices…</p>
-		{:else if 'error' in s}
-			<p class="mt-3 text-sm" style:color="var(--critical-text)">{s.error}</p>
-		{:else}
-			{#each Object.entries(s.errors) as [id, why] (id)}
-				<p class="mt-2 text-xs" style:color="var(--warning-text)">
-					{name(id)}: {why}{why.includes('not allowed') ? ' (tick Wi-Fi in its OpenWrt setup)' : ''}
-				</p>
-			{/each}
-
-			<h3 class="mt-5 text-xs font-medium text-muted">Wi-Fi networks</h3>
-			<ul class="mt-2 divide-y divide-line">
-				{#each s.networks as net (net.ssid)}
-					<li class="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
-						<span class="font-medium">{net.ssid}</span>
-						<span class="text-xs text-muted">
-							{net.devices.map(name).join(', ')}
-							· {[...new Set(net.on.map((e) => e.band).filter(Boolean))].join(' + ')}
-							· {[
-								...new Set(net.on.map((e) => ENCRYPTION_NAME[e.encryption ?? ''] ?? e.encryption))
-							].join(' / ')}
-						</span>
-						<span class="text-xs">
-							{#if !net.same_key}<span style:color="var(--warning-text)">passwords differ</span>
-							{:else}<span style:color="var(--good-text)">same password</span>{/if}
-							{#if !net.same_encryption}<span style:color="var(--warning-text)">
-									· encryption differs
-								</span>{/if}
-							{#if net.missing.length}<span class="text-muted">
-									· not on {net.missing.map(name).join(', ')}
-								</span>{/if}
-						</span>
-						{#if canChange}
-							<button
-								class="{small} ml-auto"
-								onclick={() => show({ kind: 'network', group: g.id, ssid: net.ssid })}
-							>
-								Change on all
-							</button>
-						{/if}
-					</li>
-				{:else}
-					<li class="py-2 text-sm text-muted">None read.</li>
-				{/each}
-			</ul>
-
-			<h3 class="mt-5 text-xs font-medium text-muted">Mesh</h3>
-			<ul class="mt-2 divide-y divide-line">
-				{#each s.mesh as m (m.mesh_id)}
-					<li class="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
-						<span class="font-medium">{m.mesh_id || '(no id)'}</span>
-						<span class="text-xs text-muted">{m.devices.map(name).join(', ')}</span>
-						<span class="text-xs">
-							{#if !m.same_key}<span style:color="var(--warning-text)">passwords differ</span>
-							{:else}<span style:color="var(--good-text)">same password</span>{/if}
-							{#if m.missing.length}<span class="text-muted">
-									· not on {m.missing.map(name).join(', ')}
-								</span>{/if}
-						</span>
-						{#if canChange}
-							<button
-								class="{small} ml-auto"
-								onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: true })}
-							>
-								Set on all
-							</button>
-						{/if}
-					</li>
-				{:else}
-					<li class="flex items-center py-2 text-sm text-muted">
-						No mesh.
-						{#if canChange}
-							<button
-								class="{small} ml-auto"
-								onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: false })}
-							>
-								Set one up
-							</button>
-						{/if}
-					</li>
-				{/each}
-			</ul>
-
-			{#if canChange}
-				<div class="mt-5 flex items-center justify-between border-t border-line pt-4 text-sm">
-					<span>
-						<span class="text-xs font-medium text-muted">Root's password</span><br />
-						<span class="text-xs text-muted">
-							The same on every member (their "password" ability).
-						</span>
-					</span>
-					<button class={small} onclick={() => show({ kind: 'root', group: g.id })}>
-						Set on all
-					</button>
+		<div class="flex flex-wrap items-center justify-between gap-2">
+			<h2 class="text-base font-semibold">
+				{g.name} <span class="ml-1 text-xs font-normal text-faint">{g.devices.length}</span>
+			</h2>
+			{#if canChange && store.editBlocked === null}
+				<div class="flex items-center gap-2">
+					{#if deleting === g.id}
+						<span class="text-xs">Delete this group? The devices stay.</span>
+						<button
+							class="btn btn-sm"
+							style:color="var(--critical-text)"
+							onclick={() => remove(g.id)}
+						>
+							Delete
+						</button>
+						<button class="btn btn-sm" onclick={() => (deleting = null)}>Keep</button>
+					{:else}
+						<button class="btn btn-sm" onclick={() => (editing = { id: g.id })}>Change</button>
+						<button class="btn btn-sm" onclick={() => ((deleting = g.id), (deleteError = null))}>
+							Delete
+						</button>
+					{/if}
 				</div>
 			{/if}
+		</div>
+		{#if deleting === g.id && deleteError}
+			<p class="mt-2 text-xs" style:color="var(--critical-text)">{deleteError}</p>
+		{/if}
+		<ul class="mt-4 grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+			{#each g.devices as id (id)}
+				{@const d = store.byId.get(id)}
+				<li>
+					<a
+						class="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm hover:bg-surface-2"
+						href="/devices/{id}"
+					>
+						{#if d}<StatusDot status={statusOf(d)} size="size-2" />{/if}
+						<KindIcon kind={d?.kind ?? 'other'} class="size-4 shrink-0 text-muted" />
+						<span class="truncate">{name(id)}</span>
+					</a>
+				</li>
+			{/each}
+		</ul>
+
+		{#if g.openwrt.length}
+			<div class="mt-5 border-t border-line pt-4">
+				<div class="flex flex-wrap items-baseline justify-between gap-2">
+					<h3 class="text-sm font-semibold">
+						OpenWrt <span class="text-xs font-normal text-muted">
+							· {g.openwrt.length === g.devices.length
+								? 'all members'
+								: g.openwrt.map(name).join(', ')}
+						</span>
+					</h3>
+					<button class="text-xs text-muted underline" onclick={() => survey(g.id)}>
+						read again
+					</button>
+				</div>
+				{#if !s}
+					<p class="mt-3 text-sm text-muted">Reading the devices…</p>
+				{:else if 'error' in s}
+					<p class="mt-3 text-sm" style:color="var(--critical-text)">{s.error}</p>
+				{:else}
+					{#each Object.entries(s.errors) as [id, why] (id)}
+						<p class="mt-2 text-xs" style:color="var(--warning-text)">
+							{name(id)}: {why}{why.includes('not allowed')
+								? ' (tick Wi-Fi in its OpenWrt setup)'
+								: ''}
+						</p>
+					{/each}
+
+					<h3 class="mt-5 text-xs font-medium text-muted">Wi-Fi networks</h3>
+					<ul class="mt-2 divide-y divide-line">
+						{#each s.networks as net (net.ssid)}
+							<li class="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
+								<span class="font-medium">{net.ssid}</span>
+								<span class="text-xs text-muted">
+									{net.devices.map(name).join(', ')}
+									· {[...new Set(net.on.map((e) => e.band).filter(Boolean))].join(' + ')}
+									· {[
+										...new Set(
+											net.on.map((e) => ENCRYPTION_NAME[e.encryption ?? ''] ?? e.encryption)
+										)
+									].join(' / ')}
+								</span>
+								<span class="text-xs">
+									{#if !net.same_key}<span style:color="var(--warning-text)">passwords differ</span>
+									{:else}<span style:color="var(--good-text)">same password</span>{/if}
+									{#if !net.same_encryption}<span style:color="var(--warning-text)">
+											· encryption differs
+										</span>{/if}
+									{#if net.missing.length}<span class="text-muted">
+											· not on {net.missing.map(name).join(', ')}
+										</span>{/if}
+								</span>
+								{#if canChange}
+									<button
+										class="{small} ml-auto"
+										onclick={() => show({ kind: 'network', group: g.id, ssid: net.ssid })}
+									>
+										Change on all
+									</button>
+								{/if}
+							</li>
+						{:else}
+							<li class="py-2 text-sm text-muted">None read.</li>
+						{/each}
+					</ul>
+
+					<h3 class="mt-5 text-xs font-medium text-muted">Mesh</h3>
+					<ul class="mt-2 divide-y divide-line">
+						{#each s.mesh as m (m.mesh_id)}
+							<li class="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
+								<span class="font-medium">{m.mesh_id || '(no id)'}</span>
+								<span class="text-xs text-muted">{m.devices.map(name).join(', ')}</span>
+								<span class="text-xs">
+									{#if !m.same_key}<span style:color="var(--warning-text)">passwords differ</span>
+									{:else}<span style:color="var(--good-text)">same password</span>{/if}
+									{#if m.missing.length}<span class="text-muted">
+											· not on {m.missing.map(name).join(', ')}
+										</span>{/if}
+								</span>
+								{#if canChange}
+									<button
+										class="{small} ml-auto"
+										onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: true })}
+									>
+										Set on all
+									</button>
+								{/if}
+							</li>
+						{:else}
+							<li class="flex items-center py-2 text-sm text-muted">
+								No mesh.
+								{#if canChange}
+									<button
+										class="{small} ml-auto"
+										onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: false })}
+									>
+										Set one up
+									</button>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+
+					{#if canChange}
+						<div class="mt-5 flex items-center justify-between border-t border-line pt-4 text-sm">
+							<span>
+								<span class="text-xs font-medium text-muted">Root's password</span><br />
+								<span class="text-xs text-muted">
+									The same on every member (their "password" ability).
+								</span>
+							</span>
+							<button class={small} onclick={() => show({ kind: 'root', group: g.id })}>
+								Set on all
+							</button>
+						</div>
+					{/if}
+				{/if}
+			</div>
 		{/if}
 	</section>
 {/each}
+
+{#if editing}
+	<GroupDialog
+		id={editing.id}
+		onclose={() => {
+			editing = null;
+			load();
+		}}
+	/>
+{/if}
 
 {#if open?.kind === 'network'}
 	{@const o = open}

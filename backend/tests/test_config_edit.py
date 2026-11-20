@@ -341,3 +341,189 @@ groups:
     assert "solo" not in out and "devices: [a]" in out
     out = edit_device(out, "a", None)
     assert "groups" not in out
+
+
+def test_settings_as_forms(hub_client) -> None:
+    c, config, data = hub_client
+    signin(c)
+    got = c.get("/api/settings").json()
+    s = got["sections"]
+    assert s["general"]["check_interval"] == 60 and s["alarms"]["alarms"]["down_after"] == 180
+    assert s["users"]["users"] == {"ada": {"role": "admin"}, "obi": {"role": "observer"}}  # no hashes
+    v = got["version"]
+
+    # A section saved: defaults left out, the rest of the file (and its comments) kept.
+    r = c.put(
+        "/api/settings/alarms",
+        json={"value": {"alarms": {"down_after": 300, "cert_days": 14}}, "version": v},
+        headers=H,
+    )
+    assert r.status_code == 200, r.text
+    text = config.read_text()
+    assert "alarms:\n  down_after: 300\n" in text and "cert_days" not in text
+    assert "# the one from the ISP" in text
+    v = r.json()["version"]
+
+    # Notifications: a token is never sent to the page, and kept when the form leaves it.
+    chans = [{"ntfy": "https://ntfy.sh/home", "token": "tk_secret", "min": "warning"}]
+    v = c.put("/api/settings/notify", json={"value": {"notify": chans}, "version": v}, headers=H).json()[
+        "version"
+    ]
+    shown = c.get("/api/settings").json()["sections"]["notify"]["notify"][0]
+    assert shown["token"] == "__keep__" and "tk_secret" not in json.dumps(c.get("/api/settings").json())
+    shown["min"] = "critical"
+    v = c.put("/api/settings/notify", json={"value": {"notify": [shown]}, "version": v}, headers=H).json()[
+        "version"
+    ]
+    assert "token: tk_secret" in config.read_text() and "min: critical" in config.read_text()
+
+    # Users: a new one needs a password (hashed here); an old one keeps its hash.
+    users = {"ada": {"role": "admin"}, "obi": {"role": "admin"}, "cy": {"role": "observer"}}
+    assert (
+        c.put("/api/settings/users", json={"value": {"users": users}, "version": v}, headers=H).status_code
+        == 400
+    )
+    users["cy"]["password"] = "a long password"
+    r = c.put("/api/settings/users", json={"value": {"users": users}, "version": v}, headers=H)
+    assert r.status_code == 200, r.text
+    text = config.read_text()
+    assert ADMIN in text and "a long password" not in text and text.count("scrypt$") == 3
+    v = r.json()["version"]
+
+    # Nobody takes their own admin access away from a form either.
+    users = {"ada": {"role": "observer"}, "obi": {"role": "admin"}, "cy": {"role": "observer"}}
+    assert (
+        c.put("/api/settings/users", json={"value": {"users": users}, "version": v}, headers=H).status_code
+        == 400
+    )
+
+    # Groups of any devices; a wrong one is refused with where and why.
+    groups = {"infra": {"name": "Infrastructure", "devices": ["router", "nas"]}}
+    r = c.put("/api/settings/groups", json={"value": {"groups": groups}, "version": v}, headers=H)
+    assert r.status_code == 200, r.text
+    v = r.json()["version"]
+    bad = {"infra": {"devices": ["nope"]}}
+    r = c.put("/api/settings/groups", json={"value": {"groups": bad}, "version": v}, headers=H)
+    assert r.status_code == 400 and "nope" in r.json()["detail"]
+    assert (
+        c.put("/api/settings/general", json={"value": {"devices": {}}, "version": v}, headers=H).status_code
+        == 400
+    )
+    assert (
+        c.put("/api/settings/alarms", json={"value": {"alarms": {}}, "version": "old"}, headers=H).status_code
+        == 409
+    )
+
+    # Secrets are only written.
+    assert c.put("/api/secrets/wg-easy", json={"value": "pw"}, headers=H).status_code == 200
+    assert (data / "secrets" / "wg-easy").read_text().strip() == "pw"
+    assert c.get("/api/settings").json()["secrets"]["wg-easy"] is True
+
+
+def test_a_service_reachable_from_the_internet_round_trips(hub_client) -> None:
+    c, config, _ = hub_client
+    signin(c)
+    form = c.get("/api/devices/router/form").json()
+    form["checks"][1]["exposed"] = True
+    r = c.put("/api/devices/router", json=form, headers=H)
+    assert r.status_code == 200, r.text
+    assert "exposed: true" in config.read_text().split("users:")[0]
+    assert c.get("/api/devices/router/form").json()["checks"][1]["exposed"] is True
+    assert [
+        ch["exposed"] for ch in next(d for d in c.get("/api/devices").json() if d["id"] == "router")["checks"]
+    ] == [False, True]
+
+
+SECTIONS_TEXT = """check_interval: 60 # often enough
+retention_days: 30
+
+# --- alarms ---
+alarms:
+  down_after: 300 # minutes would be too long
+  repeat: 60
+
+# --- notify ---
+notify:
+  - ntfy: https://ntfy.sh/a
+    min: warning
+
+# --- groups ---
+groups:
+  aps: { devices: [a, b] }
+
+users: {}
+"""
+
+
+def test_a_section_from_a_form_keeps_the_comments_around_it() -> None:
+    t = SECTIONS_TEXT
+    added = config_edit.set_top(t, "alarms", {"down_after": 300, "repeat": 60, "cert_days": 7})
+    assert "  cert_days: 7\n\n# --- notify ---\nnotify:" in added
+    assert "down_after: 300 # minutes would be too long" in added
+    removed = config_edit.set_top(t, "alarms", {"down_after": 300})
+    assert "  down_after: 300 # minutes would be too long\n\n# --- notify ---\nnotify:" in removed
+    replaced = config_edit.set_top(t, "notify", [{"gotify": "https://g", "min": "info"}])
+    assert "min: info\n\n# --- groups ---\ngroups:" in replaced
+    same = config_edit.set_top(t, "groups", {"aps": {"devices": ["a", "b"]}})
+    assert "devices: [a, b]" in same  # unchanged: still a flow list
+    gone = config_edit.set_top(t, "notify", None)
+    assert "notify" not in gone and "# --- groups ---\ngroups:" in gone
+    gone = config_edit.set_top(t, "retention_days", None)
+    assert "check_interval: 60 # often enough\n\n# --- alarms ---\nalarms:" in gone
+
+
+def test_a_kept_secret_goes_back_only_to_its_own_channel(hub_client) -> None:
+    c, config, _ = hub_client
+    signin(c)
+    v = c.get("/api/settings").json()["version"]
+    chans = [
+        {"gotify": "https://gotify.home", "token": "GOTIFY_SECRET", "min": "warning"},
+        {"ntfy": "https://ntfy.sh/home", "token": "NTFY_SECRET", "min": "warning"},
+        {"email": "me@example.org", "smtp": "smtps://me:MAIL_SECRET@mail.example.org", "min": "critical"},
+    ]
+    v = c.put("/api/settings/notify", json={"value": {"notify": chans}, "version": v}, headers=H).json()[
+        "version"
+    ]
+    got = c.get("/api/settings").json()
+    shown = got["sections"]["notify"]["notify"]
+    page = json.dumps(got)
+    assert "SECRET" not in page and shown[2]["smtp"] == "smtps://me:__keep__@mail.example.org"
+
+    # The first removed, the second pointed elsewhere: its token isn't carried along.
+    moved = [dict(shown[1], ntfy="https://evil.example/t"), shown[2]]
+    r = c.put("/api/settings/notify", json={"value": {"notify": moved}, "version": v}, headers=H)
+    assert r.status_code == 400 and "token again" in r.json()["detail"]
+    # Another kind in the same place: neither.
+    other = [dict(shown[0], gotify=None, ntfy="https://gotify.home")]
+    assert (
+        c.put("/api/settings/notify", json={"value": {"notify": other}, "version": v}, headers=H).status_code
+        == 400
+    )
+    # A channel without its id (new) gets no old secret.
+    new = [{k: x for k, x in shown[1].items() if k != "_id"}]
+    assert (
+        c.put("/api/settings/notify", json={"value": {"notify": new}, "version": v}, headers=H).status_code
+        == 400
+    )
+    # Reordered, each with its own id: each keeps its own.
+    r = c.put(
+        "/api/settings/notify", json={"value": {"notify": [shown[2], shown[1]]}, "version": v}, headers=H
+    )
+    assert r.status_code == 200, r.text
+    text = config.read_text()
+    assert "MAIL_SECRET" in text and "NTFY_SECRET" in text and "GOTIFY_SECRET" not in text
+    assert text.index("MAIL_SECRET") < text.index("NTFY_SECRET")
+    v = r.json()["version"]
+    # A different mail server: its password must be typed again.
+    shown = c.get("/api/settings").json()["sections"]["notify"]["notify"]
+    shown[0]["smtp"] = "smtps://me:__keep__@other.example.org"
+    assert (
+        c.put("/api/settings/notify", json={"value": {"notify": shown}, "version": v}, headers=H).status_code
+        == 400
+    )
+    # Secrets that aren't the forms' can't be set from here; a malformed body is a 400.
+    assert c.put("/api/secrets/openwrt-router", json={"value": "x"}, headers=H).status_code == 403
+    assert (
+        c.put("/api/settings/users", json={"value": {"users": ["x"]}, "version": v}, headers=H).status_code
+        == 400
+    )

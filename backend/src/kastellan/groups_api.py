@@ -1,5 +1,6 @@
-"""Groups of OpenWrt devices over HTTP (openwrt/sync.py): how their Wi-Fi networks, mesh and
-root's password line up, and changing them on every member at once. Seeing: admins; changing:
+"""Groups over HTTP: for a group's OpenWrt members (openwrt/sync.py), how their Wi-Fi networks,
+mesh and root's password line up, and changing them on every one at once. (The groups themselves
+are edited as a part of config.yaml: config_api's settings.) Seeing: admins; changing:
 signed-in admins, streamed (device by device), audited without passwords."""
 
 from __future__ import annotations
@@ -54,6 +55,9 @@ def router(hub: Hub) -> APIRouter:
         """Each member's API, or why there is none (its login isn't set up yet, say)."""
         out: dict[str, ow.Ubus | Exception] = {}
         for id in group_of(gid).devices:
+            device = hub.config.devices.get(id)
+            if device is None or device.openwrt is None:
+                continue  # only OpenWrt members have these settings
             try:
                 out[id] = hub.ubus(id)
             except KeyError:
@@ -107,13 +111,21 @@ def router(hub: Hub) -> APIRouter:
     async def groups(request: Request) -> list[dict[str, Any]]:
         require_admin(request)
         return [
-            {"id": gid, "name": g.name, "devices": g.devices} for gid, g in sorted(hub.config.groups.items())
+            {
+                "id": gid,
+                "name": g.name,
+                "devices": g.devices,
+                "openwrt": [id for id in g.devices if (d := hub.config.devices.get(id)) and d.openwrt],
+            }
+            for gid, g in sorted(hub.config.groups.items())
         ]
 
     @api.get("/{gid}")
     async def survey(gid: str, request: Request) -> dict[str, Any]:
         require_admin(request)
         group = group_of(gid)
+        if not any((d := hub.config.devices.get(id)) and d.openwrt for id in group.devices):
+            raise HTTPException(404, "no OpenWrt devices in this group")
         if hub.demo:
             from .demo import GROUP
 

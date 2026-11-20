@@ -7,9 +7,12 @@
 	import QrCode from '@lucide/svelte/icons/qr-code';
 	import Plus from '@lucide/svelte/icons/plus';
 	import X from '@lucide/svelte/icons/x';
+	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import VpnSetup from '#lib/components/VpnSetup.svelte';
+	import VpnSettings from '#lib/components/VpnSettings.svelte';
 
 	let vpn = $state<Vpn | null>(null);
+	let settingsOpen = $state(false);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 	let qr = $state<string | null>(null); // a WireGuard client id whose QR code is shown
@@ -63,7 +66,15 @@
 
 <svelte:head><title>VPN · Kastellan</title></svelte:head>
 
-<h1 class="text-2xl font-semibold tracking-tight">VPN</h1>
+<a href="/services" class="inline-flex items-center gap-1.5 text-sm text-muted hover:text-text">
+	<ArrowLeft class="size-4" /> Services
+</a>
+<div class="mt-3 flex flex-wrap items-baseline justify-between gap-3">
+	<h1 class="text-2xl font-semibold tracking-tight">VPN</h1>
+	{#if vpn && (vpn.wireguard || vpn.openvpn) && canManage && store.editBlocked === null}
+		<a href="#settings" class="btn btn-sm" onclick={() => (settingsOpen = true)}>Settings</a>
+	{/if}
+</div>
 <p class="mt-1 text-sm text-muted">Who can reach the home network from outside, and how.</p>
 
 {#if error}
@@ -76,15 +87,14 @@
 {/if}
 
 {#if vpn && !vpn.wireguard && !vpn.openvpn}
-	<div class="card mt-6 px-6 py-8 text-sm leading-relaxed text-muted">
-		<p class="font-medium text-text">No VPN set up in config.yaml.</p>
-		<pre class="mt-3 rounded-lg bg-surface-2 p-3 font-mono text-[13px] text-text">vpn:
-  wireguard:
-    wg_easy: http://sv1:51821   # kastellan secret set wg-easy
-  openvpn:
-    pki: sv1          # a device with ssh:, running kastellan-pki
-    server: openwrt   # a device with ssh:, running kastellan-crl</pre>
-	</div>
+	<p class="mt-6 text-sm text-muted">
+		{canManage && store.editBlocked === null
+			? 'No VPN set up yet: tell Kastellan where its clients are managed.'
+			: 'No VPN set up.'}
+	</p>
+	{#if canManage && store.editBlocked === null}
+		<div class="mt-4"><VpnSettings onsaved={load} /></div>
+	{/if}
 {/if}
 
 {#if vpn?.wireguard}
@@ -326,12 +336,19 @@
 			<VpnSetup canInstall={canManage} />
 			{#if !vpn.openvpn.crl_to_server}
 				<p class="mt-2 text-xs" style:color="var(--warning-text)">
-					No vpn.openvpn.server set: a revoked client keeps working until the CRL reaches the
-					server.
+					No OpenVPN server chosen (VPN settings): a revoked client keeps working until the
+					revocation list reaches the server.
 				</p>
 			{/if}
 		{/if}
 	</section>
+{/if}
+
+{#if vpn && (vpn.wireguard || vpn.openvpn) && canManage && store.editBlocked === null}
+	<details class="mt-10" id="settings" bind:open={settingsOpen}>
+		<summary class="text-sm font-semibold">VPN settings</summary>
+		<div class="mt-4"><VpnSettings onsaved={load} /></div>
+	</details>
 {/if}
 
 {#if admin && !canManage}

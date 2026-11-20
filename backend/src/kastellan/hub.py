@@ -661,7 +661,7 @@ class Hub:
             new: list[str] = []
             for item in (status.vulns or {}).get("items", []):
                 for f in item.get("findings", []):
-                    if not assess(device, f).message:
+                    if not assess(device, f, item["where"]).message:
                         continue
                     key = f"vuln:{id}:{item['where']}:{f['id']}"
                     is_new = key not in self.alarms.seen_events
@@ -696,12 +696,12 @@ class Hub:
                 continue
             for item in status.vulns.get("items", []):
                 for f in item.get("findings", []):
-                    severity = assess(device, f).alarm
+                    severity = assess(device, f, item["where"]).alarm
                     if severity is None:
                         continue
                     what = "exploited " if f.get("exploited") else ""
                     title = f"{device.name}: {what}{f['id']} in {item['product']}"
-                    facing = ", internet-facing" if device.exposed else ""
+                    facing = ", internet-facing" if device.faces_internet(item["where"]) else ""
                     detail = f"{f.get('severity')}{facing}: {f.get('summary', '')[:200]}"
                     out.append(
                         Problem(f"vuln:{id}:{item['where']}:{f['id']}", severity, id, title, title, detail)

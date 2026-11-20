@@ -115,6 +115,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `openwrt/sync.py` + `groups_api.py`: `groups:` read live (no stored desired state), networks
     lined up by SSID, passwords as HMAC fingerprints (secret `group-fingerprints`); changes go
     device by device as streamed jobs (`setup_run.stream_work`).
+  - Settings as forms: `config_api` GET /api/settings (secrets as `__keep__`), PUT
+    /api/settings/{section} (SECTIONS: top-level keys per form; `_unmask` puts secrets back and
+    hashes users' passwords, `_compact` leaves defaults out, `config_edit.set_top` merges into
+    the YAML keeping comments), PUT /api/secrets/{name} (write-only). Frontend:
+    `lib/settings.svelte.ts` + `SettingsCard`/`SettingsForms`; Groups and VPN use the same.
   - `setup_run.py`: running a setup once with a typed login (sudo, sudo with another password, or
     su with root's password over a pty), streamed as text, the last line `KASTELLAN-DONE {json}`;
     passwords are masked in every output line; `add_device_key` writes collect:/act:/ssh: after.

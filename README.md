@@ -68,7 +68,7 @@ desktop needs guacd next to it (in [compose.yaml](compose.yaml), listening on lo
 ## Configuration
 
 Everything is in `config.yaml` (`/config` in the container), editable in the app once sign-in is
-on. Kastellan picks up changes by itself. Settings left out keep their defaults:
+on: as forms on the Config, Groups and VPN pages and on each device's page, or as the file itself. Kastellan picks up changes by itself. Settings left out keep their defaults:
 
 ```yaml
 check_interval: 60 # seconds
@@ -86,7 +86,7 @@ devices:
   nas:
     host: nas.lan
     kind: server
-    exposed: true # reachable from the internet: vulnerabilities count as urgent
+    exposed: true # all of it reachable from the internet: vulnerabilities count as urgent
     ssh: { user: andreas } # the terminal, and Kastellan's SSH access
     collect: {} # the collector (see below)
     act: {} # the actor (see below)
@@ -95,6 +95,8 @@ devices:
         name: ssh
       - http: https://media.example.org # by its public name: its certificate is watched
         name: jellyfin (public)
+      - tcp: 32400
+        exposed: true # only this service is reachable from the internet (a port forward)
   pc:
     host: 192.168.1.30
     kind: pc # may be off: offline, not down
@@ -105,7 +107,7 @@ devices:
     kind: access-point
     openwrt: {} # OpenWrt through its own API (set up from the device's page)
 
-groups: # OpenWrt devices whose Wi-Fi, mesh and root password are kept the same
+groups: # devices that belong together; for OpenWrt members Wi-Fi, mesh, root password in sync
   aps: { name: Access points, devices: [ap-attic, ap-garden] }
 
 networks: # optional: names for networks, or devices in several (network: [home, vpn])

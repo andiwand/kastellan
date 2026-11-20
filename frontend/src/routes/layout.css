@@ -173,3 +173,74 @@ details > summary::before {
 details[open] > summary::before {
 	transform: translateY(-2px) rotate(45deg);
 }
+
+/* Forms: one look everywhere. In a layer, so a utility class next to them still wins. */
+@layer components {
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--muted);
+	}
+	.input {
+		height: 2.25rem;
+		width: 100%;
+		min-width: 0;
+		border-radius: 0.5rem;
+		border: 1px solid var(--line-strong);
+		background: var(--surface);
+		padding: 0 0.75rem;
+		font-size: 0.875rem;
+		font-weight: 400;
+		color: var(--text);
+		outline: none;
+	}
+	.input:focus {
+		border-color: var(--accent);
+	}
+	.input::placeholder {
+		color: var(--faint);
+	}
+	.hint {
+		font-size: 0.75rem;
+		font-weight: 400;
+		color: var(--faint);
+	}
+	.btn {
+		display: inline-flex;
+		height: 2.25rem;
+		align-items: center;
+		justify-content: center;
+		gap: 0.375rem;
+		white-space: nowrap;
+		border-radius: 0.5rem;
+		border: 1px solid var(--line-strong);
+		background: var(--surface);
+		padding: 0 0.85rem;
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--text);
+	}
+	.btn:hover:not(:disabled) {
+		border-color: color-mix(in srgb, var(--text) 30%, transparent);
+	}
+	.btn:disabled {
+		opacity: 0.5;
+	}
+	.btn-primary {
+		border-color: transparent;
+		background: var(--accent);
+		color: var(--accent-ink);
+	}
+	.btn-primary:hover:not(:disabled) {
+		border-color: transparent;
+		opacity: 0.9;
+	}
+	.btn-sm {
+		height: 2rem;
+		padding: 0 0.7rem;
+		font-size: 0.75rem;
+	}
+}

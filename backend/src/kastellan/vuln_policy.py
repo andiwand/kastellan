@@ -3,18 +3,21 @@
 The rule decided on 2026-11-20 (PLAN.md): updates are suggested, not installed; automatically
 only when a known vulnerability meets a device that faces the internet. Concretely:
 
-| finding (confirmed)            | exposed device | internal device |
+| finding (confirmed)            | exposed        | internal        |
 |--------------------------------|----------------|-----------------|
 | exploited (CISA KEV) or ≥ 9.0  | critical alarm | warning alarm   |
 | high (7.0 to 8.9)              | warning alarm  | info message    |
 | medium, low, unknown           | shown only     | shown only      |
 
+Exposed: the device as a whole (`exposed: true`), or the service the finding is in (a check's
+`exposed: true`); firmware and containers count as exposed when any service of the device is.
 An unconfirmed finding (the distribution may have patched it) is an info message at most.
 
 Automatic update: only a container, only with `auto_update: true` on the device, only when the
-device is exposed, a confirmed finding is exploited or high/critical, WUD has a newer image for
-that container within the same major version that includes the fix (when the fix is known), and
-a WUD trigger is configured. Once per new image.
+device as a whole is marked exposed (`exposed: true`; one exposed service isn't enough), a
+confirmed finding is exploited or high/critical, there is a newer image for that container
+within the same major version that includes the fix (when the fix is known), and Kastellan may
+update it (the actor, or a WUD trigger). Once per new image.
 """
 
 from __future__ import annotations
@@ -37,13 +40,16 @@ def urgent(finding: dict[str, Any]) -> bool:
     return bool(finding.get("exploited")) or finding.get("severity") == "critical"
 
 
-def assess(device: Device, finding: dict[str, Any]) -> Assessment:
+def assess(device: Device, finding: dict[str, Any], where: str | None = None) -> Assessment:
+    """`where`: what the finding is in ("service ssh", "firmware", "container x"); exposure is
+    decided for that (Device.faces_internet)."""
+    exposed = device.faces_internet(where)
     if finding.get("confidence") != "exact":
         return Assessment(None, urgent(finding) or finding.get("severity") == "high")
     if urgent(finding):
-        return Assessment(Severity.CRITICAL if device.exposed else Severity.WARNING, False)
+        return Assessment(Severity.CRITICAL if exposed else Severity.WARNING, False)
     if finding.get("severity") == "high":
-        return Assessment(Severity.WARNING, False) if device.exposed else Assessment(None, True)
+        return Assessment(Severity.WARNING, False) if exposed else Assessment(None, True)
     return Assessment(None, False)
 
 
@@ -56,6 +62,7 @@ def auto_update_reason(
     version (16 → 17 can need a migration, e.g. a database's data directory), and where the fixed
     version is known, the new version must include it."""
     can = device.act is not None or bool(device.docker and device.docker.trigger)  # actor or WUD
+    # The device as a whole: one forwarded port doesn't make every container fair game.
     if not (device.auto_update and device.exposed and can):
         return None
     if not container.get("update") or container.get("unchecked"):

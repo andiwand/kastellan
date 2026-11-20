@@ -77,6 +77,9 @@ class Check(BaseModel):
     # https: alarm when the certificate is not valid or ends soon. Default: for names on the
     # internet (not addresses, not .lan, .local, .home.arpa, ...) and checks with verify: true.
     tls: bool | None = None
+    # Reachable from the internet (a port forward, a reverse proxy): this service, not the whole
+    # device. Vulnerabilities in what it runs count as urgent (vuln_policy.py).
+    exposed: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -186,6 +189,30 @@ class OpenWrtAccess(BaseModel):
 class Device(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    def faces_internet(self, where: str | None = None) -> bool:
+        """Whether this (or, with `where`, what a finding was in: "service <check>", "firmware",
+        "container <name>") can be reached from the internet: the device as a whole is exposed,
+        or the service is (ticked, or addressed by a public name: the same ways in the network
+        view shows); the firmware and containers whenever any service of the device is."""
+        if self.exposed:
+            return True
+
+        def reachable(check: Check) -> bool:
+            if check.exposed:
+                return True
+            if check.type == "http" and isinstance(check.target, str):
+                from urllib.parse import urlsplit
+
+                from .tls import public_name
+
+                return public_name(urlsplit(check.target).hostname or "")
+            return False
+
+        if where and where.startswith("service "):
+            name = where.removeprefix("service ")
+            return any(reachable(c) for c in self.checks if c.name == name)
+        return any(reachable(c) for c in self.checks)
+
     name: str = ""
     host: str
     kind: Kind = Kind.OTHER
@@ -203,7 +230,7 @@ class Device(BaseModel):
     openwrt: OpenWrtAccess | None = None  # an OpenWrt router or access point, through its API
     # Reachable from the internet (a port forward, a public server): known vulnerabilities in
     # what it runs count as urgent, and may trigger automatic updates (see vulns.py).
-    exposed: bool = False
+    exposed: bool = False  # the whole device is reachable from the internet (a check can be too)
     # Let Kastellan update a container by itself, only when the device is exposed and a confirmed
     # high, critical or exploited vulnerability has a fix (see vulns.py). Off by default.
     auto_update: bool = False
@@ -404,8 +431,8 @@ class VpnSettings(BaseModel):
 
 
 class GroupSettings(BaseModel):
-    """OpenWrt devices whose settings are kept the same (openwrt/sync.py): Wi-Fi networks by
-    name, the mesh, root's password."""
+    """Devices that belong together (any kind). For its OpenWrt members, settings are kept the
+    same (openwrt/sync.py): Wi-Fi networks by name, the mesh, root's password."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -439,8 +466,6 @@ class Config(BaseModel):
             for id in group.devices:
                 if id not in self.devices:
                     raise ValueError(f"groups.{gid}: {id!r} is not a device")
-                if self.devices[id].openwrt is None:
-                    raise ValueError(f"groups.{gid}: {id!r} has no openwrt: (set its login up first)")
             if len(set(group.devices)) != len(group.devices):
                 raise ValueError(f"groups.{gid}: a device is listed twice")
             group.name = group.name or gid

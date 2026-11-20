@@ -224,9 +224,10 @@
 				<label class="choice text-sm">
 					<input type="checkbox" bind:checked={form.exposed} />
 					<span>
-						Reachable from the internet
+						All of it is reachable from the internet
 						<span class="block text-xs text-muted">
-							Known vulnerabilities in what it runs count as urgent.
+							Its own address is public, or everything is forwarded. Known vulnerabilities in what
+							it runs count as urgent. Only some services? Tick them below instead.
 						</span>
 					</span>
 				</label>
@@ -300,6 +301,21 @@
 										<Trash class="size-4" /><span class="sr-only">Remove</span>
 									</button>
 								</div>
+								{#if check.type !== 'ping'}
+									<label class="choice mt-2 text-xs text-muted">
+										<input
+											type="checkbox"
+											checked={!!check.exposed || form.exposed}
+											disabled={form.exposed}
+											onchange={(e) => (check.exposed = e.currentTarget.checked)}
+										/>
+										<span>
+											Reachable from the internet{form.exposed
+												? ' (the whole device is)'
+												: ' (a port forward or a proxy leads here)'}
+										</span>
+									</label>
+								{/if}
 								{#if check.type === 'http'}
 									<div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
 										<label class="flex items-center gap-1.5">

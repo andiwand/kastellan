@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Settings as forms: the Config page has the checking interval, history, heartbeat, alarms,
+  notifications, vulnerability lookups, networks and users as forms (each part saved on its own,
+  comments elsewhere in the file kept, tokens and password hashes never sent to the page); the
+  file itself on a second tab.
+- Groups of any devices, made and changed on the Groups page; the Wi-Fi, mesh and root-password
+  part shows for the OpenWrt members.
+- The VPN set up from a form (wg-easy's password kept as a secret); the VPN left the main menu:
+  the Services page lists it, with its clients.
+- Updates: one page with everything waiting (containers, system packages, reboots, OpenWrt
+  firmware), and its action where the device allows it.
+- Reachable from the internet per service (a port forward, a proxy), not only per device:
+  vulnerabilities in what that service runs count as urgent; it shows as a way in.
+- The UI: button labels without "…", checkboxes and radio buttons aligned and alike, copy buttons
+  inside their boxes, compact choices, readable widths, fold-outs with a chevron.
+- A failed SSH connection says what failed and on which port.
+
 ## 0.3.0 (2026-11-20)
 
 Looking after things, not only watching them: Linux hosts through narrow doors you open

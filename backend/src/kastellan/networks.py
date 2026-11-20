@@ -8,7 +8,8 @@
   connected; several local networks (home, a holiday flat, the office) are separate zones.
 - Ways in from the internet: checks whose target is a public name or address (`https://
   norn.example.org` is one way into SV1, whatever address it leads to), and devices marked
-  `exposed`. That is what Kastellan knows; a port forward nobody wrote down stays unknown.
+  `exposed` (as a whole, or a service of theirs). That is what Kastellan knows; a port forward
+  nobody wrote down stays unknown.
 
     networks:
       home:
@@ -152,7 +153,9 @@ def public_ways(device: Device, on_internet: bool, statuses: dict[str, Any]) -> 
         if check.type == "ping":
             continue  # not a service: no way in
         target = _target_host(device, check)
-        if target == device.host:
+        if check.exposed:
+            pass  # marked: a port forward or a proxy leads to it
+        elif target == device.host:
             if not on_internet:
                 continue
         elif not (public_name(target) or is_public(target)):

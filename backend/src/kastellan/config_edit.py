@@ -154,9 +154,9 @@ def _check_node(check: dict[str, Any]) -> Any:
         target = None
     default_name = "ping" if kind == "ping" else f"{kind}:{target}"
     extras: dict[str, Any] = {}
-    for key in ("name", "expect", "verify", "tls", "interval", "timeout"):
+    for key in ("name", "expect", "verify", "tls", "interval", "timeout", "exposed"):
         value = check.get(key)
-        if value in (None, "") or (key == "verify" and value is False):
+        if value in (None, "") or (key in ("verify", "exposed") and value is False):
             continue
         if (key == "name" and value == default_name) or (key == "timeout" and value == DEFAULT_TIMEOUT):
             continue  # the default: not written
@@ -402,3 +402,82 @@ def _keep_gaps(old: str, new: str) -> str:
             out.append("")
         out.append(line)
     return "\n".join(out) + "\n"
+
+
+def _commented(value: Any) -> Any:
+    """Plain data as ruamel's nodes, which can carry comments."""
+    if isinstance(value, dict) and not isinstance(value, CommentedMap):
+        out = CommentedMap()
+        for k, v in value.items():
+            out[k] = _commented(v)
+        return out
+    if isinstance(value, list) and not isinstance(value, CommentedSeq):
+        return CommentedSeq(_commented(v) for v in value)
+    return value
+
+
+def _merge(node: Any, value: Any) -> Any:
+    """`value` written over `node`, keeping the node (and its comments) where the structure
+    stays: keys that remain keep their place and comments, gone keys go, a list that is the same
+    stays as it was written (flow or block); what followed the node (the next section's header)
+    stays after it."""
+    if isinstance(node, CommentedMap) and isinstance(value, dict):
+        tail = _take_tail(node)
+        for key in [k for k in node if k not in value]:
+            del node[key]
+        for key, v in value.items():
+            node[key] = _merge(node[key], v) if key in node else _commented(v)
+        _put_tail(node, tail)
+        return node
+    if isinstance(node, CommentedSeq | CommentedMap) and _plain(node) == value:
+        return node
+    return _commented(value)
+
+
+def set_top(text: str, key: str, value: Any) -> str:
+    """config.yaml with one top-level setting (`alarms:`, `notify:`, `groups:` ...) set to
+    `value`, or removed when it is None (or empty); the rest of the file as it was, comments
+    included (what followed the setting stays where it was)."""
+    y = _yaml()
+    doc = y.load(text) if text.strip() else None
+    if doc is None:
+        doc = CommentedMap()
+    if not isinstance(doc, CommentedMap):
+        raise ValueError("config.yaml isn't a mapping")
+    keys = list(doc)
+    empty = value is None or value == {} or value == []
+    if key in doc:
+        nested = isinstance(doc[key], CommentedMap | CommentedSeq)
+        tail = _take_tail(doc[key]) if nested else ""
+        if empty:
+            before = keys[keys.index(key) - 1] if keys.index(key) > 0 else None
+            if not nested:  # a scalar's following lines sit on the key itself
+                slots = doc.ca.items.get(key)
+                token = slots[2] if slots and len(slots) > 2 else None
+                tail = token.value.partition("\n")[2] if token is not None else ""
+            del doc[key]
+            if before is not None and tail:
+                if isinstance(doc[before], CommentedMap | CommentedSeq):
+                    _put_tail(doc[before], tail)
+                else:
+                    _put_scalar_tail(doc, before, tail)
+        else:
+            doc[key] = _merge(doc[key], value)
+            if tail and isinstance(doc[key], CommentedMap | CommentedSeq):
+                _put_tail(doc[key], tail)
+    elif not empty:
+        _place_top(doc, key, _commented(value))
+    out = io.StringIO()
+    y.dump(doc, out)
+    return _keep_gaps(text, out.getvalue())
+
+
+def _put_scalar_tail(doc: CommentedMap, key: str, rest: str) -> None:
+    """Put `rest` on the lines after a top-level scalar (`check_interval: 60`)."""
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    slots = doc.ca.items.setdefault(key, [None, None, None, None])
+    old = slots[2]
+    own = old.value.partition("\n")[0] if old is not None else ""
+    slots[2] = CommentToken(own + "\n" + rest, CommentMark(0), None)

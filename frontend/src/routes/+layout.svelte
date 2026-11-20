@@ -8,10 +8,11 @@
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
 	import List from '@lucide/svelte/icons/list';
 	import Layers from '@lucide/svelte/icons/layers';
-	import KeyRound from '@lucide/svelte/icons/key-round';
 	import FileCog from '@lucide/svelte/icons/file-cog';
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
-	import Wifi from '@lucide/svelte/icons/wifi';
+	import Boxes from '@lucide/svelte/icons/boxes';
+	import CircleArrowUp from '@lucide/svelte/icons/circle-arrow-up';
+	import { updatesOf } from '#lib/updates.js';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import SignIn from '#lib/components/SignIn.svelte';
@@ -24,9 +25,9 @@
 	const nav = [
 		{ href: '/', label: 'Overview', icon: LayoutDashboard },
 		{ href: '/devices', label: 'Devices', icon: List },
+		{ href: '/groups', label: 'Groups', icon: Boxes },
 		{ href: '/services', label: 'Services', icon: Layers },
-		{ href: '/vpn', label: 'VPN', icon: KeyRound },
-		{ href: '/groups', label: 'Groups', icon: Wifi },
+		{ href: '/updates', label: 'Updates', icon: CircleArrowUp },
 		{ href: '/access', label: 'Access', icon: ShieldCheck },
 		{ href: '/config', label: 'Config', icon: FileCog }
 	] as { href: string; label: string; short?: string; icon: typeof List }[];
@@ -36,9 +37,14 @@
 			(i) => !['/config', '/access', '/groups'].includes(i.href) || store.me?.role === 'admin'
 		)
 	);
+	// The VPN is reached from Services (its clients are a service's).
 	const active = (href: string) =>
-		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
+		href === '/'
+			? page.url.pathname === '/'
+			: page.url.pathname.startsWith(href) ||
+				(href === '/services' && page.url.pathname.startsWith('/vpn'));
 	const attention = $derived((store.devices ?? []).filter(needsAttention).length);
+	const waiting = $derived(updatesOf(store.devices ?? []).length);
 	const connected = $derived(!store.error && store.updated != null);
 </script>
 
@@ -89,6 +95,12 @@
 								style:color="var(--critical-text)"
 							>
 								{attention}
+							</span>
+						{:else if item.href === '/updates' && waiting}
+							<span
+								class="tabular ml-auto rounded-full bg-surface-3 px-1.5 text-[11px] leading-5 font-semibold text-muted"
+							>
+								{waiting}
 							</span>
 						{/if}
 					</a>

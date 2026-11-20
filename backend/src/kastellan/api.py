@@ -91,7 +91,12 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         }
 
     def check_view(check: Check, status: CheckStatus | None) -> dict[str, Any]:
-        view: dict[str, Any] = {"name": check.name, "type": check.type, "target": check.target}
+        view: dict[str, Any] = {
+            "name": check.name,
+            "type": check.type,
+            "target": check.target,
+            "exposed": check.exposed,
+        }
         if status is None:
             return view
         view |= vars(status)
