@@ -31,6 +31,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     service's software. The monitor writes it; `/api/changes` merges real changes
     (`kind: "version"`) with ups and downs (`kind: "state"`); the hub restores the last software
     per check from it at start.
+  - `drivers/`: one module per kind of device, registered in `drivers/__init__.py` and chosen
+    with `driver:` in config.yaml. `info()` returns a `DeviceInfo` (model, name, firmware); the hub
+    polls it every 10 minutes and writes firmware changes to versions.log (check name
+    `firmware`). Only what devices answer without credentials so far; FRITZ!Box reads TR-064's
+    public `tr64desc.xml`. OpenWrt reveals nothing without an account (comes with secrets).
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)

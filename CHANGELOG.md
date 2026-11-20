@@ -13,5 +13,6 @@
   password guessing, and an audit log.
 - Terminal in the browser over SSH (xterm.js), with the hub's own key and pinned host keys.
 - Remote desktop (RDP, VNC) in the browser through guacd; not yet tested against real desktops.
+- Drivers, starting with the FRITZ!Box: model, name and FRITZ!OS version, firmware updates in the activity.
 - Demo mode (`KASTELLAN_DEMO=1`): a made-up network with a day of simulated history.
 - Project website (`website/`).

@@ -19,6 +19,8 @@ drivers, updates, backups). See [PLAN.md](PLAN.md).
 - **Device pages**: response times, uptime over 1 h / 24 h / 7 d, and the activity of each check.
 - **List or graph**: the devices as a searchable list, or as a graph of what is connected
   through what (infrastructure only; which access point a laptop uses isn't drawn).
+- **Drivers**: `driver: fritzbox` reads model and FRITZ!OS version (no password needed);
+  firmware updates show in the activity.
 - **Plain files**: `config.yaml` for the configuration, one CSV file per day for the history.
 
 ## Try it

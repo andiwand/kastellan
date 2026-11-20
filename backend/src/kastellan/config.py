@@ -135,10 +135,18 @@ class Device(BaseModel):
     always_on: bool | None = None
     ssh: SshAccess | None = None  # set to open a terminal on the device
     desktop: DesktopAccess | None = None  # set to open its screen in the browser
+    driver: str | None = None  # what else Kastellan can ask it, e.g. fritzbox (see drivers/)
     checks: list[Check] = Field(default_factory=lambda: [Check(type=CheckType.PING)])
 
     @model_validator(mode="after")
     def _unique_checks(self) -> Self:
+        if self.driver is not None:
+            from .drivers import DRIVERS
+
+            if self.driver not in DRIVERS:
+                raise ValueError(
+                    f"driver: {self.driver!r} is unknown; there are {', '.join(sorted(DRIVERS))}"
+                )
         if self.always_on is None:
             self.always_on = self.kind not in (Kind.PC, Kind.LAPTOP)
         names = [c.name for c in self.checks]

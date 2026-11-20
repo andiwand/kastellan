@@ -7,6 +7,7 @@ import contextlib
 import logging
 import shutil
 import tempfile
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from . import demo
 from .audit import Audit
 from .auth import Sessions
 from .config import Config, Role
+from .drivers import DRIVERS
 from .history import History
 from .monitor import Monitor, run_check
 from .settings import Settings
@@ -29,6 +31,7 @@ log = logging.getLogger(__name__)
 
 RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
+DRIVER_EVERY = 600
 
 
 class ConfigProblem(Exception):
@@ -191,6 +194,7 @@ class Hub:
             await asyncio.to_thread(self.demo.backfill, self.history, demo.config(), self.versions)
         self.reload()
         self._tasks = [
+            asyncio.create_task(self._poll_drivers(), name="poll drivers"),
             asyncio.create_task(self._watch_config(), name="watch config"),
             asyncio.create_task(self._prune(), name="prune history"),
         ]
@@ -219,6 +223,38 @@ class Hub:
                 except Exception:
                     # Never stop watching: the next save of the file gets another chance.
                     log.exception("reloading config.yaml failed")
+
+    async def _poll_drivers(self) -> None:
+        """Ask each device with a driver what it is and runs, every DRIVER_EVERY seconds. A new
+        firmware goes to the version log like a service's software (check name "firmware")."""
+        while True:
+            for id, device in list(self.config.devices.items()):
+                if device.driver is None:
+                    continue
+                if self.demo:
+                    if (status := self.monitor.status.get(id)) and id in demo.INFO:
+                        status.info, status.info_checked = demo.INFO[id], datetime.now(UTC)
+                    continue
+                try:
+                    info = await DRIVERS[device.driver](device.host).info()
+                except Exception:
+                    log.exception("driver %s for %s failed", device.driver, id)
+                    continue
+                status = self.monitor.status.get(id)
+                if info is None or status is None:
+                    continue
+                now = datetime.now(UTC)
+                status.info, status.info_checked = asdict(info), now
+                if info.firmware:
+                    self._note_firmware(id, info.firmware, now)
+            await asyncio.sleep(DRIVER_EVERY)
+
+    def _note_firmware(self, id: str, firmware: str, now: datetime) -> None:
+        last = self.versions.latest().get((id, "firmware"))
+        if last is None or last[0] != firmware:
+            if last is not None:
+                log.info("%s firmware: %s → %s", id, last[0], firmware)
+            self.versions.record(now, id, "firmware", last[0] if last else None, firmware)
 
     async def _prune(self) -> None:
         while True:

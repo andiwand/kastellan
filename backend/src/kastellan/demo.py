@@ -27,6 +27,7 @@ CONFIG = {
             "name": "FRITZ!Box 7590",
             "host": "192.168.178.1",
             "kind": "router",
+            "driver": "fritzbox",
             "tags": ["mesh master"],
             "checks": ["ping", {"http": "https://192.168.178.1", "name": "web"}],
         },
@@ -156,6 +157,12 @@ SOFTWARE = {
     ("printer", "ipp"): None,
 }
 UPDATED = ("homeserver", "ssh", Software("OpenSSH", "10.0p2", "Debian"), 360)  # before, minutes ago
+
+
+# What the demo's devices with a driver report (see hub._poll_drivers).
+INFO = {
+    "fritzbox": {"model": "FRITZ!Box 7590", "name": "fritz.box", "firmware": "FRITZ!OS 8.20", "details": {}},
+}
 
 
 def config() -> Config:

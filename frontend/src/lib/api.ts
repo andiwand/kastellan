@@ -25,6 +25,8 @@ export interface Device {
 	always_on: boolean;
 	ssh: { user: string; port: number } | null;
 	desktop: { protocol: 'rdp' | 'vnc'; user: string | null } | null;
+	driver: string | null;
+	info: { model: string | null; name: string | null; firmware: string | null } | null;
 	state: CheckState;
 	checks: CheckStatus[];
 }

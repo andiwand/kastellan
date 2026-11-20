@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 from . import checks
 from .config import Check, Config, Device
@@ -40,6 +41,8 @@ class CheckStatus:
 @dataclass
 class DeviceStatus:
     checks: dict[str, CheckStatus] = field(default_factory=dict)
+    info: dict[str, Any] | None = None  # from the device's driver: model, name, firmware, ...
+    info_checked: datetime | None = None
 
     @property
     def state(self) -> State:

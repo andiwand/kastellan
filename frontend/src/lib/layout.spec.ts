@@ -12,6 +12,8 @@ const device = (id: string, parent: string | null = null): Device => ({
 	always_on: true,
 	ssh: null,
 	desktop: null,
+	driver: null,
+	info: null,
 	state: 'unknown',
 	checks: []
 });

@@ -126,6 +126,14 @@
 							via <a href="/devices/{parent.id}" class="text-text hover:underline">{parent.name}</a>
 						</span>
 					{/if}
+					{#if device.info?.model}
+						<span class="text-faint">·</span>
+						<span>{device.info.model}</span>
+					{/if}
+					{#if device.info?.firmware}
+						<span class="text-faint">·</span>
+						<span title="Reported by the device">{device.info.firmware}</span>
+					{/if}
 					{#each device.tags as tag (tag)}
 						<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs">{tag}</span>
 					{/each}
