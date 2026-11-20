@@ -202,8 +202,18 @@ class OpenVpn:
         target, which = self._target(device, user)
         remote = command if self.s.mode == "restricted" else direct_command(name, conf, command)
         async with await self.keys.connect(target, which) as conn:
-            stdin = {"input": input} if input else {"stdin": asyncssh.DEVNULL}
-            result = await conn.run(remote, check=False, timeout=120, **stdin)
+            if not input:
+                result = await conn.run(remote, check=False, timeout=120, stdin=asyncssh.DEVNULL)
+            else:
+                # The script may refuse and exit before reading its input: the write then fails,
+                # but its exit status and message (stderr) are what tell why.
+                async with conn.create_process(remote) as process:
+                    try:
+                        process.stdin.write(input)
+                        process.stdin.write_eof()
+                    except (BrokenPipeError, ConnectionError, asyncssh.Error):
+                        pass
+                    result = await process.wait(check=False, timeout=120)
         if result.exit_status != 0:
             message = str(result.stderr or "").strip().splitlines()
             raise RuntimeError(message[-1] if message else f"{command.split()[0]} failed")
