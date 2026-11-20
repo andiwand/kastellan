@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Device } from './api';
-import { layoutTree } from './layout';
+import { layoutTree, splitLinked } from './layout';
 
 const device = (id: string, parent: string | null = null): Device => ({
 	id,
@@ -31,5 +31,18 @@ describe('layoutTree', () => {
 	it('places every device despite cycles and unknown parents', () => {
 		const { nodes } = layoutTree([device('a', 'b'), device('b', 'a'), device('c', 'gone')]);
 		expect(nodes.map((n) => n.device.id).sort()).toEqual(['a', 'b', 'c']);
+	});
+});
+
+describe('splitLinked', () => {
+	it('keeps devices without any link apart', () => {
+		const { linked, unlinked } = splitLinked([
+			device('router'),
+			device('switch', 'router'),
+			device('laptop'),
+			device('phone', 'gone')
+		]);
+		expect(linked.map((d) => d.id)).toEqual(['router', 'switch']);
+		expect(unlinked.map((d) => d.id)).toEqual(['laptop', 'phone']);
 	});
 });

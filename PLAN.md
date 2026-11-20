@@ -43,7 +43,7 @@ It stands on its own; it does not talk to Norn.
 ## Done (0.1)
 
 Reachability checks (ping, TCP, HTTP), history and uptime, the web app (overview, devices,
-device page, network map), demo mode, restoring state from the history after a restart.
+device page, devices as a list or a graph), demo mode, restoring state from the history after a restart.
 
 ## Next
 
@@ -69,5 +69,6 @@ device page, network map), demo mode, restoring state from the history after a r
 - **Jobs**: run something on a device on a schedule. Backups are jobs: config exports through
   drivers, full backups with restic.
 - Discovery (ARP, mDNS, the router's client list) to suggest devices for config.yaml.
-- Topology from LLDP / the router's mesh view instead of hand-written parents.
+- Topology from LLDP / the router's mesh view instead of hand-written parents (infrastructure
+  only: which access point a client uses is not worth drawing).
 - Notifications (web push, e-mail) when an always-on device goes down.

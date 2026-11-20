@@ -11,7 +11,7 @@
       nas:
         host: nas.lan
         kind: server
-        parent: fritzbox      # what it hangs off, for the network map
+        parent: fritzbox      # what it hangs off, for the graph
         checks:
           - ping
           - tcp: 22

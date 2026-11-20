@@ -17,7 +17,7 @@ devices:
   nas:
     host: nas.lan
     kind: server
-    parent: router # what it is connected through, for the network map
+    parent: router # what it is connected through, for the graph (infrastructure; skip Wi-Fi clients)
     tags: [docker]
     checks:
       - ping
@@ -31,4 +31,3 @@ devices:
   laptop:
     host: laptop.lan
     kind: laptop # pcs and laptops are offline when off, not down (always_on: false)
-    parent: router

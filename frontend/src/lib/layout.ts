@@ -77,3 +77,17 @@ export function layoutTree(
 		height: Math.max(slot, 1) * (h + gapY) - gapY
 	};
 }
+
+/** Devices that take part in a link (they have a known parent, or something hangs off them), and
+ * the rest. Most end devices are unlinked: which access point a laptop uses is not worth a line. */
+export function splitLinked(devices: Device[]): { linked: Device[]; unlinked: Device[] } {
+	const ids = new Set(devices.map((d) => d.id));
+	const parents = new Set(devices.map((d) => d.parent).filter((p) => p && ids.has(p)));
+	const linked: Device[] = [];
+	const unlinked: Device[] = [];
+	for (const d of devices) {
+		const hasParent = !!d.parent && ids.has(d.parent) && d.parent !== d.id;
+		(hasParent || parents.has(d.id) ? linked : unlinked).push(d);
+	}
+	return { linked, unlinked };
+}

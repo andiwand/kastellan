@@ -9,7 +9,7 @@
 <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
 <meta property="og:title" content="Kastellan">
 <meta property="og:description" content="Every device on your network, in one place. Self-hosted and open source.">
-<meta property="og:image" content="img/overview-dark.webp">
+<meta property="og:image" content="https://andiwand.github.io/kastellan/img/overview-dark.webp">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -119,14 +119,18 @@
 
   <article class="feature flip reveal">
     <div class="feature-copy">
-      <p class="kicker">Network map</p>
+      <p class="kicker">Graph</p>
       <h2>See how it <b>hangs together</b></h2>
-      <p>Say what each device is plugged into, and Kastellan draws the network: the router, the switch in the office, the mesh repeaters and everything behind them. When something breaks, its branch lights up, so a dead repeater doesn't look like five dead devices.</p>
+      <p>Switch the device list to a graph: the router, the switch in the office, the mesh repeaters and what's wired behind them. When something breaks, its branch lights up, so a dead repeater doesn't look like five dead devices.</p>
+      <ul class="points">
+        <li><b>Only links that matter.</b> Which access point a laptop happens to use isn't drawn; phones, laptops and Wi-Fi gadgets sit in their own row.</li>
+        <li><b>Search keeps the shape.</b> Filtering fades the rest of the network instead of removing it.</li>
+      </ul>
     </div>
     <figure class="shot">
       <picture>
-        <source srcset="img/map-dark.webp" media="(prefers-color-scheme: dark)">
-        <img src="img/map-light.webp" width="2720" height="1700" alt="The network map: the router on the left, the switch and two repeaters in the middle, servers, laptops and cameras on the right; the NAS branch in amber.">
+        <source srcset="img/graph-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/graph-light.webp" width="2720" height="1700" alt="The devices as a graph: the router on the left, the office switch and two mesh repeaters, the servers and printer behind the switch with the NAS branch in amber; below, the laptops and a Wi-Fi camera that have no links.">
       </picture>
     </figure>
   </article>
@@ -169,7 +173,7 @@
   <span class="k">nas</span>:
     <span class="k">host</span>: nas.lan
     <span class="k">kind</span>: server
-    <span class="k">parent</span>: fritzbox        <span class="c"># for the map</span>
+    <span class="k">parent</span>: fritzbox        <span class="c"># for the graph</span>
     <span class="k">checks</span>:
       - ping
       - <span class="k">tcp</span>: 22
@@ -193,7 +197,7 @@
       <ul>
         <li><svg><use href="#i-radar"/></svg><div><b>Reachability checks</b><span>Ping, TCP ports and HTTP for every device and service.</span></div></li>
         <li><svg><use href="#i-file"/></svg><div><b>History</b><span>Uptime and response time per check, kept as daily CSV files.</span></div></li>
-        <li><svg><use href="#i-network"/></svg><div><b>Network map</b><span>Drawn from what each device is connected through.</span></div></li>
+        <li><svg><use href="#i-network"/></svg><div><b>List and graph</b><span>Every device as a list, or as a graph of how it is connected.</span></div></li>
         <li><svg><use href="#i-desktop"/></svg><div><b>Demo mode</b><span>A made-up network to try everything without touching yours.</span></div></li>
       </ul>
     </div>

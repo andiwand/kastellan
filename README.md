@@ -17,7 +17,8 @@ drivers, updates, backups). See [PLAN.md](PLAN.md).
   last 24 hours as a strip, and the ups and downs of the day.
 - **Calm by default**: a PC or laptop that is off is *offline*, not *down*.
 - **Device pages**: response times, uptime over 1 h / 24 h / 7 d, and the activity of each check.
-- **Network map**: drawn from what each device is connected through.
+- **List or graph**: the devices as a searchable list, or as a graph of what is connected
+  through what (infrastructure only; which access point a laptop uses isn't drawn).
 - **Plain files**: `config.yaml` for the configuration, one CSV file per day for the history.
 
 ## Try it

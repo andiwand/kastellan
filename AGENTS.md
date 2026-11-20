@@ -13,7 +13,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
 
 - `backend/src/kastellan/` (Python 3.13, FastAPI, managed with uv):
   - `config.py`: `config.yaml` is the only configuration; there is no database. A `Device` has a
-    `host`, a `kind`, an optional `parent` (for the map), `tags`, `always_on` (default: false
+    `host`, a `kind`, an optional `parent` (for the graph; meant for infrastructure links, not which access point
+    a client uses), `tags`, `always_on` (default: false
     for `pc` and `laptop`) and `checks`. A check is written `ping`, `tcp: <port>` or
     `http: <url>` (`Check._shorthand`); its `name` defaults to the type and target.
   - `checks.py`: runs one check and returns a `Result`; it never raises. Ping is unprivileged
@@ -41,8 +42,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     **offline**, not an alarm, and doesn't count as needing attention.
   - Components: `UptimeStrip` (one bar per bucket, hover tooltip), `LatencyChart` (line + area,
     crosshair), `StatusBadge`/`StatusDot` (color always with a word), `KindIcon`, `Logo`.
-  - `src/lib/layout.ts`: the network map's left-to-right tree layout.
-  - Routes: `/` overview, `/devices`, `/devices/[id]`, `/map`.
+  - `src/lib/layout.ts`: the graph's left-to-right tree layout, and `splitLinked` (devices with
+    no link at all go in a grid under the tree).
+  - Routes: `/` overview, `/devices` (list, or graph with `?view=graph`; search and filters
+    apply to both, the graph fades non-matches), `/devices/[id]`.
 - `website/`: the project website, plain HTML/CSS/JS, published by `.github/workflows/pages.yml`.
   Screenshots in `website/img/` come from demo mode, in light and dark (`<picture>`).
 

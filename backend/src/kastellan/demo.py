@@ -92,13 +92,11 @@ CONFIG = {
             "name": "Office laptop",
             "host": "office-laptop.lan",
             "kind": "laptop",
-            "parent": "repeater-living",
         },
         "macbook": {
             "name": "MacBook",
             "host": "macbook.lan",
             "kind": "laptop",
-            "parent": "repeater-living",
             "checks": ["ping", {"tcp": 22, "name": "ssh"}],
         },
         "printer": {
@@ -119,7 +117,6 @@ CONFIG = {
             "name": "Garden camera",
             "host": "cam-garden.lan",
             "kind": "camera",
-            "parent": "repeater-attic",
             "checks": ["ping", {"tcp": 554, "name": "rtsp"}],
         },
     },
