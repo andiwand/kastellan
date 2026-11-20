@@ -41,6 +41,19 @@
 	$effect(() => {
 		dialog?.showModal();
 	});
+	// The page behind stays where it is while the dialog is open.
+	$effect(() => {
+		const root = document.documentElement;
+		const before = root.style.overflow;
+		root.style.overflow = 'hidden';
+		return () => {
+			root.style.overflow = before;
+		};
+	});
+
+	/** What a service is called when its name is left empty (as config.yaml names it). */
+	const defaultName = (c: CheckForm) =>
+		c.type === 'ping' ? 'ping' : `${c.type}:${c.target ?? ''}`;
 
 	async function load() {
 		error = null;
@@ -154,8 +167,8 @@
 		</div>
 
 		{#if form}
-			<div class="flex flex-col gap-4 overflow-y-auto px-5 py-4">
-				<div class="grid gap-3 sm:grid-cols-2">
+			<div class="flex flex-col gap-4 overflow-y-auto overscroll-contain px-5 py-4">
+				<div class="grid items-start gap-3 sm:grid-cols-2">
 					<label class={label}>
 						Name
 						<input class={input} bind:value={form.name} placeholder="NAS" />
@@ -169,27 +182,11 @@
 							required
 						/>
 					</label>
-					{#if !id}
-						<label class={label}>
-							Id <span class="font-normal text-faint">(in config.yaml; can't change later)</span>
-							<input
-								class="{input} font-mono"
-								bind:value={newId}
-								oninput={() => (idTouched = true)}
-								pattern="[a-z0-9][a-z0-9_\-]*"
-								required
-							/>
-						</label>
-					{/if}
 					<label class={label}>
 						Kind
 						<select class={input} bind:value={form.kind}>
 							{#each KINDS as k (k)}<option value={k}>{k}</option>{/each}
 						</select>
-					</label>
-					<label class={label}>
-						Tags <span class="font-normal text-faint">(comma-separated)</span>
-						<input class={input} bind:value={tags} placeholder="docker, ubuntu" />
 					</label>
 					<label class={label}>
 						Always on
@@ -206,9 +203,26 @@
 							<option value="no">No: off is just offline</option>
 						</select>
 					</label>
+					{#if !id}
+						<label class={label}>
+							Id
+							<input
+								class="{input} font-mono"
+								bind:value={newId}
+								oninput={() => (idTouched = true)}
+								pattern="[a-z0-9][a-z0-9_\-]*"
+								required
+							/>
+							<span class="font-normal text-faint">Its name in config.yaml; it stays.</span>
+						</label>
+					{/if}
+					<label class="{label} {id ? 'sm:col-span-2' : ''}">
+						Tags
+						<input class={input} bind:value={tags} placeholder="docker, ubuntu (comma-separated)" />
+					</label>
 				</div>
-				<label class="flex items-start gap-2 text-sm">
-					<input type="checkbox" bind:checked={form.exposed} class="mt-0.5" />
+				<label class="flex items-start gap-2.5 text-sm">
+					<input type="checkbox" bind:checked={form.exposed} class="mt-[3px] size-4 shrink-0" />
 					<span>
 						Reachable from the internet
 						<span class="block text-xs text-muted">
@@ -275,7 +289,7 @@
 									{/if}
 									<label class="{label} min-w-32 flex-1">
 										Name
-										<input class={input} bind:value={check.name} placeholder="e.g. ssh, web" />
+										<input class={input} bind:value={check.name} placeholder={defaultName(check)} />
 									</label>
 									<button
 										type="button"

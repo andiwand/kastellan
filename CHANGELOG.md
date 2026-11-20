@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The device form: fields in even rows, a service's default name as its placeholder, and the
+  page behind no longer scrolls while it is open.
 - `kastellan hash-password` takes a password under 10 characters after a warning (or with
   `--short`) instead of refusing it.
 
