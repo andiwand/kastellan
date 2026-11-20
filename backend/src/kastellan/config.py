@@ -173,6 +173,16 @@ class ActAccess(BaseModel):
     port: int | None = Field(default=None, ge=1, le=65535)  # None: the ssh: port, else 22
 
 
+class OpenWrtAccess(BaseModel):
+    """An OpenWrt device through its own API (openwrt/): Kastellan's rpcd login there."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user: str = Field(default="kastellan", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    port: int = Field(default=443, ge=1, le=65535)  # uhttpd's HTTPS
+    password_secret: str | None = None  # default: openwrt-<device id> (made at setup)
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -190,6 +200,7 @@ class Device(BaseModel):
     docker: DockerSource | None = None  # its containers and their updates, from WUD
     collect: CollectAccess | None = None  # how the host is doing (and its containers)
     act: ActAccess | None = None  # what Kastellan may change there (as the host allows)
+    openwrt: OpenWrtAccess | None = None  # an OpenWrt router or access point, through its API
     # Reachable from the internet (a port forward, a public server): known vulnerabilities in
     # what it runs count as urgent, and may trigger automatic updates (see vulns.py).
     exposed: bool = False

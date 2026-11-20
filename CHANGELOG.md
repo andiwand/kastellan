@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- OpenWrt: routers and access points through their own API with a login of Kastellan's that may
+  only what you tick (read always; reboot, Wi-Fi settings, firmware, chosen services). Their state, Wi-Fi clients,
+  services (running, at boot), package updates; an alarm when their release no longer gets security fixes. Wi-Fi changes
+  with the device's own rollback; firmware one release series at a time, built for the model by
+  OpenWrt's image builder, tested on the device, settings kept.
+
 - Setting up a door (collector, actor, SSH access) in a dialog: your login, root through sudo
   (also with another password) or su with root's password, the output live, then done; or the
   commands to run yourself.

@@ -26,6 +26,8 @@
 	import CollectorSetup from '#lib/components/CollectorSetup.svelte';
 	import ActorSetup from '#lib/components/ActorSetup.svelte';
 	import HostHealth from '#lib/components/HostHealth.svelte';
+	import RouterCard from '#lib/components/RouterCard.svelte';
+	import OpenWrtSetup from '#lib/components/OpenWrtSetup.svelte';
 	import Pencil from '@lucide/svelte/icons/pencil';
 
 	const id = $derived(page.params.id ?? '');
@@ -248,6 +250,20 @@
 		/>
 	</div>
 
+	{#if device.router}
+		<RouterCard
+			device={device.id}
+			report={device.router}
+			checked={device.router_checked ?? null}
+			error={device.router_error ?? null}
+			canChange={store.me?.role === 'admin' && !!store.me.user}
+		/>
+	{:else if device.openwrt && device.router_error}
+		<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
+			Kastellan can't read this OpenWrt device: {device.router_error}
+		</p>
+	{/if}
+
 	{#if device.host_report}
 		<HostHealth
 			report={device.host_report}
@@ -276,12 +292,22 @@
 	{#if store.me?.role === 'admin'}
 		<!-- Keyed: going from one device's page to another's starts these afresh. -->
 		{#key device.id}
-			<CollectorSetup device={device.id} canInstall={!!store.me.user} />
-			<ActorSetup
-				device={device.id}
-				containers={(device.containers ?? []).map((c) => c.name)}
-				canInstall={!!store.me.user}
-			/>
+			{#if device.openwrt || ['router', 'access-point', 'switch'].includes(device.kind)}
+				<OpenWrtSetup
+					device={device.id}
+					canInstall={!!store.me.user}
+					services={(device.router?.services ?? []).map((s) => s.name)}
+					allowedServices={device.router?.services_allowed ?? []}
+				/>
+			{/if}
+			{#if !device.openwrt}
+				<CollectorSetup device={device.id} canInstall={!!store.me.user} />
+				<ActorSetup
+					device={device.id}
+					containers={(device.containers ?? []).map((c) => c.name)}
+					canInstall={!!store.me.user}
+				/>
+			{/if}
 			<AccessSetup device={device.id} canSetUp={!!store.me.user} />
 			{#if device.ssh}
 				<DeviceKeys device={device.id} canChange={!!store.me.user} />

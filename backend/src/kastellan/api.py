@@ -25,6 +25,7 @@ from .hub import Hub
 from .monitor import CheckStatus
 from .networks import INTERNET, Network, network_of, networks_of, public_ways
 from .networks import Hub as NetHub
+from .openwrt_api import router as openwrt_router
 from .settings import Settings
 from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
@@ -62,6 +63,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(sshkeys_router(hub))
     app.include_router(host_router(hub))
     app.include_router(act_router(hub))
+    app.include_router(openwrt_router(hub))
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:
@@ -162,6 +164,10 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "vulns": status.vulns if status else None,
                     "collect": device.collect is not None,
                     "act": device.act is not None,
+                    "openwrt": device.openwrt is not None,
+                    "router": status.router if status else None,
+                    "router_checked": status.router_checked if status else None,
+                    "router_error": status.router_error if status else None,
                     "host_report": status.host if status else None,
                     "host_checked": status.host_checked if status else None,
                     "host_error": status.host_error if status else None,

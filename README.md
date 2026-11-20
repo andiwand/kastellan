@@ -159,12 +159,19 @@ command (`restrict`, `command=`, only from the hub's address):
 | Collector     | `kastellan-collect`   | Run one root-owned, read-only script: system, space, RAID, SMART, temperatures, services, updates, containers (never their settings). |
 | Actor         | `kastellan-act`       | Only the abilities you tick, each a root-owned script with one sudo rule: update or restart chosen containers, install system updates (apt), reboot. |
 | VPN           | `kastellan-pki`, root | Only the client-certificate and CRL scripts.                                    |
+| OpenWrt       | rpcd login `kastellan` | Through the device's own API (HTTPS, certificate pinned), with an access list of its own: read always; reboot, Wi-Fi settings, firmware, chosen services (start/stop/restart, at boot) only if ticked. |
 
 A taken-over hub gets exactly what the doors allow. Container updates are asked of the registries
 directly; updating pulls the container's own tag again (only an image that came from its
 registry) and recreates it with its settings, and puts the old one back if the new one doesn't
 run steadily. System updates keep changed config files and never remove a package. Automatic updates
 (`auto_update: true`) happen only for a known vulnerability on an `exposed` device.
+
+OpenWrt routers and access points show their state, Wi-Fi clients, package updates and whether
+their release still gets fixes. Wi-Fi changes are applied with the device's own rollback (it
+undoes them if it can't be reached afterwards). Firmware moves one release series at a time: an
+image built for the model by OpenWrt's image builder with its packages, checked, tested on the
+device, installed keeping the settings.
 
 Host keys are pinned (trusted once on the page). Kastellan's own key can be rotated on the
 **Access** page: added and tried everywhere, then switched, then the old one removed.

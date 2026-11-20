@@ -134,9 +134,12 @@ def stream(
     body: Login,
     audit: Callable[..., None],
     after: Callable[[], dict[str, Any]] | None = None,
+    keep: list[str] | None = None,
 ) -> StreamingResponse:
     """Run the script over the open connection and stream its output; on success, `after()`
-    (e.g. adding collect: to config.yaml) and its result go into the last line.
+    (e.g. adding collect: to config.yaml) and its result go into the last line. With `keep`,
+    every output line is also kept there (for `after()`), and `KASTELLAN-` data lines aren't
+    shown.
 
     The run belongs to the hub, not to the page: it goes on (and is audited, and `after()`
     runs) when the browser leaves halfway. The page only follows it."""
@@ -152,6 +155,10 @@ def stream(
                     if isinstance(item, int):
                         outcome = {"ok": item == 0, "exit": item}
                     else:
+                        if keep is not None:
+                            keep.append(item)
+                            if item.startswith("KASTELLAN-CERT "):
+                                continue
                         tail = [*tail, item][-5:]
                         queue.put_nowait((item + "\n").encode())
             if not outcome["ok"]:
@@ -224,3 +231,43 @@ def add_device_key(
     hub.save_config(old, new)
     hub.audit.record("config.device.change", user, address, device=id, changes=config_edit.diff(old, new))
     return True
+
+
+def stream_work(
+    work: Callable[[Callable[[str], None]], Any],
+    audit: Callable[..., None],
+) -> StreamingResponse:
+    """Any long job of the hub's, streamed like a setup: `work(say)` reports with `say(line)`
+    and returns its outcome (a dict); it runs to its end even if the page goes, and is audited
+    (started, then the outcome)."""
+    audit(outcome="started")
+    queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+    def say(line: str) -> None:
+        queue.put_nowait((line[:2000] + "\n").encode())
+
+    async def run() -> None:
+        try:
+            result = await work(say)
+            outcome = {"ok": True, **(result or {})}
+            audit(outcome="done")
+        except BaseException as e:
+            outcome = {"ok": False, "error": f"{str(e)[:300] or type(e).__name__}"}
+            audit(outcome=f"failed: {outcome['error'][:200]}" if isinstance(e, Exception) else "interrupted")
+            if not isinstance(e, Exception):
+                queue.put_nowait(None)
+                raise
+        queue.put_nowait(f"{DONE} {json.dumps(outcome)}\n".encode())
+        queue.put_nowait(None)
+
+    task = asyncio.get_running_loop().create_task(run())
+    _running.add(task)
+    task.add_done_callback(_running.discard)
+
+    async def follow() -> AsyncIterator[bytes]:
+        while (chunk := await queue.get()) is not None:
+            yield chunk
+
+    return StreamingResponse(
+        follow(), media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-store"}
+    )

@@ -52,6 +52,10 @@ export interface Device {
 	public_ways: PublicWay[]; // checks that reach it by a public name or address
 	collect?: boolean; // the collector reads it (collect: in config.yaml)
 	act?: boolean; // an actor is set up there (act: in config.yaml)
+	openwrt?: boolean; // an OpenWrt device Kastellan reads through its API
+	router?: RouterReport | null;
+	router_checked?: string | null;
+	router_error?: string | null;
 	host_report?: HostReport | null;
 	host_checked?: string | null;
 	host_error?: string | null;
@@ -123,6 +127,83 @@ export interface ActSetup {
 	abilities: Record<string, string>; // every ability Kastellan knows, described
 	port: number;
 	script: string; // the commands for the choice asked about
+}
+
+/** An OpenWrt device's state (openwrt/client.py). */
+export interface RouterReport {
+	board: {
+		model: string | null;
+		hostname: string | null;
+		board_name: string | null;
+		release: { version: string | null; revision: string | null; target: string | null };
+		kernel: string | null;
+	};
+	system: {
+		uptime: number | null;
+		load: number[];
+		memory: { total?: number; available?: number; free?: number };
+	};
+	interfaces?: { name: string; up: boolean; proto: string; device: string; ipv4: string[] }[];
+	radios?: {
+		name: string;
+		up: boolean;
+		disabled: boolean;
+		band: string | null;
+		channel: string | number | null;
+		htmode: string | null;
+		interfaces: {
+			section: string;
+			ifname: string | null;
+			ssid: string | null;
+			mode: string | null;
+			clients: { mac: string; name: string | null; signal: number | null }[];
+		}[];
+	}[];
+	services?: { name: string; enabled: boolean; running: boolean }[];
+	services_allowed?: string[];
+	packages?: string[] | null;
+	packages_checked?: number | null;
+	firmware?: {
+		current: string;
+		series: string;
+		supported: boolean;
+		newest_in_series: string | null;
+		next_step: string | null;
+		stable: string;
+		oldstable: string;
+	} | null;
+	errors?: Record<string, string>;
+}
+
+export interface OpenWrtSetup {
+	configured: boolean;
+	allowed: string[] | null; // the abilities the device grants now
+	abilities: Record<string, string>;
+	port: number;
+	script: string;
+}
+
+export interface WifiSettings {
+	radios: {
+		section: string;
+		channel: string | null;
+		htmode: string | null;
+		txpower: string | null;
+		disabled: string | null;
+		country: string | null;
+		band: string | null;
+	}[];
+	interfaces: {
+		section: string;
+		ssid: string | null;
+		encryption: string | null;
+		disabled: string | null;
+		hidden: string | null;
+		key_set: boolean;
+		device: string | null;
+		mode: string | null;
+		network: string | string[] | null;
+	}[];
 }
 
 export interface CollectSetup {
@@ -519,6 +600,24 @@ export const api = {
 		}>('POST', `/devices/${encodeURIComponent(id)}/act/${ability}`, {
 			container: container ?? null
 		}),
+	openwrtScript: (id: string, abilities: string[], services: string[] = []) =>
+		call<OpenWrtSetup>('POST', `/devices/${encodeURIComponent(id)}/openwrt/script`, {
+			abilities,
+			services
+		}),
+	openwrtService: (id: string, name: string, action: string) =>
+		call<{ output: string }>(
+			'POST',
+			`/devices/${encodeURIComponent(id)}/openwrt/services/${encodeURIComponent(name)}`,
+			{ action }
+		),
+	openwrtReboot: (id: string) =>
+		call<{ rebooting: boolean }>('POST', `/devices/${encodeURIComponent(id)}/openwrt/reboot`),
+	wifi: (id: string) => get<WifiSettings>(`/devices/${encodeURIComponent(id)}/openwrt/wifi`),
+	setWifi: (
+		id: string,
+		changes: Record<string, Record<string, string | number | boolean | null>>
+	) => call<WifiSettings>('PUT', `/devices/${encodeURIComponent(id)}/openwrt/wifi`, { changes }),
 	hubKeys: () => get<HubKeys>('/ssh/keys'),
 	deviceKeys: (id: string) =>
 		get<{ everyone: boolean; login: string; keys: AuthorizedKey[] }>(

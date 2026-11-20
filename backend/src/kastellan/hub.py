@@ -7,6 +7,7 @@ import contextlib
 import logging
 import shutil
 import tempfile
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,6 +32,9 @@ from .host import actor, collector
 from .hub_errors import yaml_problem
 from .monitor import DeviceStatus, Monitor, run_check
 from .networks import Resolver, default_gateway
+from .openwrt import client as openwrt_client
+from .openwrt.client import Pins, Ubus
+from .openwrt.firmware import Releases, advise
 from .registry import Registries
 from .secrets import Secrets
 from .settings import Settings
@@ -42,6 +46,8 @@ from .vuln_policy import assess, auto_update_reason
 
 log = logging.getLogger(__name__)
 
+ROUTER_EVERY = 120  # seconds between reading OpenWrt devices
+PACKAGES_EVERY = 6 * 3600  # and asking them for package updates
 COLLECT_EVERY = 60  # seconds between the collector's reports
 HEARTBEAT_EVERY = 60
 RESOLVE_EVERY = 300  # seconds between looking up device names
@@ -116,6 +122,9 @@ class Hub:
         self.resolver = Resolver()
         self.registries = Registries()
         self._background: set[asyncio.Task[None]] = set()  # automatic updates under way
+        self.pins = Pins(settings.data / "openwrt")
+        self.releases = Releases()
+        self._ubus: dict[tuple[str, str, int, str], Ubus] = {}
         self.heartbeat_ok: datetime | None = None
         self.heartbeat_error: str | None = None
         self.own_address: str | None = None  # the hub's address on its network
@@ -271,6 +280,7 @@ class Hub:
             asyncio.create_task(self._resolve_hosts(), name="resolve device names"),
             asyncio.create_task(self._poll_hosts(), name="collect from hosts"),
             asyncio.create_task(self._heartbeat(), name="heartbeat"),
+            asyncio.create_task(self._poll_routers(), name="OpenWrt devices"),
         ]
 
     async def stop(self) -> None:
@@ -382,6 +392,75 @@ class Hub:
                 # Each host on its own: one host's trouble never stops the others, or the loop.
                 await asyncio.gather(*(one(id, d) for id, d in hosts), return_exceptions=True)
             await asyncio.sleep(COLLECT_EVERY)
+
+    # --- OpenWrt devices (openwrt/) ------------------------------------------------------------
+
+    def openwrt_secret(self, id: str) -> str:
+        device = self.config.devices[id]
+        return (device.openwrt.password_secret if device.openwrt else None) or f"openwrt-{id}"
+
+    def ubus(self, id: str) -> Ubus:
+        """The device's API with Kastellan's login (kept between calls: its session lasts)."""
+        device = self.config.devices[id]
+        assert device.openwrt is not None
+        key = (id, device.host, device.openwrt.port, device.openwrt.user)
+        client = self._ubus.get(key)
+        if client is None:
+            password = self.secrets.get(self.openwrt_secret(id))
+            client = Ubus(id, device.host, device.openwrt.port, device.openwrt.user, password, self.pins)
+            self._ubus = {k: v for k, v in self._ubus.items() if k[0] != id} | {key: client}
+        return client
+
+    async def _poll_routers(self) -> None:
+        """Every OpenWrt device's state every ROUTER_EVERY seconds; its package updates and the
+        firmware advice now and then."""
+        limit = asyncio.Semaphore(4)
+
+        async def one(id: str, device: Device) -> None:
+            async with limit:
+                status = self.monitor.status.get(id)
+                if status is None:
+                    return
+                try:
+                    ubus = self.ubus(id)
+                    report = await openwrt_client.read(ubus)
+                    old = status.router or {}
+                    report["packages"] = old.get("packages")
+                    report["packages_checked"] = old.get("packages_checked")
+                    now = time.time()
+                    if not report["packages_checked"] or now - report["packages_checked"] > PACKAGES_EVERY:
+                        try:
+                            report["packages"] = await openwrt_client.upgradable(ubus)
+                            report["packages_checked"] = now
+                        except Exception as e:  # asked again only after the same while
+                            report["errors"]["packages"] = _brief(e)
+                            report["packages_checked"] = now
+                    versions = await self.releases.get()
+                    release = (report["board"].get("release") or {}).get("version") or ""
+                    advice = advise(release, versions) if versions else None
+                    report["firmware"] = advice.view() if advice else None
+                except Exception as e:  # what it said last stays, marked by its time
+                    status.router_error = _brief(e)
+                    log.info("%s: %s", id, status.router_error)
+                    return
+                status.router, status.router_checked, status.router_error = report, datetime.now(UTC), None
+                board = report["board"]
+                release = board.get("release") or {}
+                firmware = " ".join(x for x in (release.get("version"), release.get("revision")) if x)
+                status.info = {
+                    "model": board.get("model"),
+                    "name": board.get("hostname"),
+                    "firmware": firmware or None,
+                }
+                status.info_checked = datetime.now(UTC)
+                if firmware:
+                    self._note_firmware(id, f"OpenWrt {firmware}", datetime.now(UTC))
+
+        while True:
+            if not self.demo:
+                routers = [(id, d) for id, d in list(self.config.devices.items()) if d.openwrt]
+                await asyncio.gather(*(one(id, d) for id, d in routers), return_exceptions=True)
+            await asyncio.sleep(ROUTER_EVERY)
 
     async def _heartbeat(self) -> None:
         """Call the heartbeat URL every minute while the hub runs (a dead man's switch)."""
@@ -556,6 +635,15 @@ class Hub:
                     title = f"{device.name}: {c['name']} can be updated to {target}"
                     if m := self.alarms.event(key, title, f"{c['image']}:{c['tag']}", id, now, send):
                         out.append(m)
+            # An OpenWrt device's newer point release (within its series): once per release.
+            fw = (status.router or {}).get("firmware") or {}
+            if fw.get("newest_in_series"):
+                key = f"openwrt:{id}:{fw['newest_in_series']}"
+                title = (
+                    f"{device.name}: OpenWrt {fw['newest_in_series']} is out (it runs {fw.get('current')})"
+                )
+                if m := self.alarms.event(key, title, "a bug-fix release of its series", id, now, send):
+                    out.append(m)
             # The host wants a reboot (kernel or libc updates): once per set of packages.
             updates = (status.host or {}).get("updates") or {}  # normalized (host/report.py)
             if updates.get("reboot"):

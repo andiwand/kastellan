@@ -103,6 +103,15 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog. `install_script` is
     declarative (abilities not chosen are removed). Tests run the real scripts against a fake
     Docker API (tests/test_actor.py). Root scripts take nothing from the environment.
+  - `openwrt/` + `openwrt_api.py`: OpenWrt devices through ubus over HTTPS (as LuCI). `setup.py`
+    makes an rpcd login `kastellan` (md5crypt hash; the password is the secret
+    `openwrt-<id>`) and `/usr/share/rpcd/acl.d/kastellan.json` with one group per ability;
+    services are acted on only through `/usr/libexec/kastellan/service` (allow list in
+    `/etc/kastellan/services.allow`; rpcd/uhttpd restart only), since rpcd's `rc init` would allow any;
+    `client.py` reads/acts (certificate pinned in `<data>/openwrt/<id>.pem`), Wi-Fi via uci
+    apply with rollback + confirm; `firmware.py` advises one series step at a time from
+    `.versions.json` and builds images via sysupgrade.openwrt.org. `hub._poll_routers` every
+    120 s into `status.router`. Tests use a fake rpcd that enforces the real ACL.
   - `setup_run.py`: running a setup once with a typed login (sudo, sudo with another password, or
     su with root's password over a pty), streamed as text, the last line `KASTELLAN-DONE {json}`;
     passwords are masked in every output line; `add_device_key` writes collect:/act:/ssh: after.

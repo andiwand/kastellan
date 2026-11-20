@@ -52,6 +52,9 @@ class DeviceStatus:
     host: dict[str, Any] | None = None  # the collector's report (host/collector.py)
     host_checked: datetime | None = None
     host_error: str | None = None
+    router: dict[str, Any] | None = None  # an OpenWrt device's state (openwrt/client.py)
+    router_checked: datetime | None = None
+    router_error: str | None = None
 
     @property
     def state(self) -> State:
@@ -145,6 +148,8 @@ class Monitor:
             moved = self._hosts.get(id, device.host) != device.host
             if device.collect is None or moved:
                 status.host = status.host_checked = status.host_error = None
+            if device.openwrt is None or moved:
+                status.router = status.router_checked = status.router_error = None
             if (device.docker is None and device.collect is None) or moved:
                 status.containers = status.containers_checked = status.containers_error = None
             if device.driver is None or self._hosts.get(id, device.host) != device.host:

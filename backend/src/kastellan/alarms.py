@@ -215,6 +215,54 @@ def evaluate(
         except Exception:  # one host's odd report never stops the alarms of all the others
             log.exception("%s: judging its report failed", id)
 
+    # OpenWrt devices: their API answers, and their firmware still gets fixes.
+    for id, device in config.devices.items():
+        st = status.get(id)
+        if device.openwrt is None or st is None or id in down or is_muted(id) or top_down_ancestor(id):
+            continue
+        name = device.name
+        checked = st.router_checked
+        if checked is None or checked < started:
+            if st.router_error and (now - started).total_seconds() > 15 * 60:
+                problems.append(
+                    Problem(
+                        f"router:{id}:api",
+                        Severity.WARNING,
+                        id,
+                        f"{name}: its API",
+                        f"{name}: Kastellan can't read it",
+                        st.router_error,
+                    )
+                )
+            continue
+        if (now - checked).total_seconds() > 15 * 60:
+            problems.append(
+                Problem(
+                    f"router:{id}:api",
+                    Severity.WARNING,
+                    id,
+                    f"{name}: its API",
+                    f"{name}: Kastellan can't read it any more",
+                    st.router_error or "",
+                    checked,
+                )
+            )
+            continue
+        fw = (st.router or {}).get("firmware") or {}
+        if fw and fw.get("supported") is False:
+            step = f"; next: {fw['next_step']}" if fw.get("next_step") else ""
+            now_out = f"now {fw.get('stable')} and {fw.get('oldstable')}"
+            problems.append(
+                Problem(
+                    f"router:{id}:firmware",
+                    Severity.WARNING,
+                    id,
+                    f"{name}: its firmware",
+                    f"{name} runs OpenWrt {fw.get('current')}, which no longer gets security fixes",
+                    f"OpenWrt {fw.get('series')} is out of support ({now_out}){step}",
+                )
+            )
+
     # Certificates of watched checks.
     for id, device in config.devices.items():
         if is_muted(id):
