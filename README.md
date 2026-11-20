@@ -235,6 +235,12 @@ network both share (or on localhost when both run on the same host): its API use
 password over HTTP Basic and needs 2FA off, so it must never be reachable from outside. The VPN
 page warns when the password would cross the network in clear.
 
+**SSH access** for Kastellan is set up from each device's page (admins): what works now, and
+the commands for either way you prefer: **one login** (Kastellan's key added to your existing
+account) or **a user of its own** (`kastellan`, with sudo without a password for installs). Copy
+them, or let Kastellan run them once with a login and password you type: used for that one
+connection and never stored. The key line carries `from="<the hub's address>"`.
+
 **OpenVPN** works in one of two modes (`vpn.openvpn.mode`):
 
 - **restricted** (the default, and safer): two small scripts are installed, and Kastellan's VPN

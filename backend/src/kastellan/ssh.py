@@ -139,7 +139,9 @@ class Keys:
             raise ChangedHost(target.host, key.get_fingerprint())
         return key.get_fingerprint()
 
-    async def connect(self, target: Target, which: str = "hub") -> asyncssh.SSHClientConnection:
+    async def connect(
+        self, target: Target, which: str = "hub", password: str | None = None
+    ) -> asyncssh.SSHClientConnection:
         """Log in with the hub's key, only to a host presenting a key pinned for this name.
 
         The pin is checked in the login connection itself: asyncssh gets exactly the keys pinned
@@ -155,11 +157,13 @@ class Keys:
                     target.host,
                     target.port,
                     username=target.user,
-                    client_keys=[self.hub_key(which)],
+                    # The hub's key; or, once, a password an admin typed to set up access.
+                    client_keys=[] if password else [self.hub_key(which)],
                     known_hosts=(pinned, [], []),
                     agent_path=None,  # only the hub's own key, never the agent of whoever runs it
-                    password=None,
+                    password=password,
                     kbdint_auth=False,
+                    preferred_auth="password" if password else "publickey",
                 ),
                 CONNECT_TIMEOUT,
             )

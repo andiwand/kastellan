@@ -138,6 +138,15 @@ export interface Setup {
 	hosts: SetupHost[];
 }
 
+export interface Access {
+	user: string;
+	port: number;
+	hub_ip: string | null;
+	key: string;
+	checks: { name: string; ok: boolean; detail: string }[];
+	scripts: { existing: string; dedicated: string };
+}
+
 export interface Health {
 	ok: boolean;
 	version: string;
@@ -223,6 +232,23 @@ export const api = {
 		),
 	ovpnPushCrl: () => call<{ crl: unknown }>('POST', '/vpn/openvpn/crl'),
 	ovpnSetup: () => get<Setup>('/vpn/openvpn/setup'),
+	access: (device: string) => get<Access>(`/devices/${encodeURIComponent(device)}/access`),
+	setUpAccess: (
+		device: string,
+		body: {
+			login: string;
+			password: string;
+			user: string;
+			create: boolean;
+			sudo: boolean;
+			port: number;
+		}
+	) =>
+		call<{ output: string; config: string }>(
+			'POST',
+			`/devices/${encodeURIComponent(device)}/access/setup`,
+			body
+		),
 	ovpnInstall: (role: string) =>
 		call<{ output: string }>('POST', `/vpn/openvpn/setup/${role}/install`),
 	acknowledge: (key: string, note = '') =>

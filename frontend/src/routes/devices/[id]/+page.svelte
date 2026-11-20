@@ -20,6 +20,7 @@
 	import ServicesTable from '#lib/components/ServicesTable.svelte';
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
 	import VulnsList from '#lib/components/VulnsList.svelte';
+	import AccessSetup from '#lib/components/AccessSetup.svelte';
 
 	const id = $derived(page.params.id ?? '');
 	const device = $derived(store.byId.get(id));
@@ -221,6 +222,10 @@
 			rangeLabel={range.label}
 		/>
 	</div>
+
+	{#if store.me?.role === 'admin'}
+		<AccessSetup device={device.id} canSetUp={!!store.me.user} />
+	{/if}
 
 	{#if device.vulns}
 		<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
