@@ -6,7 +6,10 @@ from kastellan.software import Software, from_greeting, from_http
 @pytest.mark.parametrize(
     ("greeting", "expected"),
     [
-        ("SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.8\r\n", "OpenSSH 10.2p1 (Ubuntu)"),
+        ("SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.8\r\n", "OpenSSH 10.2p1 (Ubuntu-2ubuntu3.8)"),
+        ("SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u4", "OpenSSH 9.2p1 (Debian-2+deb12u4)"),
+        ("SSH-2.0-OpenSSH_for_Windows_9.5", "OpenSSH 9.5 (Windows)"),
+        ("220 mail.ubuntu-host.lan ESMTP Exim 4.96", "Exim 4.96"),
         ("SSH-2.0-OpenSSH_9.8", "OpenSSH 9.8"),
         ("SSH-2.0-dropbear", "Dropbear"),
         ("SSH-2.0-dropbear_2022.83", "Dropbear 2022.83"),
@@ -39,6 +42,11 @@ def test_no_greeting() -> None:
         ),
         ({}, "<html><title>\n  WUD </title>", Software("WUD")),
         ({}, "<title>503 Service Temporarily Unavailable</title>", None),
+        ({}, "<title>Inbox (3) - Roundcube</title>", None),
+        ({}, "<title>Error 502</title>", None),
+        ({}, "<title>Login</title>", None),
+        ({}, "<title>Evil\x1b\x07 Box</title>", Software("Evil Box")),
+        ({"Server": "bad\x1b]0;x\x07/1.0"}, "", Software("bad ]0;x", "1.0")),
         ({"X-Powered-By": "PHP/8.3.6"}, "", Software("PHP", "8.3.6")),
         ({"Server": "Apache/2.4.58 (Ubuntu) OpenSSL/3.0.13"}, "", Software("Apache", "2.4.58", "Ubuntu")),
         ({"Server": "mcdhttpd/1.2"}, "", Software("mcdhttpd", "1.2")),

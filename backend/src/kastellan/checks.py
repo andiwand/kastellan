@@ -108,5 +108,18 @@ async def _http(check: Check) -> Result:
     latency = round((time.perf_counter() - start) * 1000, 2)
     status = response.status_code
     up = status == check.expect if check.expect is not None else status < 500
-    body = response.text[:20000] if "html" in response.headers.get("content-type", "") else ""
-    return Result(up, latency, f"HTTP {status}", from_http(dict(response.headers), body))
+    return Result(up, latency, f"HTTP {status}", _software(response) if up else None)
+
+
+def _software(response: httpx.Response) -> Software | None:
+    """What the page says it is. Only from answers that work (an error page names the proxy in
+    front, not the service), decoding at most 20 kB, and never failing the check over it."""
+    if not (200 <= response.status_code < 300 or response.status_code == 401):
+        return None
+    try:
+        body = ""
+        if "html" in response.headers.get("content-type", ""):
+            body = response.content[:20000].decode(response.encoding or "utf-8", errors="replace")
+        return from_http(dict(response.headers), body)
+    except Exception:  # a wrong charset name, or anything else odd about the page
+        return None

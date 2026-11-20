@@ -76,10 +76,29 @@ Settings (environment): `KASTELLAN_CONFIG` (default `data/config.yaml`), `KASTEL
 (default: the config's folder), `KASTELLAN_HOST`, `KASTELLAN_PORT` (8100),
 `KASTELLAN_LOG_LEVEL`, `KASTELLAN_DEMO`.
 
+## Sign-in
+
+Sign-in is off until config.yaml has a user. Make a password hash and add it:
+
+```sh
+cd backend && uv run kastellan hash-password      # Docker: docker exec -it kastellan kastellan hash-password
+```
+
+```yaml
+users:
+  andreas:
+    role: admin          # admin, or observer: sees everything, changes nothing
+    password: scrypt$... # the hash printed above
+```
+
+Sessions last 30 days of not being used; removing a user from config.yaml signs them out at
+once. Sign-ins, failed attempts and sign-outs go to `data/audit.log`. While sign-in is off,
+everyone who reaches the page is an admin, and what hands out access to devices (the terminal,
+remote desktop) stays locked.
+
 ## Security
 
-Kastellan has no sign-in yet. Run it only where your own network or VPN can reach it, never
-on the internet. The security design (keys instead of passwords, per-device limits, roles,
+Run Kastellan only where your own network or VPN can reach it, never on the internet. The security design (keys instead of passwords, per-device limits, roles,
 updates only on known vulnerabilities of internet-facing devices) is in [PLAN.md](PLAN.md).
 
 ## License

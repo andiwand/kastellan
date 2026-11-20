@@ -9,5 +9,7 @@
   Light and dark, phone and desktop.
 - Services: every service with the software and version it reports (SSH banners, HTTP
   headers and titles), status, how long, and uptime; software updates appear in the activity.
+- Sign-in with users and roles (admin, observer) from config.yaml, sessions, a brake on
+  password guessing, and an audit log.
 - Demo mode (`KASTELLAN_DEMO=1`): a made-up network with a day of simulated history.
 - Project website (`website/`).

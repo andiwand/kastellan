@@ -23,7 +23,10 @@
 	// Each bar needs a few pixels; when the strip is narrow, neighbouring buckets merge so it
 	// never overflows its column.
 	let width = $state(0);
-	const group = $derived(width ? Math.max(1, Math.ceil(raw.length / Math.floor(width / 5))) : 1);
+	const group = $derived(
+		width ? Math.max(1, Math.ceil(raw.length / Math.max(1, Math.floor(width / 5)))) : 1
+	);
+	const end = $derived(Date.parse(start) + raw.length * rawStep * 1000);
 	const buckets = $derived(mergeBuckets(raw, group));
 	const step = $derived(rawStep * group);
 
@@ -33,7 +36,8 @@
 		if (hover == null) return null;
 		const b = buckets[hover];
 		const from = new Date(t0 + hover * step * 1000);
-		const to = new Date(t0 + (hover + 1) * step * 1000);
+		// The last merged bar can hold fewer buckets: it ends where the data ends, not later.
+		const to = new Date(Math.min(t0 + (hover + 1) * step * 1000, end));
 		const s = bucketStatus(b.uptime, alwaysOn);
 		return {
 			x: (hover + 0.5) / buckets.length,

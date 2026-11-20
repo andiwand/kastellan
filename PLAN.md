@@ -60,6 +60,11 @@ fixed, before the next one starts.
 3. **Terminal in the browser**: SSH via asyncssh + xterm.js, keys held by the hub, host keys
    pinned. Refuses to run while sign-in is off. Also lists Docker containers (image, version,
    started) and systemd services (active since) of Linux hosts.
+   **SSH access management** rides on the same access: which keys may log in where (every
+   host's `authorized_keys`, with each key's name and age), and **key rotation as one guided
+   action**: make a new key, add it everywhere, prove it works on each host, then remove the old
+   one, host by host, with a way back while both work. Every step in the audit log. Later, an
+   SSH CA (short-lived certificates) instead of keys spread over hosts.
 4. **Remote desktop**: guacd 1.6 as a sidecar container, RDP (Windows Pro) and VNC (Windows
    Home, macOS, Linux desktops), full mouse and keyboard, through guacamole-common-js.
 5. **Drivers**: one module per kind of device, declaring what it can do (as Norn's camera
@@ -70,6 +75,17 @@ fixed, before the next one starts.
 7. **Notifications and alarms** (see below).
 8. **Opening device web interfaces through the hub** (a reverse proxy per device, on its own
    subdomain: path-based proxies break most device UIs).
+
+## Beyond the home network
+
+- **Devices in other networks** (a Hetzner VM, a server at a friend's place): any host or
+  address already works in config.yaml. A `site` per device (home, hetzner, ...) groups them in
+  the list and graph, and alarms say which site. Hosts behind NAT come in through the agent.
+- **Outside services we depend on** (the ISP, DNS resolvers, a mail provider, the domain's
+  web server): devices of kind `external`, whose host is a name. New checks: `dns` (does the
+  name resolve, to what), `tls` (certificate valid, days to expiry, as an alarm before it ends),
+  and HTTP with an expected text. Their uptime shows like everything else, so an outage outside
+  can be told from one inside.
 
 ## Notifications and alarms
 

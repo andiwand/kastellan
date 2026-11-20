@@ -52,3 +52,22 @@ async def test_tcp_reads_a_greeting() -> None:
     async with server:
         result = await checks.run("127.0.0.1", Check.model_validate({"tcp": port}))
     assert result.up and str(result.software) == "OpenSSH 9.8"
+
+
+async def test_http_with_a_wrong_charset_still_works() -> None:
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        body = b"<title>Box</title>"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-16\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/"
+    async with server:
+        result = await checks.run("127.0.0.1", Check.model_validate({"http": url}))
+    assert result.up

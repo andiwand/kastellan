@@ -86,25 +86,62 @@ async def test_only_changed_checks_restart(tmp_path: Path) -> None:
 
 
 async def test_software_changes_are_logged(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
     from kastellan.checks import Result
     from kastellan.software import Software
     from kastellan.versions import Versions
 
     versions = Versions(tmp_path / "versions.log")
     monitor = Monitor(History(tmp_path), versions=versions)
-    monitor.prepare(Config.model_validate({"devices": {"sv1": {"host": "x", "checks": [{"tcp": 22}]}}}))
-    monitor._record("sv1", "tcp:22", Result(True, 1.0, software=Software("OpenSSH", "9.8")))
-    monitor._record("sv1", "tcp:22", Result(True, 1.0))  # said nothing this time: keep what we know
-    monitor._record("sv1", "tcp:22", Result(True, 1.0, software=Software("OpenSSH", "9.9")))
-    assert monitor.status["sv1"].checks["tcp:22"].software == "OpenSSH 9.9"
-    from datetime import UTC, datetime
+    config = Config.model_validate({"devices": {"sv1": {"host": "x", "checks": [{"tcp": 22}]}}})
+    monitor.prepare(config)
+    ssh = monitor.status["sv1"].checks["tcp:22"]
 
+    def see(software: Software | None) -> None:
+        monitor._record("sv1", "tcp:22", Result(True, 1.0, software=software))
+
+    see(Software("OpenSSH", "9.8"))
+    assert ssh.software is None  # once is not enough
+    see(Software("OpenSSH", "9.8"))
+    assert ssh.software == "OpenSSH 9.8"
+    see(None)  # said nothing this time: keep what we know
+    see(Software("Caddy"))  # a one-off odd answer: not an update
+    see(Software("OpenSSH", "9.8"))
+    assert ssh.software == "OpenSSH 9.8"
+    see(Software("OpenSSH", "9.9"))
+    see(Software("OpenSSH", "9.9"))
+    assert ssh.software == "OpenSSH 9.9"
     [change] = versions.changes(datetime(2000, 1, 1, tzinfo=UTC))
     assert (change["from"], change["to"]) == ("OpenSSH 9.8", "OpenSSH 9.9")
-    assert versions.latest()[("sv1", "tcp:22")][0] == "OpenSSH 9.9"
 
-    # After a restart the hub knows the software before the first check runs.
+    # After a restart the hub knows the software before the first check runs...
     fresh = Monitor(History(tmp_path), versions=versions)
-    fresh.prepare(Config.model_validate({"devices": {"sv1": {"host": "x", "checks": [{"tcp": 22}]}}}))
-    fresh.restore_software(versions.latest())
+    fresh.prepare(config)
+    fresh.restore_software(versions.latest(), config)
     assert fresh.status["sv1"].checks["tcp:22"].software == "OpenSSH 9.9"
+    # ...but not when the check now looks at another host.
+    moved = Config.model_validate({"devices": {"sv1": {"host": "y", "checks": [{"tcp": 22}]}}})
+    other = Monitor(History(tmp_path), versions=versions)
+    other.prepare(moved)
+    other.restore_software(versions.latest(), moved)
+    assert other.status["sv1"].checks["tcp:22"].software is None
+
+
+def test_version_log_compaction_and_bad_lines(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from kastellan.versions import Versions
+
+    versions = Versions(tmp_path / "versions.log")
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    versions.record(now - timedelta(days=500), "a", "ssh", None, "v1")
+    versions.record(now - timedelta(days=400), "a", "ssh", "v1", "v2")
+    versions.record(now - timedelta(days=400), "b", "web", None, "x")
+    versions.record(now - timedelta(days=1), "a", "ssh", "v2", "v3")
+    with versions.path.open("a") as f:
+        f.write('{"time": "2026-05-01T00:00:00", "device": "a"}\n{"broken\n')  # naive, partial
+    versions.compact(365, now=now)
+    kept = [(e["device"], e["to"]) for e in versions._entries()]
+    assert kept == [("b", "x"), ("a", "v3")]  # b's only entry stays: it is what b runs
+    assert versions.changes(now - timedelta(days=30))[0]["to"] == "v3"

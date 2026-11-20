@@ -12,6 +12,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from . import __version__, checks, stats
+from .auth_api import Guard
+from .auth_api import router as auth_router
 from .config import Check
 from .hub import Hub
 from .monitor import CheckStatus
@@ -37,6 +39,8 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         openapi_url="/api/openapi.json",
     )
     app.state.hub = hub
+    app.add_middleware(Guard, hub=hub)
+    app.include_router(auth_router(hub))
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:

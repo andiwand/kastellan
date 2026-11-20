@@ -20,6 +20,11 @@
             name: jellyfin
 
 A check is `ping`, `tcp: <port>` or `http: <url>`. A device without `checks` is pinged.
+
+    users:
+      andreas:
+        role: admin           # or observer
+        password: scrypt$...  # from `kastellan hash-password`
 """
 
 from __future__ import annotations
@@ -116,12 +121,32 @@ class Device(BaseModel):
         return self
 
 
+class Role(StrEnum):
+    OBSERVER = "observer"  # sees everything, changes nothing, opens no sessions
+    ADMIN = "admin"
+
+
+class User(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Role = Role.OBSERVER
+    password: str  # a hash from `kastellan hash-password`, never the password itself
+
+    @model_validator(mode="after")
+    def _hashed(self) -> Self:
+        if not self.password.startswith("scrypt$"):
+            raise ValueError("password: put the hash from `kastellan hash-password` here, not the password")
+        return self
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     check_interval: float = Field(default=60, ge=5)
     retention_days: int = Field(default=30, ge=1)
     devices: dict[str, Device] = Field(default_factory=dict)
+    # Sign-in is off while this is empty; see auth.py.
+    users: dict[str, User] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _ids_and_parents(self) -> Self:

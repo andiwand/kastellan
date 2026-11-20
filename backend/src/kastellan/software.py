@@ -10,12 +10,28 @@ import html
 import re
 from dataclasses import dataclass
 
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _clean(text: str | None, limit: int = 80) -> str | None:
+    """What a remote device sent, made safe to log and show: no control characters (terminal
+    escapes), no runs of whitespace, not too long."""
+    if text is None:
+        return None
+    text = " ".join(_CONTROL.sub(" ", text).split())[:limit]
+    return text or None
+
 
 @dataclass(frozen=True)
 class Software:
     name: str
     version: str | None = None
-    extra: str | None = None  # e.g. the distribution: "Ubuntu"
+    extra: str | None = None  # e.g. the distribution and package: "Ubuntu-2ubuntu3.8"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _clean(self.name) or "?")
+        object.__setattr__(self, "version", _clean(self.version, 40))
+        object.__setattr__(self, "extra", _clean(self.extra, 40))
 
     def __str__(self) -> str:
         parts = [self.name, self.version or ""]
@@ -45,16 +61,22 @@ def from_greeting(text: str) -> Software | None:
         return None
     if m := _SSH.match(line):
         name, version, rest = m.groups()
-        if name.lower().startswith("openssh"):
+        extra = rest.split()[0] if rest else None
+        if name.lower().startswith("openssh_for_windows") or name.lower() == "openssh_for":
+            name, extra = "OpenSSH", "Windows"
+        elif name.lower().startswith("openssh"):
             name = "OpenSSH"
         elif name.lower() == "dropbear":
             name = "Dropbear"
-        extra = next((d for d in _DISTROS if rest and d.lower() in rest.lower()), None)
+        # The package revision ("Ubuntu-2ubuntu3.8", "Debian-2+deb12u4") stays: distribution
+        # security updates change only that part.
         return Software(name, version, extra)
     for pattern, name in _KNOWN_GREETINGS:
         if m := pattern.search(line):
             version = m.group(1) if m.groups() else None
-            extra = next((d for d in _DISTROS if d.lower() in line.lower()), None)
+            # Only a distribution named in brackets: the hostname in a greeting can contain one.
+            notes = " ".join(re.findall(r"\(([^)]*)\)", line))
+            extra = next((d for d in _DISTROS if d.lower() in notes.lower()), None)
             return Software(name, version, extra)
     if line.startswith("220"):
         return Software("FTP" if "ftp" in line.lower() else "SMTP" if "smtp" in line.lower() else "Server")
@@ -84,6 +106,16 @@ def _product(value: str) -> Software | None:
 _TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 
 
+_NOT_A_PRODUCT = re.compile(r"\d|error|not found|forbidden|unavailable|log ?in|sign ?in|redirect", re.I)
+
+
+def _product_title(title: str) -> bool:
+    """Whether a page title is likely the product's name. Titles with numbers ("Inbox (3)") change
+    by themselves, and error and login pages say nothing about the software; neither may become a
+    version that then seems to change."""
+    return bool(title) and len(title) <= 40 and not _NOT_A_PRODUCT.search(title)
+
+
 # Pages that don't name themselves in headers or a title, recognised by their HTML.
 _MARKERS = [
     (re.compile(r"/luci-static/|\bLuCI\b"), "OpenWrt LuCI"),
@@ -107,8 +139,7 @@ def from_http(headers: dict[str, str], body: str = "") -> Software | None:
     page = body[:20000]
     if m := _TITLE.search(page):
         title = " ".join(html.unescape(m.group(1)).split())
-        # Error pages are not a product name.
-        if title and len(title) <= 60 and not re.match(r"^\d{3}\b", title):
+        if _product_title(title):
             return Software(title)
     for pattern, name in _MARKERS:
         if pattern.search(page):

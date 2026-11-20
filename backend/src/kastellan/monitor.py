@@ -58,6 +58,16 @@ async def run_check(id: str, device: Device, check: Check) -> checks.Result:
     return await checks.run(device.host, check)
 
 
+def target_of(device: Device, check: Check) -> str:
+    """What a check looks at, to tell a reused check name from the same check."""
+    return f"{check.type}:{device.host}:{check.target or ''}"
+
+
+# A new software must be seen this many times in a row before it counts: a page that sometimes
+# answers differently (a proxy's error page, a flaky header) must not look like an update.
+SOFTWARE_CONFIRM = 2
+
+
 class Monitor:
     def __init__(
         self, history: History, runner: Runner = run_check, versions: Versions | None = None
@@ -66,6 +76,8 @@ class Monitor:
         self.runner = runner
         self.versions = versions
         self.status: dict[str, DeviceStatus] = {}
+        self._targets: dict[tuple[str, str], str] = {}
+        self._software_seen: dict[tuple[str, str], tuple[str, int]] = {}
         self._tasks: dict[tuple[str, str], tuple[asyncio.Task[None], Device, Check, float]] = {}
 
     def apply(self, config: Config) -> None:
@@ -100,6 +112,9 @@ class Monitor:
         for id in list(self.status):
             if id not in config.devices:
                 del self.status[id]
+        self._targets = {
+            (id, c.name): target_of(device, c) for id, device in config.devices.items() for c in device.checks
+        }
         for id, device in config.devices.items():
             status = self.status.setdefault(id, DeviceStatus())
             names = {c.name for c in device.checks}
@@ -127,12 +142,20 @@ class Monitor:
                 row.time,
             )
 
-    def restore_software(self, latest: dict[tuple[str, str], tuple[str, datetime]]) -> None:
-        """The software each check last saw, from the version log."""
-        for (id, name), (software, when) in latest.items():
-            check = self.status.get(id, DeviceStatus()).checks.get(name)
-            if check is not None:
-                check.software, check.software_since = software, when
+    def restore_software(
+        self, latest: dict[tuple[str, str], tuple[str, datetime, str | None]], config: Config
+    ) -> None:
+        """The software each check last saw, from the version log; not if the check now points
+        somewhere else (a reused name)."""
+        for (id, name), (software, when, target) in latest.items():
+            device = config.devices.get(id)
+            check = next((c for c in device.checks if c.name == name), None) if device else None
+            status = self.status.get(id, DeviceStatus()).checks.get(name)
+            if check is None or status is None:
+                continue
+            if target is not None and target != target_of(device, check):
+                continue
+            status.software, status.software_since = software, when
 
     async def stop(self) -> None:
         tasks = [t for t, *_ in self._tasks.values()]
@@ -153,6 +176,25 @@ class Monitor:
                 log.exception("check %s %s failed", id, check.name)
             await asyncio.sleep(interval)
 
+    def _note_software(self, now: datetime, id: str, name: str, result: checks.Result) -> None:
+        status = self.status[id].checks[name]
+        key = (id, name)
+        if result.software is None or str(result.software) == status.software:
+            self._software_seen.pop(key, None)
+            return
+        new = str(result.software)
+        seen, count = self._software_seen.get(key, (new, 0))
+        count = count + 1 if seen == new else 1
+        if count < SOFTWARE_CONFIRM:
+            self._software_seen[key] = (new, count)
+            return
+        self._software_seen.pop(key, None)
+        if status.software is not None:
+            log.info("%s %s: %s → %s", id, name, status.software, new)
+        if self.versions is not None:
+            self.versions.record(now, id, name, status.software, new, self._targets.get(key))
+        status.software, status.software_since = new, now
+
     def _record(self, id: str, name: str, result: checks.Result) -> None:
         now = datetime.now(UTC)
         status = self.status.setdefault(id, DeviceStatus()).checks.setdefault(name, CheckStatus())
@@ -166,13 +208,7 @@ class Monitor:
             result.detail,
             now,
         )
-        if result.software is not None and str(result.software) != status.software:
-            new = str(result.software)
-            if status.software is not None:
-                log.info("%s %s: %s → %s", id, name, status.software, new)
-            if self.versions is not None:
-                self.versions.record(now, id, name, status.software, new)
-            status.software, status.software_since = new, now
+        self._note_software(now, id, name, result)
         try:
             self.history.append(Row(now, id, name, result.up, result.latency_ms, result.detail))
         except OSError as e:

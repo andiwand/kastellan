@@ -40,6 +40,14 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `demo.py`: `KASTELLAN_DEMO=1` swaps in a made-up network with simulated results (a pure
     function of device, check and time) and a backfilled day of history in a temp folder. It
     never reads config.yaml or touches the real data. Used for trying it out and the website.
+  - `auth.py`: password hashes (scrypt), sessions (`<data>/sessions.json`, only SHA-256 of the
+    tokens, 0600), and `Brake` (5 failed sign-ins per address in 5 minutes). `audit.py`:
+    `<data>/audit.log`, JSON lines, append only.
+  - `auth_api.py`: `Guard`, plain ASGI middleware in front of /api (HTTP and WebSockets). Users
+    and roles come from config.yaml (`users:`); sign-in is off while there are none. Observers
+    only read; writes need an admin and the header `X-Kastellan: 1` (CSRF). Use `require_admin`
+    in routes that change things, and `require_signin` in anything that hands out access to a
+    device (terminal, remote desktop): it refuses while sign-in is off.
   - `api.py`: `/api/health`, `/api/devices`, `/api/devices/{id}/history`, `/api/series`,
     `/api/changes`, and the web app (single-page, index.html fallback).
 - `frontend/` (SvelteKit, static adapter, Svelte 5 runes, Tailwind 4, Lucide icons, Geist):

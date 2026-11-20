@@ -15,6 +15,8 @@ from ruamel.yaml.error import YAMLError
 
 from . import config as config_mod
 from . import demo
+from .audit import Audit
+from .auth import Sessions
 from .config import Config
 from .history import History
 from .monitor import Monitor, run_check
@@ -40,6 +42,9 @@ class Hub:
         self._demo_dir = data if self.demo else None
         self.history = History(data / "checks")
         self.versions = Versions(data / "versions.log")
+        # Sign-in state lives next to the real data even in demo mode: it is not made up.
+        self.sessions = Sessions(settings.data / "sessions.json")
+        self.audit = Audit(settings.data / "audit.log")
         runner = self.demo.run if self.demo else run_check
         self.monitor = Monitor(self.history, runner, self.versions)
         self._mtime: float | None = None
@@ -48,7 +53,13 @@ class Hub:
     def reload(self) -> None:
         """Read config.yaml; an invalid file keeps the last good config and reports the error."""
         if self.demo:
-            self.config = demo.config()
+            # The made-up network, with the users of the real config.yaml (if it has any).
+            users = {}
+            try:
+                users = config_mod.load(self.settings.config).users
+            except Exception as e:
+                log.warning("demo mode: cannot read the users from config.yaml: %s", e)
+            self.config = demo.config().model_copy(update={"users": users})
             self._apply(self.config)
             return
         path = self.settings.config
@@ -64,6 +75,8 @@ class Hub:
             log.error("config.yaml is invalid, keeping the last good one: %s", e)
             return
         self.config, self.config_error = config, None
+        # Someone removed from config.yaml is signed out everywhere at once.
+        self.sessions.end_all_except(set(config.users))
         self._apply(config)
         log.info("config: %d devices", len(config.devices))
 
@@ -74,7 +87,8 @@ class Hub:
             self.monitor.prepare(config)
             try:
                 self.monitor.restore(self.history.read(datetime.now(UTC) - timedelta(days=1)))
-                self.monitor.restore_software(self.versions.latest())
+                self.versions.compact(max(config.retention_days, 365))
+                self.monitor.restore_software(self.versions.latest(), config)
             except Exception:
                 log.exception("cannot restore the state from the history; starting fresh")
         self.monitor.apply(config)

@@ -51,12 +51,40 @@ export type Change =
 	| { kind: 'state'; time: string; device: string; check: string; up: boolean; detail: string }
 	| { kind: 'version'; time: string; device: string; check: string; from: string; to: string };
 
-async function get<T>(path: string, params: Record<string, string | number | undefined> = {}) {
+/** The hub answered 401: nobody is signed in (or the session ended). */
+export class SignedOut extends Error {}
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+	const write = method !== 'GET';
+	const response = await fetch(`/api${path}`, {
+		method,
+		// Every write carries this header; the hub refuses writes without it (see auth_api.py).
+		headers: write ? { 'X-Kastellan': '1', 'Content-Type': 'application/json' } : undefined,
+		body: body === undefined ? undefined : JSON.stringify(body)
+	});
+	if (response.status === 401) throw new SignedOut((await detail(response)) ?? 'sign in first');
+	if (!response.ok) throw new Error((await detail(response)) ?? `${path}: HTTP ${response.status}`);
+	return (await response.json()) as T;
+}
+
+async function detail(response: Response): Promise<string | undefined> {
+	try {
+		return (await response.json()).detail;
+	} catch {
+		return undefined;
+	}
+}
+
+function get<T>(path: string, params: Record<string, string | number | undefined> = {}) {
 	const query = new URLSearchParams();
 	for (const [k, v] of Object.entries(params)) if (v !== undefined) query.set(k, String(v));
-	const response = await fetch(`/api${path}${query.size ? `?${query}` : ''}`);
-	if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
-	return (await response.json()) as T;
+	return call<T>('GET', `${path}${query.size ? `?${query}` : ''}`);
+}
+
+export interface Me {
+	signin: boolean; // false: sign-in is off, everyone is an admin
+	user: string | null;
+	role: 'admin' | 'observer' | null;
 }
 
 export const api = {
@@ -65,5 +93,9 @@ export const api = {
 	series: (hours: number, buckets: number, device?: string) =>
 		get<Series>('/series', { hours, buckets, device }),
 	changes: (hours = 24, device?: string, limit = 100) =>
-		get<Change[]>('/changes', { hours, device, limit })
+		get<Change[]>('/changes', { hours, device, limit }),
+	me: () => get<Me>('/auth/me'),
+	login: (user: string, password: string) =>
+		call<{ user: string; role: string }>('POST', '/auth/login', { user, password }),
+	logout: () => call<{ ok: boolean }>('POST', '/auth/logout')
 };

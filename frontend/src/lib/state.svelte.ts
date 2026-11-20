@@ -1,4 +1,4 @@
-import { api, type Change, type Device, type Health, type Series } from './api';
+import { api, SignedOut, type Change, type Device, type Health, type Me, type Series } from './api';
 
 /** The app's live data: devices every 5 s, the last day's buckets and changes every 30 s. */
 class Store {
@@ -7,6 +7,8 @@ class Store {
 	series = $state<Series | null>(null);
 	changes = $state<Change[]>([]);
 	error = $state<string | null>(null);
+	/** Who is signed in; null until the hub has answered. */
+	me = $state<Me | null>(null);
 	updated = $state<number | null>(null);
 	now = $state(Date.now());
 
@@ -17,15 +19,44 @@ class Store {
 
 	async refresh() {
 		try {
-			[this.devices, this.health] = await Promise.all([api.devices(), api.health()]);
+			this.health = await api.health();
+			this.me = await api.me();
+			if (this.me.signin && !this.me.user) {
+				this.clear();
+			} else {
+				this.devices = await api.devices();
+				this.updated = Date.now();
+			}
 			this.error = null;
-			this.updated = Date.now();
 		} catch (e) {
-			this.error = e instanceof Error ? e.message : String(e);
+			if (e instanceof SignedOut) {
+				this.me = { signin: true, user: null, role: null };
+				this.clear();
+				this.error = null;
+			} else {
+				this.error = e instanceof Error ? e.message : String(e);
+			}
+		}
+	}
+
+	/** Forget what a signed-out browser must not keep showing. */
+	clear() {
+		this.devices = null;
+		this.series = null;
+		this.changes = [];
+	}
+
+	async signOut() {
+		try {
+			await api.logout();
+		} finally {
+			this.clear();
+			await this.refresh();
 		}
 	}
 
 	async refreshHistory() {
+		if (this.me?.signin && !this.me.user) return;
 		try {
 			[this.series, this.changes] = await Promise.all([api.series(24, 48), api.changes(24)]);
 		} catch {

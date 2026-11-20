@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,35 +31,64 @@ class Versions:
         for line in lines:
             try:
                 entry = json.loads(line)
-                entry["time"] = datetime.fromisoformat(entry["time"])
+                time = datetime.fromisoformat(entry["time"])
+                if time.tzinfo is None or not all(k in entry for k in ("device", "check", "from", "to")):
+                    continue
+                entry["time"] = time
+                entry.setdefault("target", None)
                 out.append(entry)
-            except (ValueError, KeyError, TypeError):
-                continue  # a line cut short by a crash
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue  # a line cut short by a crash, or edited by hand
         return out
 
-    def record(self, time: datetime, device: str, check: str, old: str | None, new: str) -> None:
-        line = json.dumps(
-            {
-                "time": time.isoformat(timespec="seconds"),
-                "device": device,
-                "check": check,
-                "from": old,
-                "to": new,
-            },
-            ensure_ascii=False,
-        )
+    def record(
+        self, time: datetime, device: str, check: str, old: str | None, new: str, target: str | None = None
+    ) -> None:
+        entry = {
+            "time": time.isoformat(timespec="seconds"),
+            "device": device,
+            "check": check,
+            "from": old,
+            "to": new,
+        }
+        if target is not None:
+            entry["target"] = target
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a") as f:
-                f.write(line + "\n")
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as e:
             log.warning("cannot write the version log: %s", e)
 
-    def latest(self) -> dict[tuple[str, str], tuple[str, datetime]]:
-        """Per (device, check): the software last seen and since when."""
-        out: dict[tuple[str, str], tuple[str, datetime]] = {}
+    def compact(self, keep_days: int, now: datetime | None = None) -> None:
+        """Keep the changes of the last `keep_days`, and the latest entry of every check (what it
+        runs now), however old. Done at start, so the file stays small."""
+        entries = self._entries()
+        if not entries:
+            return
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=keep_days)
+        last = {(e["device"], e["check"]): i for i, e in enumerate(entries)}
+        keep = [
+            e for i, e in enumerate(entries) if e["time"] >= cutoff or last[(e["device"], e["check"])] == i
+        ]
+        if len(keep) == len(entries):
+            return
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                "".join(
+                    json.dumps({**e, "time": e["time"].isoformat(timespec="seconds")}) + "\n" for e in keep
+                )
+            )
+            tmp.replace(self.path)
+        except OSError as e:
+            log.warning("cannot compact the version log: %s", e)
+
+    def latest(self) -> dict[tuple[str, str], tuple[str, datetime, str | None]]:
+        """Per (device, check): the software last seen, since when, and what the check pointed at."""
+        out: dict[tuple[str, str], tuple[str, datetime, str | None]] = {}
         for e in self._entries():
-            out[(e["device"], e["check"])] = (e["to"], e["time"])
+            out[(e["device"], e["check"])] = (e["to"], e["time"], e["target"])
         return out
 
     def changes(self, since: datetime, device: str | None = None) -> list[dict[str, Any]]:
