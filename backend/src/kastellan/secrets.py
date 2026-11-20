@@ -32,15 +32,22 @@ class Secrets:
     def set(self, name: str, value: str) -> None:
         path = self._path(name)
         self.folder.mkdir(parents=True, exist_ok=True)
+        if self.folder.is_symlink():
+            raise ValueError(f"{self.folder} is a symlink; refusing to write secrets through it")
         os.chmod(self.folder, 0o700)
-        tmp = path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        tmp = self.folder / f".{name}.{os.getpid()}.tmp"  # never another secret's name
+        tmp.unlink(missing_ok=True)
+        # New file only (no stale file with other permissions), never through a symlink.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), 0o600)
             f.write(value)
         tmp.replace(path)
 
     def names(self) -> list[str]:
         try:
-            return sorted(p.name for p in self.folder.iterdir() if NAME.match(p.name))
+            return sorted(
+                p.name for p in self.folder.iterdir() if NAME.match(p.name) and not p.name.endswith(".tmp")
+            )
         except OSError:
             return []

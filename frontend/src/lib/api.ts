@@ -111,8 +111,13 @@ export interface OvpnClient {
 }
 
 export interface Vpn {
-	wireguard: { clients: WgClient[]; error?: string } | null;
-	openvpn: { clients: OvpnClient[]; error?: string; crl_to_server?: boolean } | null;
+	wireguard: { clients: WgClient[]; error?: string; insecure?: boolean } | null;
+	openvpn: {
+		clients: OvpnClient[];
+		error?: string;
+		crl_to_server?: boolean;
+		crl?: { pushed?: string; next_update?: string | null; error?: string | null };
+	} | null;
 }
 
 export interface Health {
@@ -194,10 +199,11 @@ export const api = {
 	ovpnIssue: (name: string, days: number | null) =>
 		call<{ name: string }>('POST', '/vpn/openvpn', { name, days }),
 	ovpnRevoke: (name: string) =>
-		call<{ revoked: boolean; crl_pushed: boolean }>(
+		call<{ revoked: boolean; crl_pushed: boolean; error?: string }>(
 			'POST',
 			`/vpn/openvpn/${encodeURIComponent(name)}/revoke`
 		),
+	ovpnPushCrl: () => call<{ crl: unknown }>('POST', '/vpn/openvpn/crl'),
 	acknowledge: (key: string, note = '') =>
 		call<Alarm>('POST', `/alarms/${encodeURIComponent(key)}/ack`, { note }),
 	mute: (device: string, minutes: number) =>

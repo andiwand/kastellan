@@ -96,6 +96,13 @@
 					{vpn.wireguard.error}
 				</p>{/if}
 		</div>
+		{#if vpn.wireguard.insecure}
+			<p class="mb-3 text-xs" style:color="var(--warning-text)">
+				wg-easy is reached over plain HTTP on another machine, so its admin password crosses the
+				network with every request. Let Kastellan reach it on localhost or a shared Docker network,
+				and don't publish its web port.
+			</p>
+		{/if}
 		<ul class="card divide-y divide-line">
 			{#each vpn.wireguard.clients as c (c.id)}
 				<li class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-sm">
@@ -208,6 +215,30 @@
 					{vpn.openvpn.error}
 				</p>{/if}
 		</div>
+		{#if vpn.openvpn.crl_to_server}
+			<div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+				{#if vpn.openvpn.crl?.error}
+					<span style:color="var(--critical-text)">
+						The revocation list didn't reach the server: {vpn.openvpn.crl.error}. Revoked clients
+						may still connect.
+					</span>
+				{:else if vpn.openvpn.crl?.pushed}
+					<span>
+						Revocation list on the server since {ago(vpn.openvpn.crl.pushed, store.now)}{vpn.openvpn
+							.crl.next_update
+							? `, valid until ${vpn.openvpn.crl.next_update.slice(0, 10)}`
+							: ''}; renewed daily.
+					</span>
+				{:else}
+					<span>The revocation list is renewed and sent to the server daily.</span>
+				{/if}
+				{#if canManage}
+					<button class={button} disabled={busy} onclick={() => act(() => api.ovpnPushCrl())}>
+						Send it now
+					</button>
+				{/if}
+			</div>
+		{/if}
 		<ul class="card divide-y divide-line">
 			{#each vpn.openvpn.clients as c (c.name + c.serial)}
 				<li
@@ -236,7 +267,14 @@
 									class={button}
 									style:color="var(--critical-text)"
 									disabled={busy}
-									onclick={() => act(() => api.ovpnRevoke(c.name))}
+									onclick={() =>
+										act(async () => {
+											const r = await api.ovpnRevoke(c.name);
+											if (!r.crl_pushed)
+												throw new Error(
+													`${c.name} is revoked, but the server didn't get the new list yet (${r.error ?? 'unknown'}). Send it again below.`
+												);
+										})}
 								>
 									Revoke {c.name}?
 								</button>

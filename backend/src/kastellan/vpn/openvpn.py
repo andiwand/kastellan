@@ -33,7 +33,7 @@ def parse_list(text: str, now: datetime | None = None) -> list[OvpnClient]:
     out: list[OvpnClient] = []
     for line in text.splitlines():
         parts = line.split("\t")
-        if len(parts) != 4 or not NAME.match(parts[3]) or parts[3] == "server":
+        if len(parts) != 4 or not NAME.match(parts[3]):
             continue
         flag, expiry, serial, name = parts
         try:
@@ -68,21 +68,44 @@ class OpenVpn:
             raise ValueError("days must be 1 to 3650")
         await self._run(self.pki, f"issue {name} {days}")
 
-    async def revoke(self, name: str) -> bool:
-        """Revoke and push the new CRL to the server. Returns whether the server has it."""
+    async def revoke(self, name: str) -> None:
+        """Revoke on the PKI host (and renew the CRL there). Then push_crl()."""
         _check(name)
         await self._run(self.pki, f"revoke {name}")
-        if self.server is None:
-            return False
+
+    async def push_crl(self, renew: bool = False) -> str:
+        """Bring the PKI host's CRL to the OpenVPN server; with renew, renew it first (CRLs
+        expire, and an expired one makes OpenVPN refuse every client). Returns the CRL (PEM)."""
+        if renew:
+            await self._run(self.pki, "renew-crl")
         crl = await self._run(self.pki, "crl")
+        if self.server is None:
+            raise RuntimeError("no vpn.openvpn.server: the CRL can't reach the server")
         await self._run(self.server, "install", input=crl)
-        return True
+        return crl
 
     async def export(self, name: str) -> str:
         _check(name)
         return await self._run(self.pki, f"export {name}")
 
 
+RESERVED = {"ca", "server"}  # never clients (kastellan-pki refuses them too)
+
+
 def _check(name: str) -> None:
     if not NAME.match(name):
         raise ValueError("names are lowercase letters, digits, . _ - (up to 64)")
+    if name in RESERVED:
+        raise ValueError(f"{name} is reserved")
+
+
+def crl_next_update(pem: str) -> str | None:
+    """When a CRL expires (ISO date), or None if it can't be read."""
+    from cryptography import x509
+
+    try:
+        crl = x509.load_pem_x509_crl(pem.encode())
+    except ValueError:
+        return None
+    when = crl.next_update_utc
+    return when.isoformat(timespec="minutes") if when else None

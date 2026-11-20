@@ -94,6 +94,7 @@ def pki(tmp_path: Path):
     keys = Keys(tmp_path / "data" / "ssh")
     certs: dict[str, str] = {}
     installed: list[str] = []
+    broken: list[bool] = []  # non-empty: the OpenVPN server refuses CRLs
     loop = asyncio.new_event_loop()
     started: concurrent.futures.Future = concurrent.futures.Future()
     host_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -112,6 +113,8 @@ def pki(tmp_path: Path):
             certs[name] = "V"
         elif command == "revoke" and name in certs:
             certs[name] = "R"
+        elif command == "renew-crl":
+            pass
         elif command == "crl":
             process.stdout.write(
                 "-----BEGIN X509 CRL-----\nrevoked: "
@@ -127,6 +130,10 @@ def pki(tmp_path: Path):
         process.exit(0)
 
     async def kastellan_crl(process: asyncssh.SSHServerProcess) -> None:
+        if broken:
+            process.stderr.write("kastellan-crl: disk full\n")
+            process.exit(2)
+            return
         installed.append(await process.stdin.read())
         process.exit(0)
 
@@ -154,7 +161,7 @@ def pki(tmp_path: Path):
     thread.start()
     asyncio.run_coroutine_threadsafe(serve(), loop)
     a, b = started.result(timeout=10)
-    yield a.sockets[0].getsockname()[1], b.sockets[0].getsockname()[1], host_key, certs, installed
+    yield a.sockets[0].getsockname()[1], b.sockets[0].getsockname()[1], host_key, certs, installed, broken
     loop.call_soon_threadsafe(a.close)
     loop.call_soon_threadsafe(b.close)
     loop.call_soon_threadsafe(loop.stop)
@@ -228,7 +235,7 @@ def test_wireguard(tmp_path: Path, wg_easy, pki) -> None:
 
 
 def test_openvpn(tmp_path: Path, wg_easy, pki) -> None:
-    pki_port, crl_port, host_key, certs, installed = pki
+    pki_port, crl_port, host_key, certs, installed, broken = pki
     with make_client(tmp_path, wg_easy[0], pki_port, crl_port) as c:
         signin(c)
         hub = c.app.state.hub
@@ -259,13 +266,28 @@ def test_openvpn(tmp_path: Path, wg_easy, pki) -> None:
         }
         assert certs == {"alice": "R"} and "revoked: alice" in installed[-1]  # the server has the new CRL
         assert c.get("/api/vpn/openvpn/alice/config").status_code == 400  # revoked: no more config
+        assert c.post("/api/vpn/openvpn", json={"name": "server"}, headers=H).status_code == 400  # reserved
+        assert c.post("/api/vpn/openvpn/server/revoke", headers=H).status_code == 400
+
+        # The server can't take the CRL: the revoke still stands and is audited; push later.
+        c.post("/api/vpn/openvpn", json={"name": "bob"}, headers=H)
+        broken.append(True)
+        r = c.post("/api/vpn/openvpn/bob/revoke", headers=H).json()
+        assert r["revoked"] and not r["crl_pushed"] and "disk full" in r["error"]
+        assert c.get("/api/vpn").json()["openvpn"]["crl"]["error"]
+        broken.clear()
+        assert c.post("/api/vpn/openvpn/crl", headers=H).status_code == 200
+        assert "revoked: alice,bob" in installed[-1]
+        log = (tmp_path / "data" / "audit.log").read_text()
+        assert '"vpn.openvpn.revoke"' in log and "failed: " in log
         del hub
 
 
 def test_observers_see_but_dont_touch(tmp_path: Path, wg_easy, pki) -> None:
     with make_client(tmp_path, wg_easy[0], pki[0], pki[1]) as c:
         signin(c, "obi")
-        assert c.get("/api/vpn").status_code == 200
+        seen = c.get("/api/vpn").json()
+        assert seen["openvpn"]["error"] == "The PKI host can't be reached right now"  # no details
         assert c.post("/api/vpn/wireguard", json={"name": "x"}, headers=H).status_code == 403
         assert c.get("/api/vpn/wireguard/1/config").status_code == 403  # a private key: admins only
         assert c.get("/api/vpn/openvpn/alice/config").status_code == 403

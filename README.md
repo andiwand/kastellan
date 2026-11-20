@@ -231,7 +231,9 @@ vpn:
 
 **wg-easy**: once Kastellan manages the clients, wg-easy's web interface doesn't need to be on
 your network. Publish only WireGuard's UDP port and let Kastellan reach the web port on a Docker
-network both share (or on localhost when both run on the same host).
+network both share (or on localhost when both run on the same host): its API uses the admin
+password over HTTP Basic and needs 2FA off, so it must never be reachable from outside. The VPN
+page warns when the password would cross the network in clear.
 
 **OpenVPN**: Kastellan never gets a shell or the CA key. Two small scripts in `tools/` are the
 only commands its key may run, bound with `command=` in `authorized_keys`:
@@ -240,10 +242,20 @@ only commands its key may run, bound with `command=` in `authorized_keys`:
   user that owns the PKI (`chmod 700`), so nothing else can read the CA key. Install
   instructions are at the top of the script; `/etc/kastellan-pki.conf` says where the PKI and
   the client template (`{{ca}} {{cert}} {{key}} {{tls}}`) are.
+  It only ever touches **client** certificates (their key usage says TLS client, not server);
+  `server`, `ca` and the names in `RESERVED` can't be exported, revoked or issued.
 - `tools/kastellan-crl` on the OpenVPN server: takes the new CRL after a revoke, so a revoked
-  client is refused at once (`crl-verify /etc/openvpn/crl.pem` in the server config).
+  client is refused at once (`crl-verify /etc/openvpn/crl.pem` in the server config). With
+  `openssl` there (`opkg install openssl-util`) it also checks that the CRL is signed by your CA,
+  and, if CRLs carry numbers, that it isn't an older one.
 
-Trust both hosts' keys once, as for the terminal.
+Both take their config file as an argument fixed in `authorized_keys` (shown at the top of each
+script), never from the environment. Trust both hosts' keys once, as for the terminal.
+
+easy-rsa's CRLs expire after 180 days, and OpenVPN then refuses every client; Kastellan renews
+the CRL and sends it to the server every day, and the VPN page shows until when it is valid. If a
+revoke can't reach the server, the revoke still stands; the page says so and offers to send the
+list again.
 
 ## Security
 

@@ -370,6 +370,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "asyncssh" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "icmplib" },
@@ -388,6 +389,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "asyncssh", specifier = ">=2.24.1" },
+    { name = "cryptography", specifier = ">=42" },
     { name = "fastapi", specifier = ">=0.163.1" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "icmplib", specifier = ">=3.0.4" },

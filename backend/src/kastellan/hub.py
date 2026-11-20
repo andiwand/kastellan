@@ -10,6 +10,7 @@ import tempfile
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 from pydantic import ValidationError
@@ -27,9 +28,10 @@ from .history import History
 from .monitor import DeviceStatus, Monitor, run_check
 from .secrets import Secrets
 from .settings import Settings
-from .ssh import Keys
+from .ssh import Keys, Target
 from .terminals import Terminals
 from .versions import Versions
+from .vpn.openvpn import OpenVpn, crl_next_update
 from .vuln_policy import assess, auto_update_reason
 
 log = logging.getLogger(__name__)
@@ -38,7 +40,8 @@ RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
 DRIVER_EVERY = 600
 ALARMS_EVERY = 30
-VULNS_FIRST = 120  # seconds after start: the first checks and polls have run
+VULNS_FIRST = 120
+CRL_FIRST = 300  # seconds after start: the first checks and polls have run
 
 
 class ConfigProblem(Exception):
@@ -79,6 +82,8 @@ class Hub:
         self.audit = Audit(settings.data / "audit.log")
         self.keys = Keys(settings.data / "ssh")
         self.secrets = Secrets(settings.data / "secrets")
+        # The OpenVPN CRL as last pushed: {"pushed": iso, "next_update": iso, "error": str}
+        self.crl_state: dict[str, Any] = {}
         self.terminals = Terminals()
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)
@@ -217,6 +222,7 @@ class Hub:
             asyncio.create_task(self._expire_tickets(), name="expire tickets"),
             asyncio.create_task(self._watch_alarms(), name="alarms"),
             asyncio.create_task(self._watch_vulns(), name="vulnerabilities"),
+            asyncio.create_task(self._renew_crl(), name="renew the OpenVPN CRL"),
             asyncio.create_task(self._prune(), name="prune history"),
         ]
 
@@ -574,6 +580,45 @@ class Hub:
             await notify.send(
                 self.config.notify, [Message(severity, title, f"because of {reason}", id)], datetime.now(UTC)
             )
+
+    async def push_crl(self, ovpn: OpenVpn, renew: bool = False) -> None:
+        """Bring the CRL to the OpenVPN server and note when it expires."""
+        try:
+            pem = await ovpn.push_crl(renew)
+        except Exception as e:
+            self.crl_state = {**self.crl_state, "error": f"{type(e).__name__}: {e}"}
+            raise
+        self.crl_state = {
+            "pushed": datetime.now(UTC).isoformat(timespec="seconds"),
+            "next_update": crl_next_update(pem),
+            "error": None,
+        }
+
+    async def _renew_crl(self) -> None:
+        """Renew and push the CRL daily: easy-rsa's CRLs last 180 days, and OpenVPN refuses
+        every client once its CRL has expired."""
+        await asyncio.sleep(CRL_FIRST)
+        while True:
+            ovpn = self.config.vpn.openvpn
+            if ovpn and ovpn.server and not self.demo:
+                devices = self.config.devices
+                pki, server = devices[ovpn.pki], devices[ovpn.server]
+                assert pki.ssh and server.ssh
+                client = OpenVpn(
+                    self.keys,
+                    Target(pki.host, pki.ssh.port, pki.ssh.user),
+                    Target(server.host, server.ssh.port, server.ssh.user),
+                )
+                try:
+                    await self.push_crl(client, renew=True)
+                    self.audit.record("vpn.openvpn.crl", None, None, outcome="renewed daily")
+                except Exception as e:
+                    log.warning("renewing the OpenVPN CRL failed: %s", e)
+                    await self._send(
+                        [Message(Severity.WARNING, "OpenVPN: the CRL couldn't be renewed", str(e)[:200])],
+                        datetime.now(UTC),
+                    )
+            await asyncio.sleep(86400)
 
     async def _expire_tickets(self) -> None:
         """A ticket holds a desktop password until used; unused ones go after their minute."""

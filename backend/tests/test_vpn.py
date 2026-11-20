@@ -27,11 +27,10 @@ def test_openvpn_list() -> None:
         "V\t261220160426Z\tF931\talice\n"
         "R\t261220160426Z\tA1B2\tbob\n"
         "V\t240101000000Z\tC3D4\told\n"
-        "V\t351231235959Z\t0001\tserver\n"
         "garbage line\n"
     )
     clients = {c.name: c for c in parse_list(text, now=datetime(2026, 11, 20, tzinfo=UTC))}
-    assert set(clients) == {"alice", "bob", "old"}  # the server's own certificate isn't a client
+    assert set(clients) == {"alice", "bob", "old"}  # (kastellan-pki lists client certificates only)
     assert (clients["alice"].status, clients["alice"].expires) == ("valid", "2026-12-20")
     assert clients["bob"].status == "revoked" and clients["old"].status == "expired"
 

@@ -11,12 +11,29 @@
 set -eu
 umask 022
 CRL=/etc/openvpn/crl.pem
-CONF=${KASTELLAN_CRL_CONF:-/etc/kastellan-crl.conf}  # sshd passes no client environment
+CA=/etc/openvpn/ca.crt
+# The config is the argument fixed in authorized_keys, never the environment.
+CONF=${1:-/etc/kastellan-crl.conf}
 [ -r "$CONF" ] && . "$CONF"
 
 [ "${SSH_ORIGINAL_COMMAND:-}" = "install" ] || { echo "kastellan-crl: only 'install'" >&2; exit 2; }
 tmp="$CRL.new"
 head -c 1048576 > "$tmp"
-grep -q "^-----BEGIN X509 CRL-----" "$tmp" && grep -q "^-----END X509 CRL-----" "$tmp" || { rm -f "$tmp"; echo "kastellan-crl: not a CRL" >&2; exit 2; }
+refuse() { rm -f "$tmp"; echo "kastellan-crl: $*" >&2; exit 2; }
+grep -q "^-----BEGIN X509 CRL-----" "$tmp" && grep -q "^-----END X509 CRL-----" "$tmp" || refuse "not a CRL"
+if command -v openssl >/dev/null 2>&1; then
+  # Signed by our CA (a CRL from elsewhere would leave no revocation in force with some builds)...
+  openssl crl -in "$tmp" -noout -CAfile "$CA" 2>/dev/null || refuse "not signed by $CA"
+  # ...and not older than the one in place (an old CRL would un-revoke clients).
+  new=$(openssl crl -in "$tmp" -noout -crlnumber 2>/dev/null | sed 's/.*=//')
+  old=""
+  if [ -r "$CRL" ]; then old=$(openssl crl -in "$CRL" -noout -crlnumber 2>/dev/null | sed 's/.*=//' || true); fi
+  # Only when both carry a CRL number (easy-rsa 3.2 writes none by default: then this is skipped).
+  case "$new" in *[!0-9A-Fa-f]* | "") new="" ;; esac
+  case "$old" in *[!0-9A-Fa-f]* | "") old="" ;; esac
+  if [ -n "$old" ] && [ -n "$new" ] && [ "$((0x$new))" -lt "$((0x$old))" ]; then refuse "older than the CRL in place"; fi
+else
+  echo "kastellan-crl: no openssl here; only the format was checked (opkg install openssl-util)" >&2
+fi
 mv "$tmp" "$CRL"
 echo "installed"

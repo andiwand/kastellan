@@ -5,16 +5,22 @@
 #   sudo install -m 755 kastellan-pki /usr/local/bin/kastellan-pki
 #   sudo useradd --system --create-home kastellan   # a user that owns (or may use) the PKI
 #   In ~kastellan/.ssh/authorized_keys, the hub's key, bound to this script:
-#     restrict,command="/usr/local/bin/kastellan-pki" ssh-ed25519 AAAA... kastellan-hub
+#     restrict,command="/usr/local/bin/kastellan-pki /etc/kastellan-pki.conf" ssh-ed25519 AAAA... kastellan-hub
 #   /etc/kastellan-pki.conf (optional):
 #     EASYRSA_DIR=/etc/openvpn/easy-rsa      # where ./easyrsa and pki/ are
 #     TEMPLATE=/etc/kastellan-pki/client.ovpn  # client config with {{ca}} {{cert}} {{key}} {{tls}}
 #     TLS_KEY=/etc/openvpn/server/tc.key        # tls-crypt/tls-auth key to inline, if used
+#     RESERVED="server vpn-server"              # certificate names that are never clients
+#
+# Only client certificates are ever touched: their extended key usage must say TLS client
+# authentication and not server authentication, and their name must not be reserved. The
+# server's certificate and the CA can't be exported, revoked or re-issued through this script.
 #
 # Commands (in SSH_ORIGINAL_COMMAND, nothing else is run):
 #   list                 one line per certificate: status, expiry, serial, name (tab-separated)
 #   issue NAME DAYS      a new client certificate and key (no passphrase), valid DAYS days
-#   revoke NAME          revoke it and renew the CRL
+#   revoke NAME          revoke it and renew the CRL (again, if it was revoked already)
+#   renew-crl            renew the CRL (it expires; the hub does this daily)
 #   crl                  the current CRL (PEM)
 #   export NAME          the client's .ovpn, with its certificate and key inline
 set -euo pipefail
@@ -23,7 +29,10 @@ umask 077
 EASYRSA_DIR=/etc/openvpn/easy-rsa
 TEMPLATE=/etc/kastellan-pki/client.ovpn
 TLS_KEY=
-CONF=${KASTELLAN_PKI_CONF:-/etc/kastellan-pki.conf}  # sshd passes no client environment
+RESERVED="server"
+# The config is the argument fixed in authorized_keys (never the environment: an sshd with
+# AcceptEnv * would let the caller choose it).
+CONF=${1:-/etc/kastellan-pki.conf}
 [ -r "$CONF" ] && . "$CONF"
 
 read -r -a args <<< "${SSH_ORIGINAL_COMMAND:-}"
@@ -32,15 +41,33 @@ name=${args[1]:-}
 days=${args[2]:-}
 
 fail() { echo "kastellan-pki: $*" >&2; exit 2; }
-check_name() { [[ $name =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]] || fail "bad name"; }
+check_name() {
+  [[ $name =~ ^[a-z0-9][a-z0-9_.-]{0,63}$ ]] || fail "bad name"
+  for r in ca $RESERVED; do [ "$name" != "$r" ] || fail "$name is reserved"; done
+}
+# A certificate for a VPN client: TLS client authentication, and no server authentication.
+is_client_cert() {
+  local usage
+  usage=$(openssl x509 -in "$1" -noout -ext extendedKeyUsage 2>/dev/null) || return 1
+  [[ $usage == *"TLS Web Client Authentication"* && $usage != *"TLS Web Server Authentication"* ]]
+}
 [ ${#args[@]} -le 3 ] || fail "too many arguments"
 
 cd "$EASYRSA_DIR" || fail "no $EASYRSA_DIR"
 
 case $command in
   list)
-    # pki/index.txt: status, expiry, revocation date, serial, file, subject (/CN=name)
-    awk -F'\t' '{ cn=$6; sub(/.*\/CN=/, "", cn); sub(/\/.*/, "", cn); print $1 "\t" $2 "\t" $4 "\t" cn }' pki/index.txt
+    # pki/index.txt: status, expiry, revocation date, serial, file, subject (/CN=name).
+    # Only client certificates (the server's and other certificates are not listed).
+    # (awk splits on every tab; `read` would merge the empty revocation field of valid ones.)
+    awk -F'\t' '{ print $1 "|" $2 "|" $4 "|" $6 }' pki/index.txt | while IFS='|' read -r status expiry serial subject; do
+      cn=${subject##*/CN=}; cn=${cn%%/*}
+      cert="pki/certs_by_serial/$serial.pem"
+      [ -r "$cert" ] || cert="pki/revoked/certs_by_serial/$serial.crt"
+      [ -r "$cert" ] || cert="pki/issued/$cn.crt"
+      is_client_cert "$cert" || continue
+      printf '%s\t%s\t%s\t%s\n' "$status" "$expiry" "$serial" "$cn"
+    done
     ;;
   issue)
     check_name
@@ -51,10 +78,19 @@ case $command in
     ;;
   revoke)
     check_name
-    [ -e "pki/issued/$name.crt" ] || fail "no $name"
-    ./easyrsa --batch revoke "$name" >/dev/null 2>&1 || fail "revoke failed"
+    if [ -e "pki/issued/$name.crt" ]; then
+      is_client_cert "pki/issued/$name.crt" || fail "$name is not a client certificate"
+      ./easyrsa --batch revoke "$name" >/dev/null 2>&1 || fail "revoke failed"
+    else
+      # Revoked before (maybe the CRL didn't reach the server then): only renew the CRL.
+      grep -q "^R.*/CN=$name\(/\|\$\)" pki/index.txt || fail "no $name"
+    fi
     ./easyrsa --batch gen-crl >/dev/null 2>&1 || fail "gen-crl failed"
     echo "revoked $name"
+    ;;
+  renew-crl)
+    ./easyrsa --batch gen-crl >/dev/null 2>&1 || fail "gen-crl failed"
+    echo "renewed"
     ;;
   crl)
     cat pki/crl.pem
@@ -62,6 +98,7 @@ case $command in
   export)
     check_name
     [ -e "pki/issued/$name.crt" ] && [ -e "pki/private/$name.key" ] || fail "no $name"
+    is_client_cert "pki/issued/$name.crt" || fail "$name is not a client certificate"
     [ -r "$TEMPLATE" ] || fail "no template $TEMPLATE"
     tls=""
     [ -n "$TLS_KEY" ] && [ -r "$TLS_KEY" ] && tls=$(cat "$TLS_KEY")
