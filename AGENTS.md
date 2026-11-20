@@ -57,10 +57,13 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     down ancestor; `RESOLVE_AFTER` hysteresis; silent resolves for muted, removed or folded
     devices. Failed notifications wait in `hub._outbox` and are retried with backoff for a day.
   - VPN: `vpn/wireguard.py` (wg-easy 15.5's API, Basic auth), `vpn/openvpn.py` (talks only to
-    `tools/kastellan-pki` and `tools/kastellan-crl` over SSH; they are bound with `command=` and
-    check every argument), `vpn_api.py` (lists for everyone signed in; changes and downloads for
+    `vpn/scripts/kastellan-pki` and `kastellan-crl`: installed and bound with `command=` to the
+    hub's separate VPN key in restricted mode, or sent over a normal login per call in direct
+    mode; `install_script()` is both the copyable instructions and what "Install for me" runs), `vpn_api.py` (lists for everyone signed in; changes and downloads for
     signed-in admins, audited; configs hold private keys: `no-store`). `secrets.py`: files in
     `<data>/secrets` (0600), named from config.yaml, set with `kastellan secret set`.
+  - A command run over SSH with nothing to send gets `stdin=asyncssh.DEVNULL`: with `input=""`
+    asyncssh leaves stdin open and a script that reads it waits forever.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)

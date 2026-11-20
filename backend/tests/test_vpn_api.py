@@ -138,7 +138,8 @@ def pki(tmp_path: Path):
         process.exit(0)
 
     async def serve() -> None:
-        authorized = asyncssh.import_authorized_keys(keys.public_key())
+        # The terminal key and the VPN key (restricted mode logs in with the latter).
+        authorized = asyncssh.import_authorized_keys(keys.public_key() + "\n" + keys.public_key("vpn"))
         a = await asyncssh.create_server(
             Server,
             "127.0.0.1",
@@ -291,3 +292,36 @@ def test_observers_see_but_dont_touch(tmp_path: Path, wg_easy, pki) -> None:
         assert c.post("/api/vpn/wireguard", json={"name": "x"}, headers=H).status_code == 403
         assert c.get("/api/vpn/wireguard/1/config").status_code == 403  # a private key: admins only
         assert c.get("/api/vpn/openvpn/alice/config").status_code == 403
+
+
+def test_setup_page(tmp_path: Path, wg_easy, pki) -> None:
+    import subprocess
+
+    pki_port, crl_port, host_key, *_ = pki
+    with make_client(tmp_path, wg_easy[0], pki_port, crl_port) as c:
+        signin(c, "obi")
+        assert c.get("/api/vpn/openvpn/setup").status_code == 403  # admins only
+        signin(c)
+        setup = c.get("/api/vpn/openvpn/setup").json()
+        assert setup["mode"] == "restricted" and setup["vpn_key"].startswith("ssh-ed25519 ")
+        pki_host, server = setup["hosts"]
+        assert pki_host["checks"][0] == {
+            "name": "Host key trusted",
+            "ok": False,
+            "detail": f"trust {host_key.get_fingerprint()} on the device's terminal page",
+        }
+        # The scripts to copy: valid shell, with the VPN key bound to the scripts.
+        for host in (pki_host, server):
+            assert subprocess.run(["sh", "-n"], input=host["script"], text=True).returncode == 0
+            assert setup["vpn_key"] in host["script"]
+        assert 'restrict,command="/usr/local/bin/kastellan-pki /etc/kastellan-pki.conf"' in pki_host["script"]
+        assert 'command="/usr/bin/kastellan-crl /etc/kastellan-crl.conf"' in server["script"]
+
+        for device in ("sv1", "openwrt"):
+            c.post(
+                f"/api/devices/{device}/ssh/trust",
+                json={"fingerprint": host_key.get_fingerprint()},
+                headers=H,
+            )
+        pki_host = c.get("/api/vpn/openvpn/setup").json()["hosts"][0]
+        assert [ch["ok"] for ch in pki_host["checks"][:2]] == [True, True]  # trusted, the script answers

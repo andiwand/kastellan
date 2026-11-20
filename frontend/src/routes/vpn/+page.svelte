@@ -7,6 +7,7 @@
 	import QrCode from '@lucide/svelte/icons/qr-code';
 	import Plus from '@lucide/svelte/icons/plus';
 	import X from '@lucide/svelte/icons/x';
+	import VpnSetup from '#lib/components/VpnSetup.svelte';
 
 	let vpn = $state<Vpn | null>(null);
 	let error = $state<string | null>(null);
@@ -322,6 +323,7 @@
 					<Plus class="size-3.5" /> Issue
 				</button>
 			</form>
+			<VpnSetup canInstall={canManage} />
 			{#if !vpn.openvpn.crl_to_server}
 				<p class="mt-2 text-xs" style:color="var(--warning-text)">
 					No vpn.openvpn.server set: a revoked client keeps working until the CRL reaches the

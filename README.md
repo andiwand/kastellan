@@ -235,22 +235,48 @@ network both share (or on localhost when both run on the same host): its API use
 password over HTTP Basic and needs 2FA off, so it must never be reachable from outside. The VPN
 page warns when the password would cross the network in clear.
 
-**OpenVPN**: Kastellan never gets a shell or the CA key. Two small scripts in `tools/` are the
-only commands its key may run, bound with `command=` in `authorized_keys`:
+**OpenVPN** works in one of two modes (`vpn.openvpn.mode`):
 
-- `tools/kastellan-pki` on the PKI host: list, issue, revoke, export, crl. Give it a dedicated
-  user that owns the PKI (`chmod 700`), so nothing else can read the CA key. Install
-  instructions are at the top of the script; `/etc/kastellan-pki.conf` says where the PKI and
-  the client template (`{{ca}} {{cert}} {{key}} {{tls}}`) are.
-  It only ever touches **client** certificates (their key usage says TLS client, not server);
-  `server`, `ca` and the names in `RESERVED` can't be exported, revoked or issued.
-- `tools/kastellan-crl` on the OpenVPN server: takes the new CRL after a revoke, so a revoked
-  client is refused at once (`crl-verify /etc/openvpn/crl.pem` in the server config). With
-  `openssl` there (`opkg install openssl-util`) it also checks that the CRL is signed by your CA,
-  and, if CRLs carry numbers, that it isn't an older one.
+- **restricted** (the default, and safer): two small scripts are installed, and Kastellan's VPN
+  key may run them and nothing else (bound with `command=` in `authorized_keys`).
+  - `kastellan-pki` on the PKI host, run by a user of its own that owns the PKI: list, issue,
+    revoke, renew the CRL, export a client's `.ovpn`. It only ever touches **client**
+    certificates; the CA and the server's key can't be reached through it.
+  - `kastellan-crl` on the OpenVPN server: takes the new CRL (checked against your CA when
+    `openssl` is there; `opkg install openssl-util` on OpenWrt) and puts it in place, so a revoked
+    client is refused at once (`crl-verify` in the server config).
+- **direct**: nothing is installed. Kastellan sends the same scripts over the hosts' normal
+  `ssh:` logins on every call. Simpler, but those logins can do anything.
 
-Both take their config file as an argument fixed in `authorized_keys` (shown at the top of each
-script), never from the environment. Trust both hosts' keys once, as for the terminal.
+The VPN page has a **Setup** section per host: what works now (tried for real), the exact
+commands to install the scripts (generated from your config, with Kastellan's VPN key), and
+"Install for me" when the host has a normal login that is root or may use sudo without a
+password. Kastellan has a separate key for this (`data/ssh/vpn_ed25519`), so binding it to the
+scripts never takes away its terminal access.
+
+```yaml
+vpn:
+  openvpn:
+    mode: restricted
+    pki: sv1                         # where easy-rsa is
+    server: openwrt                  # the OpenVPN server
+    easyrsa_dir: /etc/openvpn/easy-rsa
+    crl_path: /etc/openvpn/crl.pem   # on the server
+    ca_path: /etc/openvpn/ca.crt     # on the server
+    client_template: |               # optional: installed for you
+      client
+      remote vpn.example.org 1194
+      remote-cert-tls server
+      <ca>
+      {{ca}}
+      </ca>
+      <cert>
+      {{cert}}
+      </cert>
+      <key>
+      {{key}}
+      </key>
+```
 
 easy-rsa's CRLs expire after 180 days, and OpenVPN then refuses every client; Kastellan renews
 the CRL and sends it to the server every day, and the VPN page shows until when it is valid. If a

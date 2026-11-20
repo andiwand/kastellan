@@ -17,9 +17,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from .auth_api import client_address, require_signin, who
+from .auth_api import client_address, require_admin, require_signin, who
 from .ssh import ChangedHost, Target, UnknownHost
-from .vpn.openvpn import NAME, OpenVpn
+from .vpn.openvpn import NAME, OpenVpn, install_script
 from .vpn.wireguard import WgEasy
 
 if TYPE_CHECKING:
@@ -50,13 +50,8 @@ def router(hub: Hub) -> APIRouter:
         ovpn = hub.config.vpn.openvpn
         if ovpn is None:
             raise HTTPException(404, "no vpn: openvpn: in config.yaml")
-
-        def target(id: str) -> Target:
-            device = hub.config.devices[id]
-            assert device.ssh is not None  # checked by the config
-            return Target(device.host, device.ssh.port, device.ssh.user)
-
-        return OpenVpn(hub.keys, target(ovpn.pki), target(ovpn.server) if ovpn.server else None)
+        devices = hub.config.devices
+        return OpenVpn(hub.keys, ovpn, devices[ovpn.pki], devices[ovpn.server] if ovpn.server else None)
 
     def problem(e: Exception) -> HTTPException:
         """A failure of wg-easy or the PKI host, said plainly (never with credentials)."""
@@ -204,6 +199,147 @@ def router(hub: Hub) -> APIRouter:
         require_signin(request)
         text = await attempt(request, "vpn.openvpn.download", openvpn().export(name), client=name)
         return _download(text, f"{name}.ovpn")
+
+    # --- Setting up OpenVPN on the hosts --------------------------------------------------------
+
+    def roles() -> list[tuple[str, str, str]]:
+        """(role, device id, the restricted login) for the PKI host and the server."""
+        ovpn = hub.config.vpn.openvpn
+        if ovpn is None:
+            raise HTTPException(404, "no vpn: openvpn: in config.yaml")
+        out = [("pki", ovpn.pki, ovpn.pki_user)]
+        if ovpn.server:
+            out.append(("server", ovpn.server, ovpn.server_user))
+        return out
+
+    async def run(
+        target: Target, which: str, command: str, input: str = "", timeout: float = 20
+    ) -> tuple[int, str, str]:
+        """One command; stdin always ends (a probe must never wait for input), time-limited."""
+        async with await hub.keys.connect(target, which) as conn:
+            # Nothing to send: stdin closed at once (asyncssh leaves it open for input="").
+            stdin = {"input": input} if input else {"stdin": asyncssh.DEVNULL}
+            r = await conn.run(command, check=False, timeout=timeout, **stdin)
+        return r.exit_status or 0, str(r.stdout or ""), str(r.stderr or "")
+
+    async def checks(role: str, id: str, user: str) -> list[dict[str, Any]]:
+        """What works now on one host, tried for real."""
+        ovpn = hub.config.vpn.openvpn
+        assert ovpn is not None
+        device = hub.config.devices[id]
+        port = device.ssh.port if device.ssh else 22
+        out: list[dict[str, Any]] = []
+
+        def note(name: str, ok: bool, detail: str = "") -> bool:
+            out.append({"name": name, "ok": ok, "detail": detail})
+            return ok
+
+        try:
+            await hub.keys.check_host(Target(device.host, port, user))
+            note("Host key trusted", True)
+        except UnknownHost as e:
+            note("Host key trusted", False, f"trust {e.fingerprint} on the device's terminal page")
+            return out
+        except ChangedHost as e:
+            note("Host key trusted", False, str(e))
+            return out
+        except Exception as e:
+            note("Host key trusted", False, f"can't reach {device.host}: {type(e).__name__}")
+            return out
+        if ovpn.mode == "restricted":
+            # Ask the installed script something harmless; its answer proves it is bound to the key.
+            command = "list" if role == "pki" else "status"
+            try:
+                code, _, err = await run(Target(device.host, port, user), "vpn", command)
+                answers = code == 0 if role == "pki" else "only 'install'" in err
+                note(
+                    f"kastellan-{role} answers for {user}",
+                    answers,
+                    "" if answers else (err.strip()[-200:] or f"exit {code}"),
+                )
+            except asyncssh.PermissionDenied:
+                note(
+                    f"kastellan-{role} answers for {user}",
+                    False,
+                    f"{user}@{device.host} doesn't accept Kastellan's VPN key yet",
+                )
+            except Exception as e:
+                note(f"kastellan-{role} answers for {user}", False, f"{type(e).__name__}: {e}")
+        if device.ssh:
+            # The normal login: needed for direct mode and for installing.
+            try:
+                code, out_id, _ = await run(
+                    Target(device.host, port, device.ssh.user),
+                    "hub",
+                    "id -u; sudo -n true 2>/dev/null && echo sudo",
+                )
+                root = out_id.split()[0:1] == ["0"] or "sudo" in out_id.split()
+                uses = "for direct mode and installing" if ovpn.mode == "direct" else "for installing"
+                note(
+                    f"Normal login {device.ssh.user} ({uses})",
+                    code == 0,
+                    "can install (root or passwordless sudo)"
+                    if root
+                    else "can't install: not root, no passwordless sudo",
+                )
+                out[-1]["can_install"] = code == 0 and root
+            except Exception as e:
+                note(f"Normal login {device.ssh.user}", False, f"{type(e).__name__}: {e}")
+        return out
+
+    @api.get("/openvpn/setup")
+    async def setup(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        ovpn = hub.config.vpn.openvpn
+        assert ovpn is not None or roles()
+        key = hub.keys.public_key("vpn")
+        hosts = []
+        for role, id, user in roles():
+            device = hub.config.devices[id]
+            found = await checks(role, id, user)
+            hosts.append(
+                {
+                    "role": role,
+                    "device": id,
+                    "name": device.name,
+                    "host": device.host,
+                    "user": user,
+                    "login": device.ssh.user if device.ssh else None,
+                    "checks": found,
+                    "can_install": any(c.get("can_install") for c in found),
+                    "script": install_script(role, ovpn, key) if ovpn else "",
+                }
+            )
+        return {"mode": ovpn.mode if ovpn else None, "vpn_key": key, "hosts": hosts}
+
+    @api.post("/openvpn/setup/{role}/install")
+    async def install(role: str, request: Request) -> dict[str, Any]:
+        """Run the install script on a host over its normal login (root, or sudo without a
+        password). What it runs is exactly what the setup page shows."""
+        require_signin(request)
+        found = {r: (id, user) for r, id, user in roles()}
+        if role not in found:
+            raise HTTPException(404, "pki or server")
+        ovpn = hub.config.vpn.openvpn
+        assert ovpn is not None
+        id, _ = found[role]
+        device = hub.config.devices[id]
+        if device.ssh is None:
+            raise HTTPException(400, f"{id} has no ssh: login to install with; run the commands by hand")
+        text = install_script(role, ovpn, hub.keys.public_key("vpn"))
+        target = Target(device.host, device.ssh.port, device.ssh.user)
+        command = "sh -s" if device.ssh.user == "root" else "sudo -n sh -s"
+
+        async def go() -> str:
+            code, out, err = await run(target, "hub", command, text, timeout=300)
+            if code != 0:
+                raise RuntimeError(
+                    (err or out).strip().splitlines()[-1] if (err or out).strip() else f"exit {code}"
+                )
+            return out
+
+        output = await attempt(request, f"vpn.openvpn.install.{role}", go(), device=id)
+        return {"output": output[-4000:]}
 
     return api
 

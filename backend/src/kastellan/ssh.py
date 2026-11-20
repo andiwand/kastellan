@@ -15,6 +15,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 import asyncssh
 
@@ -48,26 +49,32 @@ class Target:
 
 
 class Keys:
+    # The hub's keys: "hub" for terminals and installs, "vpn" only for the restricted VPN scripts
+    # (bound with command= where they are installed; separate so binding it takes nothing away).
+    NAMES: ClassVar[dict[str, str]] = {"hub": "hub_ed25519", "vpn": "vpn_ed25519"}
+
     def __init__(self, folder: Path) -> None:
         self.folder = folder
         self.private_path = folder / "hub_ed25519"
         self.known_hosts = folder / "known_hosts"
         self._lock = asyncio.Lock()
 
-    def hub_key(self) -> asyncssh.SSHKey:
-        """The hub's key, made the first time it is needed."""
-        if not self.private_path.exists():
+    def hub_key(self, which: str = "hub") -> asyncssh.SSHKey:
+        """One of the hub's keys, made the first time it is needed."""
+        path = self.folder / self.NAMES[which]
+        if not path.exists():
             self.folder.mkdir(parents=True, exist_ok=True)
             os.chmod(self.folder, 0o700)
-            key = asyncssh.generate_private_key("ssh-ed25519", comment="kastellan-hub")
-            key.write_private_key(str(self.private_path))
-            os.chmod(self.private_path, 0o600)
-            key.write_public_key(str(self.private_path.with_suffix(".pub")))
-            log.info("made the hub's SSH key %s", self.private_path)
-        return asyncssh.read_private_key(str(self.private_path))
+            comment = "kastellan-hub" if which == "hub" else f"kastellan-{which}"
+            key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
+            key.write_private_key(str(path))
+            os.chmod(path, 0o600)
+            key.write_public_key(str(path.with_suffix(".pub")))
+            log.info("made the hub's SSH key %s", path)
+        return asyncssh.read_private_key(str(path))
 
-    def public_key(self) -> str:
-        return self.hub_key().export_public_key().decode().strip()
+    def public_key(self, which: str = "hub") -> str:
+        return self.hub_key(which).export_public_key().decode().strip()
 
     def _pinned(self) -> dict[str, list[asyncssh.SSHKey]]:
         out: dict[str, list[asyncssh.SSHKey]] = {}
@@ -132,7 +139,7 @@ class Keys:
             raise ChangedHost(target.host, key.get_fingerprint())
         return key.get_fingerprint()
 
-    async def connect(self, target: Target) -> asyncssh.SSHClientConnection:
+    async def connect(self, target: Target, which: str = "hub") -> asyncssh.SSHClientConnection:
         """Log in with the hub's key, only to a host presenting a key pinned for this name.
 
         The pin is checked in the login connection itself: asyncssh gets exactly the keys pinned
@@ -148,7 +155,7 @@ class Keys:
                     target.host,
                     target.port,
                     username=target.user,
-                    client_keys=[self.hub_key()],
+                    client_keys=[self.hub_key(which)],
                     known_hosts=(pinned, [], []),
                     agent_path=None,  # only the hub's own key, never the agent of whoever runs it
                     password=None,

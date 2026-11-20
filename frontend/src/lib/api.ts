@@ -120,6 +120,24 @@ export interface Vpn {
 	} | null;
 }
 
+export interface SetupHost {
+	role: 'pki' | 'server';
+	device: string;
+	name: string;
+	host: string;
+	user: string;
+	login: string | null;
+	checks: { name: string; ok: boolean; detail: string }[];
+	can_install: boolean;
+	script: string;
+}
+
+export interface Setup {
+	mode: 'restricted' | 'direct';
+	vpn_key: string;
+	hosts: SetupHost[];
+}
+
 export interface Health {
 	ok: boolean;
 	version: string;
@@ -204,6 +222,9 @@ export const api = {
 			`/vpn/openvpn/${encodeURIComponent(name)}/revoke`
 		),
 	ovpnPushCrl: () => call<{ crl: unknown }>('POST', '/vpn/openvpn/crl'),
+	ovpnSetup: () => get<Setup>('/vpn/openvpn/setup'),
+	ovpnInstall: (role: string) =>
+		call<{ output: string }>('POST', `/vpn/openvpn/setup/${role}/install`),
 	acknowledge: (key: string, note = '') =>
 		call<Alarm>('POST', `/alarms/${encodeURIComponent(key)}/ack`, { note }),
 	mute: (device: string, minutes: number) =>

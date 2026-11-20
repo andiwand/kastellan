@@ -28,7 +28,7 @@ from .history import History
 from .monitor import DeviceStatus, Monitor, run_check
 from .secrets import Secrets
 from .settings import Settings
-from .ssh import Keys, Target
+from .ssh import Keys
 from .terminals import Terminals
 from .versions import Versions
 from .vpn.openvpn import OpenVpn, crl_next_update
@@ -602,13 +602,7 @@ class Hub:
             ovpn = self.config.vpn.openvpn
             if ovpn and ovpn.server and not self.demo:
                 devices = self.config.devices
-                pki, server = devices[ovpn.pki], devices[ovpn.server]
-                assert pki.ssh and server.ssh
-                client = OpenVpn(
-                    self.keys,
-                    Target(pki.host, pki.ssh.port, pki.ssh.user),
-                    Target(server.host, server.ssh.port, server.ssh.user),
-                )
+                client = OpenVpn(self.keys, ovpn, devices[ovpn.pki], devices[ovpn.server])
                 try:
                     await self.push_crl(client, renew=True)
                     self.audit.record("vpn.openvpn.crl", None, None, outcome="renewed daily")

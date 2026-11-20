@@ -249,11 +249,38 @@ class WireGuardSource(BaseModel):
 
 
 class OpenVpnSource(BaseModel):
+    """OpenVPN clients through an easy-rsa PKI (vpn/openvpn.py).
+
+    mode restricted: the hub's VPN key may only run kastellan-pki / kastellan-crl on the hosts
+    (installed there; `pki_user` and `server_user` are those restricted logins).
+    mode direct: nothing is installed; the same scripts are sent over the devices' normal
+    `ssh:` logins on every call."""
+
     model_config = ConfigDict(extra="forbid")
 
-    pki: str  # the device with the easy-rsa PKI and kastellan-pki (its ssh: user)
-    server: str | None = None  # the OpenVPN server's device with kastellan-crl (its ssh: user)
+    mode: Literal["restricted", "direct"] = "restricted"
+    pki: str  # the device with the easy-rsa PKI
+    server: str | None = None  # the OpenVPN server's device (receives the CRL)
     days: int = Field(default=365, ge=1, le=3650)  # how long new client certificates last
+    pki_user: str = Field(default="kastellan", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    server_user: str = Field(default="root", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    # On the PKI host
+    easyrsa_dir: str = Field(default="/etc/openvpn/easy-rsa", pattern=r"^/[\w./-]+$")
+    template_path: str = Field(default="/etc/kastellan-pki/client.ovpn", pattern=r"^/[\w./-]+$")
+    tls_key: str | None = Field(default=None, pattern=r"^/[\w./-]+$")  # tls-crypt/tls-auth key to inline
+    reserved: list[str] = Field(default_factory=lambda: ["server"])  # certificate names that aren't clients
+    # The client config with {{ca}} {{cert}} {{key}} {{tls}}; installed to template_path if given.
+    client_template: str | None = None
+    # On the OpenVPN server
+    crl_path: str = Field(default="/etc/openvpn/crl.pem", pattern=r"^/[\w./-]+$")
+    ca_path: str = Field(default="/etc/openvpn/ca.crt", pattern=r"^/[\w./-]+$")
+
+    @model_validator(mode="after")
+    def _reserved_names(self) -> Self:
+        for name in self.reserved:
+            if not re.match(r"^[a-z0-9][a-z0-9_.-]{0,63}$", name):
+                raise ValueError(f"reserved: {name!r} is not a certificate name")
+        return self
 
 
 class VpnSettings(BaseModel):
@@ -282,8 +309,10 @@ class Config(BaseModel):
         for role, id in (("pki", ovpn.pki if ovpn else None), ("server", ovpn.server if ovpn else None)):
             if id is None:
                 continue
-            if id not in self.devices or self.devices[id].ssh is None:
-                raise ValueError(f"vpn.openvpn.{role}: {id!r} must be a device with ssh:")
+            if id not in self.devices:
+                raise ValueError(f"vpn.openvpn.{role}: {id!r} is not a device")
+            if ovpn and ovpn.mode == "direct" and self.devices[id].ssh is None:
+                raise ValueError(f"vpn.openvpn.{role}: {id!r} needs ssh: (its login) in direct mode")
         return self
 
     @model_validator(mode="after")
