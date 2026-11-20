@@ -119,18 +119,18 @@
 
   <article class="feature flip reveal">
     <div class="feature-copy">
-      <p class="kicker">Graph</p>
-      <h2>See how it <b>hangs together</b></h2>
-      <p>Switch the device list to a graph: the router, the switch in the office, the mesh repeaters and what's wired behind them. When something breaks, its branch lights up, so a dead repeater doesn't look like five dead devices.</p>
+      <p class="kicker">Networks</p>
+      <h2>What's at home, and what's <b>open to the internet</b></h2>
+      <p>Switch the device list to its networks: home, a second site, the internet. The router sits on the boundary between home and the internet, and everything that can be reached from outside carries a globe, with each way in listed: a public name, and the device it leads to.</p>
       <ul class="points">
-        <li><b>Only links that matter.</b> Which access point a laptop happens to use isn't drawn; phones, laptops and Wi-Fi gadgets sit in their own row.</li>
+        <li><b>Found by itself.</b> Networks come from the addresses, and the router from the way out; name them, or put a device in several, in config.yaml.</li>
         <li><b>Search keeps the shape.</b> Filtering fades the rest of the network instead of removing it.</li>
       </ul>
     </div>
     <figure class="shot">
       <picture>
         <source srcset="img/graph-dark.webp" media="(prefers-color-scheme: dark)">
-        <img src="img/graph-light.webp" width="2720" height="1700" alt="The devices as a graph: the router on the left, the office switch and two mesh repeaters, the servers and printer behind the switch with the NAS branch in amber; below, the laptops and a Wi-Fi camera that have no links.">
+        <img src="img/graph-light.webp" width="2720" height="1700" alt="The devices by network: an Internet zone with a website server and one way in, home.example.net to the home server; the FRITZ!Box on the boundary between the Internet and Home; the Home zone with cameras, laptops, servers, the NAS in amber, and the home server marked as reachable from the internet.">
       </picture>
     </figure>
   </article>
@@ -173,7 +173,6 @@
   <span class="k">nas</span>:
     <span class="k">host</span>: nas.lan
     <span class="k">kind</span>: server
-    <span class="k">parent</span>: fritzbox        <span class="c"># for the graph</span>
     <span class="k">checks</span>:
       - ping
       - <span class="k">tcp</span>: 22
