@@ -169,10 +169,35 @@ async def test_parallel_guesses_hit_the_brake(tmp_path: Path) -> None:
     app = create_app(Settings(config=config, data=tmp_path))
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://hub") as c:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
             guesses = [
                 c.post("/api/auth/login", json={"user": "ada", "password": f"g{i}"}, headers=H)
                 for i in range(20)
             ]
             codes = [r.status_code for r in await asyncio.gather(*guesses)]
     assert codes.count(401) == 5 and codes.count(429) == 15
+
+
+def test_rebound_names_are_refused(client: TestClient) -> None:
+    from kastellan.auth_api import allowed_host
+
+    assert client.get("/api/health", headers={"host": "evil.example:8100"}).status_code == 421
+    assert allowed_host("192.168.15.10:8100", ())
+    assert allowed_host("[fd00::1]:8100", ())
+    assert allowed_host("kastellan.lan", ("kastellan.lan",))
+    assert not allowed_host("kastellan.lan", ())
+
+
+def test_unwritable_marker_locks(tmp_path: Path) -> None:
+    import os
+
+    config = tmp_path / "config.yaml"
+    write_config(config)
+    data = tmp_path / "data"
+    data.mkdir()
+    os.chmod(data, 0o500)  # read-only: the marker can't be written
+    try:
+        with TestClient(create_app(Settings(config=config, data=data))) as c:
+            assert c.get("/api/devices").status_code == 503
+    finally:
+        os.chmod(data, 0o700)

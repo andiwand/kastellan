@@ -38,6 +38,7 @@ def main() -> None:
         # Never take the client's address from X-Forwarded-For: anything reaching the hub over
         # localhost could then pick any address (to slip past the brake, or to fake the audit log).
         proxy_headers=False,
+        ws_max_size=1024 * 1024,  # terminal frames are small; 16 MB default frames are not needed
     )
 
 

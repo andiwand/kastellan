@@ -77,7 +77,8 @@ class Keys:
             return out
         for line in lines:
             parts = line.split()
-            if len(parts) < 3 or line.startswith("#"):
+            # Only plain lines as trust() writes them; hashed names (|1|) and @markers are not ours.
+            if len(parts) < 3 or line.startswith(("#", "@", "|")):
                 continue
             try:
                 key = asyncssh.import_public_key(f"{parts[1]} {parts[2]}")
@@ -118,7 +119,7 @@ class Keys:
                 lines = self.known_hosts.read_text().splitlines()
             except OSError:
                 return
-            keep = [ln for ln in lines if target.name not in ln.split()[0].split(",")] if lines else []
+            keep = [ln for ln in lines if not ln.split() or target.name not in ln.split()[0].split(",")]
             self.known_hosts.write_text("".join(f"{ln}\n" for ln in keep))
 
     async def check_host(self, target: Target) -> str:
@@ -132,18 +133,45 @@ class Keys:
         return key.get_fingerprint()
 
     async def connect(self, target: Target) -> asyncssh.SSHClientConnection:
-        """Log in with the hub's key; only to a host whose key is pinned."""
-        await self.check_host(target)
-        return await asyncio.wait_for(
-            asyncssh.connect(
-                target.host,
-                target.port,
-                username=target.user,
-                client_keys=[self.hub_key()],
-                known_hosts=str(self.known_hosts),
-                agent_path=None,  # only the hub's own key, never the agent of whoever runs it
-                password=None,
-                kbdint_auth=False,
-            ),
-            CONNECT_TIMEOUT,
-        )
+        """Log in with the hub's key, only to a host presenting a key pinned for this name.
+
+        The pin is checked in the login connection itself: asyncssh gets exactly the keys pinned
+        under `target.name` (not the file, whose lookup would also accept keys pinned under the
+        resolved address or the plain host), and nothing else. A separate check before the login
+        would be another connection, possibly to another machine (DNS)."""
+        pinned = self._pinned().get(target.name, [])
+        client = _Recorder()
+        try:
+            conn, _ = await asyncio.wait_for(
+                asyncssh.create_connection(
+                    lambda: client,
+                    target.host,
+                    target.port,
+                    username=target.user,
+                    client_keys=[self.hub_key()],
+                    known_hosts=(pinned, [], []),
+                    agent_path=None,  # only the hub's own key, never the agent of whoever runs it
+                    password=None,
+                    kbdint_auth=False,
+                ),
+                CONNECT_TIMEOUT,
+            )
+        except asyncssh.HostKeyNotVerifiable as e:
+            fingerprint = client.seen.get_fingerprint() if client.seen else "unknown"
+            raise (ChangedHost if pinned else UnknownHost)(target.host, fingerprint) from e
+        except asyncssh.KeyExchangeFailed as e:
+            if pinned:  # the host no longer offers the kind of key we pinned
+                raise ChangedHost(target.host, "a different kind of key") from e
+            raise
+        return conn
+
+
+class _Recorder(asyncssh.SSHClient):
+    """Notes the host key a server presented when it was not a pinned one (for the message)."""
+
+    def __init__(self) -> None:
+        self.seen: asyncssh.SSHKey | None = None
+
+    def validate_host_public_key(self, host: str, addr: str, port: int, key: asyncssh.SSHKey) -> bool:
+        self.seen = key
+        return False

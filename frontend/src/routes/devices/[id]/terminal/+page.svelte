@@ -33,7 +33,11 @@
 	let socket: WebSocket | null = null;
 	let observer: ResizeObserver | null = null;
 
+	// Each open() is one generation; a slower earlier one must not leave a live shell behind.
+	let generation = 0;
+
 	async function open() {
+		const mine = ++generation;
 		close();
 		problem = null;
 		connected = false;
@@ -42,6 +46,8 @@
 			import('@xterm/xterm'),
 			import('@xterm/addon-fit')
 		]);
+		if (mine !== generation) return; // a newer open() took over while this one loaded
+		close();
 		const dark = matchMedia('(prefers-color-scheme: dark)').matches;
 		term = new Terminal({
 			cursorBlink: true,

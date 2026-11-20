@@ -15,6 +15,7 @@ use them). It decides, for every /api request:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 from dataclasses import dataclass
@@ -74,6 +75,23 @@ def require_signin(request: Request) -> Who:
     return w
 
 
+LOCAL_NAMES = {"localhost"}
+
+
+def allowed_host(host: str, names: tuple[str, ...]) -> bool:
+    """IP addresses (which can't be rebound), localhost, and the configured names."""
+    name = host.lower()
+    if name.startswith("["):  # [::1]:8100
+        name = name[1 : name.find("]")]
+    elif name.count(":") == 1:
+        name = name.rsplit(":", 1)[0]
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return name in LOCAL_NAMES or name in names
+
+
 def same_origin(headers: dict[str, str]) -> bool:
     """Whether a browser request comes from this hub's own page: Origin names the same host."""
     origin, host = headers.get("origin"), headers.get("host")
@@ -83,6 +101,29 @@ def same_origin(headers: dict[str, str]) -> bool:
 def client_address(scope: Scope) -> str:
     client = scope.get("client")
     return client[0] if client else "?"
+
+
+def session_token(headers: dict[str, str]) -> str | None:
+    cookie = SimpleCookie()
+    try:
+        cookie.load(headers.get("cookie", ""))
+    except Exception:  # a malformed Cookie header is no session
+        return None
+    return cookie[SESSION_COOKIE].value if SESSION_COOKIE in cookie else None
+
+
+def session_who(hub: Hub, token: str | None) -> Who | None:
+    """Who a session belongs to now, or None: also when the user was removed from config.yaml or
+    their password changed since (then the session ends). Used at every request, and again and
+    again while a terminal is open."""
+    users = hub.config.users
+    user = hub.sessions.user(token)
+    if user is None:
+        return None
+    if user not in users or hub.sessions.tag(token) != password_tag(users[user].password):
+        hub.sessions.end(token)
+        return None
+    return Who(user, users[user].role)
 
 
 class Guard:
@@ -99,6 +140,11 @@ class Guard:
         method = scope.get("method", "GET")
         users = self.hub.config.users
 
+        if not allowed_host(headers.get("host", ""), self.hub.settings.hosts):
+            # DNS rebinding: a page on an attacker's name that now points here. Its requests carry
+            # that name, which the hub doesn't answer to.
+            await _deny(scope, send, 421, "this hub doesn't answer to that name (see KASTELLAN_HOSTS)")
+            return
         if self.hub.locked and scope["path"] != "/api/health":
             # config.yaml was broken at start: refuse everything rather than run without sign-in.
             await _deny(scope, send, 503, "locked until config.yaml is fixed (see /api/health)")
@@ -116,16 +162,8 @@ class Guard:
         if not users:
             w = Who(None, Role.ADMIN)
         else:
-            cookie = SimpleCookie()
-            cookie.load(headers.get("cookie", ""))
-            token = cookie[SESSION_COOKIE].value if SESSION_COOKIE in cookie else None
-            user = self.hub.sessions.user(token)
-            if user is not None and (
-                user not in users  # removed from config.yaml
-                or self.hub.sessions.tag(token) != password_tag(users[user].password)  # new password
-            ):
-                self.hub.sessions.end(token)
-                user = None
+            current = session_who(self.hub, session_token(headers))
+            user = current.user if current else None
             if user is None:
                 if scope["path"] in PUBLIC:
                     w = None
@@ -227,9 +265,12 @@ def router(hub: Hub) -> APIRouter:
     @api.post("/auth/logout")
     def logout(request: Request, response: Response, everywhere: bool = False) -> dict[str, bool]:
         w = request.scope.get("state", {}).get("who")
+        token = request.cookies.get(SESSION_COOKIE)
         if everywhere and w and w.user:
             hub.sessions.end_user(w.user)
-        hub.sessions.end(request.cookies.get(SESSION_COOKIE))
+            hub.terminals.stop(user=w.user)
+        hub.terminals.stop(token=token)  # its open terminals end with it
+        hub.sessions.end(token)
         response.delete_cookie(SESSION_COOKIE, path="/")
         if w and w.user:
             hub.audit.record("signout", w.user, client_address(request.scope))

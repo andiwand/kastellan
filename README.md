@@ -74,7 +74,9 @@ Notes:
 
 Settings (environment): `KASTELLAN_CONFIG` (default `data/config.yaml`), `KASTELLAN_DATA`
 (default: the config's folder), `KASTELLAN_HOST`, `KASTELLAN_PORT` (8100),
-`KASTELLAN_LOG_LEVEL`, `KASTELLAN_DEMO`.
+`KASTELLAN_LOG_LEVEL`, `KASTELLAN_DEMO`, and `KASTELLAN_HOSTS`: the names you reach the hub by
+(comma-separated, e.g. `kastellan.lan`). IP addresses and localhost always work; other names are
+refused, which stops DNS-rebinding attacks from web pages you visit.
 
 ## Sign-in
 
@@ -109,7 +111,13 @@ devices:
 ```
 
 The hub has its own SSH key (`data/ssh/hub_ed25519`, made on first use); the app shows its
-public key to put into `~/.ssh/authorized_keys` on the device. The first connection shows the
+public key to put into `~/.ssh/authorized_keys` on the device. Prefer a normal user to root,
+and tie the key to the hub's address, so a copy of it is no use elsewhere:
+`from="192.168.15.10" ssh-ed25519 AAAA... kastellan-hub`.
+
+A terminal ends when its session does: signing out, a new password or role in config.yaml, or
+removing the user closes it at once. It also ends after 30 minutes without typing and after
+8 hours in any case; a user can have 4 open. The first connection shows the
 host's key fingerprint to compare and trust; if it later changes, Kastellan refuses until you
 say the host was reinstalled. Opening and closing a terminal goes to the audit log; what is
 typed does not.

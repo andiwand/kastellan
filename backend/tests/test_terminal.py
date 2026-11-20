@@ -33,8 +33,11 @@ def ssh_server(tmp_path: Path):
 
     async def shell(process: asyncssh.SSHServerProcess) -> None:
         process.stdout.write(f"$ welcome {process.get_extra_info('username')}\r\n")
-        line = await process.stdin.readline()
-        process.stdout.write(f"you typed {line.strip()}\r\n")
+        while True:  # echo lines until "exit" (or the hub closes the session)
+            line = await process.stdin.readline()
+            if not line or line.strip() == "exit":
+                break
+            process.stdout.write(f"you typed {line.strip()}\r\n")
         process.exit(0)
 
     async def serve() -> None:
@@ -112,7 +115,11 @@ def test_terminal_end_to_end(tmp_path: Path, ssh_server) -> None:
             while b"you typed" not in out:
                 out += ws.receive_bytes()
             assert b"secret-ish" in out
-            assert json.loads(ws.receive_text())["type"] == "exit"
+            ws.send_text(json.dumps({"type": "input", "data": "exit\n"}))
+            frame = ws.receive()
+            while not frame.get("text"):  # output still on its way
+                frame = ws.receive()
+            assert json.loads(frame["text"])["type"] == "exit"
 
         log = (tmp_path / "data" / "audit.log").read_text()
         assert "terminal.open" in log and "terminal.close" in log and "ssh.trust" in log
@@ -147,3 +154,45 @@ def test_terminal_refuses(tmp_path: Path, ssh_server) -> None:
         assert refused(c)
         r = c.post("/api/devices/box/ssh/trust", json={"fingerprint": "x"}, headers=H)
         assert r.status_code == 403
+
+
+def ends(ws) -> str:
+    """The reason the hub gives when it ends a terminal on its own."""
+    while True:
+        try:
+            frame = ws.receive()
+        except WebSocketDisconnect:
+            return "disconnected"
+        if frame.get("text"):
+            return json.loads(frame["text"]).get("message", "")
+        if frame["type"] == "websocket.close":
+            return "closed"
+
+
+def test_terminal_ends_with_the_session(tmp_path: Path, ssh_server, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Security review: an open terminal used to outlive sign-out, removal and password change."""
+    from kastellan import terminal_api
+
+    monkeypatch.setattr(terminal_api, "RECHECK_EVERY", 0.2)
+    port, host_key = ssh_server
+    with make_client(tmp_path, port) as c:
+        signin(c, "ada")
+        c.post("/api/devices/box/ssh/trust", json={"fingerprint": host_key.get_fingerprint()}, headers=H)
+
+        with c.websocket_connect("/api/devices/box/terminal", headers=ws_headers(c)) as ws:
+            assert b"welcome" in ws.receive_bytes()
+            # 1. Signing out everywhere ends it at once.
+            assert c.post("/api/auth/logout?everywhere=true", headers=H).status_code == 200
+            assert "signed out" in ends(ws)
+
+        signin(c, "ada")
+        with c.websocket_connect("/api/devices/box/terminal", headers=ws_headers(c)) as ws:
+            assert b"welcome" in ws.receive_bytes()
+            # 2. So does a new password in config.yaml.
+            config = tmp_path / "config.yaml"
+            config.write_text(config.read_text().replace(HASH, hash_password("another password")))
+            c.app.state.hub.reload()
+            assert ends(ws) in ("your access changed", "your session ended")
+
+        log = (tmp_path / "data" / "audit.log").read_text()
+        assert log.count('"terminal.close"') == 2

@@ -17,6 +17,17 @@ It stands on its own; it does not talk to Norn.
   `guacd` (RDP, VNC, SSH) with `guacamole-common-js` in the browser, which carries the screen,
   mouse and keyboard; the terminal with xterm.js over a WebSocket to asyncssh; backups with
   restic; device protocols through existing libraries (fritzconnection for TR-064, ...).
+- **No single place with root on everything** (decided 2026-11-20). Routine work (status,
+  containers, services, disk, updates, backups) goes **through the agent when there is one, else
+  SSH**, and either way through a narrow API that can only do named things:
+  - The agent: read-only by default; what it may do is set on the device's side (a hub that is
+    taken over gets only what each device allowed). Actions are named and enabled one by one
+    (restart container X, apply updates), never arbitrary commands. On Docker hosts it runs as a
+    container and reaches Docker through a filtering socket proxy (lists, no privileged starts).
+  - Without an agent: an SSH key restricted in authorized_keys
+    (`restrict,command="kastellan-collect"`) that can only run one fixed read-only script.
+  - The terminal is separate: human access, opened by a signed-in admin, as a normal user (sudo
+    is the person's own step), later with short-lived SSH certificates instead of a standing key.
 - **Both directions.** Agentless first: the hub logs in (SSH, vendor APIs like TR-064, SNMP,
   HTTP). A small agent (Go: one static binary for Windows, macOS, Linux, ARM) only where needed:
   Windows/macOS desktops, laptops away from home, remote desktop. The agent connects out to the
@@ -58,8 +69,9 @@ fixed, before the next one starts.
    through drivers (stage 5), newer versions (stage 6).
 2. **Sign-in and roles** (observer / admin) and the audit log.
 3. **Terminal in the browser**: SSH via asyncssh + xterm.js, keys held by the hub, host keys
-   pinned. Refuses to run while sign-in is off. Also lists Docker containers (image, version,
-   started) and systemd services (active since) of Linux hosts.
+   pinned. Refuses to run while sign-in is off. Docker containers and systemd services are
+   read through the agent or the restricted collector key (see the decision above), not through
+   the terminal's access.
    **SSH access management** rides on the same access: which keys may log in where (every
    host's `authorized_keys`, with each key's name and age), and **key rotation as one guided
    action**: make a new key, add it everywhere, prove it works on each host, then remove the old

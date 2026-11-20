@@ -17,11 +17,12 @@ from . import config as config_mod
 from . import demo
 from .audit import Audit
 from .auth import Sessions
-from .config import Config
+from .config import Config, Role
 from .history import History
 from .monitor import Monitor, run_check
 from .settings import Settings
 from .ssh import Keys
+from .terminals import Terminals
 from .versions import Versions
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class Hub:
         self.sessions = Sessions(settings.data / "sessions.json")
         self.audit = Audit(settings.data / "audit.log")
         self.keys = Keys(settings.data / "ssh")
+        self.terminals = Terminals()
         runner = self.demo.run if self.demo else run_check
         self.monitor = Monitor(self.history, runner, self.versions)
         self._mtime: float | None = None
@@ -93,10 +95,27 @@ class Hub:
                 log.error("config.yaml: %s; the API stays locked until it is fixed", problem.message)
             return
         if config.users:
-            self._mark_signin_required()
+            try:
+                self._mark_signin_required()
+            except ConfigProblem as problem:
+                self.config_error = problem.message
+                self.locked = problem.message
+                log.error("%s; the API stays locked", problem.message)
+                return
+        old_users = self.config.users
         self.config, self.config_error, self.locked, self._loaded = config, None, None, True
-        # Someone removed from config.yaml is signed out everywhere at once.
+        # Someone removed from config.yaml is signed out everywhere at once, and a terminal stays
+        # open only for an admin whose password did not change.
         self.sessions.end_all_except(set(config.users))
+        self.terminals.stop_all_but(
+            {
+                name
+                for name, user in config.users.items()
+                if user.role == Role.ADMIN
+                and (name not in old_users or old_users[name].password == user.password)
+            },
+            "your access changed",
+        )
         self._apply(config)
         log.info("config: %d devices, %d users", len(config.devices), len(config.users))
 
@@ -120,23 +139,38 @@ class Hub:
             raise ConfigProblem(_describe(e)) from e
         except (OSError, ValueError, YAMLError) as e:
             raise ConfigProblem(_first_line(str(e))) from e
-        if not config.users and self.signin_required.exists():
+        if not config.users and self._signin_was_on():
             raise ConfigProblem(
                 "it has no users, but sign-in was on; to turn sign-in off, also delete "
                 f"{self.signin_required}"
             )
         return config
 
+    def _signin_was_on(self) -> bool:
+        """Whether the marker exists; when it can't be looked at, assume it does (fail closed)."""
+        try:
+            self.signin_required.stat()
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+
     def _mark_signin_required(self) -> None:
-        if not self.signin_required.exists():
-            try:
-                self.signin_required.parent.mkdir(parents=True, exist_ok=True)
-                self.signin_required.write_text(
-                    "Sign-in has been on. While this file exists, Kastellan refuses a config.yaml "
-                    "without users instead of opening up.\n"
-                )
-            except OSError as e:
-                log.warning("cannot write %s: %s", self.signin_required, e)
+        """Without the marker, a later config.yaml without users would turn sign-in off; if it
+        can't be written, that protection is missing, so the hub refuses to run instead."""
+        if self._signin_was_on():
+            return
+        try:
+            self.signin_required.parent.mkdir(parents=True, exist_ok=True)
+            self.signin_required.write_text(
+                "Sign-in has been on. While this file exists, Kastellan refuses a config.yaml "
+                "without users instead of opening up.\n"
+            )
+        except OSError as e:
+            raise ConfigProblem(
+                f"cannot write {self.signin_required} ({e.strerror}); fix the data folder"
+            ) from e
 
     def _apply(self, config: Config) -> None:
         first = not self.monitor.status

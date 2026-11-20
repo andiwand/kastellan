@@ -19,13 +19,22 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import asyncssh
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from .auth_api import Who, client_address, require_admin, require_signin, same_origin
+from .auth_api import (
+    Who,
+    client_address,
+    require_admin,
+    require_signin,
+    same_origin,
+    session_token,
+    session_who,
+)
 from .ssh import ChangedHost, Target, UnknownHost
 
 if TYPE_CHECKING:
@@ -34,6 +43,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 IDLE_LIMIT = 30 * 60  # a terminal nobody typed in for this long closes
+MAX_SECONDS = 8 * 3600  # however busy, a terminal ends after this long
+MAX_PER_USER = 4
+RECHECK_EVERY = 15  # seconds between checks that the session is still good
 
 
 class Trust(BaseModel):
@@ -98,43 +110,53 @@ def router(hub: Hub) -> APIRouter:
     @api.websocket("/devices/{id}/terminal")
     async def terminal(ws: WebSocket, id: str, cols: int = 100, rows: int = 30) -> None:
         w: Who | None = ws.scope.get("state", {}).get("who")
+        address = client_address(ws.scope)
+        token = session_token(dict(ws.headers))
         if w is None or not w.is_admin or w.user is None or not same_origin(dict(ws.headers)):
             # Sign-in off, an observer, or another site's page: no shell.
+            hub.audit.record("terminal.refused", w.user if w else None, address, device=id)
             await ws.close(code=4403, reason="a terminal needs a signed-in admin")
             return
         device = hub.config.devices.get(id)
         if device is None or device.ssh is None:
             await ws.close(code=4404, reason="no such device, or it has no ssh: in config.yaml")
             return
+        if hub.terminals.count(w.user) >= MAX_PER_USER:
+            await ws.close(code=4429, reason=f"at most {MAX_PER_USER} terminals at once")
+            return
         await ws.accept()
         t = Target(device.host, device.ssh.port, device.ssh.user)
-        address = client_address(ws.scope)
 
         async def say(message: dict[str, Any]) -> None:
             with contextlib.suppress(Exception):
                 await ws.send_text(json.dumps(message))
 
+        async def refuse(code: int, message: dict[str, Any], why: str) -> None:
+            hub.audit.record("terminal.failed", w.user, address, device=id, reason=why)
+            await say(message)
+            await ws.close(code=code)
+
         try:
             conn = await hub.keys.connect(t)
         except UnknownHost as e:
-            await say({"type": "unknown-host", "fingerprint": e.fingerprint})
-            await ws.close(code=4001)
+            await refuse(4001, {"type": "unknown-host", "fingerprint": e.fingerprint}, "unknown host key")
             return
         except ChangedHost as e:
-            await say({"type": "changed-host", "fingerprint": e.fingerprint})
-            await ws.close(code=4002)
+            await refuse(4002, {"type": "changed-host", "fingerprint": e.fingerprint}, "host key changed")
             return
         except asyncssh.PermissionDenied:
-            await say({"type": "error", "message": f"{t.user}@{t.host} does not accept the hub's key"})
-            await ws.close(code=4003)
+            message = f"{t.user}@{t.host} does not accept the hub's key"
+            await refuse(4003, {"type": "error", "message": message}, "key not accepted")
             return
         except (OSError, TimeoutError, asyncssh.Error) as e:
-            await say({"type": "error", "message": f"cannot reach {t.host}: {e or type(e).__name__}"})
-            await ws.close(code=4004)
+            message = f"cannot reach {t.host}: {e or type(e).__name__}"
+            await refuse(4004, {"type": "error", "message": message}, "unreachable")
             return
 
+        handle = hub.terminals.add(w.user, token, id)
         opened = time.monotonic()
         hub.audit.record("terminal.open", w.user, address, device=id, login=f"{t.user}@{t.host}")
+        ended = "closed"
         try:
             async with conn:
                 process = await conn.create_process(
@@ -142,13 +164,35 @@ def router(hub: Hub) -> APIRouter:
                     term_size=(max(10, min(cols, 500)), max(4, min(rows, 200))),
                     encoding=None,
                 )
-                await _bridge(ws, process)
-                await say({"type": "exit", "status": process.exit_status})
+
+                def allowed() -> str | None:
+                    """Why the terminal must end now, or None."""
+                    if handle.stop.is_set():
+                        return handle.reason or "signed out"
+                    now = session_who(hub, token)
+                    if now is None or now.user != w.user or not now.is_admin:
+                        return "your session ended"
+                    if time.monotonic() - opened > MAX_SECONDS:
+                        return f"closed after {MAX_SECONDS // 3600} hours"
+                    return None
+
+                ended = await _bridge(ws, process, allowed, handle.stop)
+                if ended == "exit":
+                    await say({"type": "exit", "status": process.exit_status})
+                elif ended != "closed":
+                    await say({"type": "error", "message": ended})
         except (OSError, asyncssh.Error) as e:
-            await say({"type": "error", "message": str(e) or type(e).__name__})
+            ended = str(e) or type(e).__name__
+            await say({"type": "error", "message": ended})
         finally:
+            hub.terminals.remove(handle)
             hub.audit.record(
-                "terminal.close", w.user, address, device=id, seconds=round(time.monotonic() - opened)
+                "terminal.close",
+                w.user,
+                address,
+                device=id,
+                seconds=round(time.monotonic() - opened),
+                why=ended,
             )
             with contextlib.suppress(Exception):
                 await ws.close()
@@ -156,14 +200,20 @@ def router(hub: Hub) -> APIRouter:
     return api
 
 
-async def _bridge(ws: WebSocket, process: asyncssh.SSHClientProcess) -> None:
-    """Copy output to the browser and input to the shell until either side ends."""
+async def _bridge(
+    ws: WebSocket, process: asyncssh.SSHClientProcess, allowed: Callable[[], str | None], stop: asyncio.Event
+) -> str:
+    """Copy output to the browser and input to the shell until one side ends or the terminal is
+    no longer allowed. Returns why it ended: "exit", "closed", or a reason to show."""
     last_input = time.monotonic()
+    why = "closed"
 
     async def output() -> None:
+        nonlocal why
         while True:
             data = await process.stdout.read(16384)
             if not data:
+                why = "exit"
                 return
             await ws.send_bytes(data)
 
@@ -171,30 +221,38 @@ async def _bridge(ws: WebSocket, process: asyncssh.SSHClientProcess) -> None:
         nonlocal last_input
         while True:
             try:
-                message = await asyncio.wait_for(ws.receive_text(), 60)
+                message = await asyncio.wait_for(ws.receive_text(), RECHECK_EVERY)
             except TimeoutError:
-                if time.monotonic() - last_input > IDLE_LIMIT:
-                    await ws.send_text(
-                        json.dumps({"type": "error", "message": "closed after 30 minutes idle"})
-                    )
-                    return
                 continue
-            except WebSocketDisconnect:
+            except (WebSocketDisconnect, RuntimeError):
                 return
             try:
                 m = json.loads(message)
             except ValueError:
                 continue
             if m.get("type") == "input" and isinstance(m.get("data"), str):
-                last_input = time.monotonic()
+                last_input = time.monotonic()  # only typing counts as use, not resizing
                 process.stdin.write(m["data"].encode())
+                await process.stdin.drain()
             elif m.get("type") == "resize":
-                with contextlib.suppress(TypeError, ValueError):
-                    process.change_terminal_size(
-                        max(10, min(int(m["cols"]), 500)), max(4, min(int(m["rows"]), 200))
-                    )
+                with contextlib.suppress(TypeError, ValueError, KeyError):
+                    cols, rows = max(10, min(int(m["cols"]), 500)), max(4, min(int(m["rows"]), 200))
+                    process.change_terminal_size(cols, rows)
 
-    tasks = [asyncio.create_task(output()), asyncio.create_task(input())]
+    async def watch() -> None:
+        """Ends the terminal when its session ends, the user loses access, or it idles."""
+        nonlocal why
+        while True:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), RECHECK_EVERY)
+            if reason := allowed():
+                why = reason
+                return
+            if time.monotonic() - last_input > IDLE_LIMIT:
+                why = f"closed after {IDLE_LIMIT // 60} minutes without typing"
+                return
+
+    tasks = [asyncio.create_task(output()), asyncio.create_task(input()), asyncio.create_task(watch())]
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:
@@ -202,3 +260,4 @@ async def _bridge(ws: WebSocket, process: asyncssh.SSHClientProcess) -> None:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         process.close()
+    return why

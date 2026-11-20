@@ -15,6 +15,7 @@ services:
     #   - "8100:8100"
     environment:
       TZ: Etc/UTC # your time zone
+      # KASTELLAN_HOSTS: kastellan.lan # names you open it by; IP addresses always work
       # KASTELLAN_DEMO: "1" # a made-up network with simulated results, to try it out
     volumes:
       - ./config:/config # config.yaml
