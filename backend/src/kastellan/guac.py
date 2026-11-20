@@ -16,6 +16,7 @@ The protocol is documented at https://guacamole.apache.org/doc/gug/guacamole-pro
 from __future__ import annotations
 
 import asyncio
+import codecs
 from collections.abc import Sequence
 
 INTERNAL = ""  # opcode of the tunnel's own instructions (ping, uuid), never sent to guacd
@@ -30,6 +31,23 @@ def encode(*elements: str) -> str:
     return ",".join(f"{len(e)}.{e}" for e in elements) + ";"
 
 
+def for_browser(instruction: str) -> str:
+    """guacd counts lengths in code points; guacamole-common-js 1.5.0 counts UTF-16 units, so a
+    character outside the BMP (an emoji in a VNC desktop's name) would shift its parsing and let
+    the rest of an element be read as instructions. Re-count lengths in UTF-16 units for those."""
+    if instruction.isascii() or all(ord(ch) <= 0xFFFF for ch in instruction):
+        return instruction
+    elements = decode(instruction)
+    return ",".join(f"{len(e.encode('utf-16-le')) // 2}.{e}" for e in elements) + ";"
+
+
+def _length(text: str) -> int:
+    # Only ASCII digits, as guacd reads them: int() would also take " 3", "+3", "1_0" or "٣".
+    if not text or len(text) > 10 or not (text.isascii() and text.isdigit()):
+        raise ProtocolError("bad length")
+    return int(text)
+
+
 def decode(instruction: str) -> list[str]:
     """One complete instruction ("4.size,1.1;") to its elements (["size", "1"])."""
     elements: list[str] = []
@@ -38,10 +56,7 @@ def decode(instruction: str) -> list[str]:
         dot = instruction.find(".", i)
         if dot < 0:
             raise ProtocolError("no length")
-        try:
-            length = int(instruction[i:dot])
-        except ValueError as e:
-            raise ProtocolError("bad length") from e
+        length = _length(instruction[i:dot])
         start, end = dot + 1, dot + 1 + length
         if end >= len(instruction) or length < 0:
             raise ProtocolError("truncated")
@@ -62,6 +77,9 @@ class Reader:
     def __init__(self, reader: asyncio.StreamReader) -> None:
         self.reader = reader
         self.buffer = ""
+        # Incremental: a character split between two reads must not turn into U+FFFD twice,
+        # which would make the code-point count disagree with the length.
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     async def instruction(self) -> str:
         """The next whole instruction, as text; "" at the end of the stream."""
@@ -75,7 +93,7 @@ class Reader:
             chunk = await self.reader.read(65536)
             if not chunk:
                 return ""
-            self.buffer += chunk.decode("utf-8", errors="replace")
+            self.buffer += self._decoder.decode(chunk)
 
 
 def complete(buffer: str) -> int | None:
@@ -85,10 +103,7 @@ def complete(buffer: str) -> int | None:
         dot = buffer.find(".", i)
         if dot < 0:
             return None
-        try:
-            length = int(buffer[i:dot])
-        except ValueError as e:
-            raise ProtocolError("bad length") from e
+        length = _length(buffer[i:dot])
         end = dot + 1 + length
         if end >= len(buffer):
             return None

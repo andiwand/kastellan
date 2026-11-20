@@ -122,6 +122,14 @@ class DesktopAccess(BaseModel):
     ignore_cert: bool = True
 
 
+class DockerSource(BaseModel):
+    """Where the host's containers and their updates come from (for now WUD's API)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    wud: str = Field(pattern=r"^https?://[^\s]+$")
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -136,6 +144,7 @@ class Device(BaseModel):
     ssh: SshAccess | None = None  # set to open a terminal on the device
     desktop: DesktopAccess | None = None  # set to open its screen in the browser
     driver: str | None = None  # what else Kastellan can ask it, e.g. fritzbox (see drivers/)
+    docker: DockerSource | None = None  # its containers and their updates
     checks: list[Check] = Field(default_factory=lambda: [Check(type=CheckType.PING)])
 
     @model_validator(mode="after")

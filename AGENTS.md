@@ -36,6 +36,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     polls it every 10 minutes and writes firmware changes to versions.log (check name
     `firmware`). Only what devices answer without credentials so far; FRITZ!Box reads TR-064's
     public `tr64desc.xml`. OpenWrt reveals nothing without an account (comes with secrets).
+  - `docker.py`: containers from WUD's API (`docker: {wud: url}`), polled with the drivers.
+    `unchecked` says why an update can't be known (unsupported registry, a non-semver tag whose
+    digest WUD doesn't watch); never show those as "up to date". Each container's running
+    image (`image:tag (id)`) goes to versions.log as `container <name>`.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)

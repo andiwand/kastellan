@@ -19,6 +19,9 @@ drivers, updates, backups). See [PLAN.md](PLAN.md).
 - **Device pages**: response times, uptime over 1 h / 24 h / 7 d, and the activity of each check.
 - **List or graph**: the devices as a searchable list, or as a graph of what is connected
   through what (infrastructure only; which access point a laptop uses isn't drawn).
+- **Docker updates**: `docker: {wud: http://host:3000}` reads the containers and their updates
+  from [WUD](https://getwud.github.io/wud/), and says which it can't check (a registry WUD
+  doesn't know, or a `latest`-style tag whose digest WUD doesn't watch).
 - **Drivers**: `driver: fritzbox` reads model and FRITZ!OS version (no password needed);
   firmware updates show in the activity.
 - **Plain files**: `config.yaml` for the configuration, one CSV file per day for the history.
@@ -146,8 +149,15 @@ devices:
 ```
 
 The password is asked for when connecting, used once, and never stored or put in a URL.
-Kastellan doesn't let the remote side reach the hub's files or printers. Opening and closing
-goes to the audit log. Not tested against real desktops yet.
+Kastellan doesn't let the remote side reach the hub's files, printers or clipboard, and passes
+only mouse, keyboard and screen size from the browser to guacd. It ends after 30 minutes without
+input. Opening and closing goes to the audit log. Not tested against real desktops yet.
+
+Mind the certificate: Windows' RDP certificate is self-signed and guacd can't pin it, so
+`ignore_cert: true` (the default) means someone in the middle on your network could catch the
+login. Prefer `security: nla`, and give the PC a certificate guacd trusts, then set
+`ignore_cert: false`. guacd itself has no sign-in: anything on the hub's host can use it, which is
+why it listens on localhost only.
 
 ## Security
 

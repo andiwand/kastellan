@@ -88,7 +88,8 @@
 		const events = ['mousedown', 'mouseup', 'mousemove'];
 		new G.Mouse(display.getElement()).onEach(events, send);
 		new G.Mouse.Touchscreen(display.getElement()).onEach(events, send);
-		keyboard = new G.Keyboard(document);
+		// One keyboard listener for the page's life; connecting again only sets its handlers.
+		keyboard ??= new G.Keyboard(document);
 		keyboard.onkeydown = (keysym: number) => {
 			c.sendKeyEvent(1, keysym);
 			return false;
@@ -109,11 +110,10 @@
 		observer?.disconnect();
 		observer = null;
 		if (keyboard) {
+			keyboard.reset(); // releases held keys while the handlers can still send them
 			keyboard.onkeydown = null;
 			keyboard.onkeyup = null;
-			keyboard.reset();
 		}
-		keyboard = null;
 	}
 
 	function disconnect() {

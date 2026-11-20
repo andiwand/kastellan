@@ -141,3 +141,24 @@ def test_desktop_ends_with_the_session(tmp_path: Path, guacd, monkeypatch: pytes
             assert c.post("/api/auth/logout?everywhere=true", headers=H).status_code == 200
             frame = ws.receive()
             assert frame.get("text") and guac.decode(frame["text"])[0] == "error"
+
+
+def test_only_screen_input_reaches_guacd(tmp_path: Path, guacd) -> None:
+    """Security review: the browser could send any instruction to guacd."""
+    port, _ = guacd
+    with make_client(tmp_path, port) as c:
+        signin(c)
+        url = f"/api/devices/pc/desktop?ticket={ticket(c)}"
+        with c.websocket_connect(url, headers=headers(c), subprotocols=["guacamole"]) as ws:
+            ws.receive_text()  # uuid
+            ws.send_text(
+                guac.encode("file", "1", "text/plain", "x.txt")
+                + guac.encode("argv", "2", "text/plain", "hostname")
+                + guac.encode("size", "99999", "99999")
+                + guac.encode("mouse", "1", "2", "0")
+            )
+            expected = guac.encode("size", "7680", "4320") + guac.encode("mouse", "1", "2", "0")
+            got = ""
+            while len(got) < len(expected):  # the fake guacd echoes what reached it
+                got += ws.receive_text()
+            assert got == expected

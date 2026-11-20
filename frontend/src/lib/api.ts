@@ -27,8 +27,22 @@ export interface Device {
 	desktop: { protocol: 'rdp' | 'vnc'; user: string | null } | null;
 	driver: string | null;
 	info: { model: string | null; name: string | null; firmware: string | null } | null;
+	containers: Container[] | null;
+	containers_checked: string | null;
+	containers_error: string | null;
 	state: CheckState;
 	checks: CheckStatus[];
+}
+
+export interface Container {
+	name: string;
+	image: string;
+	tag: string;
+	image_id: string;
+	state: string;
+	update: boolean;
+	update_to: string | null;
+	unchecked: string | null;
 }
 
 export interface Health {

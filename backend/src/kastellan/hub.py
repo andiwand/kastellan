@@ -11,14 +11,16 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
 from pydantic import ValidationError
 from ruamel.yaml.error import YAMLError
 
 from . import config as config_mod
-from . import demo
+from . import demo, docker
 from .audit import Audit
 from .auth import Sessions
 from .config import Config, Role
+from .desktop_api import Tickets
 from .drivers import DRIVERS
 from .history import History
 from .monitor import Monitor, run_check
@@ -72,6 +74,7 @@ class Hub:
         self.audit = Audit(settings.data / "audit.log")
         self.keys = Keys(settings.data / "ssh")
         self.terminals = Terminals()
+        self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         runner = self.demo.run if self.demo else run_check
         self.monitor = Monitor(self.history, runner, self.versions)
         self._mtime: float | None = None
@@ -110,6 +113,8 @@ class Hub:
         # Someone removed from config.yaml is signed out everywhere at once, and a terminal stays
         # open only for an admin whose password did not change.
         self.sessions.end_all_except(set(config.users))
+        for name in set(old_users) - set(config.users):
+            self.tickets.drop(user=name)
         self.terminals.stop_all_but(
             {
                 name
@@ -196,6 +201,7 @@ class Hub:
         self._tasks = [
             asyncio.create_task(self._poll_drivers(), name="poll drivers"),
             asyncio.create_task(self._watch_config(), name="watch config"),
+            asyncio.create_task(self._expire_tickets(), name="expire tickets"),
             asyncio.create_task(self._prune(), name="prune history"),
         ]
 
@@ -229,6 +235,8 @@ class Hub:
         firmware goes to the version log like a service's software (check name "firmware")."""
         while True:
             for id, device in list(self.config.devices.items()):
+                if device.docker is not None:
+                    await self._poll_docker(id, device.docker.wud)
                 if device.driver is None:
                     continue
                 if self.demo:
@@ -249,12 +257,45 @@ class Hub:
                     self._note_firmware(id, info.firmware, now)
             await asyncio.sleep(DRIVER_EVERY)
 
+    async def _poll_docker(self, id: str, wud: str) -> None:
+        status = self.monitor.status.get(id)
+        if status is None:
+            return
+        if self.demo:
+            status.containers, status.containers_checked = demo.CONTAINERS.get(id), datetime.now(UTC)
+            return
+        try:
+            containers = await docker.read_wud(wud)
+        except (httpx.HTTPError, ValueError) as e:
+            # Keep what we knew; say since when it's old.
+            status.containers_error = f"cannot read WUD: {e or type(e).__name__}"
+            log.info("%s: %s", id, status.containers_error)
+            return
+        now = datetime.now(UTC)
+        status.containers, status.containers_checked, status.containers_error = (
+            docker.as_dicts(containers),
+            now,
+            None,
+        )
+        latest = self.versions.latest()
+        for c in containers:
+            key = f"container {c.name}"
+            last = latest.get((id, key))
+            if last is None or last[0] != c.running_version:
+                self.versions.record(now, id, key, last[0] if last else None, c.running_version)
+
     def _note_firmware(self, id: str, firmware: str, now: datetime) -> None:
         last = self.versions.latest().get((id, "firmware"))
         if last is None or last[0] != firmware:
             if last is not None:
                 log.info("%s firmware: %s → %s", id, last[0], firmware)
             self.versions.record(now, id, "firmware", last[0] if last else None, firmware)
+
+    async def _expire_tickets(self) -> None:
+        """A ticket holds a desktop password until used; unused ones go after their minute."""
+        while True:
+            await asyncio.sleep(15)
+            self.tickets.expire()
 
     async def _prune(self) -> None:
         while True:

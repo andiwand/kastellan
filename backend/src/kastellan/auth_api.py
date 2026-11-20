@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from .auth import _DUMMY_HASH, SESSION_COOKIE, SESSION_IDLE, Brake, password_tag, verify_password
 from .config import Role
+from .terminals import token_key
 
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
@@ -269,7 +270,9 @@ def router(hub: Hub) -> APIRouter:
         if everywhere and w and w.user:
             hub.sessions.end_user(w.user)
             hub.terminals.stop(user=w.user)
-        hub.terminals.stop(token=token)  # its open terminals end with it
+            hub.tickets.drop(user=w.user)
+        hub.terminals.stop(token=token)  # its open terminals and desktops end with it
+        hub.tickets.drop(session=token_key(token))
         hub.sessions.end(token)
         response.delete_cookie(SESSION_COOKIE, path="/")
         if w and w.user:

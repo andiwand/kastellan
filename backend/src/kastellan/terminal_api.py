@@ -124,7 +124,9 @@ def router(hub: Hub) -> APIRouter:
         if hub.terminals.count(w.user) >= MAX_PER_USER:
             await ws.close(code=4429, reason=f"at most {MAX_PER_USER} terminals at once")
             return
-        await ws.accept()
+        # Registered before anything is awaited: a sign-out while connecting ends it too, and
+        # parallel opens count against the limit at once.
+        handle = hub.terminals.add(w.user, token, id)
         t = Target(device.host, device.ssh.port, device.ssh.user)
 
         async def say(message: dict[str, Any]) -> None:
@@ -136,24 +138,39 @@ def router(hub: Hub) -> APIRouter:
             await say(message)
             await ws.close(code=code)
 
+        async def connect() -> asyncssh.SSHClientConnection | None:
+            await ws.accept()
+            try:
+                conn = await hub.keys.connect(t)
+            except UnknownHost as e:
+                await refuse(4001, {"type": "unknown-host", "fingerprint": e.fingerprint}, "unknown host key")
+                return None
+            except ChangedHost as e:
+                await refuse(4002, {"type": "changed-host", "fingerprint": e.fingerprint}, "host key changed")
+                return None
+            except asyncssh.PermissionDenied:
+                message = f"{t.user}@{t.host} does not accept the hub's key"
+                await refuse(4003, {"type": "error", "message": message}, "key not accepted")
+                return None
+            except (OSError, TimeoutError, asyncssh.Error) as e:
+                message = f"cannot reach {t.host}: {e or type(e).__name__}"
+                await refuse(4004, {"type": "error", "message": message}, "unreachable")
+                return None
+            if handle.stop.is_set():  # signed out while connecting
+                conn.close()
+                await refuse(4403, {"type": "error", "message": handle.reason or "signed out"}, "signed out")
+                return None
+            return conn
+
         try:
-            conn = await hub.keys.connect(t)
-        except UnknownHost as e:
-            await refuse(4001, {"type": "unknown-host", "fingerprint": e.fingerprint}, "unknown host key")
-            return
-        except ChangedHost as e:
-            await refuse(4002, {"type": "changed-host", "fingerprint": e.fingerprint}, "host key changed")
-            return
-        except asyncssh.PermissionDenied:
-            message = f"{t.user}@{t.host} does not accept the hub's key"
-            await refuse(4003, {"type": "error", "message": message}, "key not accepted")
-            return
-        except (OSError, TimeoutError, asyncssh.Error) as e:
-            message = f"cannot reach {t.host}: {e or type(e).__name__}"
-            await refuse(4004, {"type": "error", "message": message}, "unreachable")
+            conn = await connect()
+        except BaseException:
+            hub.terminals.remove(handle)
+            raise
+        if conn is None:
+            hub.terminals.remove(handle)
             return
 
-        handle = hub.terminals.add(w.user, token, id)
         opened = time.monotonic()
         hub.audit.record("terminal.open", w.user, address, device=id, login=f"{t.user}@{t.host}")
         ended = "closed"

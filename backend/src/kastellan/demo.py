@@ -57,6 +57,7 @@ CONFIG = {
             "kind": "server",
             "parent": "switch",
             "tags": ["docker"],
+            "docker": {"wud": "http://nas.lan:3000"},
             "checks": [
                 "ping",
                 {"tcp": 22, "name": "ssh"},
@@ -70,6 +71,7 @@ CONFIG = {
             "kind": "server",
             "parent": "switch",
             "tags": ["docker", "proxmox"],
+            "docker": {"wud": "http://homeserver.lan:3000"},
             "checks": [
                 "ping",
                 {"tcp": 22, "name": "ssh"},
@@ -162,6 +164,37 @@ UPDATED = ("homeserver", "ssh", Software("OpenSSH", "10.0p2", "Debian"), 360)  #
 # What the demo's devices with a driver report (see hub._poll_drivers).
 INFO = {
     "fritzbox": {"model": "FRITZ!Box 7590", "name": "fritz.box", "firmware": "FRITZ!OS 8.20", "details": {}},
+}
+
+
+def _c(name, image, tag, update_to=None, unchecked=None, state="running"):
+    return {
+        "name": name,
+        "image": image,
+        "tag": tag,
+        "image_id": "3f9a2c71b0de",
+        "state": state,
+        "update": update_to is not None,
+        "update_to": update_to,
+        "unchecked": unchecked,
+        "registry": "hub",
+    }
+
+
+# The demo's Docker hosts (see hub._poll_docker).
+CONTAINERS = {
+    "nas": [
+        _c("jellyfin", "jellyfin/jellyfin", "10.10.7", update_to="10.11.0"),
+        _c("immich-server", "immich-app/immich-server", "v1.135.3"),
+        _c("paperless", "paperless-ngx/paperless-ngx", "2.14"),
+        _c("sonarr", "linuxserver/sonarr", "latest", unchecked="Unsupported Registry unknown"),
+    ],
+    "homeserver": [
+        _c("homeassistant", "home-assistant/home-assistant", "2026.11.2", update_to="2026.11.3"),
+        _c("mosquitto", "library/eclipse-mosquitto", "2"),
+        _c("zigbee2mqtt", "koenkk/zigbee2mqtt", "latest", update_to="newer build"),
+        _c("wud", "getwud/wud", "latest"),
+    ],
 }
 
 

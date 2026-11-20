@@ -74,3 +74,27 @@ async def test_handshake_error() -> None:
         with pytest.raises(guac.ProtocolError, match="Aborted"):
             await guac.handshake(guac.Reader(r), w, "rdp", {}, (800, 600, 96))
         w.close()
+
+
+async def test_reader_keeps_characters_split_between_reads() -> None:
+    """Security review: a character across a read boundary used to break the length count."""
+    text = guac.encode("name", "é" * 40000)
+    data = text.encode()
+    stream = asyncio.StreamReader()
+    for i in range(0, len(data), 65535):  # odd chunk size: splits "é" (2 bytes)
+        stream.feed_data(data[i : i + 65535])
+    stream.feed_eof()
+    reader = guac.Reader(stream)
+    reader.reader._limit = 1 << 30
+    assert guac.decode(await reader.instruction()) == ["name", "é" * 40000]
+
+
+def test_lengths_only_ascii_digits() -> None:
+    for bad in ("+3.abc;", " 3.abc;", "1_0.abcdefghij;", "٣.abc;", "99999999999.a;"):
+        with pytest.raises(guac.ProtocolError):
+            guac.decode(bad)
+
+
+def test_browser_lengths_count_utf16_units() -> None:
+    assert guac.for_browser("4.name,2.ab;") == "4.name,2.ab;"
+    assert guac.for_browser(guac.encode("name", "a😀b")) == "4.name,4.a😀b;"  # 😀 is two units

@@ -31,6 +31,15 @@
 	// Amber while things only limp along, red once something that should be on is down.
 	const tone = $derived(counts.down ? 'critical' : counts.degraded ? 'warning' : 'good');
 	const checkCount = $derived(devices.reduce((n, d) => n + d.checks.length, 0));
+	// Container updates over all Docker hosts, and what can't be checked.
+	const updates = $derived(
+		devices.flatMap((d) =>
+			(d.containers ?? []).filter((c) => c.update).map((c) => ({ device: d, c }))
+		)
+	);
+	const unchecked = $derived(
+		devices.reduce((n, d) => n + (d.containers ?? []).filter((c) => c.unchecked).length, 0)
+	);
 
 	const alwaysOn = $derived(devices.filter((d) => d.always_on));
 	const fleetUptime = $derived.by(() => {
@@ -152,6 +161,28 @@
 					</li>
 				{/each}
 			</ul>
+		{/if}
+		{#if updates.length || unchecked}
+			<div class="relative mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+				{#if updates.length}
+					<span class="font-medium text-accent">
+						{updates.length}
+						{updates.length === 1 ? 'container update' : 'container updates'}:
+					</span>
+					{#each updates.slice(0, 6) as { device, c } (`${device.id}/${c.name}`)}
+						<a href="/devices/{device.id}" class="text-muted hover:text-text">
+							{c.name} <span class="text-faint">→</span>
+							{c.update_to}
+						</a>
+					{/each}
+				{/if}
+				{#if unchecked}
+					<span class="text-xs text-faint">
+						{unchecked}
+						{unchecked === 1 ? "container's" : "containers'"} updates can't be checked
+					</span>
+				{/if}
+			</div>
 		{/if}
 	</section>
 

@@ -3,7 +3,7 @@
 	import { api, type Change, type Series } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { statusOf, uptimeOf } from '#lib/status.js';
-	import { ms, percent, stateFor } from '#lib/format.js';
+	import { ago, ms, percent, stateFor } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
@@ -16,6 +16,7 @@
 	import Check from '@lucide/svelte/icons/check';
 	import ActivityItem from '#lib/components/ActivityItem.svelte';
 	import ServicesTable from '#lib/components/ServicesTable.svelte';
+	import ContainersTable from '#lib/components/ContainersTable.svelte';
 
 	const id = $derived(page.params.id ?? '');
 	const device = $derived(store.byId.get(id));
@@ -202,6 +203,25 @@
 			rangeLabel={range.label}
 		/>
 	</div>
+
+	{#if device.containers || device.containers_error}
+		<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">
+			<h2 class="text-sm font-semibold">
+				Containers
+				{#if device.containers}<span class="tabular ml-1 font-normal text-faint">
+						{device.containers.length}
+					</span>{/if}
+			</h2>
+			<p class="text-xs text-muted">
+				{#if device.containers_error}
+					<span style:color="var(--warning-text)">{device.containers_error}</span>
+				{:else}
+					from WUD, {ago(device.containers_checked, store.now)}
+				{/if}
+			</p>
+		</div>
+		{#if device.containers}<ContainersTable containers={device.containers} />{/if}
+	{/if}
 
 	<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">
 		<section>

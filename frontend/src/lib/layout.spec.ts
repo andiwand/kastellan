@@ -14,6 +14,9 @@ const device = (id: string, parent: string | null = null): Device => ({
 	desktop: null,
 	driver: null,
 	info: null,
+	containers: null,
+	containers_checked: null,
+	containers_error: null,
 	state: 'unknown',
 	checks: []
 });

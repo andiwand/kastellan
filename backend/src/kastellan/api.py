@@ -94,6 +94,9 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "state": status.state if status else "unknown",
                     "driver": device.driver,
                     "info": status.info if status else None,
+                    "containers": status.containers if status else None,
+                    "containers_checked": status.containers_checked if status else None,
+                    "containers_error": status.containers_error if status else None,
                     "checks": [
                         check_view(check, status.checks.get(check.name) if status else None)
                         for check in device.checks

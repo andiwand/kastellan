@@ -43,6 +43,9 @@ class DeviceStatus:
     checks: dict[str, CheckStatus] = field(default_factory=dict)
     info: dict[str, Any] | None = None  # from the device's driver: model, name, firmware, ...
     info_checked: datetime | None = None
+    containers: list[dict[str, Any]] | None = None  # from docker.py
+    containers_checked: datetime | None = None
+    containers_error: str | None = None
 
     @property
     def state(self) -> State:
