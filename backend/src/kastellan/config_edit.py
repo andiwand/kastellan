@@ -91,17 +91,45 @@ def write(path: Path, backups: Path, old: str, new: str) -> None:
         Path(tmp).unlink(missing_ok=True)
 
 
-# Values that are secrets: masked in the audit log (which is kept for good).
-SECRET = re.compile(
-    r"^([+-]?\s*-?\s*(?:password|token|secret|\w*api_key|\w*_key|webhook|ntfy|smtp|url)\s*:\s*)\S.*$",
-    re.IGNORECASE,
-)
+# Keys whose values are secrets, and credentials inside URLs: masked in the audit log, which is
+# kept for good. Masked on the parsed YAML (any style: block, flow, multi-line), then diffed.
+SECRET_KEY = re.compile(r"^(password|token|secret|smtp|ntfy|webhook|\w*_key|\w*api_key)$", re.IGNORECASE)
+URL_LOGIN = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/@\s]*@", re.IGNORECASE)
+
+
+def _mask(node: Any) -> Any:
+    if isinstance(node, dict):
+        return {k: "***" if SECRET_KEY.match(str(k)) and v is not None else _mask(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_mask(v) for v in node]
+    if isinstance(node, str):
+        return URL_LOGIN.sub(r"\1***@", node)
+    return node
+
+
+def _masked_text(text: str) -> str | None:
+    try:
+        data = YAML(typ="safe").load(text) if text.strip() else {}
+    except Exception:
+        return None
+    out = io.StringIO()
+    y = YAML()
+    y.default_flow_style = False
+    y.width = 4096
+    y.dump(_mask(data), out)
+    return out.getvalue()
 
 
 def diff(old: str, new: str) -> str:
-    """What changed, for the audit log; secrets masked."""
-    lines = difflib.unified_diff(old.splitlines(), new.splitlines(), "before", "after", lineterm="", n=0)
-    return "\n".join(SECRET.sub(r"\1***", line) for line in lines)[:4000]
+    """What changed, for the audit log; secrets masked (on the parsed config, whatever style it
+    is written in). If either version can't be read, only that it changed."""
+    a, b = _masked_text(old), _masked_text(new)
+    if a is None or b is None:
+        return "(changed; a version couldn't be read, so the change isn't shown)"
+    if a == b:
+        return "(only secrets, comments or layout changed)" if old != new else ""
+    lines = difflib.unified_diff(a.splitlines(), b.splitlines(), "before", "after", lineterm="", n=0)
+    return "\n".join(lines)[:4000]
 
 
 # --- One device, from the forms ---------------------------------------------------------------

@@ -75,11 +75,22 @@ def router(hub: Hub) -> APIRouter:
         rot = rotator.state()
         if rot is None:
             return None
+        current = {id: sshkeys.login_of(d) for id, d in hub.config.devices.items() if d.ssh}
+        steps = {}
+        for id, s in rot.devices.items():
+            # As finish() sees it: done for the login the device has now (it may have changed).
+            steps[id] = vars(s) | {"current": current.get(id) == s.target}
         return {
             "started": rot.started,
             "stage": rot.stage,
             "finished": rot.finished,
-            "devices": {id: vars(s) for id, s in rot.devices.items()},
+            "devices": steps,
+            # Devices the new key isn't on (for their login now): Switch needs them, or "anyway".
+            "missing": sorted(
+                id
+                for id, login in current.items()
+                if not (id in rot.devices and rot.devices[id].added and rot.devices[id].target == login)
+            ),
         }
 
     @api.get("/ssh/keys")

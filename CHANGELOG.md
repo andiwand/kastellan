@@ -1,11 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-20)
 
+Changing things from the app: the config, devices, SSH keys. Editing needs sign-in on (add a
+user to config.yaml once) and a config folder the container's user can write. SSH key listing,
+removal and rotation are tested against a real shell, not yet on real devices.
+
+- "Last 24 hours" tells the day: outages and how long, short drops counted, many devices
+  unreachable at once as one entry (the hub or its network, not each device), when devices that
+  may be off were online, and software updates.
 - The graph shows networks: a zone per network (home, other sites, the internet), devices in
   two networks on the boundary between them (the router between home and the internet, found
-  by itself), a globe on what can be reached from the internet, and the ways in listed.
-  `networks:` names networks; `network:` puts a device in one or several.
+  by itself on Linux with host networking, as compose.yaml runs it), a globe on what can be
+  reached from the internet, and the ways in listed. `networks:` names networks; `network:`
+  puts a device in one or several.
 - More notification channels: Gotify, Telegram and e-mail (SMTP with TLS or STARTTLS).
 - SSH keys: every device's authorized_keys on its page (Kastellan's own marked), removing a
   key; rotating Kastellan's key from the new Access page (added and tried everywhere first,

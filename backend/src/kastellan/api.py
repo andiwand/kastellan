@@ -21,7 +21,8 @@ from .config_api import router as config_router
 from .desktop_api import router as desktop_router
 from .hub import Hub
 from .monitor import CheckStatus
-from .networks import Network, network_of, networks_of, public_ways
+from .networks import INTERNET, Network, network_of, networks_of, public_ways
+from .networks import Hub as NetHub
 from .settings import Settings
 from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
@@ -96,10 +97,13 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     def hub_network() -> Network | None:
         return network_of(hub.config, hub.own_address)
 
+    def hub_place() -> NetHub:
+        return NetHub(hub_network(), hub.own_v6)
+
     def where(device: Device, status: Any) -> dict[str, Any]:
         """Which networks the device is in, and its ways in from the internet (networks.py)."""
         address = hub.resolver.address(device.host)
-        nets = networks_of(hub.config, device, address, hub.gateway)
+        nets = networks_of(hub.config, device, address, hub.gateway, hub_place())
         assumed = False
         if not nets and not public_name(device.host) and (own := hub_network()):
             # A name only the network knows, which the hub couldn't resolve: most likely the
@@ -109,7 +113,9 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             "address": address,
             "networks": [n.view() for n in nets],
             "network_assumed": assumed,
-            "public_ways": public_ways(device, address, status.checks if status else {}),
+            "public_ways": public_ways(
+                device, any(n.id == INTERNET for n in nets), status.checks if status else {}
+            ),
         }
 
     @app.get("/api/networks")
@@ -176,6 +182,32 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         start = datetime.now(UTC) - timedelta(hours=hours)
         data = stats.series(hub.history.read(start, device=device), start, step, buckets)
         return {"start": start, "step_seconds": step.total_seconds(), "devices": data}
+
+    @app.get("/api/activity")
+    def activity(hours: float = 24, limit: int = 60) -> list[dict[str, Any]]:
+        """The day as a person would tell it (stats.activity): outages and how long, short drops
+        counted, many devices at once as one, when devices that may be off were on; and software
+        updates."""
+        now = datetime.now(UTC)
+        since = now - timedelta(hours=min(hours, 24 * 7))
+        rows = [r for r in hub.history.read(since) if r.device in hub.config.devices]
+        on = {id: bool(d.always_on) for id, d in hub.config.devices.items()}
+        short = timedelta(seconds=hub.config.alarms.down_after)
+        events = stats.activity(rows, on, now, short, gap=short)
+        events += [
+            {
+                "kind": "version",
+                "time": e["time"],
+                "device": e["device"],
+                "check": e["check"],
+                "from": e["from"],
+                "to": e["to"],
+                "end": e["time"],
+            }
+            for e in hub.versions.changes(since, None)
+        ]
+        events.sort(key=lambda e: e.get("end") or e.get("last") or now, reverse=True)
+        return events[:limit]
 
     @app.get("/api/changes")
     def changes(hours: float = 24, device: str | None = None, limit: int = 100) -> list[dict[str, Any]]:

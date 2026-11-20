@@ -9,7 +9,7 @@
 	import CircleCheck from '@lucide/svelte/icons/circle-check';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
-	import ActivityItem from '#lib/components/ActivityItem.svelte';
+	import ActivityEntryItem from '#lib/components/ActivityEntryItem.svelte';
 	import { api } from '#lib/api.js';
 
 	const devices = $derived(store.devices ?? []);
@@ -325,16 +325,14 @@
 		<section>
 			<h2 class="mb-3 text-sm font-semibold">Last 24 hours</h2>
 			<div class="card p-2">
-				{#if store.changes.length === 0}
+				{#if store.activity.length === 0}
 					<p class="px-3 py-6 text-center text-sm text-muted">
-						No ups and downs, no updates. A quiet day.
+						No outages, no updates. A quiet day.
 					</p>
 				{:else}
 					<ol class="max-h-[34rem] overflow-y-auto">
-						{#each store.changes.slice(0, 40) as change (`${change.kind}/${change.time}/${change.device}/${change.check}`)}
-							<li>
-								<ActivityItem {change} device={store.byId.get(change.device)} link />
-							</li>
+						{#each store.activity.slice(0, 40) as entry, i (i)}
+							<li><ActivityEntryItem {entry} /></li>
 						{/each}
 					</ol>
 				{/if}

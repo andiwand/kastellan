@@ -44,10 +44,10 @@ def test_on_the_boundary() -> None:
 
 def test_ways_in_from_the_internet() -> None:
     nas = CONFIG.devices["nas"]
-    ways = public_ways(nas, "192.168.15.20", {"public": CheckStatus(up=True, address="198.51.100.7")})
+    ways = public_ways(nas, False, {"public": CheckStatus(up=True, address="198.51.100.7")})
     assert ways == [{"check": "public", "target": "https://nas.example.org", "address": "198.51.100.7"}]
     vps = CONFIG.devices["vps"]
-    assert public_ways(vps, "203.0.113.20", {}) == []  # a ping is no way in
+    assert public_ways(vps, True, {}) == []  # a ping is no way in
 
 
 def test_unknown_network_names_are_refused() -> None:
@@ -55,3 +55,29 @@ def test_unknown_network_names_are_refused() -> None:
         Config.model_validate({"devices": {"x": {"host": "h", "network": "nowhere"}}})
     with pytest.raises(ValueError, match="cidr"):
         Config.model_validate({"networks": {"a": {"cidr": "not a net"}}})
+
+
+def test_ipv6_at_home_is_home() -> None:
+    from kastellan.networks import Hub, network_of
+
+    home = network_of(CONFIG, "192.168.15.10")
+    here = Hub(home, "2a02:8388:1:2::10")
+    assert network_of(CONFIG, "2a02:8388:1:2::99", here) == home  # the hub's /64
+    assert network_of(CONFIG, "2a02:8388:9:9::1", here).id == "internet"
+    dual = Config.model_validate({"devices": {"tv": {"host": "2a02:8388:1:2::99", "checks": [{"tcp": 80}]}}})
+    assert public_ways(dual.devices["tv"], False, {}) == []  # its own global address: no way in
+
+
+async def test_a_bad_name_doesnt_stop_the_others() -> None:
+    from kastellan.networks import Resolver
+
+    r = Resolver()
+    await r.refresh({"nas..lan", "localhost", "x" * 70 + ".lan"})
+    assert r.address("localhost") in ("127.0.0.1", "::1") and r.address("nas..lan") is None
+
+
+def test_network_ids() -> None:
+    with pytest.raises(ValueError, match="built in"):
+        Config.model_validate({"networks": {"internet": {}}})
+    d = Config.model_validate({"networks": {"a": {}}, "devices": {"x": {"host": "h", "network": ["a", "a"]}}})
+    assert d.devices["x"].network == ["a"]

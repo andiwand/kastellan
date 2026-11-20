@@ -238,10 +238,13 @@
 	</div>
 
 	{#if store.me?.role === 'admin'}
-		<AccessSetup device={device.id} canSetUp={!!store.me.user} />
-		{#if device.ssh}
-			<DeviceKeys device={device.id} canChange={!!store.me.user} />
-		{/if}
+		<!-- Keyed: going from one device's page to another's starts these afresh. -->
+		{#key device.id}
+			<AccessSetup device={device.id} canSetUp={!!store.me.user} />
+			{#if device.ssh}
+				<DeviceKeys device={device.id} canChange={!!store.me.user} />
+			{/if}
+		{/key}
 	{/if}
 
 	{#if device.vulns}

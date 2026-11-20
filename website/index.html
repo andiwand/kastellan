@@ -196,7 +196,7 @@
       <ul>
         <li><svg><use href="#i-radar"/></svg><div><b>Reachability checks</b><span>Ping, TCP ports and HTTP for every device and service.</span></div></li>
         <li><svg><use href="#i-file"/></svg><div><b>History</b><span>Uptime and response time per check, kept as daily CSV files.</span></div></li>
-        <li><svg><use href="#i-network"/></svg><div><b>List and graph</b><span>Every device as a list, or as a graph of how it is connected.</span></div></li>
+        <li><svg><use href="#i-network"/></svg><div><b>List and networks</b><span>Every device as a list, or by network: home, other sites, and what the internet can reach.</span></div></li>
         <li><svg><use href="#i-desktop"/></svg><div><b>Demo mode</b><span>A made-up network to try everything without touching yours.</span></div></li>
       </ul>
     </div>
@@ -246,7 +246,7 @@
   <div class="code">
     <div class="code-bar"><span>Terminal</span><button class="copy" data-copy="run" type="button">Copy</button></div>
 <pre id="run"><code>docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 \
-  ghcr.io/andiwand/kastellan:0.1.0
+  ghcr.io/andiwand/kastellan:0.2.0
 <span class="c"># then open http://localhost:8100</span></code></pre>
   </div>
 </section>

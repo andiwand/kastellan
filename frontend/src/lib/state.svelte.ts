@@ -2,7 +2,7 @@ import {
 	api,
 	SignedOut,
 	type Alarms,
-	type Change,
+	type ActivityEntry,
 	type Device,
 	type Health,
 	type Me,
@@ -14,7 +14,7 @@ class Store {
 	devices = $state<Device[] | null>(null);
 	health = $state<Health | null>(null);
 	series = $state<Series | null>(null);
-	changes = $state<Change[]>([]);
+	activity = $state<ActivityEntry[]>([]);
 	alarms = $state<Alarms | null>(null);
 	error = $state<string | null>(null);
 	/** Who is signed in; null until the hub has answered. */
@@ -68,7 +68,7 @@ class Store {
 	clear() {
 		this.devices = null;
 		this.series = null;
-		this.changes = [];
+		this.activity = [];
 		this.alarms = null;
 	}
 
@@ -84,9 +84,9 @@ class Store {
 	async refreshHistory() {
 		if (this.me?.signin && !this.me.user) return;
 		try {
-			[this.series, this.changes, this.alarms] = await Promise.all([
+			[this.series, this.activity, this.alarms] = await Promise.all([
 				api.series(24, 48),
-				api.changes(24),
+				api.activity(24),
 				api.alarms()
 			]);
 		} catch {

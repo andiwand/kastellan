@@ -292,6 +292,11 @@ class Rotation:
         os.replace(temp, path)
 
 
+def login_of(device: Device) -> str:
+    """The login a rotation step was done for: user@host:port."""
+    return _login(device)
+
+
 def _login(device: Device) -> str:
     t = target_of(device)
     return f"{t.user}@{t.host}:{t.port}"

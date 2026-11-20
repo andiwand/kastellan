@@ -312,4 +312,16 @@ def test_the_audit_diff_masks_secrets() -> None:
     d = config_edit.diff(old, new)
     for secret in ("tk_abc", "tk_def", "k1", "k2", "secret-topic", "other-topic"):
         assert secret not in d
-    assert "token: ***" in d
+    assert d == "(only secrets, comments or layout changed)"
+
+
+def test_masking_any_yaml_style() -> None:
+    old = "users:\n  me: {role: admin, password: scrypt$old}\nnotify:\n  - {email: a@b.c, smtp: 'smtps://u:hunter2@m.example'}\n"
+    new = (
+        "users:\n  me: {role: admin, password: scrypt$new}\nnotify:\n  - email: a@b.c\n    smtp: >-\n"
+        "      smtps://u:hunter3@m.example\ndevices:\n  x:\n    host: h\n    checks:\n      - http: https://admin:pw@h/\n"
+    )
+    d = config_edit.diff(old, new)
+    for secret in ("scrypt$old", "scrypt$new", "hunter2", "hunter3", "admin:pw"):
+        assert secret not in d
+    assert "https://***@h/" in d

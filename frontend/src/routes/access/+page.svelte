@@ -41,7 +41,8 @@
 
 	const rot = $derived(keys?.rotation && keys.rotation.stage !== 'done' ? keys.rotation : null);
 	const name = (id: string) => store.byId.get(id)?.name ?? id;
-	const missing = $derived(rot && keys ? keys.devices.filter((id) => !rot.devices[id]?.added) : []);
+	// As the hub decides it (a device whose login changed needs the key again).
+	const missing = $derived(rot?.missing ?? []);
 	const canChange = $derived(store.me?.role === 'admin' && !!store.me.user);
 	const button =
 		'inline-flex h-9 items-center gap-1.5 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card hover:border-line-strong disabled:opacity-50';
@@ -107,7 +108,10 @@
 			<ul class="mt-4 divide-y divide-line rounded-xl border border-line">
 				{#each keys.devices as id (id)}
 					{@const step = rot.devices[id]}
-					{@const ok = rot.stage === 'adding' ? step?.added : step?.removed}
+					{@const ok =
+						rot.stage === 'adding'
+							? step?.added && step.current && !missing.includes(id)
+							: step?.removed}
 					<li class="flex items-start gap-2 px-3 py-2 text-sm">
 						{#if ok}<Check
 								class="mt-0.5 size-4 shrink-0"
@@ -117,9 +121,11 @@
 							<a href="/devices/{id}" class="font-medium hover:underline">{name(id)}</a>
 							<span class="text-muted">
 								· {rot.stage === 'adding'
-									? step?.added
-										? 'has the new key, and it works'
-										: (step?.error ?? 'not tried yet')
+									? step?.added && !step.current
+										? 'its login changed since: needs the new key again'
+										: step?.added
+											? 'has the new key, and it works'
+											: (step?.error ?? 'not tried yet')
 									: step?.removed
 										? 'old key removed'
 										: (step?.error ?? 'old key still there')}
@@ -171,6 +177,8 @@
 			</div>
 		{/if}
 	</section>
+{:else if store.me && store.me.role !== 'admin'}
+	<p class="mt-6 text-sm text-muted">Only admins see Kastellan's keys.</p>
 {:else if !error}
 	<p class="mt-6 text-sm text-muted">Loading…</p>
 {/if}

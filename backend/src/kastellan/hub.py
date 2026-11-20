@@ -108,6 +108,7 @@ class Hub:
         self.resolver = Resolver()
         self.own_address: str | None = None  # the hub's address on its network
         self.gateway: str | None = None  # its default gateway: on the boundary to the internet
+        self.own_v6: str | None = None  # its IPv6 address, if it has one
 
     def reload(self) -> None:
         """Read config.yaml. An invalid file keeps the last good config and reports the error.
@@ -277,16 +278,18 @@ class Hub:
             hosts = frozenset(d.host for d in self.config.devices.values())
             now = asyncio.get_running_loop().time()
             if hosts != seen or now - last > RESOLVE_EVERY:
-                try:
-                    if self.demo:  # the made-up network has made-up addresses
-                        self.resolver.addresses = demo.addresses(set(hosts))
-                        self.own_address, self.gateway = demo.HUB_ADDRESS, demo.GATEWAY
-                    else:
+                if self.demo:  # the made-up network has made-up addresses
+                    self.resolver.addresses = demo.addresses(set(hosts))
+                    self.own_address, self.gateway = demo.HUB_ADDRESS, demo.GATEWAY
+                else:
+                    # Each on its own: one failing doesn't keep the others from being known.
+                    try:
                         await self.resolver.refresh(set(hosts))
-                        self.own_address = await asyncio.to_thread(hub_address, "1.1.1.1", 53)
-                        self.gateway = default_gateway()
-                except Exception:
-                    log.exception("resolving device names failed")
+                    except Exception:
+                        log.exception("resolving device names failed")
+                    self.own_address = await asyncio.to_thread(hub_address, "1.1.1.1", 53)
+                    self.own_v6 = await asyncio.to_thread(hub_address, "2606:4700:4700::1111", 53)
+                    self.gateway = default_gateway()
                 seen, last = hosts, now
             await asyncio.sleep(5)
 

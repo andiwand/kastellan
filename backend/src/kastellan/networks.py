@@ -92,13 +92,38 @@ def _by_address(config: Config, ip: ipaddress.IPv4Address | ipaddress.IPv6Addres
 THE_INTERNET = Network(INTERNET, "Internet", None, False)
 
 
-def network_of(config: Config, address: str | None) -> Network | None:
+@dataclass(frozen=True)
+class Hub:
+    """Where the hub is: its network (from its IPv4 address) and its IPv6 address, if any; a
+    global IPv6 address in the same /64 as the hub's is at home, not on the internet."""
+
+    network: Network | None = None
+    v6: str | None = None
+
+
+def network_of(config: Config, address: str | None, hub: Hub | None = None) -> Network | None:
     """The network an address is in, or None."""
     ip = _ip(address)
-    return _by_address(config, ip) if ip else None
+    if ip is None:
+        return None
+    if (
+        ip.version == 6
+        and hub
+        and hub.network
+        and hub.v6
+        and not any(
+            n.cidr and ip in ipaddress.ip_network(n.cidr, strict=False) for n in config.networks.values()
+        )
+    ):
+        own = ipaddress.ip_network(f"{hub.v6}/64", strict=False)
+        if ip in own:
+            return hub.network
+    return _by_address(config, ip)
 
 
-def networks_of(config: Config, device: Device, address: str | None, gateway: str | None) -> list[Network]:
+def networks_of(
+    config: Config, device: Device, address: str | None, gateway: str | None, hub: Hub | None = None
+) -> list[Network]:
     """Every network a device is in: those config.yaml names for it, else the one of its address;
     and the internet for the hub's gateway (the router the way out goes through), which sits on
     the boundary between home and the internet."""
@@ -110,7 +135,7 @@ def networks_of(config: Config, device: Device, address: str | None, gateway: st
             n = config.networks[id]
             out.append(Network(id, n.name or id, n.cidr, True))
     if not device.network:
-        own = network_of(config, address)
+        own = network_of(config, address, hub)
         if own:
             out.append(own)
     if gateway and address and _ip(gateway) == _ip(address) and THE_INTERNET not in out:
@@ -118,14 +143,19 @@ def networks_of(config: Config, device: Device, address: str | None, gateway: st
     return out
 
 
-def public_ways(device: Device, address: str | None, statuses: dict[str, Any]) -> list[dict[str, Any]]:
-    """The checks that reach this device from the internet's side: by a public name or address."""
+def public_ways(device: Device, on_internet: bool, statuses: dict[str, Any]) -> list[dict[str, Any]]:
+    """The checks that reach this device from the internet's side: by a public name, or by an
+    address on the internet. Checks of the device's own address count only when the device is on
+    the internet (a home IPv6 address is global, yet no way in)."""
     out = []
     for check in device.checks:
         if check.type == "ping":
             continue  # not a service: no way in
         target = _target_host(device, check)
-        if not (public_name(target) or is_public(target)):
+        if target == device.host:
+            if not on_internet:
+                continue
+        elif not (public_name(target) or is_public(target)):
             continue
         status = statuses.get(check.name)
         out.append(
@@ -170,11 +200,18 @@ class Resolver:
         async def one(host: str) -> tuple[str, str | None]:
             if _ip(host):
                 return host, host.strip("[]")
-            try:
-                infos = await asyncio.wait_for(loop.getaddrinfo(host, None, type=socket.SOCK_STREAM), 5)
-            except (OSError, TimeoutError):
-                return host, None
-            return host, str(infos[0][4][0]) if infos else None
+            # IPv4 first: a home device's IPv4 address says which network it is in; its IPv6
+            # one is often global. Any error (a name IDNA refuses, too slow) is just "unknown".
+            for family in (socket.AF_INET, socket.AF_UNSPEC):
+                try:
+                    infos = await asyncio.wait_for(
+                        loop.getaddrinfo(host, None, family=family, type=socket.SOCK_STREAM), 5
+                    )
+                except Exception:
+                    continue
+                if infos:
+                    return host, str(infos[0][4][0])
+            return host, None
 
         found = await asyncio.gather(*(one(h) for h in hosts))
         self.addresses = dict(found)

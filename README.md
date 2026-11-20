@@ -21,7 +21,9 @@ drivers, updates, backups). See [PLAN.md](PLAN.md).
   (home, a second site, the internet), devices in two networks on the boundary between them
   (your router between home and the internet), and a globe on what can be reached from the
   internet, with every way in listed (a public name, and the device it leads to). Networks come
-  from the addresses; name them, or put a device in several, in config.yaml:
+  from the addresses; name them, or put a device in several, in config.yaml. The router is put
+  on the boundary to the internet by itself when Kastellan runs on Linux with host networking
+  (as compose.yaml does); elsewhere say `network: [home, internet]` on it:
 
   ```yaml
   networks:
@@ -48,7 +50,7 @@ drivers, updates, backups). See [PLAN.md](PLAN.md).
 With Docker, the demo in one line:
 
 ```sh
-docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 ghcr.io/andiwand/kastellan:0.1.0
+docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 ghcr.io/andiwand/kastellan:0.2.0
 ```
 
 From a checkout, with [uv](https://docs.astral.sh/uv/) and Node.js 24:

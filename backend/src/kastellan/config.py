@@ -183,6 +183,8 @@ class Device(BaseModel):
     def _one_network(cls, data: Any) -> Any:
         if isinstance(data, dict) and isinstance(data.get("network"), str):
             data = {**data, "network": [data["network"]]}
+        if isinstance(data, dict) and isinstance(data.get("network"), list):
+            data = {**data, "network": list(dict.fromkeys(data["network"]))}  # once each
         return data
 
     checks: list[Check] = Field(default_factory=lambda: [Check(type=CheckType.PING)])
@@ -377,6 +379,12 @@ class Config(BaseModel):
     vulns: VulnSettings = Field(default_factory=VulnSettings)
     vpn: VpnSettings = Field(default_factory=VpnSettings)
     networks: dict[str, NetworkSettings] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _network_ids(self) -> Self:
+        if "internet" in self.networks:
+            raise ValueError("networks: internet is built in; give your network another id")
+        return self
 
     @model_validator(mode="after")
     def _vpn_devices(self) -> Self:

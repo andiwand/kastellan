@@ -250,6 +250,7 @@ export interface RotationStep {
 	added: boolean;
 	removed: boolean;
 	error: string | null;
+	current: boolean; // done for the login the device has now
 }
 
 export interface Rotation {
@@ -257,6 +258,7 @@ export interface Rotation {
 	stage: 'adding' | 'removing' | 'done';
 	finished: string | null;
 	devices: Record<string, RotationStep>;
+	missing: string[]; // devices the new key isn't on (for their login now)
 }
 
 export interface HubKeys {
@@ -267,6 +269,21 @@ export interface HubKeys {
 	rotation: Rotation | null;
 	devices: string[]; // with an ssh: login
 }
+
+/** The day as a person would tell it (stats.activity on the hub). */
+export type ActivityEntry =
+	| {
+			kind: 'outage';
+			device: string;
+			check: string;
+			start: string;
+			end: string | null;
+			detail: string;
+	  }
+	| { kind: 'blips'; device: string; check: string; count: number; last: string }
+	| { kind: 'together'; start: string; end: string | null; devices: string[]; count: number }
+	| { kind: 'online'; device: string; start: string | null; end: string | null }
+	| { kind: 'version'; device: string; check: string; time: string; from: string; to: string };
 
 /** The hub answered 401: nobody is signed in (or the session ended). */
 export class SignedOut extends Error {}
@@ -362,6 +379,7 @@ export const api = {
 			`/devices/${encodeURIComponent(id)}${version ? `?version=${encodeURIComponent(version)}` : ''}`
 		),
 	networks: () => get<Networks>('/networks'),
+	activity: (hours = 24) => get<ActivityEntry[]>('/activity', { hours }),
 	hubKeys: () => get<HubKeys>('/ssh/keys'),
 	deviceKeys: (id: string) =>
 		get<{ everyone: boolean; login: string; keys: AuthorizedKey[] }>(

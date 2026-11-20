@@ -18,7 +18,10 @@
 	let { devices, matching }: { devices: Device[]; matching: Set<string> | null } = $props();
 
 	let networks = $state<Networks | null>(null);
+	// Fetched again with each refresh of the devices: right after the hub starts, its own
+	// address isn't known yet.
 	$effect(() => {
+		void devices;
 		api
 			.networks()
 			.then((n) => (networks = n))
@@ -37,7 +40,11 @@
 		devices: Device[];
 	}
 
-	// Zones top to bottom: the internet, the hub's network, other networks, the unresolved.
+	const zoneIds = (d: Device) => (d.networks.length ? d.networks.map((n) => n.id) : [UNKNOWN.id]);
+
+	// Zones top to bottom: the internet, the hub's network, then the others, each one next to a
+	// zone it shares a device with where it can (a site's router between it and the internet
+	// can't always be: then it shows inside its site, "also Internet").
 	const zones = $derived.by(() => {
 		const byId = new Map<string, NetworkRef>();
 		for (const d of devices) for (const n of d.networks) byId.set(n.id, n);
@@ -48,9 +55,25 @@
 		const hub = networks?.hub?.id;
 		const rank = (n: NetworkRef) =>
 			n.id === 'internet' ? 0 : n.id === hub ? 1 : n.id === UNKNOWN.id ? 3 : 2;
-		return [...byId.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+		const rest = [...byId.values()].sort(
+			(a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)
+		);
+		const linked = (a: string, b: string) =>
+			devices.some((d) => {
+				const ids = zoneIds(d);
+				return ids.includes(a) && ids.includes(b);
+			});
+		const order: NetworkRef[] = [];
+		while (rest.length) {
+			const last = order[order.length - 1];
+			// The next of the same rank that shares a device with the last one, else the next.
+			const i = last
+				? rest.findIndex((n) => rank(n) === rank(rest[0]) && linked(last.id, n.id))
+				: -1;
+			order.push(...rest.splice(i >= 0 ? i : 0, 1));
+		}
+		return order;
 	});
-	const zoneIds = (d: Device) => (d.networks.length ? d.networks.map((n) => n.id) : [UNKNOWN.id]);
 
 	// Each device in two or more zones goes on one boundary: between the two of its zones that
 	// are next to each other (or, if none are, above the lowest of them).
@@ -66,7 +89,13 @@
 			}
 			const idx = ids.map((id) => order.indexOf(id)).sort((a, b) => a - b);
 			const pair = idx.findIndex((v, i) => i > 0 && v === idx[i - 1] + 1);
-			const below = pair > 0 ? idx[pair] : idx[idx.length - 1];
+			if (pair < 0) {
+				// Its zones aren't next to each other: inside the lowest local one, "also ...".
+				const local = idx.filter((i) => order[i] !== 'internet');
+				inside.get(order[local[local.length - 1] ?? idx[0]])?.push(d);
+				continue;
+			}
+			const below = idx[pair];
 			const key = `${order[below - 1]}|${order[below]}`;
 			const b = boundaries.get(key) ?? {
 				above: order[below - 1],
@@ -229,7 +258,15 @@
 					style="grid-template-columns: repeat(auto-fill, minmax(212px, 1fr));"
 				>
 					{#each layout.inside.get(net.id) ?? [] as d (d.id)}
-						{@render node(d, d.network_assumed ? 'name not resolved' : '')}
+						{@const others = otherZones(d, [net.id])}
+						{@render node(
+							d,
+							d.network_assumed
+								? 'name not resolved'
+								: others.length
+									? `also ${others.join(', ')}`
+									: ''
+						)}
 					{/each}
 				</div>
 			{:else if !(net.id === 'internet' && ways.length)}
