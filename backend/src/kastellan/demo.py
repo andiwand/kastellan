@@ -74,6 +74,7 @@ CONFIG = {
             "parent": "switch",
             "tags": ["docker", "proxmox"],
             "docker": {"wud": "http://homeserver.lan:3000"},
+            "collect": {},
             "checks": [
                 "ping",
                 {"tcp": 22, "name": "ssh"},
@@ -230,6 +231,98 @@ CONTAINERS = {
 def config() -> Config:
     return Config.model_validate(CONFIG)
 
+
+# What the home server's collector reports (host/collector.py), made up.
+HOST = {
+    "homeserver": {
+        "version": 1,
+        "errors": {},
+        "system": {
+            "hostname": "homeserver",
+            "kernel": "6.8.0-49-generic",
+            "uptime": 1_830_000.0,
+            "load": [0.42, 0.51, 0.48],
+            "cpus": 8,
+            "memory": {"total": 32 * 2**30, "available": 21 * 2**30},
+            "swap": {"total": 8 * 2**30, "free": 8 * 2**30},
+        },
+        "filesystems": [
+            {
+                "mount": "/",
+                "device": "/dev/nvme0n1p2",
+                "type": "ext4",
+                "total": 500e9,
+                "used": 212e9,
+                "available": 263e9,
+            },
+            {
+                "mount": "/srv/media",
+                "device": "/dev/md0",
+                "type": "ext4",
+                "total": 8e12,
+                "used": 7.0e12,
+                "available": 0.6e12,
+            },
+        ],
+        "raid": [
+            {
+                "name": "md0",
+                "active": True,
+                "level": "raid1",
+                "devices": ["sda", "sdb"],
+                "failed": [],
+                "status": "UU",
+                "progress": None,
+            }
+        ],
+        "smart": {
+            "available": True,
+            "disks": [
+                {
+                    "disk": "nvme0n1",
+                    "model": "Samsung SSD 980 1TB",
+                    "passed": True,
+                    "temperature": 41,
+                    "power_on_hours": 18_200,
+                    "nvme_used_percent": 4,
+                    "nvme_media_errors": 0,
+                },
+                {
+                    "disk": "sda",
+                    "model": "WDC WD80EFZZ",
+                    "passed": True,
+                    "temperature": 36,
+                    "power_on_hours": 26_000,
+                    "reallocated": 0,
+                    "pending": 0,
+                    "uncorrectable": 0,
+                },
+                {
+                    "disk": "sdb",
+                    "model": "WDC WD80EFZZ",
+                    "passed": True,
+                    "temperature": 37,
+                    "power_on_hours": 26_000,
+                    "reallocated": 0,
+                    "pending": 0,
+                    "uncorrectable": 0,
+                },
+            ],
+        },
+        "temperatures": [
+            {"sensor": "k10temp Tctl", "celsius": 48.0, "limit": None},
+            {"sensor": "nvme Composite", "celsius": 41.0, "limit": 82.0},
+        ],
+        "services": {"failed": []},
+        "updates": {
+            "reboot": True,
+            "reboot_for": ["linux-image-6.8.0-51-generic"],
+            "available": 3,
+            "security": 1,
+        },
+        "docker": None,
+    }
+}
 
 HUB_ADDRESS = "192.168.178.5"
 GATEWAY = "192.168.178.1"  # the FRITZ!Box

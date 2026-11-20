@@ -56,7 +56,12 @@ _make_lock = threading.Lock()
 class Keys:
     # The hub's keys: "hub" for terminals and installs, "vpn" only for the restricted VPN scripts
     # (bound with command= where they are installed; separate so binding it takes nothing away).
-    NAMES: ClassVar[dict[str, str]] = {"hub": "hub_ed25519", "vpn": "vpn_ed25519"}
+    NAMES: ClassVar[dict[str, str]] = {
+        "hub": "hub_ed25519",
+        "vpn": "vpn_ed25519",
+        "collect": "collect_ed25519",  # the read-only collector (host/collector.py)
+        "act": "act_ed25519",  # the actor's abilities (host/actor.py)
+    }
 
     def __init__(self, folder: Path) -> None:
         self.folder = folder
@@ -238,7 +243,7 @@ class Keys:
                     agent_path=None,  # only the hub's own key, never the agent of whoever runs it
                     password=password,
                     kbdint_auth=bool(password),  # PAM often asks for passwords that way
-                    preferred_auth="password" if password else "publickey",
+                    preferred_auth="keyboard-interactive,password" if password else "publickey",
                 ),
                 CONNECT_TIMEOUT,
             )

@@ -195,31 +195,35 @@ def _deepest_last(node: Any) -> tuple[Any, Any, int] | None:
     return found
 
 
-def _take_tail(node: Any) -> tuple[str, str]:
-    """Take the comment after the last value under `node`: (its own end-of-line comment, what
-    follows on the next lines: blank lines, the next thing's header)."""
+def _take_tail(node: Any) -> str:
+    """Take what follows the last value under `node` on the next lines (blank lines, the next
+    thing's header comment). Its own end-of-line comment stays where it is: on its line."""
     where = _deepest_last(node)
     if where is None:
-        return "", ""
+        return ""
     container, key, slot = where
     slots = container.ca.items.get(key)
     token = slots[slot] if slots and len(slots) > slot else None
     if token is None:
-        return "", ""
-    slots[slot] = None
+        return ""
     eol, _, rest = token.value.partition("\n")
-    return eol, rest
+    if eol.strip():
+        token.value = eol + "\n"
+    else:
+        slots[slot] = None
+    return rest
 
 
-def _put_tail(node: Any, eol: str, rest: str) -> None:
+def _put_tail(node: Any, rest: str) -> None:
+    """Put `rest` after the last value under `node` (after its own end-of-line comment)."""
     where = _deepest_last(node)
-    if where is None or not (eol.strip() or rest):
+    if where is None or not rest:
         return
     container, key, slot = where
     slots = container.ca.items.setdefault(key, [None, None, None, None] if slot == 2 else [None, None])
     old = slots[slot]
     own = old.value.partition("\n")[0] if old is not None else ""
-    text = (own or eol) + "\n" + rest
+    text = own + "\n" + rest
     if old is not None:
         old.value = text
     else:
@@ -292,11 +296,11 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
             raise KeyError(id)
         ids = list(devices)
         before = ids[ids.index(id) - 1] if ids.index(id) > 0 else None
-        _, rest = _take_tail(devices[id])  # the next device's header, or what precedes users:
+        rest = _take_tail(devices[id])  # the next device's header, or what precedes users:
         if before is not None:
-            eol, _ = _take_tail(devices[before])  # drop the deleted device's own header
+            _take_tail(devices[before])  # the deleted device's own header goes with it
             del devices[id]
-            _put_tail(devices[before], eol, rest)
+            _put_tail(devices[before], rest)
         else:
             del devices[id]
             if len(devices) and rest.strip():
@@ -306,9 +310,9 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
                 )
         for other in devices.values():  # nothing may hang off a device that is gone
             if isinstance(other, CommentedMap) and other.get("parent") == id:
-                eol, rest = _take_tail(other)
+                rest = _take_tail(other)
                 del other["parent"]
-                _put_tail(other, eol, rest)
+                _put_tail(other, rest)
     else:
         if new and id in devices:
             raise ValueError(f"there is a device {id!r} already")
@@ -316,11 +320,8 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
             raise KeyError(id)
         if new:
             last = list(devices)[-1] if len(devices) else None
-            eol, rest = _take_tail(devices[last]) if last is not None else ("", "")
+            tail = _take_tail(devices[last]) if last is not None else ""
             devices[id] = CommentedMap()
-            if last is not None:
-                _put_tail(devices[last], eol, "")
-            tail = ("", rest)
         device = devices[id]
         if not isinstance(device, CommentedMap):
             device = devices[id] = CommentedMap()
@@ -340,7 +341,33 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
                 _place(device, key, tags)
             else:
                 _place(device, key, value)
-        _put_tail(device, *tail)
+        _put_tail(device, tail)
+    out = io.StringIO()
+    y.dump(doc, out)
+    return _keep_gaps(text, out.getvalue())
+
+
+def set_device_key(text: str, id: str, key: str, value: Any) -> str:
+    """config.yaml with one key of a device set (e.g. collect: after installing the collector),
+    everything else as it was."""
+    y = _yaml()
+    doc = y.load(text)
+    device = (doc or {}).get("devices", {}).get(id) if isinstance(doc, CommentedMap) else None
+    if not isinstance(device, CommentedMap):
+        raise KeyError(id)
+    tail = _take_tail(device)
+    node: Any = value
+    if isinstance(value, dict):
+        node = CommentedMap(value)
+        if not value:
+            node.fa.set_flow_style()
+    if key in device:
+        device[key] = node
+    else:
+        keys = list(device)
+        pos = keys.index("checks") if "checks" in keys else len(keys)
+        device.insert(pos, key, node)
+    _put_tail(device, tail)
     out = io.StringIO()
     y.dump(doc, out)
     return _keep_gaps(text, out.getvalue())

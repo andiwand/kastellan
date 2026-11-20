@@ -13,12 +13,14 @@ from fastapi.responses import FileResponse
 
 from . import __version__, checks, stats
 from .access_api import router as access_router
+from .act_api import router as act_router
 from .alarms_api import router as alarms_router
 from .auth_api import Guard
 from .auth_api import router as auth_router
 from .config import Check, Device
 from .config_api import router as config_router
 from .desktop_api import router as desktop_router
+from .host_api import router as host_router
 from .hub import Hub
 from .monitor import CheckStatus
 from .networks import INTERNET, Network, network_of, networks_of, public_ways
@@ -58,6 +60,8 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(access_router(hub))
     app.include_router(config_router(hub))
     app.include_router(sshkeys_router(hub))
+    app.include_router(host_router(hub))
+    app.include_router(act_router(hub))
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:
@@ -156,6 +160,11 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "containers_checked": status.containers_checked if status else None,
                     "containers_error": status.containers_error if status else None,
                     "vulns": status.vulns if status else None,
+                    "collect": device.collect is not None,
+                    "act": device.act is not None,
+                    "host_report": status.host if status else None,
+                    "host_checked": status.host_checked if status else None,
+                    "host_error": status.host_error if status else None,
                     "exposed": device.exposed,
                     **where(device, status),
                     "checks": [

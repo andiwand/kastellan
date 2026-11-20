@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -49,6 +50,9 @@ def device():
             return (username, password) == ("andreas", "hunter2")
 
     async def handle(process: asyncssh.SSHServerProcess) -> None:
+        if process.command == "sudo -n true":  # no passwordless sudo here: it asks for one
+            process.exit(1)
+            return
         ran.append((process.command or "", await process.stdin.read()))
         process.stdout.write("Kastellan can log in as kastellan.\n")
         process.exit(0)
@@ -99,7 +103,12 @@ def test_set_up_with_a_password_once(tmp_path: Path, device) -> None:
         body["password"] = "hunter2"
         r = c.post("/api/devices/sv1/access/setup", json=body, headers=H)
         assert r.status_code == 200, r.text
-        assert r.json()["config"] == f"ssh:\n  user: kastellan\n  port: {port}"
+        # The output streams; the last line is the outcome.
+        lines = r.text.splitlines()
+        assert lines[0] == "Kastellan can log in as kastellan."
+        done = json.loads(lines[-1].removeprefix("KASTELLAN-DONE "))
+        assert done["ok"] and done["config"] == f"ssh:\n  user: kastellan\n  port: {port}"
+        assert hub.config.devices["sv1"].ssh.user == "kastellan"  # in config.yaml now
         [(command, stdin)] = ran
         assert command.startswith("sudo -S -p '' sh -c ") and "useradd" in command  # not root: through sudo
         assert stdin == "hunter2\n"  # the password reaches sudo, nothing else
@@ -135,3 +144,75 @@ def test_key_written_as_the_user(tmp_path: Path) -> None:
     # dropbear (OpenWrt) gets the plain line: it would refuse from=
     assert "line='ssh-ed25519 AAAA k'; else line='from=" in bob
     assert setup_script("john.doe", "k", None, False, True).count("/etc/sudoers.d/kastellan-john_doe") >= 1
+
+
+def test_installing_the_collector(tmp_path: Path, device) -> None:
+    port, host_key, ran = device
+    config = tmp_path / "config.yaml"
+    users = f"users:\n  ada:\n    role: admin\n    password: {HASH}\n"
+    config.write_text("devices:\n  sv1:\n    host: 127.0.0.1 # SV1\n" + users)
+    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
+        c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=H)
+        hub = c.app.state.hub
+        hub.keys.known_hosts.parent.mkdir(parents=True, exist_ok=True)
+        hub.keys.known_hosts.write_text(
+            f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n"
+        )
+
+        setup = c.get("/api/devices/sv1/collect").json()
+        assert setup["state"] == "off" and "kastellan-collect" in setup["script"]
+        assert (
+            hub.keys.public_key("collect") in setup["script"] and hub.keys.public_key() not in setup["script"]
+        )
+
+        body = {"login": "andreas", "password": "hunter2", "port": port}
+        r = c.post("/api/devices/sv1/collect/install", json=body, headers=H)
+        assert r.status_code == 200, r.text
+        [(command, stdin)] = ran
+        assert command.startswith("sudo -S -p '' sh -c ") and "/usr/local/lib/kastellan/collect" in command
+        assert stdin == "hunter2\n"
+        # Kastellan reads it from now on: collect: added, the rest of the file as it was.
+        text = config.read_text()
+        assert f"host: 127.0.0.1 # SV1\n    collect:\n      port: {port}\n" in text
+        assert hub.config.devices["sv1"].collect is not None
+        log = (tmp_path / "data" / "audit.log").read_text()
+        assert "collect.install" in log and "hunter2" not in log
+
+
+def test_installing_the_actor(tmp_path: Path, device) -> None:
+    port, host_key, ran = device
+    config = tmp_path / "config.yaml"
+    users = f"users:\n  ada:\n    role: admin\n    password: {HASH}\n"
+    config.write_text("devices:\n  sv1:\n    host: 127.0.0.1\n" + users)
+    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
+        c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=H)
+        hub = c.app.state.hub
+        hub.keys.known_hosts.parent.mkdir(parents=True, exist_ok=True)
+        hub.keys.known_hosts.write_text(
+            f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n"
+        )
+        # Nothing to act through yet.
+        assert c.post("/api/devices/sv1/act/reboot", json={}, headers=H).status_code == 409
+        choice = {"abilities": ["update-container"], "containers": ["norn"]}
+        preview = c.post("/api/devices/sv1/act/script", json=choice, headers=H).json()
+        assert preview["configured"] is False and "act/update-container *" in preview["script"]
+        assert "act/reboot" in preview["script"]  # only to remove it: "rm -f ..."
+        assert (
+            c.post("/api/devices/sv1/act/script", json={"abilities": ["format-disk"]}, headers=H).status_code
+            == 400
+        )
+
+        r = c.post(
+            "/api/devices/sv1/act/install",
+            json=choice | {"login": "andreas", "password": "hunter2", "port": port},
+            headers=H,
+        )
+        assert r.status_code == 200, r.text
+        [(command, stdin)] = ran
+        assert (
+            command.startswith("sudo -S -p '' sh -c ") and "/usr/local/lib/kastellan/act/dispatch" in command
+        )
+        assert stdin == "hunter2\n"
+        assert hub.config.devices["sv1"].act is not None
+        log = (tmp_path / "data" / "audit.log").read_text()
+        assert "act.install" in log and "hunter2" not in log and '"update-container"' in log

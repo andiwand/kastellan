@@ -152,6 +152,24 @@
       </picture>
     </figure>
   </article>
+
+  <article class="feature flip reveal">
+    <div class="feature-copy">
+      <p class="kicker">Hosts</p>
+      <h2>Disks, services, containers. <b>Through doors you open.</b></h2>
+      <p>For a Linux host: space, RAID, disk health, temperatures, failed services, pending system updates and reboots, and its containers with their updates, asked of the registries directly. Installing system updates, updating a container, a reboot: as far as the host allows.</p>
+      <ul class="points">
+        <li><b>Read-only by default.</b> The collector is one root-owned script that only reads, run through one sudo rule.</li>
+        <li><b>Change only what you tick.</b> Each ability is a script of its own; what isn't installed can't be run.</li>
+      </ul>
+    </div>
+    <figure class="shot">
+      <picture>
+        <source srcset="img/host-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/host-light.webp" width="2720" height="1700" alt="The home server's host card: uptime, load and memory; space on / at 45% and on /srv/media at 92% in amber; a healthy RAID 1 and three healthy disks with temperatures; no failed services, three pending updates and a reboot wanted; below, the collector, actor and SSH access sections and the containers with their updates.">
+      </picture>
+    </figure>
+  </article>
 </section>
 
 <section class="wrap files reveal" aria-labelledby="files-title">
@@ -188,35 +206,36 @@
 <section class="wrap roadmap" id="roadmap" aria-labelledby="roadmap-title">
   <p class="kicker center">Roadmap</p>
   <h2 id="roadmap-title" class="center">From watching <b>to looking after</b></h2>
-  <p class="section-lead center">Kastellan is young. Today it watches; the plan is a single place to look after everything on the network, built on proven tools rather than reinventing them.</p>
+  <p class="section-lead center">Kastellan is young. It watches, and looks after hosts as far as you let it; the plan is one place for everything on the network, built on proven tools rather than reinventing them.</p>
 
   <div class="stages">
     <div class="stage now reveal">
       <h3><span class="badge">Works today</span></h3>
       <ul>
-        <li><svg><use href="#i-radar"/></svg><div><b>Reachability checks</b><span>Ping, TCP ports and HTTP for every device and service.</span></div></li>
-        <li><svg><use href="#i-file"/></svg><div><b>History</b><span>Uptime and response time per check, kept as daily CSV files.</span></div></li>
-        <li><svg><use href="#i-network"/></svg><div><b>List and networks</b><span>Every device as a list, or by network: home, other sites, and what the internet can reach.</span></div></li>
-        <li><svg><use href="#i-desktop"/></svg><div><b>Demo mode</b><span>A made-up network to try everything without touching yours.</span></div></li>
+        <li><svg><use href="#i-radar"/></svg><div><b>Checks &amp; history</b><span>Ping, ports and web pages, software versions and certificates, uptime kept as CSV files.</span></div></li>
+        <li><svg><use href="#i-network"/></svg><div><b>Networks &amp; alarms</b><span>Devices by network, ways in from outside; alarms to ntfy, Gotify, Telegram, e-mail.</span></div></li>
+        <li><svg><use href="#i-shield"/></svg><div><b>Vulnerabilities</b><span>NVD, OSV and CISA KEV for software, firmware and containers.</span></div></li>
+        <li><svg><use href="#i-server"/></svg><div><b>Hosts</b><span>Disks, RAID, health, services, containers; updates and restarts where allowed.</span></div></li>
+        <li><svg><use href="#i-terminal"/></svg><div><b>Terminal &amp; desktop</b><span>SSH, RDP and VNC in the browser, through Apache Guacamole.</span></div></li>
+        <li><svg><use href="#i-key"/></svg><div><b>VPN &amp; keys</b><span>WireGuard and OpenVPN clients; SSH keys per host, rotation of Kastellan's own.</span></div></li>
       </ul>
     </div>
     <div class="stage next reveal">
       <h3><span class="badge">Next</span></h3>
       <ul>
-        <li><svg><use href="#i-terminal"/></svg><div><b>Terminal in the browser</b><span>SSH to any server, with xterm.js and keys the hub holds.</span></div></li>
-        <li><svg><use href="#i-desktop"/></svg><div><b>Remote desktop</b><span>RDP and VNC with mouse and keyboard, through Apache Guacamole.</span></div></li>
-        <li><svg><use href="#i-router"/></svg><div><b>Device drivers</b><span>Talk to a FRITZ!Box, OpenWrt, printers: firmware, clients, settings.</span></div></li>
-        <li><svg><use href="#i-refresh"/></svg><div><b>Docker updates</b><span>Which containers run an outdated image, and on which host.</span></div></li>
-        <li><svg><use href="#i-key"/></svg><div><b>Roles</b><span>Observers see everything; only admins open sessions or change things.</span></div></li>
+        <li><svg><use href="#i-wifi"/></svg><div><b>OpenWrt</b><span>Clients, mesh and Wi-Fi from the routers and access points.</span></div></li>
+        <li><svg><use href="#i-lock"/></svg><div><b>Secrets at rest</b><span>Passwords and tokens Kastellan keeps, encrypted with age.</span></div></li>
+        <li><svg><use href="#i-desktop"/></svg><div><b>Device pages</b><span>A router's or camera's own web page, opened through Kastellan.</span></div></li>
+        <li><svg><use href="#i-radar"/></svg><div><b>Discovery</b><span>New devices on the network, as they appear.</span></div></li>
       </ul>
     </div>
     <div class="stage later reveal">
       <h3><span class="badge">Later</span></h3>
       <ul>
         <li><svg><use href="#i-laptop"/></svg><div><b>A small agent</b><span>For Windows, macOS and laptops away from home; it reports in, no open ports.</span></div></li>
-        <li><svg><use href="#i-wifi"/></svg><div><b>Wi-Fi &amp; mesh</b><span>See and keep network and Wi-Fi settings in sync across the mesh.</span></div></li>
+        <li><svg><use href="#i-wifi"/></svg><div><b>Wi-Fi &amp; mesh in sync</b><span>One desired state for the settings across the mesh.</span></div></li>
         <li><svg><use href="#i-backup"/></svg><div><b>Backups &amp; jobs</b><span>Config exports, full backups with restic, any task on a schedule.</span></div></li>
-        <li><svg><use href="#i-server"/></svg><div><b>Firmware &amp; resources</b><span>Disk, CPU and memory; firmware versions against the newest.</span></div></li>
+        <li><svg><use href="#i-key"/></svg><div><b>Short-lived SSH certificates</b><span>Instead of keys spread over hosts.</span></div></li>
       </ul>
     </div>
   </div>
@@ -228,9 +247,9 @@
     <h2 id="security-title">It holds the keys, <b>so it's built like a keep</b></h2>
     <p class="section-lead">A tool that can reach every device is the most valuable thing on the network. These are the rules it's designed around.</p>
     <div class="rules">
-      <div class="rule reveal"><svg><use href="#i-lock"/></svg><h3>Behind your VPN</h3><p>Kastellan is meant for the inside of your network, reached through WireGuard or Tailscale, never published to the internet.</p></div>
-      <div class="rule reveal"><svg><use href="#i-key"/></svg><h3>Keys, not passwords</h3><p>SSH keys or short-lived certificates for servers; mutual TLS for agents. Stored secrets are encrypted at rest.</p></div>
-      <div class="rule reveal"><svg><use href="#i-shield"/></svg><h3>Each device sets its limits</h3><p>An agent decides on its own side what the hub may do: watch only, open a shell, share the screen.</p></div>
+      <div class="rule reveal"><svg><use href="#i-lock"/></svg><h3>Behind your VPN</h3><p>Kastellan is meant for the inside of your network, reached from home or through a VPN, never published to the internet.</p></div>
+      <div class="rule reveal"><svg><use href="#i-shield"/></svg><h3>No root of its own</h3><p>Each host gets narrow doors you open yourself: a read-only collector, and only the actions you tick. A taken-over hub gets exactly that.</p></div>
+      <div class="rule reveal"><svg><use href="#i-key"/></svg><h3>Keys bound to one command</h3><p>Every key Kastellan holds can run one thing, only from the hub's address. Host keys are pinned; its own key rotates in one step.</p></div>
       <div class="rule reveal"><svg><use href="#i-refresh"/></svg><h3>No surprise updates</h3><p>Updates are suggested, not installed. Automatically only when a known vulnerability meets a device that faces the internet.</p></div>
     </div>
   </div>

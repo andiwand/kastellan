@@ -153,6 +153,26 @@ class DockerSource(BaseModel):
     trigger: str | None = Field(default=None, pattern=r"^[a-z]+\.[A-Za-z0-9_-]+$")
 
 
+class CollectAccess(BaseModel):
+    """The collector's login (host/collector.py): its key may run the read-only script, nothing
+    else."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user: str = Field(default="kastellan-collect", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    port: int | None = Field(default=None, ge=1, le=65535)  # None: the ssh: port, else 22
+
+
+class ActAccess(BaseModel):
+    """The actor's login (host/actor.py): its key may run the dispatcher, which starts only the
+    abilities installed on the host."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user: str = Field(default="kastellan-act", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    port: int | None = Field(default=None, ge=1, le=65535)  # None: the ssh: port, else 22
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -167,7 +187,9 @@ class Device(BaseModel):
     ssh: SshAccess | None = None  # set to open a terminal on the device
     desktop: DesktopAccess | None = None  # set to open its screen in the browser
     driver: str | None = None  # what else Kastellan can ask it, e.g. fritzbox (see drivers/)
-    docker: DockerSource | None = None  # its containers and their updates
+    docker: DockerSource | None = None  # its containers and their updates, from WUD
+    collect: CollectAccess | None = None  # how the host is doing (and its containers)
+    act: ActAccess | None = None  # what Kastellan may change there (as the host allows)
     # Reachable from the internet (a port forward, a public server): known vulnerabilities in
     # what it runs count as urgent, and may trigger automatic updates (see vulns.py).
     exposed: bool = False
@@ -236,6 +258,10 @@ class AlarmSettings(BaseModel):
 
     down_after: int = Field(default=180, ge=30)  # seconds down before an alarm
     cert_days: int = Field(default=14, ge=1, le=365)  # a watched certificate ending sooner: warning
+    # The collector's hosts (host/collector.py): a filesystem fuller than this (percent).
+    disk_warning: int = Field(default=85, ge=50, le=99)
+    disk_critical: int = Field(default=95, ge=50, le=100)
+    disk_temperature: int = Field(default=55, ge=30, le=90)  # °C a disk may get (SMART)
 
 
 class NotifyChannel(BaseModel):
@@ -378,6 +404,9 @@ class Config(BaseModel):
     notify: list[NotifyChannel] = Field(default_factory=list)
     vulns: VulnSettings = Field(default_factory=VulnSettings)
     vpn: VpnSettings = Field(default_factory=VpnSettings)
+    # A URL Kastellan calls every minute (a dead man's switch, e.g. healthchecks.io): when the
+    # calls stop, that service tells you the hub (or its host, or the internet line) is gone.
+    heartbeat: str | None = Field(default=None, pattern=r"^https://[^\s]+$")
     networks: dict[str, NetworkSettings] = Field(default_factory=dict)
 
     @model_validator(mode="after")

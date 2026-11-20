@@ -1,0 +1,314 @@
+#!/usr/bin/python3 -I -S
+# Kastellan's collector: reads how a Linux host is doing and prints it as JSON. Nothing else.
+#
+# Installed root-owned at /usr/local/lib/kastellan/collect, run as root through one sudo rule of
+# the user kastellan-collect, whose SSH key may run only this (command= in authorized_keys).
+# It takes no input and no arguments, runs no shell, and writes only its SMART cache (in /run,
+# root's): disk health is read every 20 minutes, and never wakes a sleeping disk. Docker is read
+# through its API (lists only: never a container's environment, which may hold passwords).
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+
+OUT = {"version": 1, "time": int(time.time()), "errors": {}}
+
+
+def section(name):
+    def wrap(fn):
+        try:
+            OUT[name] = fn()
+        except Exception as e:  # one part failing never hides the rest
+            OUT["errors"][name] = f"{type(e).__name__}: {e}"[:200]
+        return fn
+
+    return wrap
+
+
+def read(path):
+    with open(path, errors="surrogateescape") as f:
+        return f.read()
+
+
+def unescape(text):
+    """/proc/mounts writes space, tab, newline and backslash as \\NNN (octal)."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), text)
+
+
+def run(argv, timeout=20):
+    """A fixed program with fixed arguments; never a shell."""
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"})
+    return r.returncode, r.stdout
+
+
+@section("system")
+def system():
+    load = read("/proc/loadavg").split()
+    mem = {}
+    for line in read("/proc/meminfo").splitlines():
+        key, _, value = line.partition(":")
+        mem[key] = int(value.split()[0]) * 1024 if value.split() else 0
+    return {
+        "hostname": socket.gethostname(),
+        "kernel": os.uname().release,
+        "uptime": float(read("/proc/uptime").split()[0]),
+        "load": [float(x) for x in load[:3]],
+        "cpus": os.cpu_count(),
+        "memory": {"total": mem.get("MemTotal", 0), "available": mem.get("MemAvailable", 0)},
+        "swap": {"total": mem.get("SwapTotal", 0), "free": mem.get("SwapFree", 0)},
+    }
+
+
+REAL_FS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "vfat", "exfat", "ntfs", "ntfs3", "jfs", "reiserfs", "bcachefs"}
+
+
+@section("filesystems")
+def filesystems():
+    out, seen = [], set()
+    for line in read("/proc/mounts").splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[2] not in REAL_FS or parts[0].startswith("/dev/loop"):
+            continue
+        dev, mount, kind = unescape(parts[0]), unescape(parts[1]), parts[2]
+        if dev in seen or mount.startswith(("/snap/", "/var/lib/docker/", "/run/")):
+            continue
+        seen.add(dev)
+        try:
+            st = os.statvfs(mount)
+        except OSError:
+            continue  # gone since /proc/mounts was read, or unreadable: the others still count
+        total = st.f_blocks * st.f_frsize
+        if not total:
+            continue
+        out.append({
+            "mount": mount.encode("utf-8", "replace").decode("utf-8", "replace"),
+            "device": dev.encode("utf-8", "replace").decode("utf-8", "replace"), "type": kind, "total": total,
+            "used": (st.f_blocks - st.f_bfree) * st.f_frsize, "available": st.f_bavail * st.f_frsize,
+        })
+    return out
+
+
+@section("raid")
+def raid():
+    if not os.path.exists("/proc/mdstat"):
+        return []
+    arrays, current = [], None
+    levels = ("raid0", "raid1", "raid4", "raid5", "raid6", "raid10", "linear", "multipath")
+    for line in read("/proc/mdstat").splitlines():
+        m = re.match(r"^(md\w+) : (\w+)\s*(.*)$", line)
+        if m:
+            words = [w for w in m.group(3).split() if not w.startswith("(")]  # (auto-read-only)
+            level = words[0] if words and words[0] in levels else ""
+            members = re.findall(r"([\w-]+)\[\d+\](\([A-Z]\))?", m.group(3))
+            current = {
+                "name": m.group(1), "active": m.group(2) == "active", "level": level,
+                "devices": [d for d, _ in members], "failed": [d for d, f in members if f == "(F)"],
+                "status": "", "progress": None,
+            }
+            arrays.append(current)
+            continue
+        if current is None:
+            continue
+        s = re.search(r"\[([U_]+)\]", line)
+        if s:
+            current["status"] = s.group(1)
+        p = re.search(r"(resync|recovery|reshape|check)\s*=\s*([\d.]+)%", line)
+        if p:
+            current["progress"] = {"what": p.group(1), "percent": float(p.group(2))}
+    return arrays
+
+
+def disks():
+    out = []
+    for name in sorted(os.listdir("/sys/block")):
+        if re.match(r"^(sd[a-z]+|nvme\d+n\d+|vd[a-z]+|hd[a-z]+)$", name):
+            out.append(name)
+    return out
+
+
+SMART_CACHE = "/run/kastellan-collect/smart.json"  # root's, in memory: one read per 20 min
+SMART_EVERY = 20 * 60
+
+
+@section("smart")
+def smart():
+    try:
+        with open(SMART_CACHE) as f:
+            cached = json.load(f)
+        if time.time() - cached.get("time", 0) < SMART_EVERY:
+            return cached["smart"]
+    except (OSError, ValueError, KeyError):
+        pass
+    smartctl = next((p for p in ("/usr/sbin/smartctl", "/usr/bin/smartctl", "/sbin/smartctl") if os.path.exists(p)), None)
+    if smartctl is None:
+        return {"available": False, "disks": []}
+    out, budget = [], time.monotonic() + 45
+    for name in disks():
+        if time.monotonic() > budget:
+            out.append({"disk": name, "error": "not read (time ran out)"})
+            continue
+        # -n standby: a disk that sleeps is left asleep (SMART would wake it every time).
+        code, text = run([smartctl, "-j", "-n", "standby", "-H", "-A", "-i", f"/dev/{name}"], timeout=15)
+        try:
+            j = json.loads(text)
+        except ValueError:
+            out.append({"disk": name, "error": "no answer"})
+            continue
+        if (j.get("power_mode") or {}).get("name") == "STANDBY" or code & 2 and "standby" in text.lower():
+            out.append({"disk": name, "asleep": True})
+            continue
+        attrs = {a.get("id"): a.get("raw", {}).get("value") for a in j.get("ata_smart_attributes", {}).get("table", [])}
+        nvme = j.get("nvme_smart_health_information_log") or {}
+        out.append({
+            "disk": name,
+            "model": j.get("model_name"),
+            "passed": j.get("smart_status", {}).get("passed"),
+            "temperature": (j.get("temperature") or {}).get("current"),
+            "power_on_hours": (j.get("power_on_time") or {}).get("hours"),
+            "reallocated": attrs.get(5),
+            "pending": attrs.get(197),
+            "uncorrectable": attrs.get(198),
+            "nvme_used_percent": nvme.get("percentage_used"),
+            "nvme_media_errors": nvme.get("media_errors"),
+        })
+    result = {"available": True, "disks": out}
+    try:
+        os.makedirs(os.path.dirname(SMART_CACHE), mode=0o700, exist_ok=True)
+        with open(SMART_CACHE + ".new", "w") as f:
+            json.dump({"time": time.time(), "smart": result}, f)
+        os.replace(SMART_CACHE + ".new", SMART_CACHE)
+    except OSError:
+        pass
+    return result
+
+
+@section("temperatures")
+def temperatures():
+    out = []
+    base = "/sys/class/hwmon"
+    for h in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        path = os.path.join(base, h)
+        try:
+            chip = read(os.path.join(path, "name")).strip()
+        except OSError:
+            continue
+        for f in sorted(os.listdir(path)):
+            m = re.match(r"^temp(\d+)_input$", f)
+            if not m:
+                continue
+            try:
+                value = int(read(os.path.join(path, f)).strip()) / 1000
+            except (OSError, ValueError):
+                continue
+            if not 1 <= value <= 150:
+                continue  # an input with nothing connected (0, or 216 °C)
+            limit = None
+            for kind in ("crit", "max"):  # the chip's own limit, where it gives one
+                try:
+                    v = int(read(os.path.join(path, f"temp{m.group(1)}_{kind}")).strip()) / 1000
+                    if 20 <= v <= 150:
+                        limit = v
+                        break
+                except (OSError, ValueError):
+                    pass
+            label = chip
+            try:
+                label = f"{chip} {read(os.path.join(path, f'temp{m.group(1)}_label')).strip()}"
+            except OSError:
+                pass
+            out.append({"sensor": label[:60], "celsius": value, "limit": limit})
+    return out[:40]
+
+
+@section("services")
+def services():
+    code, text = run(["systemctl", "list-units", "--state=failed", "--no-legend", "--plain", "--no-pager"])
+    failed = [line.split()[0] for line in text.splitlines() if line.split()]
+    return {"failed": failed[:50]}
+
+
+@section("updates")
+def updates():
+    out = {"reboot": os.path.exists("/var/run/reboot-required"), "available": None, "security": None}
+    # Debian has no reboot-required file without unattended-upgrades: a newer kernel installed
+    # than the one running says it too.
+    try:
+        def key(v):
+            return [int(x) if x.isdigit() else x for x in re.split(r"[.-]", v)]
+        kernels = [f[len("vmlinuz-"):] for f in os.listdir("/boot") if f.startswith("vmlinuz-")]
+        newest = max(kernels, key=key) if kernels else None
+        if newest and newest != os.uname().release:
+            out["reboot"] = True
+            out["kernel"] = newest
+    except (OSError, ValueError, TypeError):
+        pass
+    try:
+        out["reboot_for"] = read("/var/run/reboot-required.pkgs").split()[:20]
+    except OSError:
+        out["reboot_for"] = []
+    apt = next((p for p in ("/usr/bin/apt-get", "/bin/apt-get") if os.path.exists(p)), None)
+    if apt:
+        # What an upgrade would install, as apt sees it now (its lists are refreshed by the
+        # system's daily apt timer): a dry run (-s) changes nothing and takes no lock.
+        code, text = run([apt, "-s", "-o", "Debug::NoLocking=1", "--with-new-pkgs", "upgrade"], timeout=60)
+        if code == 0:
+            inst = [ln for ln in text.splitlines() if ln.startswith("Inst ")]
+            out["available"] = len(inst)
+            out["security"] = sum(1 for ln in inst if "-security" in ln)
+            out["packages"] = sorted({ln.split()[1] for ln in inst})[:50]
+            return out
+    try:
+        text = read("/var/lib/update-notifier/updates-available")
+        m = re.search(r"(\d+) updates? can be applied", text)
+        out["available"] = int(m.group(1)) if m else (0 if "0 updates" in text else None)
+        s = re.search(r"(\d+) of these updates (?:is a|are) (?:standard )?security update", text)
+        out["security"] = int(s.group(1)) if s else 0
+    except OSError:
+        pass
+    return out
+
+
+def docker_get(path):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(15)
+    s.connect("/var/run/docker.sock")
+    s.sendall(f"GET {path} HTTP/1.0\r\nHost: docker\r\n\r\n".encode())
+    data = b""
+    while chunk := s.recv(65536):
+        data += chunk
+    s.close()
+    head, _, body = data.partition(b"\r\n\r\n")
+    if not head.startswith(b"HTTP/1.") or b" 200 " not in head.split(b"\r\n")[0]:
+        raise OSError(head.split(b"\r\n")[0].decode(errors="replace"))
+    return json.loads(body)
+
+
+@section("docker")
+def docker():
+    if not os.path.exists("/var/run/docker.sock"):
+        return None
+    out, digests = [], {}
+    for c in docker_get("/containers/json?all=1"):
+        image_id = c.get("ImageID", "")
+        if image_id not in digests:
+            try:
+                digests[image_id] = docker_get(f"/images/{image_id}/json").get("RepoDigests") or []
+            except Exception:
+                digests[image_id] = []
+        out.append({
+            "name": (c.get("Names") or ["?"])[0].lstrip("/"),
+            "image": c.get("Image", ""),
+            "image_id": image_id,
+            "digests": digests[image_id],
+            "state": c.get("State", ""),
+            "status": c.get("Status", ""),
+            "created": c.get("Created"),
+            "compose": (c.get("Labels") or {}).get("com.docker.compose.project"),
+        })
+    return out
+
+
+sys.stdout.write(json.dumps(OUT))

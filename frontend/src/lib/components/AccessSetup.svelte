@@ -3,6 +3,8 @@
 	import Check from '@lucide/svelte/icons/check';
 	import X from '@lucide/svelte/icons/x';
 	import Copy from '@lucide/svelte/icons/copy';
+	import { store } from '#lib/state.svelte.js';
+	import SetupDialog from './SetupDialog.svelte';
 
 	/** SSH access for Kastellan to one device: what works, the commands, or set it up once with a
 	 * login and password (used for that connection only). */
@@ -12,11 +14,8 @@
 	let error = $state<string | null>(null);
 	let way = $state<'existing' | 'dedicated'>('existing');
 	let copied = $state(false);
-	let login = $state('');
-	let password = $state('');
-	let busy = $state(false);
 	let understood = $state(false);
-	let result = $state<{ output: string; config: string } | null>(null);
+	let setting = $state(false);
 
 	async function load() {
 		error = null;
@@ -33,38 +32,12 @@
 		setTimeout(() => (copied = false), 1500);
 	}
 
-	async function setUp(e: SubmitEvent) {
-		e.preventDefault();
-		if (!access) return;
-		busy = true;
-		error = null;
-		const dedicated = way === 'dedicated';
-		try {
-			result = await api.setUpAccess(device, {
-				login: login.trim(),
-				password,
-				user: dedicated ? 'kastellan' : access.user,
-				create: dedicated,
-				sudo: dedicated,
-				port: access.port
-			});
-			await load();
-		} catch (err) {
-			error = (err as Error).message;
-		} finally {
-			password = '';
-			busy = false;
-		}
-	}
-
-	const input =
-		'h-9 rounded-lg border border-line bg-surface px-3 text-sm outline-none focus:border-accent';
 	const button =
 		'inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs font-medium hover:border-line-strong disabled:opacity-50';
 </script>
 
 <details
-	class="card mt-8 p-4"
+	class="card mt-4 p-4"
 	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !access && load()}
 >
 	<summary class="cursor-pointer text-sm font-semibold">SSH access for Kastellan</summary>
@@ -125,48 +98,50 @@
 			class="mt-1 max-h-72 overflow-auto rounded-lg bg-surface-2 p-3 font-mono text-[11px] leading-relaxed">{access
 				.scripts[way]}</pre>
 
-		{#if canSetUp}
-			<form class="mt-4 border-t border-line pt-4" onsubmit={setUp}>
-				<p class="text-sm font-medium">Or let Kastellan do it</p>
-				<p class="mt-1 text-xs text-muted">
-					With a login that exists on the device{way === 'dedicated'
-						? ' and may use sudo (or root)'
-						: ''}. Its password is used for this one connection and never stored.
-				</p>
-				{#if way === 'dedicated'}
-					<label class="mt-3 flex items-start gap-2 text-xs">
-						<input type="checkbox" bind:checked={understood} class="mt-0.5" />
-						<span>The user <b>kastellan</b> gets sudo without a password on this device.</span>
-					</label>
-				{/if}
-				<div class="mt-3 flex flex-wrap gap-2">
-					<input
-						class={input}
-						bind:value={login}
-						placeholder="Login, e.g. {way === 'existing' ? access.user : 'root'}"
-						autocomplete="off"
-						required
-					/>
-					<input
-						class={input}
-						type="password"
-						bind:value={password}
-						placeholder="Its password"
-						autocomplete="off"
-						required
-					/>
-					<button class={button} disabled={busy || (way === 'dedicated' && !understood)}>
-						{busy ? 'Setting up…' : 'Set it up'}
-					</button>
-				</div>
-			</form>
+		{#if way === 'dedicated'}
+			<label class="mt-3 flex items-start gap-2 text-xs">
+				<input type="checkbox" bind:checked={understood} class="mt-0.5" />
+				<span>The user <b>kastellan</b> gets sudo without a password on this device.</span>
+			</label>
 		{/if}
-		{#if result}
-			<div class="mt-3 text-xs">
-				<p style:color="var(--good-text)">{result.output.split('\n').at(-1)}</p>
-				<p class="mt-2 text-muted">Add this to the device in config.yaml:</p>
-				<pre class="mt-1 rounded-lg bg-surface-2 p-2 font-mono text-[11px]">{result.config}</pre>
-			</div>
-		{/if}
+		<div class="mt-3 flex justify-end">
+			<button
+				class={button}
+				disabled={way === 'dedicated' && !understood}
+				onclick={() => (setting = true)}
+			>
+				Set it up with your login…
+			</button>
+		</div>
 	{/if}
 </details>
+
+{#if setting && access}
+	<SetupDialog
+		title={way === 'dedicated'
+			? 'A user of its own: kastellan'
+			: `Kastellan's key for ${access.user}`}
+		intro={way === 'dedicated'
+			? 'Kastellan logs in once with your login, creates the user kastellan with sudo, adds its key, and adds ssh: to this device in config.yaml.'
+			: `Kastellan logs in once as ${access.user}, adds its key to that account, and adds ssh: to this device in config.yaml.`}
+		path="/devices/{encodeURIComponent(device)}/access/setup"
+		body={{
+			user: way === 'dedicated' ? 'kastellan' : access.user,
+			create: way === 'dedicated',
+			sudo: way === 'dedicated'
+		}}
+		script={access.scripts[way] ?? ''}
+		port={access.port}
+		needsRoot={true}
+		noRootFor={way === 'existing' ? access.user : null}
+		defaultLogin={way === 'existing' ? access.user : ''}
+		canRun={canSetUp}
+		onclose={() => (setting = false)}
+		ondone={async (o) => {
+			if (o.ok) {
+				await store.refresh();
+				await load();
+			}
+		}}
+	/>
+{/if}

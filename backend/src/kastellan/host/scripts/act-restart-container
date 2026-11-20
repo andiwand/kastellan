@@ -1,0 +1,13 @@
+# Restart one container (on the host's list), found by its exact name, restarted by its id.
+name = one_name()
+try:
+    found = exact(name)
+    if found is None:
+        fail(f"no container called {name}")
+    if found["HostConfig"].get("AutoRemove"):
+        fail("started with --rm: a restart would remove it")
+    docker("POST", f"/containers/{found['Id']}/restart?t=30", timeout=90)
+    state = docker("GET", f"/containers/{found['Id']}/json")["State"]
+except Exception as e:
+    fail(str(e))
+done({"container": name, "restarted": True, "running": bool(state.get("Running"))})

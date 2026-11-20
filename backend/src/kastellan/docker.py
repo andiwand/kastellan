@@ -1,4 +1,5 @@
-"""Docker containers of a host and their updates, from WUD (What's Up Docker) for now.
+"""Docker containers of a host and their updates: from the collector (host/collector.py) with
+updates asked of the registries (registry.py), or from WUD (What's Up Docker).
 
     devices:
       sv1:
@@ -123,6 +124,39 @@ async def read_wud(url: str) -> list[Container]:
     for c in containers:
         unique.setdefault(c.key, c)
     return list(unique.values())
+
+
+async def from_collector(items: list[Any], registries: Any) -> list[Container]:
+    """Containers as the collector lists them (host/collector.py), with updates asked of their
+    registries (registry.py) instead of WUD."""
+    from .registry import parse
+
+    out: list[Container] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        image_ref = _text(item.get("image"), 300)
+        digests = [d for d in item.get("digests") or [] if isinstance(d, str)][:20]
+        ref = parse(image_ref)
+        update = registries.peek(image_ref, digests)  # never waits for a registry
+        name = _text(item.get("name") or "?", 100)
+        out.append(
+            Container(
+                key=name,
+                wud_id="",
+                name=name,
+                image=ref.name.removeprefix("library/") if ref else image_ref,
+                tag=ref.tag if ref else "?",
+                image_id=_text(item.get("image_id"), 80).removeprefix("sha256:")[:12],
+                state=_text(item.get("state") or "?", 40),
+                update=update.update,
+                update_to=update.update_to,
+                update_digest=update.digest,
+                unchecked=update.unchecked,
+                registry=(ref.registry.replace("registry-1.docker.io", "docker.io") if ref else None),
+            )
+        )
+    return sorted(out, key=lambda c: c.key.lower())
 
 
 def as_dicts(containers: list[Container]) -> list[dict[str, Any]]:

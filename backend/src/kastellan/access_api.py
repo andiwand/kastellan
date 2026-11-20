@@ -4,29 +4,28 @@ with a login and password typed once (access.py)."""
 from __future__ import annotations
 
 import asyncio
-import shlex
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import asyncssh
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from fastapi.responses import StreamingResponse
+from pydantic import Field
 
+from . import setup_run
 from .access import USER, hub_address, setup_script
 from .auth_api import client_address, require_admin, require_signin
+from .setup_run import Login
 from .ssh import ChangedHost, Target, UnknownHost
 
 if TYPE_CHECKING:
     from .hub import Hub
 
 
-class Setup(BaseModel):
-    login: str = Field(min_length=1, max_length=32)  # an existing account on the device
-    password: str = Field(min_length=1, max_length=1024)  # for this one connection, never kept
+class Setup(Login):
     user: str = Field(min_length=1, max_length=32)  # the account Kastellan will use
-    create: bool = False  # create `user` (needs root or sudo)
-    sudo: bool = False  # passwordless sudo for `user` (needs root or sudo)
-    port: int = Field(default=22, ge=1, le=65535)
+    create: bool = False  # create `user` (needs root)
+    sudo: bool = False  # passwordless sudo for `user` (needs root)
 
 
 def script_or_none(user: str, key: str, hub_ip: str | None, create: bool, sudo: bool) -> str | None:
@@ -102,59 +101,38 @@ def router(hub: Hub) -> APIRouter:
         }
 
     @api.post("/{id}/access/setup")
-    async def set_up(id: str, body: Setup, request: Request) -> dict[str, Any]:
-        """Log in once with the typed password and run the commands the page shows."""
+    async def set_up(id: str, body: Setup, request: Request) -> StreamingResponse:
+        """Log in once with the typed password and run the commands the page shows (as root
+        when they need it), streaming the output; then `ssh:` goes into config.yaml."""
         w = require_signin(request)
         device = device_of(id)
         if not (USER.match(body.login) and USER.match(body.user)):
             raise HTTPException(400, "user names are letters, digits, . _ - (up to 32, not starting with -)")
         hub_ip = await asyncio.to_thread(hub_address, device.host, body.port)
         script = setup_script(body.user, hub.keys.public_key(), hub_ip, body.create, body.sudo)
-        privileged = body.create or body.sudo or (body.user != body.login)
-        target = Target(device.host, body.port, body.login)
+        if not (body.create or body.sudo or body.user != body.login):
+            body.elevate = "none"  # its own key: as itself
         details = {
             "device": id,
             "login": body.login,
             "account": body.user,  # not "user": that is who did it (Audit.record)
             "create": body.create,
             "sudo": body.sudo,
+            "elevate": body.elevate,
         }
         audit = partial(hub.audit.record, "access.setup", w.user, client_address(request.scope), **details)
-        try:
-            async with await hub.keys.connect(target, password=body.password) as conn:
-                if privileged and body.login != "root":
-                    # sudo reads the same password from stdin; the script is its argument.
-                    r = await conn.run(
-                        f"sudo -S -p '' sh -c {shlex.quote(script)}",
-                        input=body.password + "\n",
-                        check=False,
-                        timeout=60,
-                    )
-                else:
-                    r = await conn.run("sh -s", input=script, check=False, timeout=60)
-        except (UnknownHost, ChangedHost) as e:
-            audit(outcome="host key")
-            raise HTTPException(409, f"{e} (trust the host key first)") from e
-        except asyncssh.PermissionDenied as e:
-            audit(outcome="login refused")
-            raise HTTPException(401, f"{body.login} with that password was refused") from e
-        except (TimeoutError, asyncssh.TimeoutError) as e:
-            audit(outcome="timed out")
-            raise HTTPException(504, "timed out: some of it may have been done; check the device") from e
-        except (OSError, asyncssh.Error) as e:
-            audit(outcome="unreachable")
-            raise HTTPException(502, f"can't reach {device.host}: {type(e).__name__}") from e
-        except Exception as e:
-            audit(outcome=f"failed: {type(e).__name__}")
-            raise HTTPException(500, f"failed: {type(e).__name__}") from e
-        output = (str(r.stdout or "") + str(r.stderr or "")).strip()
-        ok = r.exit_status == 0
-        audit(outcome="done" if ok else f"failed: {output[-200:]}")
-        if not ok:
-            raise HTTPException(502, output[-500:] or f"exit {r.exit_status}")
-        return {
-            "output": output[-2000:],
-            "config": f"ssh:\n  user: {body.user}" + (f"\n  port: {body.port}" if body.port != 22 else ""),
-        }
+        conn = await setup_run.connect(hub, device.host, body, audit)
+
+        def after() -> dict[str, Any]:
+            # Kastellan logs in as this user from now on: ssh: in config.yaml says so (replacing
+            # another user there: that's what setting it up for this one means).
+            ssh = {"user": body.user} | ({"port": body.port} if body.port != 22 else {})
+            wrote = setup_run.add_device_key(
+                hub, w.user, client_address(request.scope), id, "ssh", body.port, ssh, replace=True
+            )
+            text = "ssh:\n  " + "\n  ".join(f"{k}: {v}" for k, v in ssh.items())
+            return {"config": text} if wrote else {}
+
+        return setup_run.stream(conn, script, body, audit, after)
 
     return api

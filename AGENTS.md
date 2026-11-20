@@ -90,6 +90,25 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     default gateway is also on the internet), and its `public_ways` (checks by a public name or
     address). `hub._resolve_hosts` resolves names every 5 min. The web app's NetworkMap draws a
     zone per network and devices in two on the boundary.
+  - `host/collector.py` + `host/scripts/kastellan-collect` + `host_api.py`: the collector (a
+    root-owned read-only Python script on the host, one sudo rule, the `collect` key bound to it).
+    `collect()` reads its JSON; `hub._poll_hosts` every minute; `alarms.host_problems` turns a
+    report into problems. The script runs on the hosts' python3 with the stdlib only: keep it so.
+    `registry.py`: update checks against the registries (anonymous tokens, digests, version tags),
+    cached for hours; `docker.from_collector` builds containers from the report with them.
+    `access_api.run_with_password`: log in once with a typed password and run a script (as root).
+  - `host/actor.py` + `host/scripts/act-*` + `act_api.py`: the actor. `act-dispatch` (as
+    kastellan-act, bound to the act key) accepts exact forms and execs `sudo -n python3 -I
+    <ability> <arg>`; each ability is `act-common` + `act-<ability>`, root-owned, checks its
+    argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog. `install_script` is
+    declarative (abilities not chosen are removed). Tests run the real scripts against a fake
+    Docker API (tests/test_actor.py). Root scripts take nothing from the environment.
+  - `setup_run.py`: running a setup once with a typed login (sudo, sudo with another password, or
+    su with root's password over a pty), streamed as text, the last line `KASTELLAN-DONE {json}`;
+    passwords are masked in every output line; `add_device_key` writes collect:/act:/ssh: after.
+    The run is a hub task (`_running`), not the page's: a browser leaving halfway doesn't stop it,
+    and it is audited ("started", then the outcome) either way. sudo is probed (`sudo -n true`)
+    so no password lands on a script's stdin; su gets a marker to tell "root now" from a prompt.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)

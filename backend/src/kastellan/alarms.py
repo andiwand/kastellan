@@ -188,6 +188,33 @@ def evaluate(
                     )
                 )
 
+    # Hosts with a collector: what their own report says (host/collector.py).
+    limits = config.alarms
+    for id, device in config.devices.items():
+        st = status.get(id)
+        if device.collect is None or st is None or id in down or is_muted(id) or top_down_ancestor(id):
+            continue
+        name = device.name
+        if st.host_checked is None or st.host_checked < started:
+            continue  # nothing read since the hub started: no judgment yet
+        if (now - st.host_checked).total_seconds() > 15 * 60:
+            problems.append(
+                Problem(
+                    f"host:{id}:collector",
+                    Severity.WARNING,
+                    id,
+                    f"{name}: the collector",
+                    f"{name}: the collector stopped answering",
+                    st.host_error or "",
+                    st.host_checked,
+                )
+            )
+            continue
+        try:
+            problems += host_problems(id, name, st.host or {}, limits)
+        except Exception:  # one host's odd report never stops the alarms of all the others
+            log.exception("%s: judging its report failed", id)
+
     # Certificates of watched checks.
     for id, device in config.devices.items():
         if is_muted(id):
@@ -221,6 +248,100 @@ def evaluate(
             # No `since`: how long the service has been up says nothing about the certificate.
             problems.append(Problem(key, severity, id, name, title, detail))
     return problems
+
+
+def host_problems(id: str, name: str, report: dict[str, Any], limits: Any) -> list[Problem]:
+    """Problems in one collector report: full disks, RAID, disk health, heat, failed services."""
+    out: list[Problem] = []
+
+    def add(key: str, severity: Severity, what: str, title: str, detail: str = "") -> None:
+        out.append(Problem(f"host:{id}:{key}", severity, id, f"{name}: {what}", f"{name}: {title}", detail))
+
+    # What the host couldn't read can't be judged: say so, rather than stay quiet.
+    errors = report.get("errors") or {}
+    for section in ("filesystems", "raid", "smart"):
+        if section in errors:
+            add(
+                f"unread:{section}",
+                Severity.WARNING,
+                section,
+                f"can't read its {section}",
+                str(errors[section])[:200],
+            )
+
+    pools: set[str] = set()
+    for fs in report.get("filesystems") or []:
+        if fs.get("type") == "zfs":  # datasets of one pool share its space: one alarm per pool
+            pool = str(fs.get("device", "")).split("/", 1)[0]
+            if pool in pools:
+                continue
+            pools.add(pool)
+        try:
+            used, avail = int(fs["used"]), int(fs["available"])
+            percent = 100 * used / (used + avail) if used + avail else 0
+            mount = str(fs["mount"])[:100]
+        except (KeyError, TypeError, ValueError):
+            continue
+        free = f"{avail / 1e9:.1f} GB free" if avail < 1e12 else f"{avail / 1e12:.2f} TB free"
+        if percent >= limits.disk_critical:
+            add(f"disk:{mount}", Severity.CRITICAL, mount, f"{mount} is {percent:.0f}% full", free)
+        elif percent >= limits.disk_warning:
+            add(f"disk:{mount}", Severity.WARNING, mount, f"{mount} is {percent:.0f}% full", free)
+
+    for array in report.get("raid") or []:
+        if not isinstance(array, dict):
+            continue
+        md = str(array.get("name", "?"))[:20]
+        state = str(array.get("status") or "")
+        failed = [str(d) for d in array.get("failed") or []][:8]
+        if not array.get("active") or "_" in state or failed:
+            detail = f"[{state}]" + (f", failed: {', '.join(failed)}" if failed else "")
+            progress = array.get("progress") or {}
+            if isinstance(progress, dict) and progress.get("what") == "recovery":
+                detail += f", rebuilding {progress.get('percent')}%"
+            add(f"raid:{md}", Severity.CRITICAL, md, f"RAID {md} is degraded", detail)
+
+    for disk in (report.get("smart") or {}).get("disks") or []:
+        if not isinstance(disk, dict):
+            continue
+        dev = str(disk.get("disk", "?"))[:20]
+        label = f"{dev}" + (f" ({disk['model']})" if disk.get("model") else "")
+        if disk.get("passed") is False:
+            add(f"smart:{dev}", Severity.CRITICAL, dev, f"disk {label} fails its health check")
+            continue
+        bad = {
+            "reallocated sectors": disk.get("reallocated"),
+            "pending sectors": disk.get("pending"),
+            "uncorrectable sectors": disk.get("uncorrectable"),
+            "media errors": disk.get("nvme_media_errors"),
+        }
+        signs = [f"{v} {k}" for k, v in bad.items() if isinstance(v, int) and v > 0]
+        if isinstance(disk.get("nvme_used_percent"), int) and disk["nvme_used_percent"] >= 90:
+            signs.append(f"{disk['nvme_used_percent']}% of its rated wear used")
+        if signs:
+            add(f"smart:{dev}", Severity.WARNING, dev, f"disk {label} shows wear", ", ".join(signs))
+        temp = disk.get("temperature")
+        if isinstance(temp, int | float) and temp >= limits.disk_temperature:
+            add(f"disktemp:{dev}", Severity.WARNING, dev, f"disk {label} is hot ({temp:.0f} °C)")
+
+    for t in report.get("temperatures") or []:
+        if not isinstance(t, dict):
+            continue
+        value, limit = t.get("celsius"), t.get("limit")
+        if isinstance(value, int | float) and isinstance(limit, int | float) and value >= limit:
+            sensor = str(t.get("sensor", "?"))[:60]
+            add(
+                f"temp:{sensor}",
+                Severity.WARNING,
+                sensor,
+                f"{sensor} is at {value:.0f} °C (limit {limit:.0f})",
+            )
+
+    failed = [str(u)[:80] for u in (report.get("services") or {}).get("failed") or []]
+    if failed:
+        noun = "service has" if len(failed) == 1 else "services have"
+        add("services", Severity.WARNING, "services", f"{len(failed)} {noun} failed", ", ".join(failed[:10]))
+    return out
 
 
 @dataclass

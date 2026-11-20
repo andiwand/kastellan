@@ -1,0 +1,107 @@
+#!/usr/bin/python3 -I -S
+# Kastellan's actor: what every ability shares (prepended to each when installed). Runs as root
+# through one sudo rule per ability; takes its one argument from the dispatcher and checks it
+# again, against a pattern and the host's own list (/etc/kastellan/act/<ability>.allow, root's).
+import http.client
+import json
+import os
+import re
+import socket
+import sys
+import syslog
+import time
+
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # used with fullmatch: no newline sneaks in
+SOCKET = "/var/run/docker.sock"  # fixed: nothing from the environment steers a root script
+ABILITY = os.path.basename(sys.argv[0])
+
+
+def fail(message, code=1):
+    syslog.syslog(syslog.LOG_WARNING, f"{ABILITY}: refused or failed: {message}")
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+LOCK = "/run/kastellan-act.lock"
+
+
+def one_at_a_time():
+    """One changing action on this host at a time (a second one is refused, not queued)."""
+    import fcntl
+
+    handle = open(LOCK, "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fail("another action runs on this host; try again in a moment")
+    return handle
+
+
+def quote(text, safe=""):
+    return "".join(c if c.isalnum() or c in "-._" + safe else f"%{ord(c):02X}" for c in text)
+
+
+def exact(container):
+    """The container called exactly `container`: Docker would also take an id or the start of
+    one, which could be another container than the list means."""
+    found = docker("GET", f"/containers/{quote(container)}/json", ok=(200, 404))
+    if not isinstance(found, dict) or found.get("Name") != "/" + container:
+        return None
+    return found
+
+
+def done(result):
+    syslog.syslog(syslog.LOG_NOTICE, f"{ABILITY}: {json.dumps(result)[:400]}")
+    print(json.dumps(result))
+    sys.exit(0)
+
+
+def allowed(name):
+    """Whether the host's own list lets Kastellan act on this container."""
+    try:
+        with open(f"/etc/kastellan/act/{ABILITY}.allow") as f:
+            lines = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+    except OSError:
+        return False
+    return "*" in lines or name in lines
+
+
+def one_name():
+    if len(sys.argv) != 2 or not NAME.fullmatch(sys.argv[1]):
+        fail("wrong arguments", 2)
+    if not allowed(sys.argv[1]):
+        fail(f"{sys.argv[1]} isn't on this host's list for {ABILITY}", 3)
+    return sys.argv[1]
+
+
+class _Unix(http.client.HTTPConnection):
+    def __init__(self, timeout):
+        super().__init__("docker", timeout=timeout)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(SOCKET)
+
+
+def docker(method, path, body=None, timeout=60, ok=(200, 201, 204, 304)):
+    """One call to the Docker API; the JSON answer (or None). Fixed paths built here, never a
+    string from outside except a checked container name."""
+    conn = _Unix(timeout)
+    headers = {"Content-Type": "application/json"} if body is not None else {}
+    conn.request(method, "/v1.41" + path, body=json.dumps(body) if body is not None else None, headers=headers)
+    r = conn.getresponse()
+    data = r.read()
+    conn.close()
+    if r.status not in ok:
+        try:
+            message = json.loads(data).get("message", "")
+        except ValueError:
+            message = data[:200].decode(errors="replace")
+        raise RuntimeError(f"{method} {path.split('?')[0]}: {r.status} {message}")
+    if not data:
+        return None
+    try:
+        return json.loads(data)
+    except ValueError:
+        return data.decode(errors="replace")

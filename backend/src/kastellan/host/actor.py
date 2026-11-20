@@ -1,0 +1,195 @@
+"""The actor: what Kastellan may change on a Linux host, ability by ability, each installed only
+when chosen.
+
+On the host (install_script, run as root; running it again with another choice changes it to
+exactly that choice):
+- a user `kastellan-act` that can do nothing by itself;
+- a dispatcher (scripts/act-dispatch), the only thing the act key may run (`restrict`,
+  `command=`, `from=` the hub): it accepts exactly `update-container <name>`, `restart-container
+  <name>`, `reboot` and `abilities` (which lists what is installed), and starts the ability;
+- per chosen ability, a root-owned script (act-common + act-<ability>) and one sudo rule naming
+  exactly it; the container abilities act only on the containers in a root-owned list on the
+  host (/etc/kastellan/act/<ability>.allow), every action goes to the host's syslog.
+
+What isn't installed can't be run, whatever the hub asks.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+from importlib.resources import files
+from typing import Any
+
+import asyncssh
+
+from ..access import authorize
+from ..config import Device
+from ..ssh import Keys, Target
+from .collector import PYTHON_CHECK
+
+USER = "kastellan-act"
+BASE = "/usr/local/lib/kastellan/act"
+ABILITIES = {
+    "update-container": "Update containers (pull the image, recreate it with the same settings)",
+    "restart-container": "Restart containers",
+    "upgrade-packages": "Install system updates (apt: keeps your config files, removes nothing)",
+    "reboot": "Reboot the host (in a minute, so it can still be cancelled there)",
+}
+CONTAINER_ABILITIES = ("update-container", "restart-container")
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # always with fullmatch
+
+
+def _script(name: str) -> str:
+    return (files("kastellan.host") / "scripts" / name).read_text()
+
+
+def ability_script(ability: str) -> str:
+    return _script("act-common").rstrip("\n") + "\n\n" + _script(f"act-{ability}")
+
+
+def install_script(
+    chosen: set[str], containers: list[str], public_key: str, hub_ip: str | None, user: str = USER
+) -> str:
+    """Shell commands, run as root, that give Kastellan exactly the chosen abilities on a host
+    (removing any others): for the container abilities, on `containers` ("*" for all)."""
+    q = shlex.quote
+    unknown = chosen - set(ABILITIES)
+    if unknown:
+        raise ValueError(f"unknown abilities: {', '.join(sorted(unknown))}")
+    if any(c != "*" and not NAME.fullmatch(c) for c in containers):
+        raise ValueError("container names are letters, digits, _ . - (or * for all)")
+    sudoers = f"/etc/sudoers.d/{user}"
+    lines = [
+        "set -eu",
+        "umask 022",
+        *PYTHON_CHECK.splitlines(),
+        f"id -u {q(user)} >/dev/null 2>&1 || useradd --system --create-home --shell /bin/sh {q(user)}",
+        "# The scripts and lists: root's; nobody else may change them.",
+        f"install -d -o root -g root -m 755 {BASE} /etc/kastellan /etc/kastellan/act",
+    ]
+
+    def put(path: str, text: str, mode: str) -> None:
+        end = "KASTELLAN_ACT_EOF"
+        lines.extend(
+            [
+                f"cat > {path}.new <<'{end}'",
+                text.rstrip("\n"),
+                end,
+                f"chown root:root {path}.new && chmod {mode} {path}.new && mv {path}.new {path}",
+            ]
+        )
+
+    put(f"{BASE}/dispatch", _script("act-dispatch"), "644")
+    rules = []
+    for ability in sorted(ABILITIES):
+        script = f"{BASE}/{ability}"
+        if ability in chosen:
+            put(script, ability_script(ability), "644")
+            # Container abilities take one argument (checked by the script); reboot none.
+            args = " *" if ability in CONTAINER_ABILITIES else ' ""'
+            rules.append(f"{user} ALL=(root) NOPASSWD: $py -I -S {script}{args}")
+            if ability in CONTAINER_ABILITIES:
+                # The names as quoted words, not in a heredoc: no name can end it early.
+                allow = f"/etc/kastellan/act/{ability}.allow"
+                names = " ".join(q(c) for c in containers)
+                lines.append(f"printf '%s\\n' {names} > {allow}.new" if containers else f": > {allow}.new")
+                lines.append(
+                    f"chown root:root {allow}.new && chmod 644 {allow}.new && mv {allow}.new {allow}"
+                )
+        else:
+            lines.append(f"rm -f {script} /etc/kastellan/act/{ability}.allow  # not chosen")
+    lines += ["# One sudo rule per chosen ability, naming exactly its script."]
+    if rules:
+        lines.append(f"cat > {sudoers}.new <<KASTELLAN_SUDO_EOF")
+        lines += rules
+        lines += [
+            "KASTELLAN_SUDO_EOF",
+            f"chmod 440 {sudoers}.new",
+            f"if ! visudo -cf {sudoers}.new >/dev/null; then",
+            f"  rm -f {sudoers}.new; echo 'bad sudo rule' >&2; exit 1",
+            "fi",
+            f"mv {sudoers}.new {sudoers}",
+        ]
+    else:
+        lines.append(f"rm -f {sudoers}")
+    lines += [
+        "# Kastellan's act key may run the dispatcher, and nothing else (and only from the hub).",
+        f"key={q(public_key)}",
+        f"hub={q(hub_ip or '')}",
+        f'cmd="$py -I -S {BASE}/dispatch"',
+        'openssh_line="${hub:+from=\\"$hub\\",}restrict,command=\\"$cmd\\" $key"',
+        'limits="no-port-forwarding,no-agent-forwarding,no-pty,no-X11-forwarding"',
+        'dropbear_line="command=\\"$cmd\\",$limits $key"',
+    ]
+    for ln in authorize(user, "OPENSSH_LINE", "DROPBEAR_LINE"):
+        lines.append(
+            ln.replace("OPENSSH_LINE", '"$openssh_line"').replace("DROPBEAR_LINE", '"$dropbear_line"')
+        )
+    lines += keep_only_new_key()
+    what = ", ".join(sorted(chosen)) or "nothing (only listing)"
+    lines.append(f"echo {q(f'The actor is set up; Kastellan may: {what}.')}")
+    return "\n".join(lines) + "\n"
+
+
+def keep_only_new_key() -> list[str]:
+    """Shell lines, after authorize(): the Kastellan user's authorized_keys keeps only the line
+    just added (its own user: an older key or an older hub address must not stay valid). The new
+    line is in first, so an interruption never leaves the host without it."""
+    return [
+        'if [ -n "${home:-}" ]; then',
+        '  su -s /bin/sh "$user" -c \'f=$0; grep -qxF -- "$1" "$f" && grep -m1 -xF -- "$1" "$f" > "$f.k" \\',
+        '    && cat "$f.k" > "$f"; rm -f "$f.k"\' "$home/.ssh/authorized_keys" "$line"',
+        "fi",
+    ]
+
+
+def target_of(device: Device) -> Target:
+    if device.act is None:
+        raise ValueError("the device has no act: in config.yaml")
+    port = device.act.port or (device.ssh.port if device.ssh else 22)
+    return Target(device.host, port, device.act.user)
+
+
+async def _run(keys: Keys, device: Device, words: list[str], timeout: float) -> tuple[int, str, str]:
+    async with await keys.connect(target_of(device), "act") as conn:
+        r = await conn.run(" ".join(words), check=False, stdin=asyncssh.DEVNULL, timeout=timeout)
+    return r.exit_status or 0, str(r.stdout or "")[:65536], str(r.stderr or "")[:4096]
+
+
+async def abilities(keys: Keys, device: Device) -> dict[str, list[str]]:
+    """What the host lets Kastellan do: ability -> the containers it may act on ([] for none or
+    for reboot)."""
+    code, out, err = await _run(keys, device, ["abilities"], 30)
+    if code != 0:
+        raise RuntimeError(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")
+    lines = out.splitlines()
+    names = [a for a in (lines[0].split() if lines else []) if a in ABILITIES]
+    result: dict[str, list[str]] = {a: [] for a in names}
+    for line in lines[1:]:
+        ability, _, rest = line.partition(":")
+        if ability in result:
+            result[ability] = [c for c in rest.split() if c == "*" or NAME.fullmatch(c)]
+    return result
+
+
+async def act(keys: Keys, device: Device, ability: str, container: str | None = None) -> dict[str, Any]:
+    """Ask the host to do one thing; its answer (JSON) or RuntimeError with its reason."""
+    if ability not in ABILITIES:
+        raise ValueError("unknown ability")
+    words = [ability]
+    if ability in CONTAINER_ABILITIES:
+        if not container or not NAME.fullmatch(container):
+            raise ValueError("a container name is letters, digits, _ . -")
+        words.append(container)
+    # Longer than the script on the host allows itself, so the hub hears how it ended.
+    limits = {"update-container": 1500, "upgrade-packages": 3000, "restart-container": 180, "reboot": 60}
+    code, out, err = await _run(keys, device, words, limits[ability])
+    if code != 0:
+        raise RuntimeError(err.strip().splitlines()[-1][:300] if err.strip() else f"exit {code}")
+    try:
+        result = json.loads(out.strip().splitlines()[-1])
+    except (ValueError, IndexError) as e:
+        raise RuntimeError("the host's answer wasn't readable") from e
+    return result if isinstance(result, dict) else {"result": result}

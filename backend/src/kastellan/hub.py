@@ -27,9 +27,11 @@ from .config import Config, Device, NotifyChannel, Role
 from .desktop_api import Tickets
 from .drivers import DRIVERS
 from .history import History
+from .host import actor, collector
 from .hub_errors import yaml_problem
 from .monitor import DeviceStatus, Monitor, run_check
 from .networks import Resolver, default_gateway
+from .registry import Registries
 from .secrets import Secrets
 from .settings import Settings
 from .ssh import Keys
@@ -40,6 +42,8 @@ from .vuln_policy import assess, auto_update_reason
 
 log = logging.getLogger(__name__)
 
+COLLECT_EVERY = 60  # seconds between the collector's reports
+HEARTBEAT_EVERY = 60
 RESOLVE_EVERY = 300  # seconds between looking up device names
 RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
@@ -53,6 +57,10 @@ class ConfigProblem(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+def _brief(e: Exception) -> str:
+    return (str(e) or type(e).__name__)[:200]
 
 
 def _first_line(text: str) -> str:
@@ -106,6 +114,10 @@ class Hub:
         self.locked: str | None = None  # why the API refuses everything (fail closed), or None
         self.signin_required = settings.data / "signin-required"
         self.resolver = Resolver()
+        self.registries = Registries()
+        self._background: set[asyncio.Task[None]] = set()  # automatic updates under way
+        self.heartbeat_ok: datetime | None = None
+        self.heartbeat_error: str | None = None
         self.own_address: str | None = None  # the hub's address on its network
         self.gateway: str | None = None  # its default gateway: on the boundary to the internet
         self.own_v6: str | None = None  # its IPv6 address, if it has one
@@ -257,11 +269,16 @@ class Hub:
             asyncio.create_task(self._renew_crl(), name="renew the OpenVPN CRL"),
             asyncio.create_task(self._prune(), name="prune history"),
             asyncio.create_task(self._resolve_hosts(), name="resolve device names"),
+            asyncio.create_task(self._poll_hosts(), name="collect from hosts"),
+            asyncio.create_task(self._heartbeat(), name="heartbeat"),
         ]
 
     async def stop(self) -> None:
-        for task in self._tasks:
+        for task in [*self._tasks, *self._background]:
             task.cancel()
+        for task in list(self._background):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         for task in self._tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -317,7 +334,8 @@ class Hub:
         async def one(id: str, device: Device) -> None:
             async with limit:
                 try:
-                    if device.docker is not None:
+                    # With a collector, it lists the containers (except in the demo, which has none).
+                    if device.docker is not None and (device.collect is None or self.demo):
                         await self._poll_docker(id, device.docker.wud)
                     if device.driver is not None:
                         await self._poll_driver(id, device)
@@ -327,6 +345,58 @@ class Hub:
         while True:
             await asyncio.gather(*(one(id, d) for id, d in list(self.config.devices.items())))
             await asyncio.sleep(DRIVER_EVERY)
+
+    async def _poll_hosts(self) -> None:
+        """The collector on every device with `collect:`, every COLLECT_EVERY seconds (host
+        health; its containers, with updates from the registries)."""
+        limit = asyncio.Semaphore(4)
+
+        async def one(id: str, device: Device) -> None:
+            async with limit:
+                status = self.monitor.status.get(id)
+                if status is None:
+                    return
+                try:
+                    report = await collector.collect(self.keys, device)
+                except Exception as e:  # what it said last stays, marked by its time
+                    status.host_error = _brief(e)
+                    log.info("%s: the collector: %s", id, status.host_error)
+                    return
+                status.host, status.host_checked, status.host_error = report, datetime.now(UTC), None
+                items = report.get("docker")
+                if isinstance(items, list):
+                    try:
+                        self._set_containers(id, status, await docker.from_collector(items, self.registries))
+                        status.containers_error = None
+                    except Exception as e:
+                        status.containers_error = _brief(e)
+                        log.exception("%s: reading its containers failed", id)
+
+        while True:
+            if self.demo:  # the made-up network's made-up reports
+                for id, report in demo.HOST.items():
+                    if status := self.monitor.status.get(id):
+                        status.host, status.host_checked = report, datetime.now(UTC)
+            else:
+                hosts = [(id, d) for id, d in list(self.config.devices.items()) if d.collect]
+                # Each host on its own: one host's trouble never stops the others, or the loop.
+                await asyncio.gather(*(one(id, d) for id, d in hosts), return_exceptions=True)
+            await asyncio.sleep(COLLECT_EVERY)
+
+    async def _heartbeat(self) -> None:
+        """Call the heartbeat URL every minute while the hub runs (a dead man's switch)."""
+        async with httpx.AsyncClient(timeout=10) as client:
+            while True:
+                url = self.config.heartbeat
+                if url and not self.demo:
+                    try:
+                        (await client.get(url)).raise_for_status()
+                        self.heartbeat_ok = datetime.now(UTC)
+                        self.heartbeat_error = None
+                    except Exception as e:
+                        self.heartbeat_error = type(e).__name__
+                        log.info("heartbeat failed: %s", self.heartbeat_error)
+                await asyncio.sleep(HEARTBEAT_EVERY)
 
     async def _poll_driver(self, id: str, device: Device) -> None:
         status = self.monitor.status.get(id)
@@ -358,6 +428,10 @@ class Hub:
             status.containers_error = f"cannot read WUD: {e or type(e).__name__}"
             log.info("%s: %s", id, status.containers_error)
             return
+        self._set_containers(id, status, containers)
+
+    def _set_containers(self, id: str, status: DeviceStatus, containers: list[docker.Container]) -> None:
+        """What a device runs now (from WUD or the collector): stored, and changes logged."""
         now = datetime.now(UTC)
         status.containers, status.containers_checked, status.containers_error = (
             docker.as_dicts(containers),
@@ -482,6 +556,15 @@ class Hub:
                     title = f"{device.name}: {c['name']} can be updated to {target}"
                     if m := self.alarms.event(key, title, f"{c['image']}:{c['tag']}", id, now, send):
                         out.append(m)
+            # The host wants a reboot (kernel or libc updates): once per set of packages.
+            updates = (status.host or {}).get("updates") or {}  # normalized (host/report.py)
+            if updates.get("reboot"):
+                why = ", ".join(str(p) for p in (updates.get("reboot_for") or [])[:6])
+                key = f"reboot:{id}:{why}"
+                if m := self.alarms.event(
+                    key, f"{device.name} wants a reboot", why or "after updates", id, now, send
+                ):
+                    out.append(m)
             # New findings worth a message: one message per device, not one per finding.
             new: list[str] = []
             for item in (status.vulns or {}).get("items", []):
@@ -609,24 +692,55 @@ class Hub:
         return out
 
     async def _auto_update(self, id: str, device: Device, status: DeviceStatus) -> None:
-        """Update a container by itself only where vuln_policy.auto_update_reason allows it."""
-        if not (device.docker and device.docker.trigger and device.auto_update):
+        """Update a container by itself only where vuln_policy.auto_update_reason allows it, and,
+        through the actor, only containers on the host's own list. Each runs in the background:
+        a long pull doesn't hold up the sweep."""
+        via_wud = bool(device.docker and device.docker.trigger)
+        if not ((via_wud or device.act) and device.auto_update):
             return
         findings = {item["where"]: item["findings"] for item in (status.vulns or {}).get("items", [])}
+        allowed: list[str] | None = None
         for c in status.containers or []:
             key = c.get("key", c["name"])
             reason = auto_update_reason(device, c, findings.get(f"container {key}", []))
             if reason is None:
                 continue
+            if device.act is not None:
+                # The actor pulls the container's own tag again, never another one: a fix in a
+                # newer version tag needs that tag in its settings, a person's decision.
+                if c.get("update_to") != "newer build":
+                    continue
+                if allowed is None:
+                    try:
+                        allowed = (await actor.abilities(self.keys, device)).get("update-container", [])
+                    except Exception:
+                        allowed = []
+                if "*" not in allowed and c["name"] not in allowed:
+                    continue  # the host doesn't let Kastellan update this one
             done = f"auto:{id}:{key}:{c.get('update_to')}:{c.get('update_digest', '')}"
             if done in self.alarms.seen_events:
                 continue  # once per new image
             self.alarms.event(done, "", "", id, datetime.now(UTC), send=False)
-            try:
+            task = asyncio.create_task(self._update_one(id, device, c, reason), name=f"update {id} {key}")
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+
+    async def _update_one(self, id: str, device: Device, c: dict[str, Any], reason: str) -> None:
+        key = c.get("key", c["name"])
+        outcome, severity = "interrupted (the hub stopped)", Severity.CRITICAL
+        try:
+            if device.act is not None:
+                result = await actor.act(self.keys, device, "update-container", c["name"])
+                outcome = "done" if result.get("updated") else f"nothing to do: {result.get('why', '')}"
+            else:
+                assert device.docker is not None and device.docker.trigger is not None
                 await docker.run_trigger(device.docker.wud, c["wud_id"], device.docker.trigger)
-                outcome, severity = "started", Severity.WARNING
-            except Exception as e:
-                outcome, severity = f"failed: {type(e).__name__}", Severity.CRITICAL
+                outcome = "started"
+            severity = Severity.WARNING
+        except Exception as e:
+            outcome, severity = f"failed: {str(e)[:120] or type(e).__name__}", Severity.CRITICAL
+        finally:
+            # Written whatever happened, also when the hub stops halfway (before any await).
             self.audit.record(
                 "update.auto",
                 None,
@@ -637,10 +751,9 @@ class Hub:
                 reason=reason,
                 outcome=outcome,
             )
-            title = f"{device.name}: updating {c['name']} to {c.get('update_to')} ({outcome})"
-            await notify.send(
-                self.config.notify, [Message(severity, title, f"because of {reason}", id)], datetime.now(UTC)
-            )
+        title = f"{device.name}: updating {c['name']} to {c.get('update_to')} ({outcome})"
+        # Through the outbox, like every alarm: retried when a channel can't be reached.
+        await self._send([Message(severity, title, f"because of {reason}", id)], datetime.now(UTC))
 
     async def push_crl(self, ovpn: OpenVpn, renew: bool = False) -> None:
         """Bring the CRL to the OpenVPN server and note when it expires."""

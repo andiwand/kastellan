@@ -23,6 +23,9 @@
 	import AccessSetup from '#lib/components/AccessSetup.svelte';
 	import DeviceEditor from '#lib/components/DeviceEditor.svelte';
 	import DeviceKeys from '#lib/components/DeviceKeys.svelte';
+	import CollectorSetup from '#lib/components/CollectorSetup.svelte';
+	import ActorSetup from '#lib/components/ActorSetup.svelte';
+	import HostHealth from '#lib/components/HostHealth.svelte';
 	import Pencil from '@lucide/svelte/icons/pencil';
 
 	const id = $derived(page.params.id ?? '');
@@ -31,6 +34,14 @@
 	const parent = $derived(device?.parent ? store.byId.get(device.parent) : undefined);
 	const children = $derived((store.devices ?? []).filter((d) => d.parent === id));
 	let editing = $state(false);
+	/** One action through the host's actor; what happened, in words. */
+	async function actOn(ability: 'update-container' | 'restart-container', name: string) {
+		const r = await api.act(id, ability, name);
+		if (ability === 'restart-container') return 'Restarted.';
+		return r.updated
+			? `Updated (${r.from} → ${r.to}).`
+			: `Nothing to do: ${r.why ?? 'already the newest'}.`;
+	}
 	const webUi = $derived(
 		device?.checks.find((c) => c.type === 'http')?.target as string | undefined
 	);
@@ -237,9 +248,40 @@
 		/>
 	</div>
 
+	{#if device.host_report}
+		<HostHealth
+			report={device.host_report}
+			checked={device.host_checked ?? null}
+			error={device.host_error ?? null}
+			reboot={device.act && store.me?.role === 'admin' && store.me.user
+				? async () => {
+						await api.act(id, 'reboot');
+						return 'Rebooting in a minute (cancel on the host: shutdown -c).';
+					}
+				: null}
+			upgrade={device.act && store.me?.role === 'admin' && store.me.user
+				? async () => {
+						const r = await api.act(id, 'upgrade-packages');
+						const n = r.upgraded ?? 0;
+						return `${n} ${n === 1 ? 'package' : 'packages'} updated${r.reboot ? '; it wants a reboot now' : ''}.`;
+					}
+				: null}
+		/>
+	{:else if device.collect && device.host_error}
+		<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
+			The collector doesn't answer: {device.host_error}
+		</p>
+	{/if}
+
 	{#if store.me?.role === 'admin'}
 		<!-- Keyed: going from one device's page to another's starts these afresh. -->
 		{#key device.id}
+			<CollectorSetup device={device.id} canInstall={!!store.me.user} />
+			<ActorSetup
+				device={device.id}
+				containers={(device.containers ?? []).map((c) => c.name)}
+				canInstall={!!store.me.user}
+			/>
 			<AccessSetup device={device.id} canSetUp={!!store.me.user} />
 			{#if device.ssh}
 				<DeviceKeys device={device.id} canChange={!!store.me.user} />
@@ -267,13 +309,17 @@
 						· last read {ago(device.containers_checked, store.now)}
 					{/if}
 				{:else}
-					from WUD, {ago(device.containers_checked, store.now)}
+					from {device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
+						device.containers_checked,
+						store.now
+					)}
 				{/if}
 			</p>
 		</div>
 		{#if device.containers}<ContainersTable
 				containers={device.containers}
 				stale={!!device.containers_error}
+				act={device.act && store.me?.role === 'admin' && store.me.user ? actOn : null}
 			/>{/if}
 	{/if}
 

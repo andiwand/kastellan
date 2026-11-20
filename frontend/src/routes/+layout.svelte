@@ -2,6 +2,7 @@
 	import './layout.css';
 	import { page } from '$app/state';
 	import { store } from '#lib/state.svelte.js';
+	import { ago } from '#lib/format.js';
 	import { needsAttention } from '#lib/status.js';
 	import Logo from '#lib/components/Logo.svelte';
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
@@ -120,6 +121,27 @@
 						<span class="font-medium text-text">Sign-in is off.</span> Anyone who reaches this page is
 						an admin; the terminal and remote desktop stay locked.
 					</p>
+				{/if}
+				{#if store.alarms?.heartbeat?.on}
+					{@const hb = store.alarms.heartbeat}
+					<div
+						class="flex items-center gap-2"
+						title="Kastellan calls your dead man's switch every minute; if the calls stop, it warns you that the hub is gone."
+					>
+						<span
+							class="size-1.5 rounded-full"
+							style:background={hb.error
+								? 'var(--warning)'
+								: hb.last
+									? 'var(--good)'
+									: 'var(--offline)'}
+						></span>
+						{hb.error
+							? `Heartbeat failing (${hb.error})`
+							: hb.last
+								? `Heartbeat sent ${ago(hb.last, store.now)}`
+								: 'Heartbeat starting'}
+					</div>
 				{/if}
 				<div class="flex items-center gap-2">
 					<span

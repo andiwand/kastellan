@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Setting up a door (collector, actor, SSH access) in a dialog: your login, root through sudo
+  (also with another password) or su with root's password, the output live, then done; or the
+  commands to run yourself.
+- System updates: pending ones read from apt (a dry run), installed through the actor's new
+  ability (apt upgrade, keeps config files, removes nothing).
+- README rewritten, short; the website shows hosts and an up-to-date roadmap.
+- The collector: how a Linux host is doing (space, RAID, disk health, temperatures, failed
+  services, updates, reboots, Docker containers) through one read-only door: a user that may run
+  one root-owned script, and a key bound to it. Installed from the device page. Alarms for full
+  disks, a degraded RAID, failing disks, heat, failed services.
+- Container updates asked of the registries directly (no WUD needed).
+- The actor: what Kastellan may change on a host, installed ability by ability (update or
+  restart chosen containers, reboot). One root-owned script and one sudo rule per chosen
+  ability, a dispatcher the act key is bound to; updates roll back if the new container fails.
+- Heartbeat: a dead man's switch Kastellan calls every minute.
 - The device form: fields in even rows, a service's default name as its placeholder, and the
   page behind no longer scrolls while it is open.
 - `kastellan hash-password` takes a password under 10 characters after a warning (or with

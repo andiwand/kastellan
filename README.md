@@ -1,386 +1,188 @@
-# Kastellan
+<p align="center"><img src="website/favicon.svg" width="72" alt=""></p>
 
-Every device on your network, in one place.
+<h1 align="center">Kastellan</h1>
 
-Kastellan is a self-hosted hub that watches your router, access points, switches, servers, PCs,
-laptops, printers and cameras. It answers whether everything is all right, and if not, what is
-wrong, since when, and what the device is connected through. It is early: today it watches;
-next it learns to look after things (a terminal and remote desktop in the browser, device
-drivers, updates, backups). See [PLAN.md](PLAN.md).
+<p align="center"><b>Every device on your home network in one place.</b><br>
+A self-hosted hub that watches routers, access points, servers, PCs, printers and cameras, and
+lets you look after them: through narrow doors you open host by host.</p>
 
-![The overview](website/img/overview-light.webp)
+<p align="center">
+<a href="https://github.com/andiwand/kastellan/actions/workflows/ci.yml"><img src="https://github.com/andiwand/kastellan/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/andiwand/kastellan/releases"><img src="https://img.shields.io/github/v/release/andiwand/kastellan?include_prereleases" alt="Release"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-brightgreen.svg" alt="License: MIT"></a>
+</p>
 
-## What it does today
+<p align="center"><a href="https://andiwand.github.io/kastellan/">Website</a> ·
+<a href="#quick-start">Quick start</a> · <a href="#configuration">Configuration</a> ·
+<a href="#access-to-your-hosts">Access</a> · <a href="#development">Development</a></p>
 
-- **Checks**: ping, TCP ports and HTTP endpoints per device, on an interval.
-- **Overview**: one line saying whether anything needs you, the failing checks, every device's
-  last 24 hours as a strip, and the ups and downs of the day.
-- **Calm by default**: a PC or laptop that is off is *offline*, not *down*.
-- **Device pages**: response times, uptime over 1 h / 24 h / 7 d, and the activity of each check.
-- **List or networks**: the devices as a searchable list, or by network: each network a zone
-  (home, a second site, the internet), devices in two networks on the boundary between them
-  (your router between home and the internet), and a globe on what can be reached from the
-  internet, with every way in listed (a public name, and the device it leads to). Networks come
-  from the addresses; name them, or put a device in several, in config.yaml. The router is put
-  on the boundary to the internet by itself when Kastellan runs on Linux with host networking
-  (as compose.yaml does); elsewhere say `network: [home, internet]` on it:
+---
 
-  ```yaml
-  networks:
-    home: {name: Home, cidr: 192.168.15.0/24}
-    flat: {name: Holiday flat, cidr: 10.0.5.0/24}
-  devices:
-    vpn:
-      host: 192.168.15.10
-      network: [home, internet]   # on the boundary
-  ```
-- **Certificates and ways in**: every `https` check also looks at the certificate (valid or why
-  not, when it ends, who issued it), and a check by name shows the address it led to. Give a
-  service one check per way in, say its address at home and its public domain, to see each
-  path working. See [Certificates](#certificates).
-- **Docker updates**: `docker: {wud: http://host:3000}` reads the containers and their updates
-  from [WUD](https://getwud.github.io/wud/), and says which it can't check (a registry WUD
-  doesn't know, or a `latest`-style tag whose digest WUD doesn't watch).
-- **Drivers**: `driver: fritzbox` reads model and FRITZ!OS version (no password needed);
-  firmware updates show in the activity.
-- **Plain files**: `config.yaml` for the configuration, one CSV file per day for the history.
+> Kastellan is an early preview, built on one real home network; see [PLAN.md](PLAN.md).
 
-## Try it
+- **Checks**: ping, ports and web pages per device, with history (CSV files), uptime, the
+  software and version each service reports, and its certificate.
+- **Networks**: devices by network, the router on the boundary to the internet, and every way
+  in from outside that Kastellan knows.
+- **Alarms** without storms: one alarm for a device and everything behind it, quiet hours, mute,
+  acknowledge. To ntfy, Gotify, Telegram, e-mail or a webhook.
+- **Vulnerabilities** in what devices and containers run (NVD, OSV, CISA KEV), urgent where a
+  device faces the internet.
+- **Hosts**: disks and space, RAID, disk health, temperatures, failed services, pending
+  system updates and reboots, Docker containers and their updates; installing system updates,
+  updating or restarting a container, a reboot: as far as the host allows.
+- **Terminal and remote desktop** in the browser (SSH; RDP and VNC through Apache Guacamole).
+- **VPN**: WireGuard clients through wg-easy, OpenVPN clients through easy-rsa.
+- **SSH keys**: which keys may log in where; rotating Kastellan's own.
+- **A YAML file, no database**: edit `config.yaml` by hand or in the app; comments stay.
+- **Local**: no account, no cloud, no telemetry. Reach it from home or through a VPN only.
 
-With Docker, the demo in one line:
+## Quick start
 
-```sh
-docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 ghcr.io/andiwand/kastellan:0.2.0
-```
-
-From a checkout, with [uv](https://docs.astral.sh/uv/) and Node.js 24:
-
-```sh
-cd frontend && npm install && npm run build && cp -r build ../backend/src/kastellan/web
-cd ../backend && KASTELLAN_DEMO=1 uv run kastellan
-```
-
-Open http://localhost:8100. Demo mode shows a made-up network with a day of simulated history;
-nothing on your network is contacted.
-
-For your own network with Docker: `docker compose up -d` (see [compose.yaml](compose.yaml)).
-
-## Your own network
-
-Copy [config.example.yaml](config.example.yaml) to `data/config.yaml` (Docker:
-`config/config.yaml`) and describe your devices:
+With Docker (Linux; amd64 or arm64), using [compose.yaml](compose.yaml):
 
 ```yaml
+services:
+  kastellan:
+    image: ghcr.io/andiwand/kastellan:latest
+    restart: unless-stopped
+    network_mode: host # the checks see the network as the host does
+    environment:
+      TZ: Etc/UTC
+    volumes:
+      - ./config:/config # config.yaml
+      - ./data:/data # history, sign-in, Kastellan's SSH keys, the audit log
+```
+
+```sh
+docker compose up -d
+```
+
+Open `http://<host>:8100`. To try it first: `docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1
+ghcr.io/andiwand/kastellan` shows a made-up network.
+
+Ping runs without root; on Linux the host must allow that once:
+`sysctl -w net.ipv4.ping_group_range="0 2147483647"` (persist it in `/etc/sysctl.d/`). Remote
+desktop needs guacd next to it (in [compose.yaml](compose.yaml), listening on localhost only).
+
+## Configuration
+
+Everything is in `config.yaml` (`/config` in the container), editable in the app once sign-in is
+on. Kastellan picks up changes by itself. Settings left out keep their defaults:
+
+```yaml
+check_interval: 60 # seconds
+
 devices:
-  router:
-    host: 192.168.178.1
-    kind: router
+  router: # the id: history and alarms are filed under it
+    name: FRITZ!Box
+    host: 192.168.1.1
+    kind: router # router, access-point, switch, server, pc, laptop, printer, camera, other
+    driver: fritzbox # model and firmware, without a password
     checks:
       - ping
-      - http: https://192.168.178.1
+      - http: https://192.168.1.1
+        name: web
   nas:
     host: nas.lan
     kind: server
-    parent: router
+    exposed: true # reachable from the internet: vulnerabilities count as urgent
+    ssh: { user: andreas } # the terminal, and Kastellan's SSH access
+    collect: {} # the collector (see below)
+    act: {} # the actor (see below)
     checks:
-      - ping
       - tcp: 22
         name: ssh
+      - http: https://media.example.org # by its public name: its certificate is watched
+        name: jellyfin (public)
+  pc:
+    host: 192.168.1.30
+    kind: pc # may be off: offline, not down
+    desktop: { protocol: rdp, user: andreas }
+    checks: [{ tcp: 3389 }] # Windows answers no ping by default
+
+networks: # optional: names for networks, or devices in several (network: [home, vpn])
+  home: { name: Home, cidr: 192.168.1.0/24 }
+
+users: # sign-in; off while empty
+  andreas:
+    role: admin # or observer: sees everything, changes nothing
+    password: scrypt$... # from: kastellan hash-password
+
+alarms:
+  down_after: 180 # seconds down before an alarm
+  cert_days: 14 # a watched certificate ending sooner
+  disk_warning: 85 # percent full; disk_critical: 95
+
+notify:
+  - ntfy: https://ntfy.sh/your-secret-topic
+    min: warning # info, warning, critical
+    quiet: "22:00-07:00" # only critical then
+  - telegram: 123456789
+    token: "123456:ABC-your-bot-token" # also: gotify, email (smtp: smtps://user:pass@host), webhook
+
+heartbeat: https://hc-ping.com/<id> # called every minute: a dead man's switch tells you when it stops
+
+vpn:
+  wireguard: { wg_easy: http://nas.lan:51821 } # its password: kastellan secret set wg-easy
+  openvpn: { pki: nas, server: router } # easy-rsa on the nas, OpenVPN on the router
 ```
 
-Kastellan picks up changes to the file by itself. Run it without `KASTELLAN_DEMO`.
+| Variable              | Default                 | What                                                        |
+| --------------------- | ----------------------- | ----------------------------------------------------------- |
+| `KASTELLAN_CONFIG`    | `data/config.yaml`      | The config file (`/config/config.yaml` in the image).       |
+| `KASTELLAN_DATA`      | the config's folder     | History, sign-in, keys, logs (`/data`).                     |
+| `KASTELLAN_PORT`      | `8100`                  | The web app and the API.                                    |
+| `KASTELLAN_HOSTS`     |                         | Names you open it by (`kastellan.lan`); addresses always work. Others are refused (DNS rebinding). |
+| `KASTELLAN_GUACD`     | `127.0.0.1:4822`        | guacd, for remote desktop.                                  |
+| `KASTELLAN_DEMO`      |                         | `1`: a made-up network.                                     |
+| `KASTELLAN_LOG_LEVEL` | `info`                  | `debug`, `info`, `warning`, `error`.                        |
 
-Or change it in the app, once sign-in is on (see [Sign-in](#sign-in); while it is off, anyone
-who reaches the page would be an admin, so the app doesn't write the file then):
+### Sign-in
 
-- **Devices**: "Add device" on the device list, "Edit" on a device's page: name, address,
-  kind, tags, always on, and its services (ping, ports, web addresses). The id (`nas`) stays:
-  the history is filed under it.
-- **Config**: the whole file in an editor, for alarms, notifications, VPN and users.
+Off until the first user is in `config.yaml`; then everyone signs in, and it never turns itself
+off again. **Observers** see everything; **admins** also change things. Whatever reaches into a
+device (terminal, desktop, installs, keys, editing the config) needs sign-in on, every change
+goes to `data/audit.log`. Short passwords are allowed after a warning (`--short`).
 
-Either way the file stays yours: comments and order are kept, a change is checked by the same
-rules as loading it (a mistake says which line, and nothing is saved), saving over a change
-made in the meantime is refused, and the version before goes to `data/config-backups/` (the
-last 30). Every change is in the audit log. In Docker, the config folder must be writable by
-the container's user.
+## Access to your hosts
 
-Notes:
+Kastellan holds no root anywhere by itself. You open each door on the device's page, in a dialog:
+either run the commands it shows yourself (Kastellan never sees a login), or type your login and
+password (root through sudo, or su with root's password), used for that one connection, never
+stored, the output shown as it runs. Each door is a user of its own with a key bound to one
+command (`restrict`, `command=`, only from the hub's address):
 
-- **Ping without root.** Kastellan pings unprivileged. macOS allows that; on Linux (and in
-  Docker with host networking) the host must allow it once:
-  `sysctl -w net.ipv4.ping_group_range="0 2147483647"` (persist it in `/etc/sysctl.d/`). The
-  app shows a banner when ping is refused.
-- **Windows** answers no ping by default. Check a port instead: `tcp: 3389` (remote desktop)
-  or `tcp: 445` (file sharing), and set `kind: pc` so a PC that is off counts as offline.
-- **False alarms.** Ping sends three packets and any reply counts; a failed port or HTTP check
-  is tried once more after two seconds before it counts as down.
+| Door          | User                  | What it can do                                                                 |
+| ------------- | --------------------- | ------------------------------------------------------------------------------ |
+| SSH access    | yours, or `kastellan` | The terminal, as that user.                                                     |
+| Collector     | `kastellan-collect`   | Run one root-owned, read-only script: system, space, RAID, SMART, temperatures, services, updates, containers (never their settings). |
+| Actor         | `kastellan-act`       | Only the abilities you tick, each a root-owned script with one sudo rule: update or restart chosen containers, install system updates (apt), reboot. |
+| VPN           | `kastellan-pki`, root | Only the client-certificate and CRL scripts.                                    |
 
-Settings (environment): `KASTELLAN_CONFIG` (default `data/config.yaml`), `KASTELLAN_DATA`
-(default: the config's folder), `KASTELLAN_HOST`, `KASTELLAN_PORT` (8100),
-`KASTELLAN_LOG_LEVEL`, `KASTELLAN_DEMO`, and `KASTELLAN_HOSTS`: the names you reach the hub by
-(comma-separated, e.g. `kastellan.lan`). IP addresses and localhost always work; other names are
-refused, which stops DNS-rebinding attacks from web pages you visit.
+A taken-over hub gets exactly what the doors allow. Container updates are asked of the registries
+directly; updating pulls the container's own tag again (only an image that came from its
+registry) and recreates it with its settings, and puts the old one back if the new one doesn't
+run steadily. System updates keep changed config files and never remove a package. Automatic updates
+(`auto_update: true`) happen only for a known vulnerability on an `exposed` device.
 
-## Sign-in
+Host keys are pinned (trusted once on the page). Kastellan's own key can be rotated on the
+**Access** page: added and tried everywhere, then switched, then the old one removed.
 
-Sign-in is off until config.yaml has a user. Make a password hash and add it:
+## Development
+
+`backend/` (Python, FastAPI), `frontend/` (SvelteKit, Tailwind), `website/` (GitHub Pages).
+[AGENTS.md](AGENTS.md) explains the architecture.
 
 ```sh
-cd backend && uv run kastellan hash-password      # Docker: docker exec -it kastellan kastellan hash-password
-# Under 10 characters it asks whether you mean it; --short takes it without asking.
+cd frontend && npm install && npm run build && cp -r build ../backend/src/kastellan/web
+cd backend && KASTELLAN_DEMO=1 uv run kastellan  # http://localhost:8100
+cd frontend && npm run dev                        # http://localhost:5173, with hot reload
+
+cd backend && uv run ruff check . && uv run ruff format --check . && uv run pytest
+cd frontend && npm run lint && npm run check && npm test
 ```
-
-```yaml
-users:
-  andreas:
-    role: admin          # admin, or observer: sees everything, changes nothing
-    password: scrypt$... # the hash printed above
-```
-
-Sessions last 30 days of not being used; removing a user from config.yaml signs them out at
-once. Sign-ins, failed attempts and sign-outs go to `data/audit.log`. While sign-in is off,
-everyone who reaches the page is an admin, and what hands out access to devices (the terminal,
-remote desktop) stays locked.
-
-## Terminal
-
-A device with `ssh:` gets a terminal in the browser (admins only, and only with sign-in on):
-
-```yaml
-devices:
-  sv1:
-    host: 192.168.15.10
-    ssh:
-      user: andreas  # a user whose authorized_keys has the hub's key
-```
-
-The hub has its own SSH key (`data/ssh/hub_ed25519`, made on first use); the app shows its
-public key to put into `~/.ssh/authorized_keys` on the device. Prefer a normal user to root,
-and tie the key to the hub's address, so a copy of it is no use elsewhere:
-`from="192.168.15.10" ssh-ed25519 AAAA... kastellan-hub`.
-
-A terminal ends when its session does: signing out, a new password or role in config.yaml, or
-removing the user closes it at once. It also ends after 30 minutes without typing and after
-8 hours in any case; a user can have 4 open. The first connection shows the
-host's key fingerprint to compare and trust; if it later changes, Kastellan refuses until you
-say the host was reinstalled. Opening and closing a terminal goes to the audit log; what is
-typed does not.
-
-If config.yaml is broken when the hub starts, it locks itself (everything but /api/health
-answers 503) rather than starting without sign-in. Once sign-in has been on, a config.yaml
-without users is refused too; to turn sign-in off on purpose, also delete
-`data/signin-required`.
-
-## Remote desktop
-
-A device with `desktop:` gets its screen in the browser, with mouse and keyboard (admins only,
-with sign-in on). It goes through Apache Guacamole's guacd, which compose.yaml starts next to
-Kastellan on localhost:4822 (`KASTELLAN_GUACD` to change).
-
-```yaml
-devices:
-  gaming-pc:
-    host: 192.168.15.20
-    kind: pc
-    desktop:
-      protocol: rdp   # Windows Pro; for Windows Home, macOS or Linux desktops: vnc
-      user: andreas   # suggested in the form
-```
-
-The password is asked for when connecting, used once, and never stored or put in a URL.
-Kastellan doesn't let the remote side reach the hub's files, printers or clipboard, and passes
-only mouse, keyboard and screen size from the browser to guacd. It ends after 30 minutes without
-input. Opening and closing goes to the audit log. Not tested against real desktops yet.
-
-Mind the certificate: Windows' RDP certificate is self-signed and guacd can't pin it, so
-`ignore_cert: true` (the default) means someone in the middle on your network could catch the
-login. Prefer `security: nla`, and give the PC a certificate guacd trusts, then set
-`ignore_cert: false`. guacd itself has no sign-in: anything on the hub's host can use it, which is
-why it listens on localhost only.
-
-## Certificates
-
-Every `https` check looks at the certificate the service presents, with a handshake of its own
-next to the request: valid (a trusted chain, for this name, not expired) or why not, when it
-ends, and who issued it. The services table shows it under the address, and a check to a name
-shows the address the name led to.
-
-Alarms come only for certificates that should be valid: names on the internet (not addresses,
-and not `.lan`, `.local`, `.home.arpa`, `.internal`, `.fritz.box`, ...), and checks with
-`verify: true`. A certificate that is not valid is critical; one that ends within
-`alarms.cert_days` (14) is a warning. A device at home with a self-signed certificate is normal
-and stays grey. Set `tls: true` or `tls: false` on a check to decide yourself.
-
-```yaml
-  sv1:
-    host: 192.168.15.10
-    checks:
-      - http: http://192.168.15.10:8473      # Norn at home
-        name: norn
-      - http: https://norn.example.org       # Norn by its public name (certificate watched)
-        name: norn (public)
-```
-
-Checked from home, a public name shows whether it works *from home* (through the router's
-public address and back in, or a local DNS entry: "via ..." says which); it doesn't prove the
-service is reachable from the internet.
-
-## Alarms and notifications
-
-Kastellan raises an alarm when a device that should always be on is down for 3 minutes
-(critical), or one of its services is (warning). A device that is down covers the devices
-behind it (its `parent` chain): one alarm, not one per device. Container updates and changed
-software or firmware are sent as info. Alarms show on the overview; an admin can acknowledge
-them, and mute a device for an hour. Every alarm goes to `data/alarms.log`.
-
-```yaml
-alarms:
-  down_after: 180             # seconds
-  cert_days: 14               # warn this many days before a watched certificate ends
-notify:
-  - ntfy: https://ntfy.sh/your-secret-topic   # or your own ntfy server
-    min: warning              # info, warning, critical
-    quiet: "22:00-07:00"      # only critical at night
-  - webhook: https://example.org/hook         # JSON: title, body, severity, device
-  - gotify: https://gotify.example.org         # with an application token
-    token: A1b2c3
-  - telegram: 123456789                        # the chat id; the token is the bot's
-    token: "123456:ABC-..."
-  - email: me@example.org
-    smtp: smtps://bot%40example.org:password@mail.example.org:465   # or smtp://...:587 (STARTTLS)
-```
-
-E-mail is never sent in clear: `smtps://` is TLS from the start, `smtp://` must offer STARTTLS.
-Tokens and passwords stay out of the log and are masked in the audit log.
-
-## Vulnerabilities and automatic updates
-
-Kastellan looks up what your devices run in public vulnerability databases: **NVD** (CVEs by
-product and version), **OSV** (packages, e.g. Home Assistant), and CISA's **KEV** catalogue of
-vulnerabilities exploited in the wild. It uses what it already knows: SSH and web server
-banners, firmware from drivers, container images with a version tag. Results show on each
-device and are refreshed every 6 hours (cached for a day). Only product names and versions are
-sent to these services.
-
-Mark devices reachable from the internet with `exposed: true`. Then:
-
-| finding                         | exposed device | internal device |
-|---------------------------------|----------------|-----------------|
-| exploited (KEV) or critical     | critical alarm | warning alarm   |
-| high                            | warning alarm  | message         |
-| medium, low                     | shown          | shown           |
-
-When software reports a distribution's package revision (OpenSSH on Ubuntu), the distribution
-may have fixed a bug without changing the upstream version: such findings say "maybe fixed by
-your distribution", are messages at most, and never trigger anything.
-
-Automatic updates are off. With `auto_update: true` on a device, and a WUD trigger
-(`docker: {wud: ..., trigger: docker.local}`), Kastellan updates a container by itself only when
-the device is `exposed`, a confirmed high, critical or exploited vulnerability is in that
-container, and WUD offers a newer image. It does so once per new image, writes it to the audit
-log and tells you.
-
-```yaml
-vulns:
-  every_hours: 6
-  nvd_api_key: ...      # optional, faster NVD lookups
-```
-
-## VPN access
-
-One page to give and take away VPN access: WireGuard through
-[wg-easy](https://github.com/wg-easy/wg-easy) (15.x), OpenVPN through an
-[easy-rsa](https://github.com/OpenVPN/easy-rsa) PKI. Admins (with sign-in on) add clients,
-turn them off or revoke them, and download a ready `.conf`/`.ovpn` or show a QR code. Every
-action goes to the audit log.
-
-```yaml
-vpn:
-  wireguard:
-    wg_easy: http://192.168.15.10:51821  # its admin login; 2FA must be off for its API
-    user: admin                           # password: kastellan secret set wg-easy
-  openvpn:
-    pki: sv1          # the device with the easy-rsa PKI (its ssh: user runs kastellan-pki)
-    server: openwrt   # the OpenVPN server (its ssh: user runs kastellan-crl)
-    days: 365         # how long new client certificates last
-```
-
-**wg-easy**: once Kastellan manages the clients, wg-easy's web interface doesn't need to be on
-your network. Publish only WireGuard's UDP port and let Kastellan reach the web port on a Docker
-network both share (or on localhost when both run on the same host): its API uses the admin
-password over HTTP Basic and needs 2FA off, so it must never be reachable from outside. The VPN
-page warns when the password would cross the network in clear.
-
-**SSH access** for Kastellan is set up from each device's page (admins): what works now, and
-the commands for either way you prefer: **one login** (Kastellan's key added to your existing
-account) or **a user of its own** (`kastellan`, with sudo without a password for installs). Copy
-them, or let Kastellan run them once with a login and password you type: used for that one
-connection and never stored. The key line carries `from="<the hub's address>"`.
-
-**SSH keys** on a device are listed on its page (admins): every account's `authorized_keys`
-when Kastellan's login is root or may use sudo, else the login's own; Kastellan's keys are
-marked. A signed-in admin can remove any other key (audited). Other users' files are read and
-written *as those users*, so a link in someone's home can't redirect root.
-
-**Rotating Kastellan's key** (the Access page): a new key is added to every device with an
-`ssh:` login and tried there; once it works everywhere (or you choose to go on without a device
-that failed), Kastellan switches to it and removes the old key from each device, then deletes
-the old private key. Until then both keys work, so nothing breaks half-way, and the progress
-survives a restart. The VPN key (bound to its scripts) isn't rotated this way yet.
-
-**OpenVPN** works in one of two modes (`vpn.openvpn.mode`):
-
-- **restricted** (the default, and safer): two small scripts are installed, and Kastellan's VPN
-  key may run them and nothing else (bound with `command=` in `authorized_keys`).
-  - `kastellan-pki` on the PKI host, run by a user of its own that owns the PKI: list, issue,
-    revoke, renew the CRL, export a client's `.ovpn`. It only ever touches **client**
-    certificates; the CA and the server's key can't be reached through it.
-  - `kastellan-crl` on the OpenVPN server: takes the new CRL (checked against your CA when
-    `openssl` is there; `opkg install openssl-util` on OpenWrt) and puts it in place, so a revoked
-    client is refused at once (`crl-verify` in the server config).
-- **direct**: nothing is installed. Kastellan sends the same scripts over the hosts' normal
-  `ssh:` logins on every call. Simpler, but those logins can do anything.
-
-The VPN page has a **Setup** section per host: what works now (tried for real), the exact
-commands to install the scripts (generated from your config, with Kastellan's VPN key), and
-"Install for me" when the host has a normal login that is root or may use sudo without a
-password. Kastellan has a separate key for this (`data/ssh/vpn_ed25519`), so binding it to the
-scripts never takes away its terminal access.
-
-```yaml
-vpn:
-  openvpn:
-    mode: restricted
-    pki: sv1                         # where easy-rsa is
-    server: openwrt                  # the OpenVPN server
-    easyrsa_dir: /etc/openvpn/easy-rsa
-    crl_path: /etc/openvpn/crl.pem   # on the server
-    ca_path: /etc/openvpn/ca.crt     # on the server
-    client_template: |               # optional: installed for you
-      client
-      remote vpn.example.org 1194
-      remote-cert-tls server
-      <ca>
-      {{ca}}
-      </ca>
-      <cert>
-      {{cert}}
-      </cert>
-      <key>
-      {{key}}
-      </key>
-```
-
-easy-rsa's CRLs expire after 180 days, and OpenVPN then refuses every client; Kastellan renews
-the CRL and sends it to the server every day, and the VPN page shows until when it is valid. If a
-revoke can't reach the server, the revoke still stands; the page says so and offers to send the
-list again.
-
-## Security
-
-Run Kastellan only where your own network or VPN can reach it, never on the internet. The security design (keys instead of passwords, per-device limits, roles,
-updates only on known vulnerabilities of internet-facing devices) is in [PLAN.md](PLAN.md).
 
 ## License
 
-MIT
+MIT.

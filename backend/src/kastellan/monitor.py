@@ -49,6 +49,9 @@ class DeviceStatus:
     containers_checked: datetime | None = None
     containers_error: str | None = None
     vulns: dict[str, Any] | None = None  # from the vulnerability sweep (hub, vulns.py)
+    host: dict[str, Any] | None = None  # the collector's report (host/collector.py)
+    host_checked: datetime | None = None
+    host_error: str | None = None
 
     @property
     def state(self) -> State:
@@ -139,7 +142,10 @@ class Monitor:
                 c.cert = c.address = None  # about what it pointed at before
         for id, device in config.devices.items():
             status = self.status.setdefault(id, DeviceStatus())
-            if device.docker is None or self._hosts.get(id, device.host) != device.host:
+            moved = self._hosts.get(id, device.host) != device.host
+            if device.collect is None or moved:
+                status.host = status.host_checked = status.host_error = None
+            if (device.docker is None and device.collect is None) or moved:
                 status.containers = status.containers_checked = status.containers_error = None
             if device.driver is None or self._hosts.get(id, device.host) != device.host:
                 status.info = status.info_checked = None

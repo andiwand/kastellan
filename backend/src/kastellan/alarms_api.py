@@ -36,6 +36,16 @@ def router(hub: Hub) -> APIRouter:
             "open": [asdict(a) for a in hub.alarms.open.values()],
             "muted": {k: v for k, v in hub.alarms.muted.items() if v > now},
             "channels": len(hub.config.notify),
+            "limits": {
+                "disk_warning": hub.config.alarms.disk_warning,
+                "disk_critical": hub.config.alarms.disk_critical,
+            },
+            # The dead man's switch: on (a URL is set), when it was last reached, and why not.
+            "heartbeat": {
+                "on": bool(hub.config.heartbeat),
+                "last": hub.heartbeat_ok,
+                "error": hub.heartbeat_error,
+            },
         }
 
     @api.post("/alarms/{key:path}/ack")

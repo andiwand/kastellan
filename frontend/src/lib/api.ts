@@ -50,8 +50,89 @@ export interface Device {
 	networks: NetworkRef[]; // several: it sits on the boundary between them
 	network_assumed: boolean; // its name didn't resolve: taken to be in the hub's network
 	public_ways: PublicWay[]; // checks that reach it by a public name or address
+	collect?: boolean; // the collector reads it (collect: in config.yaml)
+	act?: boolean; // an actor is set up there (act: in config.yaml)
+	host_report?: HostReport | null;
+	host_checked?: string | null;
+	host_error?: string | null;
 	state: CheckState;
 	checks: CheckStatus[];
+}
+
+/** What the collector reports about a host (host/collector.py). Every part may be missing. */
+export interface HostReport {
+	errors?: Record<string, string>;
+	system?: {
+		hostname: string;
+		kernel: string;
+		uptime: number;
+		load: number[];
+		cpus: number;
+		memory: { total: number; available: number };
+		swap: { total: number; free: number };
+	};
+	filesystems?: {
+		mount: string;
+		device: string;
+		type: string;
+		total: number;
+		used: number;
+		available: number;
+	}[];
+	raid?: {
+		name: string;
+		active: boolean;
+		level: string;
+		devices: string[];
+		failed: string[];
+		status: string;
+		progress: { what: string; percent: number } | null;
+	}[];
+	smart?: {
+		available: boolean;
+		disks: {
+			disk: string;
+			model?: string | null;
+			passed?: boolean | null;
+			temperature?: number | null;
+			power_on_hours?: number | null;
+			reallocated?: number | null;
+			pending?: number | null;
+			uncorrectable?: number | null;
+			nvme_used_percent?: number | null;
+			nvme_media_errors?: number | null;
+			asleep?: boolean;
+			error?: string | null;
+		}[];
+	};
+	temperatures?: { sensor: string; celsius: number; limit: number | null }[];
+	services?: { failed: string[] };
+	updates?: {
+		reboot: boolean;
+		reboot_for?: string[];
+		available: number | null;
+		security: number | null;
+	};
+	docker?: unknown[] | null; // its containers (they show in the device's container list)
+}
+
+export interface ActSetup {
+	configured: boolean;
+	allowed: Record<string, string[]> | null; // what the host allows now (ability -> containers)
+	error: string | null;
+	abilities: Record<string, string>; // every ability Kastellan knows, described
+	port: number;
+	script: string; // the commands for the choice asked about
+}
+
+export interface CollectSetup {
+	configured: boolean;
+	state: 'off' | 'waiting' | 'reading' | 'failing';
+	error: string | null;
+	port: number;
+	hub_ip: string | null;
+	user: string;
+	script: string;
 }
 
 export interface NetworkRef {
@@ -104,6 +185,8 @@ export interface Alarms {
 	open: Alarm[];
 	muted: Record<string, string>;
 	channels: number;
+	heartbeat?: { on: boolean; last: string | null; error: string | null };
+	limits?: { disk_warning: number; disk_critical: number };
 }
 
 export interface Finding {
@@ -315,6 +398,56 @@ function get<T>(path: string, params: Record<string, string | number | undefined
 	return call<T>('GET', `${path}${query.size ? `?${query}` : ''}`);
 }
 
+/** How a setup gets root on the device (setup_run.py). */
+export interface SetupLogin {
+	login: string;
+	password: string;
+	port: number;
+	elevate: 'sudo' | 'su' | 'none';
+	root_password?: string | null;
+}
+
+export interface SetupOutcome {
+	ok: boolean;
+	error?: string;
+	config?: string;
+	exit?: number;
+}
+
+/** Run a setup on a device and follow its output line by line (the setup dialog). Errors before
+ * it starts (a refused login, an untrusted host key) throw; the outcome is the last line. */
+export async function streamSetup(
+	path: string,
+	body: object,
+	onLine: (line: string) => void
+): Promise<SetupOutcome> {
+	const response = await fetch(`/api${path}`, {
+		method: 'POST',
+		headers: { 'X-Kastellan': '1', 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (response.status === 401 && !(await response.clone().text()).includes('refused'))
+		throw new SignedOut('sign in first');
+	if (!response.ok || !response.body)
+		throw new Error((await detail(response)) ?? `HTTP ${response.status}`);
+	const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+	let buffer = '';
+	let outcome: SetupOutcome = { ok: false, error: 'the connection ended early' };
+	for (;;) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		buffer += value;
+		let nl: number;
+		while ((nl = buffer.indexOf('\n')) >= 0) {
+			const line = buffer.slice(0, nl);
+			buffer = buffer.slice(nl + 1);
+			if (line.startsWith('KASTELLAN-DONE ')) outcome = JSON.parse(line.slice(15));
+			else onLine(line);
+		}
+	}
+	return outcome;
+}
+
 export interface Me {
 	signin: boolean; // false: sign-in is off, everyone is an admin
 	user: string | null;
@@ -346,22 +479,6 @@ export const api = {
 	ovpnPushCrl: () => call<{ crl: unknown }>('POST', '/vpn/openvpn/crl'),
 	ovpnSetup: () => get<Setup>('/vpn/openvpn/setup'),
 	access: (device: string) => get<Access>(`/devices/${encodeURIComponent(device)}/access`),
-	setUpAccess: (
-		device: string,
-		body: {
-			login: string;
-			password: string;
-			user: string;
-			create: boolean;
-			sudo: boolean;
-			port: number;
-		}
-	) =>
-		call<{ output: string; config: string }>(
-			'POST',
-			`/devices/${encodeURIComponent(device)}/access/setup`,
-			body
-		),
 	ovpnInstall: (role: string) =>
 		call<{ output: string }>('POST', `/vpn/openvpn/setup/${role}/install`),
 	config: () => get<{ text: string; version: string; error: string | null }>('/config'),
@@ -380,6 +497,28 @@ export const api = {
 		),
 	networks: () => get<Networks>('/networks'),
 	activity: (hours = 24) => get<ActivityEntry[]>('/activity', { hours }),
+	collectSetup: (id: string) => get<CollectSetup>(`/devices/${encodeURIComponent(id)}/collect`),
+	collectTest: (id: string) =>
+		call<{ ok: boolean; errors: Record<string, string> }>(
+			'POST',
+			`/devices/${encodeURIComponent(id)}/collect/test`
+		),
+	actScript: (id: string, abilities: string[], containers: string[]) =>
+		call<ActSetup>('POST', `/devices/${encodeURIComponent(id)}/act/script`, {
+			abilities,
+			containers
+		}),
+	act: (id: string, ability: string, container?: string) =>
+		call<{
+			updated?: boolean;
+			from?: string;
+			to?: string;
+			why?: string;
+			reboot?: string | boolean;
+			upgraded?: number;
+		}>('POST', `/devices/${encodeURIComponent(id)}/act/${ability}`, {
+			container: container ?? null
+		}),
 	hubKeys: () => get<HubKeys>('/ssh/keys'),
 	deviceKeys: (id: string) =>
 		get<{ everyone: boolean; login: string; keys: AuthorizedKey[] }>(

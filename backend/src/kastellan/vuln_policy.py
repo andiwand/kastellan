@@ -55,7 +55,8 @@ def auto_update_reason(
     Besides the device's consent and exposure: the update must stay within the same major
     version (16 → 17 can need a migration, e.g. a database's data directory), and where the fixed
     version is known, the new version must include it."""
-    if not (device.auto_update and device.exposed and device.docker and device.docker.trigger):
+    can = device.act is not None or bool(device.docker and device.docker.trigger)  # actor or WUD
+    if not (device.auto_update and device.exposed and can):
         return None
     if not container.get("update") or container.get("unchecked"):
         return None

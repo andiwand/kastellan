@@ -66,7 +66,7 @@
 			<div class="min-w-0">
 				<h2 class="text-sm font-semibold">Kastellan's key</h2>
 				<p class="mt-1 font-mono text-xs break-all text-muted">{keys.fingerprint}</p>
-				<p class="mt-1 text-xs text-faint">Made {ago(keys.made, store.now)} ago</p>
+				<p class="mt-1 text-xs text-faint">Made {ago(keys.made, store.now)}</p>
 			</div>
 			<button
 				class={button}
@@ -93,7 +93,7 @@
 		{#if !rot}
 			{#if keys.rotation?.stage === 'done'}
 				<p class="mt-3 text-xs text-muted">
-					Last rotated {ago(keys.rotation.finished ?? keys.rotation.started, store.now)} ago.
+					Last rotated {ago(keys.rotation.finished ?? keys.rotation.started, store.now)}.
 				</p>
 			{/if}
 			<button

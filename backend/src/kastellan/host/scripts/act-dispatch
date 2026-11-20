@@ -1,0 +1,49 @@
+#!/usr/bin/python3 -I -S
+# Kastellan's actor: the only thing its SSH key may run (command= in authorized_keys). Runs as
+# the user kastellan-act, which can do nothing by itself; each ability is a root-owned script
+# with its own sudo rule, installed only if chosen. This reads the requested action from
+# SSH_ORIGINAL_COMMAND, accepts exactly the known forms, and starts the ability through sudo
+# with the checked argument (never a shell). The ability checks it again.
+import os
+import re
+import sys
+
+BASE = "/usr/local/lib/kastellan/act"
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # with fullmatch
+FORMS = {
+    "update-container": NAME,  # pull its image, recreate it with the same settings
+    "restart-container": NAME,
+    "upgrade-packages": None,  # apt-get update and upgrade (keeps config files, removes nothing)
+    "reboot": None,  # in a minute (shutdown -r +1), so it can still be cancelled on the host
+}
+
+words = os.environ.get("SSH_ORIGINAL_COMMAND", "").split()
+installed = sorted(a for a in FORMS if os.path.isfile(os.path.join(BASE, a)))
+
+if words == ["abilities"]:
+    # What this host allows Kastellan (and for which containers): read-only, for the app.
+    print(" ".join(installed))
+    for ability in installed:
+        try:
+            with open(f"/etc/kastellan/act/{ability}.allow") as f:
+                allowed = [ln.strip() for ln in f if NAME.fullmatch(ln.strip()) or ln.strip() == "*"]
+            print(f"{ability}: {' '.join(allowed)}")
+        except OSError:
+            pass
+    sys.exit(0)
+
+if not words or words[0] not in FORMS:
+    print("unknown action; this host allows: " + (" ".join(installed) or "nothing"), file=sys.stderr)
+    sys.exit(2)
+ability, args = words[0], words[1:]
+if ability not in installed:
+    print(f"{ability} isn't installed on this host", file=sys.stderr)
+    sys.exit(3)
+pattern = FORMS[ability]
+if (pattern is None and args) or (pattern is not None and (len(args) != 1 or not pattern.fullmatch(args[0]))):
+    print(f"{ability}: wrong arguments", file=sys.stderr)
+    sys.exit(2)
+
+# The same python3 that runs this (the one the sudo rules name), and sudo by its full path.
+sudo = next(p for p in ("/usr/bin/sudo", "/bin/sudo", "/usr/local/bin/sudo") if os.path.exists(p))
+os.execv(sudo, ["sudo", "-n", sys.executable, "-I", "-S", os.path.join(BASE, ability), *args])
