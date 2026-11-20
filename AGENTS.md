@@ -62,6 +62,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     mode; `install_script()` is both the copyable instructions and what "Install for me" runs), `vpn_api.py` (lists for everyone signed in; changes and downloads for
     signed-in admins, audited; configs hold private keys: `no-store`). `secrets.py`: files in
     `<data>/secrets` (0600), named from config.yaml, set with `kastellan secret set`.
+  - Keys go onto devices only through `access.authorize()`: written as the target user (su), never
+    by root into a home that user controls (a symlink there would aim root's write anywhere);
+    dropbear (`/etc/openwrt_release`) gets plain lines, OpenSSH `from=` (and `restrict`).
   - A command run over SSH with nothing to send gets `stdin=asyncssh.DEVNULL`: with `input=""`
     asyncssh leaves stdin open and a script that reads it waits forever.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder

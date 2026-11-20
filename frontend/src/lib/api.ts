@@ -144,7 +144,7 @@ export interface Access {
 	hub_ip: string | null;
 	key: string;
 	checks: { name: string; ok: boolean; detail: string }[];
-	scripts: { existing: string; dedicated: string };
+	scripts: { existing: string | null; dedicated: string };
 }
 
 export interface Health {

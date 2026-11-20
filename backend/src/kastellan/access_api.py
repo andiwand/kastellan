@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import asyncssh
@@ -26,6 +27,13 @@ class Setup(BaseModel):
     create: bool = False  # create `user` (needs root or sudo)
     sudo: bool = False  # passwordless sudo for `user` (needs root or sudo)
     port: int = Field(default=22, ge=1, le=65535)
+
+
+def script_or_none(user: str, key: str, hub_ip: str | None, create: bool, sudo: bool) -> str | None:
+    try:
+        return setup_script(user, key, hub_ip, create, sudo)
+    except ValueError:
+        return None  # a login name the commands can't take; the page says so
 
 
 def router(hub: Hub) -> APIRouter:
@@ -86,8 +94,8 @@ def router(hub: Hub) -> APIRouter:
             "key": key,
             "checks": checks,
             "scripts": {
-                # One login for everything: Kastellan's key for an existing user (run as that user).
-                "existing": setup_script(user, key, hub_ip, create=False, sudo=False),
+                # One login for everything: Kastellan's key for an existing user.
+                "existing": script_or_none(user, key, hub_ip, create=False, sudo=False),
                 # A user of its own, with sudo for installs (run as root).
                 "dedicated": setup_script("kastellan", key, hub_ip, create=True, sudo=True),
             },
@@ -99,7 +107,7 @@ def router(hub: Hub) -> APIRouter:
         w = require_signin(request)
         device = device_of(id)
         if not (USER.match(body.login) and USER.match(body.user)):
-            raise HTTPException(400, "user names are lowercase letters, digits, _ and - (up to 32)")
+            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32, not starting with -)")
         hub_ip = await asyncio.to_thread(hub_address, device.host, body.port)
         script = setup_script(body.user, hub.keys.public_key(), hub_ip, body.create, body.sudo)
         privileged = body.create or body.sudo or (body.user != body.login)
@@ -111,6 +119,7 @@ def router(hub: Hub) -> APIRouter:
             "create": body.create,
             "sudo": body.sudo,
         }
+        audit = partial(hub.audit.record, "access.setup", w.user, client_address(request.scope), **details)
         try:
             async with await hub.keys.connect(target, password=body.password) as conn:
                 if privileged and body.login != "root":
@@ -124,29 +133,23 @@ def router(hub: Hub) -> APIRouter:
                 else:
                     r = await conn.run("sh -s", input=script, check=False, timeout=60)
         except (UnknownHost, ChangedHost) as e:
-            hub.audit.record(
-                "access.setup", w.user, client_address(request.scope), outcome="host key", **details
-            )
+            audit(outcome="host key")
             raise HTTPException(409, f"{e} (trust the host key first)") from e
         except asyncssh.PermissionDenied as e:
-            hub.audit.record(
-                "access.setup", w.user, client_address(request.scope), outcome="login refused", **details
-            )
+            audit(outcome="login refused")
             raise HTTPException(401, f"{body.login} with that password was refused") from e
-        except (OSError, TimeoutError, asyncssh.Error) as e:
-            hub.audit.record(
-                "access.setup", w.user, client_address(request.scope), outcome="unreachable", **details
-            )
+        except (TimeoutError, asyncssh.TimeoutError) as e:
+            audit(outcome="timed out")
+            raise HTTPException(504, "timed out: some of it may have been done; check the device") from e
+        except (OSError, asyncssh.Error) as e:
+            audit(outcome="unreachable")
             raise HTTPException(502, f"can't reach {device.host}: {type(e).__name__}") from e
+        except Exception as e:
+            audit(outcome=f"failed: {type(e).__name__}")
+            raise HTTPException(500, f"failed: {type(e).__name__}") from e
         output = (str(r.stdout or "") + str(r.stderr or "")).strip()
         ok = r.exit_status == 0
-        hub.audit.record(
-            "access.setup",
-            w.user,
-            client_address(request.scope),
-            outcome="done" if ok else f"failed: {output[-200:]}",
-            **details,
-        )
+        audit(outcome="done" if ok else f"failed: {output[-200:]}")
         if not ok:
             raise HTTPException(502, output[-500:] or f"exit {r.exit_status}")
         return {

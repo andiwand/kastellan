@@ -15,6 +15,7 @@
 	let login = $state('');
 	let password = $state('');
 	let busy = $state(false);
+	let understood = $state(false);
 	let result = $state<{ output: string; config: string } | null>(null);
 
 	async function load() {
@@ -111,7 +112,11 @@
 			{#if access.hub_ip}The key only works from the hub's address ({access.hub_ip}).{/if}
 		</p>
 		<div class="mt-2 flex justify-end">
-			<button class={button} onclick={() => copy(access!.scripts[way])}>
+			<button
+				class={button}
+				disabled={!access.scripts[way]}
+				onclick={() => copy(access!.scripts[way] ?? '')}
+			>
 				<Copy class="size-3.5" />
 				{copied ? 'Copied' : 'Copy'}
 			</button>
@@ -128,6 +133,12 @@
 						? ' and may use sudo (or root)'
 						: ''}. Its password is used for this one connection and never stored.
 				</p>
+				{#if way === 'dedicated'}
+					<label class="mt-3 flex items-start gap-2 text-xs">
+						<input type="checkbox" bind:checked={understood} class="mt-0.5" />
+						<span>The user <b>kastellan</b> gets sudo without a password on this device.</span>
+					</label>
+				{/if}
 				<div class="mt-3 flex flex-wrap gap-2">
 					<input
 						class={input}
@@ -144,7 +155,9 @@
 						autocomplete="off"
 						required
 					/>
-					<button class={button} disabled={busy}>{busy ? 'Setting up…' : 'Set it up'}</button>
+					<button class={button} disabled={busy || (way === 'dedicated' && !understood)}>
+						{busy ? 'Setting up…' : 'Set it up'}
+					</button>
 				</div>
 			</form>
 		{/if}

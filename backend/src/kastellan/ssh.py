@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -48,6 +49,9 @@ class Target:
         return self.host if self.port == 22 else f"[{self.host}]:{self.port}"
 
 
+_make_lock = threading.Lock()
+
+
 class Keys:
     # The hub's keys: "hub" for terminals and installs, "vpn" only for the restricted VPN scripts
     # (bound with command= where they are installed; separate so binding it takes nothing away).
@@ -60,17 +64,21 @@ class Keys:
         self._lock = asyncio.Lock()
 
     def hub_key(self, which: str = "hub") -> asyncssh.SSHKey:
-        """One of the hub's keys, made the first time it is needed."""
+        """One of the hub's keys, made the first time it is needed (once, even when two requests
+        ask at the same time; written whole, then renamed into place)."""
         path = self.folder / self.NAMES[which]
-        if not path.exists():
-            self.folder.mkdir(parents=True, exist_ok=True)
-            os.chmod(self.folder, 0o700)
-            comment = "kastellan-hub" if which == "hub" else f"kastellan-{which}"
-            key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
-            key.write_private_key(str(path))
-            os.chmod(path, 0o600)
-            key.write_public_key(str(path.with_suffix(".pub")))
-            log.info("made the hub's SSH key %s", path)
+        with _make_lock:
+            if not path.exists():
+                self.folder.mkdir(parents=True, exist_ok=True)
+                os.chmod(self.folder, 0o700)
+                comment = "kastellan-hub" if which == "hub" else f"kastellan-{which}"
+                key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
+                temp = path.with_suffix(".new")
+                key.write_private_key(str(temp))
+                os.chmod(temp, 0o600)
+                key.write_public_key(str(path.with_suffix(".pub")))
+                os.replace(temp, path)
+                log.info("made the hub's SSH key %s", path)
         return asyncssh.read_private_key(str(path))
 
     def public_key(self, which: str = "hub") -> str:
@@ -162,7 +170,7 @@ class Keys:
                     known_hosts=(pinned, [], []),
                     agent_path=None,  # only the hub's own key, never the agent of whoever runs it
                     password=password,
-                    kbdint_auth=False,
+                    kbdint_auth=bool(password),  # PAM often asks for passwords that way
                     preferred_auth="password" if password else "publickey",
                 ),
                 CONNECT_TIMEOUT,

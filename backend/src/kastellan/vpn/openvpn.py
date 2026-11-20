@@ -27,6 +27,7 @@ from importlib.resources import files
 
 import asyncssh
 
+from ..access import authorize, openssh_options
 from ..config import Device, OpenVpnSource
 from ..ssh import Keys, Target
 
@@ -66,12 +67,14 @@ def parse_list(text: str, now: datetime | None = None) -> list[OvpnClient]:
     return out
 
 
-def pki_conf(s: OpenVpnSource) -> str:
+def pki_conf(s: OpenVpnSource, restricted: bool = False) -> str:
+    """The script's settings. Installed (restricted), the TLS key is the copy its user can read."""
     q = shlex.quote
+    tls = (TLS_COPY if restricted else s.tls_key) if s.tls_key else ""
     return (
         f"EASYRSA_DIR={q(s.easyrsa_dir)}\n"
         f"TEMPLATE={q(s.template_path)}\n"
-        f"TLS_KEY={q(s.tls_key or '')}\n"
+        f"TLS_KEY={q(tls)}\n"
         f"RESERVED={q(' '.join(s.reserved))}\n"
     )
 
@@ -99,47 +102,61 @@ def direct_command(script_name: str, conf: str, command: str) -> str:
     )
 
 
-PKI_KEY_LINE = 'restrict,command="/usr/local/bin/kastellan-pki /etc/kastellan-pki.conf" '
-CRL_KEY_LINE = (
-    'command="/usr/bin/kastellan-crl /etc/kastellan-crl.conf",'
-    "no-port-forwarding,no-agent-forwarding,no-pty,no-X11-forwarding "
-)
+PKI_COMMAND = 'command="/usr/local/bin/kastellan-pki /etc/kastellan-pki.conf"'
+CRL_COMMAND = 'command="/usr/bin/kastellan-crl /etc/kastellan-crl.conf"'
+# dropbear (OpenWrt) knows neither `restrict` nor `from=`; these are what it has.
+DROPBEAR_LIMITS = "no-port-forwarding,no-agent-forwarding,no-pty,no-X11-forwarding"
+TLS_COPY = "/etc/kastellan-pki/tls.key"
 
 
-def install_script(role: str, s: OpenVpnSource, vpn_public_key: str) -> str:
+def key_lines(command: str, key: str, hub_ip: str | None) -> tuple[str, str]:
+    """(OpenSSH line, dropbear line) binding the VPN key to one command."""
+    return (
+        openssh_options(hub_ip, "restrict", command) + key,
+        f"{command},{DROPBEAR_LIMITS} {key}",
+    )
+
+
+def install_script(role: str, s: OpenVpnSource, vpn_public_key: str, hub_ip: str | None = None) -> str:
     """Shell commands (run as root) that set up restricted mode on the PKI host ("pki") or the
     OpenVPN server ("server"). Shown for copying; also what "Install for me" runs."""
     q = shlex.quote
     lines = ["set -eu", "umask 022"]
     if role == "pki":
-        home = f"/home/{s.pki_user}"
+        u = s.pki_user
+        pki = f"{s.easyrsa_dir.rstrip('/')}/pki"
         lines += [
-            "# A user of its own owns the PKI; nothing else can read the CA key.",
-            f"id -u {s.pki_user} >/dev/null 2>&1 || useradd --system --create-home --home-dir {home} "
-            f"--shell /bin/sh {s.pki_user}",
-            f"chown -R {s.pki_user}: {q(s.easyrsa_dir)} && chmod 700 {q(s.easyrsa_dir)}",
+            f"# {u} owns the PKI's data (pki/: the CA key); the easyrsa program stays root's.",
+            f"id -u {u} >/dev/null 2>&1 || useradd --system --create-home --shell /bin/sh {u}",
+            f"if command -v sudo >/dev/null && sudo -l -U {u} 2>/dev/null | grep -q 'may run'; then",
+            f"  echo 'Warning: {u} may use sudo; give the PKI a user that can do nothing else.' >&2",
+            "fi",
+            f"chown -R {u}: {q(pki)} && chmod 700 {q(pki)}",
+            f"grep -rqs {q('crl-verify ' + pki)} /etc/openvpn && echo 'Note: an OpenVPN here reads the CRL "
+            f"inside {pki}, which only {u} can read now; point crl-verify at a copy.' >&2 || true",
             "# The script, and its settings.",
             _heredoc("/usr/local/bin/kastellan-pki", script("kastellan-pki")).rstrip("\n"),
             "chmod 755 /usr/local/bin/kastellan-pki",
-            _heredoc("/etc/kastellan-pki.conf", pki_conf(s)).rstrip("\n"),
+            "mkdir -p /etc/kastellan-pki",
+            _heredoc("/etc/kastellan-pki.conf", pki_conf(s, restricted=True)).rstrip("\n"),
             "chmod 644 /etc/kastellan-pki.conf",
         ]
+        if s.tls_key:
+            lines += [
+                f"# A copy of the TLS key {u} can read (run this again if that key changes).",
+                f"cp {q(s.tls_key)} {TLS_COPY} && chown {u}: {TLS_COPY} && chmod 600 {TLS_COPY}",
+            ]
         if s.client_template:
             lines += [
                 f"mkdir -p {q(s.template_path.rsplit('/', 1)[0])}",
                 _heredoc(q(s.template_path), s.client_template).rstrip("\n"),
-                f"chown {s.pki_user}: {q(s.template_path)}",
+                f"chmod 644 {q(s.template_path)}",
             ]
-        lines += [
-            "# Kastellan's VPN key may run this script, and nothing else.",
-            f"install -d -m 700 -o {s.pki_user} {home}/.ssh",
-            f"line={q(PKI_KEY_LINE + vpn_public_key)}",
-            f"keys={home}/.ssh/authorized_keys",
-            'grep -qxF "$line" "$keys" 2>/dev/null || echo "$line" >> "$keys"',
-            f'chown {s.pki_user}: "$keys" && chmod 600 "$keys"',
-            "echo kastellan-pki installed",
-        ]
+        lines.append("# Kastellan's VPN key may run this script, and nothing else.")
+        lines += authorize(u, *key_lines(PKI_COMMAND, vpn_public_key, hub_ip))
+        lines.append("echo kastellan-pki installed")
     else:
+        u = s.server_user
         lines += [
             "# openssl lets the script check each CRL's signature (OpenWrt: openssl-util).",
             "command -v openssl >/dev/null || (command -v opkg >/dev/null && opkg install openssl-util) \\",
@@ -148,17 +165,17 @@ def install_script(role: str, s: OpenVpnSource, vpn_public_key: str) -> str:
             "chmod 755 /usr/bin/kastellan-crl",
             _heredoc("/etc/kastellan-crl.conf", crl_conf(s)).rstrip("\n"),
             "chmod 644 /etc/kastellan-crl.conf",
-            "# Kastellan's VPN key may run this script, and nothing else.",
-            "# (OpenWrt's dropbear keeps root's keys in /etc/dropbear; elsewhere ~/.ssh.)",
-            f"if [ -d /etc/dropbear ] && [ {q(s.server_user)} = root ]; then",
-            "  keys=/etc/dropbear/authorized_keys",
-            "else",
-            f"  keys=$(getent passwd {s.server_user} | cut -d: -f6)/.ssh/authorized_keys",
-            '  mkdir -p "$(dirname "$keys")"',
-            "fi",
-            f"line={q(CRL_KEY_LINE + vpn_public_key)}",
-            'grep -qxF "$line" "$keys" 2>/dev/null || echo "$line" >> "$keys"',
-            'chmod 600 "$keys"',
+        ]
+        if u != "root":
+            folder = s.crl_path.rsplit("/", 1)[0] or "/"
+            lines += [
+                f"id -u {u} >/dev/null 2>&1 || useradd --system --create-home --shell /bin/sh {u}",
+                f"# {u} replaces the CRL: it needs to write where it is.",
+                f"echo 'Note: {u} must be able to write {folder}' >&2",
+            ]
+        lines.append("# Kastellan's VPN key may run this script, and nothing else.")
+        lines += authorize(u, *key_lines(CRL_COMMAND, vpn_public_key, hub_ip))
+        lines += [
             f"grep -rqs {q('crl-verify ' + s.crl_path)} /etc/openvpn /etc/config/openvpn "
             f"|| echo 'Note: add \"crl-verify {s.crl_path}\" to the OpenVPN server config.'",
             "echo kastellan-crl installed",

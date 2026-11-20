@@ -262,7 +262,8 @@ class OpenVpnSource(BaseModel):
     pki: str  # the device with the easy-rsa PKI
     server: str | None = None  # the OpenVPN server's device (receives the CRL)
     days: int = Field(default=365, ge=1, le=3650)  # how long new client certificates last
-    pki_user: str = Field(default="kastellan", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    # Not "kastellan": that is the name Kastellan's own login (with sudo) gets on a device.
+    pki_user: str = Field(default="kastellan-pki", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
     server_user: str = Field(default="root", pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
     # On the PKI host
     easyrsa_dir: str = Field(default="/etc/openvpn/easy-rsa", pattern=r"^/[\w./-]+$")

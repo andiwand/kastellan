@@ -7,6 +7,7 @@ client's private key) need a signed-in admin and go to the audit log.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -17,12 +18,14 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from .access import hub_address
 from .auth_api import client_address, require_admin, require_signin, who
 from .ssh import ChangedHost, Target, UnknownHost
 from .vpn.openvpn import NAME, OpenVpn, install_script
 from .vpn.wireguard import WgEasy
 
 if TYPE_CHECKING:
+    from .config import Device
     from .hub import Hub
 
 log = logging.getLogger(__name__)
@@ -222,6 +225,9 @@ def router(hub: Hub) -> APIRouter:
             r = await conn.run(command, check=False, timeout=timeout, **stdin)
         return r.exit_status or 0, str(r.stdout or ""), str(r.stderr or "")
 
+    async def hub_ip_for(device: Device) -> str | None:
+        return await asyncio.to_thread(hub_address, device.host, device.ssh.port if device.ssh else 22)
+
     async def checks(role: str, id: str, user: str) -> list[dict[str, Any]]:
         """What works now on one host, tried for real."""
         ovpn = hub.config.vpn.openvpn
@@ -307,7 +313,7 @@ def router(hub: Hub) -> APIRouter:
                     "login": device.ssh.user if device.ssh else None,
                     "checks": found,
                     "can_install": any(c.get("can_install") for c in found),
-                    "script": install_script(role, ovpn, key) if ovpn else "",
+                    "script": install_script(role, ovpn, key, await hub_ip_for(device)) if ovpn else "",
                 }
             )
         return {"mode": ovpn.mode if ovpn else None, "vpn_key": key, "hosts": hosts}
@@ -326,7 +332,7 @@ def router(hub: Hub) -> APIRouter:
         device = hub.config.devices[id]
         if device.ssh is None:
             raise HTTPException(400, f"{id} has no ssh: login to install with; run the commands by hand")
-        text = install_script(role, ovpn, hub.keys.public_key("vpn"))
+        text = install_script(role, ovpn, hub.keys.public_key("vpn"), await hub_ip_for(device))
         target = Target(device.host, device.ssh.port, device.ssh.user)
         command = "sh -s" if device.ssh.user == "root" else "sudo -n sh -s"
 

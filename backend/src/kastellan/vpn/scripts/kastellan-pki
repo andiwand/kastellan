@@ -101,7 +101,10 @@ case $command in
     is_client_cert "pki/issued/$name.crt" || fail "$name is not a client certificate"
     [ -r "$TEMPLATE" ] || fail "no template $TEMPLATE"
     tls=""
-    [ -n "$TLS_KEY" ] && [ -r "$TLS_KEY" ] && tls=$(cat "$TLS_KEY")
+    if [ -n "$TLS_KEY" ]; then
+      [ -r "$TLS_KEY" ] || fail "can't read the TLS key $TLS_KEY"
+      tls=$(cat "$TLS_KEY")
+    fi
     # Inline blocks: replace each {{...}} line with the file's contents.
     awk -v ca=pki/ca.crt -v crt="pki/issued/$name.crt" -v key="pki/private/$name.key" -v tls="$tls" '
       function dump(f,   line) { while ((getline line < f) > 0) print line; close(f) }

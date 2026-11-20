@@ -105,3 +105,33 @@ def test_set_up_with_a_password_once(tmp_path: Path, device) -> None:
         assert stdin == "hunter2\n"  # the password reaches sudo, nothing else
         log = (tmp_path / "data" / "audit.log").read_text()
         assert "access.setup" in log and "hunter2" not in log
+
+
+def test_key_written_as_the_user(tmp_path: Path) -> None:
+    """Root adds the key through su as the user; a missing user stops before anything is written."""
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    home = tmp_path / "home" / "alice"
+    home.mkdir(parents=True)
+    stubs = {
+        "getent": f'[ "$2" = alice ] && echo "alice:x:1:1::{home}:/bin/sh"',
+        "su": 'echo "$3" >> "$SU_LOG"; shift 4; exec sh -c "$@"',  # su -s SH USER -c CMD ARGS
+        "id": "echo root",
+    }
+    for name, body in stubs.items():
+        (bin / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin / name).chmod(0o755)
+    env = {"PATH": f"{bin}:/usr/bin:/bin", "SU_LOG": str(tmp_path / "su.log")}
+    for _ in range(2):
+        script = setup_script("alice", "ssh-ed25519 AAAA k", "10.0.0.5", create=False, sudo=False)
+        assert subprocess.run(["sh"], input=script, text=True, env=env).returncode == 0
+    keys = home / ".ssh" / "authorized_keys"
+    assert keys.read_text() == 'from="10.0.0.5" ssh-ed25519 AAAA k\n'  # once
+    assert (tmp_path / "su.log").read_text().split() == ["alice", "alice"]
+    assert keys.stat().st_mode & 0o777 == 0o600
+    bob = setup_script("bob", "ssh-ed25519 AAAA k", "10.0.0.5", create=False, sudo=False)
+    r = subprocess.run(["sh"], input=bob, text=True, env=env, capture_output=True)
+    assert r.returncode == 1 and "no user bob" in r.stderr
+    # dropbear (OpenWrt) gets the plain line: it would refuse from=
+    assert "line='ssh-ed25519 AAAA k'; else line='from=" in bob
+    assert setup_script("john.doe", "k", None, False, True).count("/etc/sudoers.d/kastellan-john_doe") >= 1
