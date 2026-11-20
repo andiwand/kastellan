@@ -10,6 +10,7 @@
 	import LatencyChart from '#lib/components/LatencyChart.svelte';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import ExternalLink from '@lucide/svelte/icons/external-link';
+	import SquareTerminal from '@lucide/svelte/icons/square-terminal';
 	import Copy from '@lucide/svelte/icons/copy';
 	import Check from '@lucide/svelte/icons/check';
 	import ActivityItem from '#lib/components/ActivityItem.svelte';
@@ -130,16 +131,26 @@
 				</div>
 			</div>
 		</div>
-		{#if webUi}
-			<a
-				href={webUi}
-				target="_blank"
-				rel="noopener noreferrer"
-				class="inline-flex h-9 shrink-0 items-center gap-2 self-start rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
-			>
-				Open web interface <ExternalLink class="size-3.5 text-muted" />
-			</a>
-		{/if}
+		<div class="flex shrink-0 flex-wrap gap-2 self-start">
+			{#if device.ssh && store.me?.role === 'admin' && store.me.user}
+				<a
+					href="/devices/{device.id}/terminal"
+					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
+				>
+					<SquareTerminal class="size-4 text-muted" /> Terminal
+				</a>
+			{/if}
+			{#if webUi}
+				<a
+					href={webUi}
+					target="_blank"
+					rel="noopener noreferrer"
+					class="inline-flex h-9 shrink-0 items-center gap-2 self-start rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
+				>
+					Open web interface <ExternalLink class="size-3.5 text-muted" />
+				</a>
+			{/if}
+		</div>
 	</header>
 
 	<!-- Range -->

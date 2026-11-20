@@ -23,6 +23,7 @@ export interface Device {
 	parent: string | null;
 	tags: string[];
 	always_on: boolean;
+	ssh: { user: string; port: number } | null;
 	state: CheckState;
 	checks: CheckStatus[];
 }
@@ -32,6 +33,7 @@ export interface Health {
 	version: string;
 	config_error: string | null;
 	ping_refused: string | null;
+	locked: boolean;
 	demo: boolean;
 }
 
@@ -97,5 +99,12 @@ export const api = {
 	me: () => get<Me>('/auth/me'),
 	login: (user: string, password: string) =>
 		call<{ user: string; role: string }>('POST', '/auth/login', { user, password }),
-	logout: () => call<{ ok: boolean }>('POST', '/auth/logout')
+	logout: () => call<{ ok: boolean }>('POST', '/auth/logout'),
+	sshKey: () => get<{ public_key: string }>('/ssh/key'),
+	trustHost: (device: string, fingerprint: string) =>
+		call<{ state: string }>('POST', `/devices/${encodeURIComponent(device)}/ssh/trust`, {
+			fingerprint
+		}),
+	forgetHost: (device: string) =>
+		call<{ state: string }>('POST', `/devices/${encodeURIComponent(device)}/ssh/forget`)
 };

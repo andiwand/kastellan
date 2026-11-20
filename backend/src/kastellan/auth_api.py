@@ -20,11 +20,12 @@ import logging
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .auth import _DUMMY_HASH, SESSION_COOKIE, SESSION_IDLE, Brake, verify_password
+from .auth import _DUMMY_HASH, SESSION_COOKIE, SESSION_IDLE, Brake, password_tag, verify_password
 from .config import Role
 
 if TYPE_CHECKING:
@@ -49,8 +50,12 @@ class Who:
         return self.role is Role.ADMIN
 
 
+# What a route sees if the guard did not run (a route outside /api): no rights at all.
+NOBODY = Who(None, Role.OBSERVER)
+
+
 def who(request: Request) -> Who:
-    return request.scope.get("state", {}).get("who") or Who(None, Role.ADMIN)
+    return request.scope.get("state", {}).get("who") or NOBODY
 
 
 def require_admin(request: Request) -> Who:
@@ -67,6 +72,12 @@ def require_signin(request: Request) -> Who:
     if w.user is None:
         raise HTTPException(403, "turn on sign-in first (add a user to config.yaml)")
     return w
+
+
+def same_origin(headers: dict[str, str]) -> bool:
+    """Whether a browser request comes from this hub's own page: Origin names the same host."""
+    origin, host = headers.get("origin"), headers.get("host")
+    return bool(origin and host) and urlsplit(origin).netloc == host
 
 
 def client_address(scope: Scope) -> str:
@@ -88,6 +99,16 @@ class Guard:
         method = scope.get("method", "GET")
         users = self.hub.config.users
 
+        if self.hub.locked and scope["path"] != "/api/health":
+            # config.yaml was broken at start: refuse everything rather than run without sign-in.
+            await _deny(scope, send, 503, "locked until config.yaml is fixed (see /api/health)")
+            return
+        if scope["type"] == "websocket" and not same_origin(headers):
+            # A page on another site (or a sibling host on the same site) must not open a
+            # WebSocket with the user's cookie.
+            await _deny(scope, send, 403, "WebSockets only from this hub's own page")
+            return
+
         if scope["type"] == "http" and method not in READS and headers.get(CSRF_HEADER) != "1":
             await _deny(scope, send, 403, "missing the X-Kastellan header")
             return
@@ -99,7 +120,10 @@ class Guard:
             cookie.load(headers.get("cookie", ""))
             token = cookie[SESSION_COOKIE].value if SESSION_COOKIE in cookie else None
             user = self.hub.sessions.user(token)
-            if user is not None and user not in users:  # removed from config.yaml
+            if user is not None and (
+                user not in users  # removed from config.yaml
+                or self.hub.sessions.tag(token) != password_tag(users[user].password)  # new password
+            ):
                 self.hub.sessions.end(token)
                 user = None
             if user is None:
@@ -135,8 +159,8 @@ async def _deny(scope: Scope, send: Send, status: int, message: str) -> None:
 
 
 class SignIn(BaseModel):
-    user: str
-    password: str
+    user: str = Field(max_length=64)
+    password: str = Field(max_length=1024)
 
 
 def router(hub: Hub) -> APIRouter:
@@ -152,23 +176,42 @@ def router(hub: Hub) -> APIRouter:
             "role": w.role if w else None,
         }
 
+    # Each check costs ~32 MB and ~50 ms; anyone may ask, so only a few run at a time, and one
+    # address waits for its previous attempt (parallel guesses can't slip past the brake).
+    hashing = asyncio.Semaphore(4)
+    per_address: dict[str, asyncio.Lock] = {}
+
     @api.post("/auth/login")
     async def login(body: SignIn, request: Request, response: Response) -> dict[str, Any]:
         address = client_address(request.scope)
         if not hub.config.users:
             raise HTTPException(400, "sign-in is off: there are no users in config.yaml")
+        lock = per_address.setdefault(address, asyncio.Lock())
+        try:
+            async with lock:
+                return await attempt(body, address, request, response)
+        finally:
+            if not lock.locked() and per_address.get(address) is lock:
+                del per_address[address]
+
+    async def attempt(body: SignIn, address: str, request: Request, response: Response) -> dict[str, Any]:
         if wait := brake.blocked(address):
-            hub.audit.record("signin.blocked", body.user, address)
+            if brake.first_block(address):
+                hub.audit.record("signin.blocked", body.user, address)
             raise HTTPException(429, f"too many attempts; try again in {int(wait) + 1} s")
+        # Counted before checking, so the attempt counts however it ends.
+        brake.failed(address)
         user = hub.config.users.get(body.user)
-        # The hash takes ~50 ms; compare against a dummy for unknown names so timing tells nothing.
-        ok = await asyncio.to_thread(verify_password, body.password, user.password if user else _DUMMY_HASH)
+        async with hashing:
+            # A dummy hash for unknown names, so the time taken tells nothing.
+            ok = await asyncio.to_thread(
+                verify_password, body.password, user.password if user else _DUMMY_HASH
+            )
         if not (ok and user):
-            brake.failed(address)
             hub.audit.record("signin.failed", body.user, address)
             raise HTTPException(401, "wrong user or password")
         brake.succeeded(address)
-        token = hub.sessions.create(body.user)
+        token = hub.sessions.create(body.user, password_tag(user.password))
         response.set_cookie(
             SESSION_COOKIE,
             token,
@@ -182,8 +225,10 @@ def router(hub: Hub) -> APIRouter:
         return {"user": body.user, "role": user.role}
 
     @api.post("/auth/logout")
-    def logout(request: Request, response: Response) -> dict[str, bool]:
+    def logout(request: Request, response: Response, everywhere: bool = False) -> dict[str, bool]:
         w = request.scope.get("state", {}).get("who")
+        if everywhere and w and w.user:
+            hub.sessions.end_user(w.user)
         hub.sessions.end(request.cookies.get(SESSION_COOKIE))
         response.delete_cookie(SESSION_COOKIE, path="/")
         if w and w.user:

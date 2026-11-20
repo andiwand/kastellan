@@ -30,7 +30,15 @@ def main() -> None:
     )
     # Every HTTP check would otherwise log a line; the monitor logs what matters (ups and downs).
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    uvicorn.run(create_app(settings), host=settings.host, port=settings.port, log_level=settings.log_level)
+    uvicorn.run(
+        create_app(settings),
+        host=settings.host,
+        port=settings.port,
+        log_level=settings.log_level,
+        # Never take the client's address from X-Forwarded-For: anything reaching the hub over
+        # localhost could then pick any address (to slip past the brake, or to fake the audit log).
+        proxy_headers=False,
+    )
 
 
 def hash_password_command() -> None:

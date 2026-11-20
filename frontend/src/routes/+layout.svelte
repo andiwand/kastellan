@@ -27,7 +27,22 @@
 	const connected = $derived(!store.error && store.updated != null);
 </script>
 
-{#if store.me?.signin && !store.me.user}
+{#if store.health?.locked}
+	<div class="grid min-h-dvh place-items-center bg-bg px-4">
+		<div class="card w-full max-w-md p-7">
+			<div class="flex items-center gap-2.5">
+				<Logo size={30} />
+				<span class="text-lg font-semibold tracking-tight">Kastellan</span>
+			</div>
+			<h1 class="mt-6 text-xl font-semibold tracking-tight">Locked</h1>
+			<p class="mt-2 text-sm leading-relaxed text-muted">
+				The hub could not read its config.yaml when it started, so it does not know who may sign in.
+				Rather than open up, it refuses everything until the file is fixed; it picks up the fix by
+				itself. The hub's log says what is wrong.
+			</p>
+		</div>
+	</div>
+{:else if store.me?.signin && !store.me.user}
 	<SignIn />
 {:else}
 	<div class="min-h-dvh lg:pl-60">

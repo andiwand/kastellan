@@ -98,6 +98,15 @@ class Check(BaseModel):
         return self
 
 
+class SshAccess(BaseModel):
+    """How the hub logs in to a device (terminal, and later what it reads over SSH)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user: str = Field(min_length=1, pattern=r"^[A-Za-z0-9._-]+$")
+    port: int = Field(default=22, ge=1, le=65535)
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -109,6 +118,7 @@ class Device(BaseModel):
     # Down is a problem only for devices that should always be on; a laptop that is off is just
     # offline. None: by kind (pcs and laptops are not always on).
     always_on: bool | None = None
+    ssh: SshAccess | None = None  # set to open a terminal on the device
     checks: list[Check] = Field(default_factory=lambda: [Check(type=CheckType.PING)])
 
     @model_validator(mode="after")
@@ -134,6 +144,13 @@ class User(BaseModel):
 
     @model_validator(mode="after")
     def _hashed(self) -> Self:
+        parts = self.password.split("$")
+        try:
+            weak = len(parts) != 6 or int(parts[1]) < 2**14 or int(parts[2]) < 8 or int(parts[3]) < 1
+        except ValueError:
+            weak = True
+        if parts[0] == "scrypt" and weak:
+            raise ValueError("password: this scrypt hash is malformed or too weak; make a new one")
         if not self.password.startswith("scrypt$"):
             raise ValueError("password: put the hash from `kastellan hash-password` here, not the password")
         return self

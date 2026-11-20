@@ -10,6 +10,7 @@ const device = (id: string, parent: string | null = null): Device => ({
 	parent,
 	tags: [],
 	always_on: true,
+	ssh: null,
 	state: 'unknown',
 	checks: []
 });

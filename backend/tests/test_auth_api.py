@@ -96,3 +96,83 @@ def test_without_users_everyone_is_admin(tmp_path: Path) -> None:
         assert c.get("/api/devices").status_code == 200
         assert c.get("/api/auth/me").json() == {"signin": False, "user": None, "role": "admin"}
         assert c.post("/api/auth/login", json={"user": "x", "password": "y"}, headers=H).status_code == 400
+
+
+# --- Fail closed (security review, findings 1, 2, 3, 6, 7, 12) ---
+
+
+def test_broken_config_at_start_locks_instead_of_opening(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("devices:\n  box:\n    host: [oops\n")  # a YAML typo
+    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
+        assert c.get("/api/devices").status_code == 503
+        assert c.get("/api/auth/me").status_code == 503
+        health = c.get("/api/health").json()
+        assert health["locked"] and health["config_error"] == "config.yaml has a problem"
+
+
+def test_deleting_or_emptying_config_keeps_signin(client: TestClient, tmp_path: Path) -> None:
+    hub = client.app.state.hub
+    config = tmp_path / "config.yaml"
+    text = config.read_text()
+    for broken in ("", None, "devices: {}\n"):  # emptied, deleted, users removed
+        if broken is None:
+            config.unlink()
+        else:
+            config.write_text(broken)
+        hub.reload()
+        assert client.get("/api/devices").status_code == 401, broken
+        assert client.get("/api/auth/me").json()["signin"] is True
+        config.write_text(text)
+        hub.reload()
+
+
+def test_plain_password_never_shows(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("users:\n  ada:\n    role: admin\n    password: MyPlainSecret99\n")
+    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
+        assert "MyPlainSecret99" not in c.get("/api/health").text
+    assert "MyPlainSecret99" not in client_log(tmp_path)
+
+
+def client_log(tmp_path: Path) -> str:
+    return (tmp_path / "audit.log").read_text() if (tmp_path / "audit.log").exists() else ""
+
+
+def test_new_password_ends_old_sessions(client: TestClient, tmp_path: Path) -> None:
+    signin(client, "ada", "admin password")
+    assert client.get("/api/devices").status_code == 200
+    config = tmp_path / "config.yaml"
+    config.write_text(config.read_text().replace(ADMIN_HASH, hash_password("a new password")))
+    client.app.state.hub.reload()
+    assert client.get("/api/devices").status_code == 401
+
+
+def test_weak_hash_and_huge_names_are_refused(client: TestClient) -> None:
+    from pydantic import ValidationError
+
+    from kastellan.config import User
+
+    with pytest.raises(ValidationError):
+        User(password="scrypt$2$1$1$c2FsdA==$a2V5")
+    r = client.post("/api/auth/login", json={"user": "x" * 100_000, "password": "y"}, headers=H)
+    assert r.status_code == 422
+
+
+async def test_parallel_guesses_hit_the_brake(tmp_path: Path) -> None:
+    import asyncio
+
+    import httpx
+
+    config = tmp_path / "config.yaml"
+    write_config(config)
+    app = create_app(Settings(config=config, data=tmp_path))
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://hub") as c:
+            guesses = [
+                c.post("/api/auth/login", json={"user": "ada", "password": f"g{i}"}, headers=H)
+                for i in range(20)
+            ]
+            codes = [r.status_code for r in await asyncio.gather(*guesses)]
+    assert codes.count(401) == 5 and codes.count(429) == 15

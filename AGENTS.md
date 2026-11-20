@@ -48,6 +48,15 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     only read; writes need an admin and the header `X-Kastellan: 1` (CSRF). Use `require_admin`
     in routes that change things, and `require_signin` in anything that hands out access to a
     device (terminal, remote desktop): it refuses while sign-in is off.
+  - `ssh.py`: the hub's SSH key (`<data>/ssh/hub_ed25519`) and pinned host keys
+    (`<data>/ssh/known_hosts`); never trust on first use by itself: `UnknownHost` until an admin
+    trusts the fingerprint, `ChangedHost` until someone forgets the old key. No ssh-agent, no
+    passwords. `terminal_api.py`: the terminal WebSocket (JSON input/resize in, binary output),
+    trust/forget routes; audit open/close, never keystrokes.
+  - Fail closed (`hub.py`): a broken config.yaml at start locks the API (`hub.locked`, 503);
+    after sign-in was on (`<data>/signin-required`), a missing, empty, invalid or user-less
+    config never turns it off. Config errors never include values (`_describe`), since
+    config.yaml holds password hashes.
   - `api.py`: `/api/health`, `/api/devices`, `/api/devices/{id}/history`, `/api/series`,
     `/api/changes`, and the web app (single-page, index.html fallback).
 - `frontend/` (SvelteKit, static adapter, Svelte 5 runes, Tailwind 4, Lucide icons, Geist):
@@ -82,6 +91,12 @@ cd frontend && npm run dev
 ```
 
 Node 24 (`frontend/.nvmrc`); older Node fails to install the toolchain.
+
+**The lockfile:** `npm install <pkg>` next to an existing `node_modules` drops other platforms'
+optional packages (`@emnapi/*`) from package-lock.json, and `npm ci` then fails on Linux (CI,
+Docker). After adding a package, regenerate it without node_modules:
+`mv node_modules /tmp/nm && rm package-lock.json && npm install --package-lock-only && npm ci`
+(then `grep -c node_modules/@emnapi package-lock.json` says 3).
 
 ## Conventions
 

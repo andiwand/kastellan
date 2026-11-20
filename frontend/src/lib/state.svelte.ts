@@ -20,6 +20,11 @@ class Store {
 	async refresh() {
 		try {
 			this.health = await api.health();
+			if (this.health.locked) {
+				this.clear();
+				this.error = null;
+				return;
+			}
 			this.me = await api.me();
 			if (this.me.signin && !this.me.user) {
 				this.clear();

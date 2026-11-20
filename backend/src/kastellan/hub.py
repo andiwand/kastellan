@@ -21,12 +21,33 @@ from .config import Config
 from .history import History
 from .monitor import Monitor, run_check
 from .settings import Settings
+from .ssh import Keys
 from .versions import Versions
 
 log = logging.getLogger(__name__)
 
 RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
+
+
+class ConfigProblem(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _first_line(text: str) -> str:
+    return text.strip().splitlines()[0][:300] if text.strip() else "unreadable"
+
+
+def _describe(e: ValidationError) -> str:
+    """What is wrong, without the values: config.yaml holds password hashes, and a pasted plain
+    password must not end up in a log or an API answer."""
+    problems = []
+    for err in e.errors(include_input=False, include_url=False):
+        where = ".".join(str(p) for p in err["loc"])
+        problems.append(f"{where}: {err['msg']}" if where else err["msg"])
+    return "; ".join(problems)[:600]
 
 
 class Hub:
@@ -45,40 +66,77 @@ class Hub:
         # Sign-in state lives next to the real data even in demo mode: it is not made up.
         self.sessions = Sessions(settings.data / "sessions.json")
         self.audit = Audit(settings.data / "audit.log")
+        self.keys = Keys(settings.data / "ssh")
         runner = self.demo.run if self.demo else run_check
         self.monitor = Monitor(self.history, runner, self.versions)
         self._mtime: float | None = None
         self._tasks: list[asyncio.Task[None]] = []
+        self._loaded = False  # a config has been loaded since the start
+        self.locked: str | None = None  # why the API refuses everything (fail closed), or None
+        self.signin_required = settings.data / "signin-required"
 
     def reload(self) -> None:
-        """Read config.yaml; an invalid file keeps the last good config and reports the error."""
-        if self.demo:
-            # The made-up network, with the users of the real config.yaml (if it has any).
-            users = {}
-            try:
-                users = config_mod.load(self.settings.config).users
-            except Exception as e:
-                log.warning("demo mode: cannot read the users from config.yaml: %s", e)
-            self.config = demo.config().model_copy(update={"users": users})
-            self._apply(self.config)
-            return
-        path = self.settings.config
+        """Read config.yaml. An invalid file keeps the last good config and reports the error.
+
+        Sign-in fails closed: once it has been on (the marker <data>/signin-required), a missing,
+        empty, invalid or user-less config.yaml never turns it off by itself; the hub keeps the
+        last good config, or, at start, locks the API until config.yaml is fixed. To turn sign-in
+        off on purpose, remove the users and delete the marker."""
         try:
-            stat = path.stat() if path.exists() else None
-            if stat is not None and stat.st_size == 0 and self.config.devices:
-                # Most likely an editor between truncating and writing; look again shortly.
-                return
-            self._mtime = stat.st_mtime if stat else None
-            config = config_mod.load(path)
-        except (OSError, ValueError, ValidationError, YAMLError) as e:
-            self.config_error = str(e)
-            log.error("config.yaml is invalid, keeping the last good one: %s", e)
+            config = self._load()
+        except ConfigProblem as problem:
+            self.config_error = problem.message
+            if self._loaded:
+                log.error("config.yaml: %s; keeping the last good one", problem.message)
+            else:
+                self.locked = f"config.yaml: {problem.message}"
+                log.error("config.yaml: %s; the API stays locked until it is fixed", problem.message)
             return
-        self.config, self.config_error = config, None
+        if config.users:
+            self._mark_signin_required()
+        self.config, self.config_error, self.locked, self._loaded = config, None, None, True
         # Someone removed from config.yaml is signed out everywhere at once.
         self.sessions.end_all_except(set(config.users))
         self._apply(config)
-        log.info("config: %d devices", len(config.devices))
+        log.info("config: %d devices, %d users", len(config.devices), len(config.users))
+
+    def _load(self) -> Config:
+        """The config to use now, or ConfigProblem."""
+        path = self.settings.config
+        try:
+            stat = path.stat() if path.exists() else None
+            self._mtime = stat.st_mtime if stat else None
+            if self.demo:
+                # The made-up network, with the users of the real config.yaml (if it has any).
+                users = config_mod.load(path).users
+                config = demo.config().model_copy(update={"users": users})
+            else:
+                if stat is not None and stat.st_size == 0 and self._loaded:
+                    raise ConfigProblem("the file is empty (maybe being saved)")
+                if stat is None and self._loaded:
+                    raise ConfigProblem("the file is missing")
+                config = config_mod.load(path)
+        except ValidationError as e:
+            raise ConfigProblem(_describe(e)) from e
+        except (OSError, ValueError, YAMLError) as e:
+            raise ConfigProblem(_first_line(str(e))) from e
+        if not config.users and self.signin_required.exists():
+            raise ConfigProblem(
+                "it has no users, but sign-in was on; to turn sign-in off, also delete "
+                f"{self.signin_required}"
+            )
+        return config
+
+    def _mark_signin_required(self) -> None:
+        if not self.signin_required.exists():
+            try:
+                self.signin_required.parent.mkdir(parents=True, exist_ok=True)
+                self.signin_required.write_text(
+                    "Sign-in has been on. While this file exists, Kastellan refuses a config.yaml "
+                    "without users instead of opening up.\n"
+                )
+            except OSError as e:
+                log.warning("cannot write %s: %s", self.signin_required, e)
 
     def _apply(self, config: Config) -> None:
         first = not self.monitor.status
@@ -116,8 +174,6 @@ class Hub:
     async def _watch_config(self) -> None:
         while True:
             await asyncio.sleep(RELOAD_EVERY)
-            if self.demo:
-                continue
             path = self.settings.config
             try:
                 mtime = path.stat().st_mtime if path.exists() else None

@@ -96,6 +96,29 @@ once. Sign-ins, failed attempts and sign-outs go to `data/audit.log`. While sign
 everyone who reaches the page is an admin, and what hands out access to devices (the terminal,
 remote desktop) stays locked.
 
+## Terminal
+
+A device with `ssh:` gets a terminal in the browser (admins only, and only with sign-in on):
+
+```yaml
+devices:
+  sv1:
+    host: 192.168.15.10
+    ssh:
+      user: andreas  # a user whose authorized_keys has the hub's key
+```
+
+The hub has its own SSH key (`data/ssh/hub_ed25519`, made on first use); the app shows its
+public key to put into `~/.ssh/authorized_keys` on the device. The first connection shows the
+host's key fingerprint to compare and trust; if it later changes, Kastellan refuses until you
+say the host was reinstalled. Opening and closing a terminal goes to the audit log; what is
+typed does not.
+
+If config.yaml is broken when the hub starts, it locks itself (everything but /api/health
+answers 503) rather than starting without sign-in. Once sign-in has been on, a config.yaml
+without users is refused too; to turn sign-in off on purpose, also delete
+`data/signin-required`.
+
 ## Security
 
 Run Kastellan only where your own network or VPN can reach it, never on the internet. The security design (keys instead of passwords, per-device limits, roles,

@@ -64,11 +64,18 @@ def verify_password(password: str, stored: str) -> bool:
 _DUMMY_HASH = hash_password(secrets.token_hex(8))
 
 
+def password_tag(stored_hash: str) -> str:
+    """A short fingerprint of a user's password hash. A session remembers it, so changing the
+    password in config.yaml ends every session made with the old one."""
+    return hashlib.sha256(stored_hash.encode()).hexdigest()[:16]
+
+
 @dataclass
 class Session:
     user: str
     created: float
     used: float
+    tag: str = ""  # password_tag at sign-in; sessions from before tags existed match nothing
 
 
 class Sessions:
@@ -95,13 +102,29 @@ class Sessions:
         os.chmod(tmp, 0o600)
         tmp.replace(self.path)
 
-    def create(self, user: str) -> str:
+    def create(self, user: str, tag: str = "") -> str:
         token = secrets.token_urlsafe(32)
         now = time.time()
         with self._lock:
-            self._sessions[self._key(token)] = Session(user, now, now)
+            self._sessions[self._key(token)] = Session(user, now, now, tag)
             self._save()
         return token
+
+    def tag(self, token: str | None) -> str | None:
+        if not token:
+            return None
+        with self._lock:
+            session = self._sessions.get(self._key(token))
+            return session.tag if session else None
+
+    def end_user(self, user: str) -> None:
+        """Sign a user out everywhere."""
+        with self._lock:
+            gone = [k for k, s in self._sessions.items() if s.user == user]
+            for k in gone:
+                del self._sessions[k]
+            if gone:
+                self._save()
 
     def user(self, token: str | None, now: float | None = None) -> str | None:
         """The user of a live session, or None."""
@@ -140,24 +163,48 @@ class Sessions:
 
 
 class Brake:
-    """Slows down password guessing: after `limit` failures from one address within `window`
-    seconds, that address must wait until the window has passed."""
+    """Slows down password guessing: after `limit` attempts from one address within `window`
+    seconds, that address must wait until the window has passed. Attempts are counted before the
+    password is checked (see auth_api), and a success clears the count."""
 
     def __init__(self, limit: int = 5, window: float = 300) -> None:
         self.limit, self.window = limit, window
         self._failures: dict[str, list[float]] = {}
+        self._noted: dict[str, float] = {}  # when an address's block was last written to the audit log
+
+    def _recent(self, address: str, now: float) -> list[float]:
+        recent = [t for t in self._failures.get(address, []) if now - t < self.window]
+        if recent:
+            self._failures[address] = recent
+        else:
+            self._failures.pop(address, None)
+        return recent
 
     def blocked(self, address: str, now: float | None = None) -> float:
         """Seconds to wait, or 0."""
         now = time.time() if now is None else now
-        recent = [t for t in self._failures.get(address, []) if now - t < self.window]
-        self._failures[address] = recent
+        recent = self._recent(address, now)
         if len(recent) < self.limit:
             return 0
         return self.window - (now - recent[0])
 
+    def first_block(self, address: str, now: float | None = None) -> bool:
+        """True once per window while an address is blocked: for the audit log, which must not
+        get a line per rejected attempt."""
+        now = time.time() if now is None else now
+        if now - self._noted.get(address, -1e18) < self.window:
+            return False
+        self._noted[address] = now
+        return True
+
     def failed(self, address: str, now: float | None = None) -> None:
-        self._failures.setdefault(address, []).append(time.time() if now is None else now)
+        now = time.time() if now is None else now
+        self._failures.setdefault(address, []).append(now)
+        if len(self._failures) > 10_000:  # many addresses: forget the ones done waiting
+            for a in list(self._failures):
+                self._recent(a, now)
+            self._noted = {a: t for a, t in self._noted.items() if now - t < self.window}
 
     def succeeded(self, address: str) -> None:
         self._failures.pop(address, None)
+        self._noted.pop(address, None)

@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from . import __version__, checks, stats
@@ -18,6 +18,7 @@ from .config import Check
 from .hub import Hub
 from .monitor import CheckStatus
 from .settings import Settings
+from .terminal_api import router as terminal_router
 
 WEB = Path(__file__).parent / "web"
 
@@ -41,14 +42,20 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.state.hub = hub
     app.add_middleware(Guard, hub=hub)
     app.include_router(auth_router(hub))
+    app.include_router(terminal_router(hub))
 
     @app.get("/api/health")
-    def health() -> dict[str, Any]:
+    def health(request: Request) -> dict[str, Any]:
+        # Public: what's wrong is only for admins (config errors name hosts and settings).
+        w = request.scope.get("state", {}).get("who")
+        trusted = w is not None and w.is_admin and not hub.locked
+        problem = hub.locked or hub.config_error
         return {
-            "ok": True,
+            "ok": not hub.locked,
             "version": __version__,
-            "config_error": hub.config_error,
-            "ping_refused": checks.ping_refused,
+            "locked": bool(hub.locked),
+            "config_error": (problem if trusted else "config.yaml has a problem") if problem else None,
+            "ping_refused": checks.ping_refused if trusted else None,
             "demo": hub.demo is not None,
         }
 
@@ -78,6 +85,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "parent": device.parent,
                     "tags": device.tags,
                     "always_on": device.always_on,
+                    "ssh": device.ssh.model_dump() if device.ssh else None,
                     "state": status.state if status else "unknown",
                     "checks": [
                         check_view(check, status.checks.get(check.name) if status else None)
