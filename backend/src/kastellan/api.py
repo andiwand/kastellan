@@ -21,6 +21,7 @@ from .hub import Hub
 from .monitor import CheckStatus
 from .settings import Settings
 from .terminal_api import router as terminal_router
+from .vpn_api import router as vpn_router
 
 WEB = Path(__file__).parent / "web"
 
@@ -47,6 +48,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(terminal_router(hub))
     app.include_router(desktop_router(hub))
     app.include_router(alarms_router(hub))
+    app.include_router(vpn_router(hub))
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:

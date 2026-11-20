@@ -91,6 +91,30 @@ export interface Vulns {
 	kev?: string | null;
 }
 
+export interface WgClient {
+	id: string;
+	name: string;
+	enabled: boolean;
+	address: string | null;
+	created: string | null;
+	expires: string | null;
+	last_handshake: string | null;
+	rx: number | null;
+	tx: number | null;
+}
+
+export interface OvpnClient {
+	name: string;
+	status: 'valid' | 'revoked' | 'expired' | 'unknown';
+	expires: string | null;
+	serial: string;
+}
+
+export interface Vpn {
+	wireguard: { clients: WgClient[]; error?: string } | null;
+	openvpn: { clients: OvpnClient[]; error?: string; crl_to_server?: boolean } | null;
+}
+
 export interface Health {
 	ok: boolean;
 	version: string;
@@ -161,6 +185,19 @@ export const api = {
 		get<Change[]>('/changes', { hours, device, limit }),
 	me: () => get<Me>('/auth/me'),
 	alarms: () => get<Alarms>('/alarms'),
+	vpn: () => get<Vpn>('/vpn'),
+	wgCreate: (name: string, days: number | null) =>
+		call<{ id: string }>('POST', '/vpn/wireguard', { name, days }),
+	wgEnable: (id: string, on: boolean) =>
+		call<{ enabled: boolean }>('POST', `/vpn/wireguard/${id}/${on ? 'enable' : 'disable'}`),
+	wgDelete: (id: string) => call<{ deleted: boolean }>('DELETE', `/vpn/wireguard/${id}`),
+	ovpnIssue: (name: string, days: number | null) =>
+		call<{ name: string }>('POST', '/vpn/openvpn', { name, days }),
+	ovpnRevoke: (name: string) =>
+		call<{ revoked: boolean; crl_pushed: boolean }>(
+			'POST',
+			`/vpn/openvpn/${encodeURIComponent(name)}/revoke`
+		),
 	acknowledge: (key: string, note = '') =>
 		call<Alarm>('POST', `/alarms/${encodeURIComponent(key)}/ack`, { note }),
 	mute: (device: string, minutes: number) =>

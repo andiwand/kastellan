@@ -93,12 +93,10 @@ fixed, before the next one starts.
 Today: OpenVPN on the OpenWrt router with its easy-rsa PKI on SV1, and WireGuard through wg-easy
 on SV1. Goal: one place to give and take away VPN access.
 
-- **OpenVPN**: Kastellan holds (or drives) the easy-rsa PKI: create a client (key + certificate),
-  revoke it, keep the CRL current on the OpenWrt server, and download a ready `.ovpn` (inline
-  certificates) or a QR code. The CA key stays on SV1 (or moves to the hub, encrypted); every
-  issue and revoke goes to the audit log; clients expire.
-- **WireGuard**: build on wg-easy's API rather than duplicating it (list, create, disable, delete
-  clients; config and QR from it); later possibly native WireGuard on OpenWrt.
+- **OpenVPN** (built): easy-rsa stays installed on SV1 (decided: no container of our own), owned
+  by a dedicated user; Kastellan drives it only through `tools/kastellan-pki`, and pushes the
+  CRL with `tools/kastellan-crl`. Still to do on the real hosts: install both, the template.
+- **WireGuard** (built): through wg-easy's API; its web interface can then leave the LAN.
 - One "VPN" page: who has access, by which method, last seen; revoke in one place.
 - Needs: SSH (or the agent) to SV1 and the router, so it comes after those are set up.
 

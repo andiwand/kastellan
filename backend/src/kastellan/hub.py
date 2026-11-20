@@ -25,6 +25,7 @@ from .desktop_api import Tickets
 from .drivers import DRIVERS
 from .history import History
 from .monitor import DeviceStatus, Monitor, run_check
+from .secrets import Secrets
 from .settings import Settings
 from .ssh import Keys
 from .terminals import Terminals
@@ -77,6 +78,7 @@ class Hub:
         self.sessions = Sessions(settings.data / "sessions.json")
         self.audit = Audit(settings.data / "audit.log")
         self.keys = Keys(settings.data / "ssh")
+        self.secrets = Secrets(settings.data / "secrets")
         self.terminals = Terminals()
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)

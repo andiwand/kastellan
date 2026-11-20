@@ -7,6 +7,7 @@
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
 	import List from '@lucide/svelte/icons/list';
 	import Layers from '@lucide/svelte/icons/layers';
+	import KeyRound from '@lucide/svelte/icons/key-round';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import SignIn from '#lib/components/SignIn.svelte';
@@ -19,7 +20,8 @@
 	const nav = [
 		{ href: '/', label: 'Overview', icon: LayoutDashboard },
 		{ href: '/devices', label: 'Devices', icon: List },
-		{ href: '/services', label: 'Services', icon: Layers }
+		{ href: '/services', label: 'Services', icon: Layers },
+		{ href: '/vpn', label: 'VPN', icon: KeyRound }
 	] as { href: string; label: string; short?: string; icon: typeof List }[];
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
@@ -176,7 +178,7 @@
 
 		<!-- Tab bar (narrow screens) -->
 		<nav
-			class="fixed inset-x-0 bottom-0 z-30 grid grid-cols-3 border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden"
+			class="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden"
 			aria-label="Main"
 		>
 			{#each nav as item (item.href)}

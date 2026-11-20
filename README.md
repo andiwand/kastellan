@@ -210,6 +210,41 @@ vulns:
   nvd_api_key: ...      # optional, faster NVD lookups
 ```
 
+## VPN access
+
+One page to give and take away VPN access: WireGuard through
+[wg-easy](https://github.com/wg-easy/wg-easy) (15.x), OpenVPN through an
+[easy-rsa](https://github.com/OpenVPN/easy-rsa) PKI. Admins (with sign-in on) add clients,
+turn them off or revoke them, and download a ready `.conf`/`.ovpn` or show a QR code. Every
+action goes to the audit log.
+
+```yaml
+vpn:
+  wireguard:
+    wg_easy: http://192.168.15.10:51821  # its admin login; 2FA must be off for its API
+    user: admin                           # password: kastellan secret set wg-easy
+  openvpn:
+    pki: sv1          # the device with the easy-rsa PKI (its ssh: user runs kastellan-pki)
+    server: openwrt   # the OpenVPN server (its ssh: user runs kastellan-crl)
+    days: 365         # how long new client certificates last
+```
+
+**wg-easy**: once Kastellan manages the clients, wg-easy's web interface doesn't need to be on
+your network. Publish only WireGuard's UDP port and let Kastellan reach the web port on a Docker
+network both share (or on localhost when both run on the same host).
+
+**OpenVPN**: Kastellan never gets a shell or the CA key. Two small scripts in `tools/` are the
+only commands its key may run, bound with `command=` in `authorized_keys`:
+
+- `tools/kastellan-pki` on the PKI host: list, issue, revoke, export, crl. Give it a dedicated
+  user that owns the PKI (`chmod 700`), so nothing else can read the CA key. Install
+  instructions are at the top of the script; `/etc/kastellan-pki.conf` says where the PKI and
+  the client template (`{{ca}} {{cert}} {{key}} {{tls}}`) are.
+- `tools/kastellan-crl` on the OpenVPN server: takes the new CRL after a revoke, so a revoked
+  client is refused at once (`crl-verify /etc/openvpn/crl.pem` in the server config).
+
+Trust both hosts' keys once, as for the terminal.
+
 ## Security
 
 Run Kastellan only where your own network or VPN can reach it, never on the internet. The security design (keys instead of passwords, per-device limits, roles,

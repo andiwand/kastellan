@@ -19,9 +19,17 @@ def main() -> None:
     parser.add_argument("--version", action="version", version=f"kastellan {__version__}")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("hash-password", help="make a password hash for a user in config.yaml")
+    secret = commands.add_parser(
+        "secret", help="store a secret (a password, a token) for config.yaml to name"
+    )
+    secret.add_argument("action", choices=["set", "list"])
+    secret.add_argument("name", nargs="?")
     args = parser.parse_args()
     if args.command == "hash-password":
         hash_password_command()
+        return
+    if args.command == "secret":
+        secret_command(args.action, args.name)
         return
 
     settings = Settings.from_env()
@@ -40,6 +48,25 @@ def main() -> None:
         proxy_headers=False,
         ws_max_size=1024 * 1024,  # terminal frames are small; 16 MB default frames are not needed
     )
+
+
+def secret_command(action: str, name: str | None) -> None:
+    """`kastellan secret set wg-easy` asks for the value and stores it in <data>/secrets (0600)."""
+    import getpass
+
+    from .secrets import Secrets
+
+    secrets = Secrets(Settings.from_env().data / "secrets")
+    if action == "list":
+        print("\n".join(secrets.names()) or "(none)")
+        return
+    if not name:
+        raise SystemExit("Name the secret: kastellan secret set <name>")
+    value = getpass.getpass(f"Value for {name}: ")
+    if not value:
+        raise SystemExit("Nothing stored.")
+    secrets.set(name, value)
+    print(f"Stored {name}.")
 
 
 def hash_password_command() -> None:

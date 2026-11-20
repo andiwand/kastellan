@@ -20,5 +20,7 @@
 - Known vulnerabilities from NVD, OSV and CISA KEV for software, firmware and container images;
   alarms by exposure; opt-in automatic container updates only for confirmed serious findings on
   internet-facing devices.
+- VPN access: WireGuard clients through wg-easy, OpenVPN through easy-rsa (restricted scripts), with
+  config downloads and QR codes.
 - Demo mode (`KASTELLAN_DEMO=1`): a made-up network with a day of simulated history.
 - Project website (`website/`).
