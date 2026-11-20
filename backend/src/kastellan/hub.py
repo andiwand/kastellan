@@ -11,15 +11,15 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import httpx
 from pydantic import ValidationError
 from ruamel.yaml.error import YAMLError
 
 from . import config as config_mod
-from . import demo, docker
+from . import demo, docker, notify
+from .alarms import Alarms, Message, evaluate
 from .audit import Audit
 from .auth import Sessions
-from .config import Config, Role
+from .config import Config, Device, Role
 from .desktop_api import Tickets
 from .drivers import DRIVERS
 from .history import History
@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
 DRIVER_EVERY = 600
+ALARMS_EVERY = 30
 
 
 class ConfigProblem(Exception):
@@ -75,6 +76,9 @@ class Hub:
         self.keys = Keys(settings.data / "ssh")
         self.terminals = Terminals()
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
+        self.alarms = Alarms(data)
+        self._events_since = datetime.now(UTC)
+        self._container_seen: dict[tuple[str, str], tuple[str, int]] = {}
         runner = self.demo.run if self.demo else run_check
         self.monitor = Monitor(self.history, runner, self.versions)
         self._mtime: float | None = None
@@ -202,6 +206,7 @@ class Hub:
             asyncio.create_task(self._poll_drivers(), name="poll drivers"),
             asyncio.create_task(self._watch_config(), name="watch config"),
             asyncio.create_task(self._expire_tickets(), name="expire tickets"),
+            asyncio.create_task(self._watch_alarms(), name="alarms"),
             asyncio.create_task(self._prune(), name="prune history"),
         ]
 
@@ -231,31 +236,40 @@ class Hub:
                     log.exception("reloading config.yaml failed")
 
     async def _poll_drivers(self) -> None:
-        """Ask each device with a driver what it is and runs, every DRIVER_EVERY seconds. A new
-        firmware goes to the version log like a service's software (check name "firmware")."""
-        while True:
-            for id, device in list(self.config.devices.items()):
-                if device.docker is not None:
-                    await self._poll_docker(id, device.docker.wud)
-                if device.driver is None:
-                    continue
-                if self.demo:
-                    if (status := self.monitor.status.get(id)) and id in demo.INFO:
-                        status.info, status.info_checked = demo.INFO[id], datetime.now(UTC)
-                    continue
+        """Ask each device with a driver or a Docker source what it is and runs, every
+        DRIVER_EVERY seconds, a few devices at a time. One device's trouble never stops the
+        others; what it said last stays, marked by its time."""
+        limit = asyncio.Semaphore(8)
+
+        async def one(id: str, device: Device) -> None:
+            async with limit:
                 try:
-                    info = await DRIVERS[device.driver](device.host).info()
+                    if device.docker is not None:
+                        await self._poll_docker(id, device.docker.wud)
+                    if device.driver is not None:
+                        await self._poll_driver(id, device)
                 except Exception:
-                    log.exception("driver %s for %s failed", device.driver, id)
-                    continue
-                status = self.monitor.status.get(id)
-                if info is None or status is None:
-                    continue
-                now = datetime.now(UTC)
-                status.info, status.info_checked = asdict(info), now
-                if info.firmware:
-                    self._note_firmware(id, info.firmware, now)
+                    log.exception("asking %s failed", id)
+
+        while True:
+            await asyncio.gather(*(one(id, d) for id, d in list(self.config.devices.items())))
             await asyncio.sleep(DRIVER_EVERY)
+
+    async def _poll_driver(self, id: str, device: Device) -> None:
+        status = self.monitor.status.get(id)
+        if status is None or device.driver is None:
+            return
+        if self.demo:
+            if id in demo.INFO:
+                status.info, status.info_checked = demo.INFO[id], datetime.now(UTC)
+            return
+        info = await DRIVERS[device.driver](device.host).info()
+        if info is None:
+            return
+        now = datetime.now(UTC)
+        status.info, status.info_checked = asdict(info), now
+        if info.firmware:
+            self._note_firmware(id, info.firmware, now)
 
     async def _poll_docker(self, id: str, wud: str) -> None:
         status = self.monitor.status.get(id)
@@ -266,8 +280,8 @@ class Hub:
             return
         try:
             containers = await docker.read_wud(wud)
-        except (httpx.HTTPError, ValueError) as e:
-            # Keep what we knew; say since when it's old.
+        except Exception as e:
+            # Keep what we knew; the app shows since when it's old.
             status.containers_error = f"cannot read WUD: {e or type(e).__name__}"
             log.info("%s: %s", id, status.containers_error)
             return
@@ -279,17 +293,67 @@ class Hub:
         )
         latest = self.versions.latest()
         for c in containers:
-            key = f"container {c.name}"
+            version = c.running_version
+            if version is None:
+                continue
+            key = f"@container {c.key}"
             last = latest.get((id, key))
-            if last is None or last[0] != c.running_version:
-                self.versions.record(now, id, key, last[0] if last else None, c.running_version)
+            if last is not None and last[0] == version:
+                self._container_seen.pop((id, key), None)
+                continue
+            # Seen twice in a row before it counts, like services' software (monitor.py).
+            seen, count = self._container_seen.get((id, key), (version, 0))
+            count = count + 1 if seen == version else 1
+            if last is not None and count < 2:
+                self._container_seen[(id, key)] = (version, count)
+                continue
+            self._container_seen.pop((id, key), None)
+            self.versions.record(now, id, key, last[0] if last else None, version)
 
     def _note_firmware(self, id: str, firmware: str, now: datetime) -> None:
-        last = self.versions.latest().get((id, "firmware"))
+        last = self.versions.latest().get((id, "@firmware"))
         if last is None or last[0] != firmware:
             if last is not None:
                 log.info("%s firmware: %s → %s", id, last[0], firmware)
-            self.versions.record(now, id, "firmware", last[0] if last else None, firmware)
+            self.versions.record(now, id, "@firmware", last[0] if last else None, firmware)
+
+    async def _watch_alarms(self) -> None:
+        """Turn what is known into alarms and info events, and send them (alarms.py, notify.py)."""
+        while True:
+            await asyncio.sleep(ALARMS_EVERY)
+            try:
+                now = datetime.now(UTC)
+                problems = evaluate(self.config, self.monitor.status, now, self.alarms.muted)
+                messages = self.alarms.update(problems, now) + self._events(now)
+                await notify.send(self.config.notify, messages, now)
+            except Exception:
+                log.exception("evaluating the alarms failed")
+
+    def _events(self, now: datetime) -> list[Message]:
+        """Info events: container updates that appeared, software and firmware that changed."""
+        out: list[Message] = []
+        for id, status in self.monitor.status.items():
+            device = self.config.devices.get(id)
+            if device is None:
+                continue
+            for c in status.containers or []:
+                if c.get("update"):
+                    key = f"update:{id}:{c.get('key', c['name'])}:{c.get('update_to')}"
+                    title = f"{device.name}: {c['name']} can be updated to {c.get('update_to')}"
+                    if m := self.alarms.event(key, title, f"{c['image']}:{c['tag']}", id, now):
+                        out.append(m)
+        for change in self.versions.changes(self._events_since):
+            device = self.config.devices.get(change["device"])
+            name = device.name if device else change["device"]
+            key = f"version:{change['device']}:{change['check']}:{change['to']}"
+            what = change["check"].removeprefix("@")
+            title = f"{name}: {what} updated"
+            if m := self.alarms.event(
+                key, title, f"{change['from']} → {change['to']}", change["device"], now
+            ):
+                out.append(m)
+        self._events_since = now
+        return out
 
     async def _expire_tickets(self) -> None:
         """A ticket holds a desktop password until used; unused ones go after their minute."""

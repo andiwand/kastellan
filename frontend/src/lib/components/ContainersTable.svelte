@@ -5,7 +5,7 @@
 	import Check from '@lucide/svelte/icons/check';
 
 	/** A host's containers: what runs, and whether a newer image exists (or why that's unknown). */
-	let { containers }: { containers: Container[] } = $props();
+	let { containers, stale = false }: { containers: Container[]; stale?: boolean } = $props();
 
 	const order = (c: Container) => (c.update ? 0 : c.unchecked ? 1 : 2);
 	const sorted = $derived(
@@ -13,14 +13,14 @@
 	);
 </script>
 
-<div class="card overflow-hidden">
+<div class="card overflow-hidden" class:opacity-60={stale}>
 	<div
 		class="hidden grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted md:grid"
 	>
 		<span>Container</span><span>Image</span><span>State</span><span>Update</span>
 	</div>
 	<ul class="divide-y divide-line">
-		{#each sorted as c (c.name)}
+		{#each sorted as c (c.key)}
 			<li
 				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)]"
 			>
@@ -44,9 +44,14 @@
 					{:else if c.unchecked}
 						<CircleHelp class="size-3.5 shrink-0 text-faint" />
 						<span class="truncate text-muted" title={c.unchecked}>can't check: {c.unchecked}</span>
+					{:else if stale}
+						<span class="text-muted">was up to date</span>
 					{:else}
 						<Check class="size-3.5 shrink-0" style="color: var(--good-text)" />
 						<span class="text-muted">up to date</span>
+					{/if}
+					{#if c.state !== 'running'}
+						<span class="ml-auto text-faint md:hidden">{c.state}</span>
 					{/if}
 				</span>
 			</li>

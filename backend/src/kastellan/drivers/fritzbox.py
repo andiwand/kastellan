@@ -10,6 +10,7 @@ user with only the rights it needs.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -51,10 +52,18 @@ class FritzBox(Driver):
     async def info(self) -> DeviceInfo | None:
         url = f"http://{self.host}:{PORT}/tr64desc.xml"
         try:
-            async with httpx.AsyncClient(timeout=8) as client:
-                response = await client.get(url)
-            response.raise_for_status()
-            return parse_description(response.text[:200_000])
-        except (httpx.HTTPError, ET.ParseError, ValueError) as e:
+            async with (
+                asyncio.timeout(15),
+                httpx.AsyncClient(timeout=8) as client,
+                client.stream("GET", url) as response,
+            ):
+                response.raise_for_status()
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body += chunk
+                    if len(body) > 512 * 1024:  # the real file is ~15 kB
+                        raise ValueError("description too large")
+            return parse_description(body.decode("utf-8", errors="replace"))
+        except (httpx.HTTPError, ET.ParseError, ValueError, TimeoutError) as e:
             log.info("%s: no TR-064 description (%s)", self.host, e)
             return None

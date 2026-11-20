@@ -1,0 +1,71 @@
+"""Alarms over HTTP: the open ones, acknowledging, muting a device, a test notification."""
+
+from __future__ import annotations
+
+from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from . import notify
+from .alarms import Message, Severity
+from .auth_api import client_address, require_admin
+
+if TYPE_CHECKING:
+    from .hub import Hub
+
+
+class Ack(BaseModel):
+    note: str = Field(default="", max_length=500)
+
+
+class Mute(BaseModel):
+    minutes: int = Field(ge=0, le=60 * 24 * 30)  # 0 unmutes
+
+
+def router(hub: Hub) -> APIRouter:
+    api = APIRouter(prefix="/api")
+
+    @api.get("/alarms")
+    def alarms() -> dict[str, Any]:
+        now = datetime.now(UTC)
+        return {
+            "open": [asdict(a) for a in hub.alarms.open.values()],
+            "muted": {k: v for k, v in hub.alarms.muted.items() if v > now},
+            "channels": len(hub.config.notify),
+        }
+
+    @api.post("/alarms/{key}/ack")
+    def acknowledge(key: str, body: Ack, request: Request) -> dict[str, Any]:
+        w = require_admin(request)
+        alarm = hub.alarms.acknowledge(key, w.user, body.note, datetime.now(UTC))
+        if alarm is None:
+            raise HTTPException(404, "no such open alarm")
+        hub.audit.record("alarm.ack", w.user, client_address(request.scope), alarm=key, note=body.note)
+        return asdict(alarm)
+
+    @api.post("/devices/{id}/mute")
+    def mute(id: str, body: Mute, request: Request) -> dict[str, Any]:
+        w = require_admin(request)
+        if id not in hub.config.devices:
+            raise HTTPException(404, "no such device")
+        until = datetime.now(UTC) + timedelta(minutes=body.minutes) if body.minutes else None
+        hub.alarms.mute(id, until)
+        hub.audit.record(
+            "device.mute", w.user, client_address(request.scope), device=id, minutes=body.minutes
+        )
+        return {"device": id, "muted_until": until}
+
+    @api.post("/notify/test")
+    async def test(request: Request) -> dict[str, int]:
+        w = require_admin(request)
+        if not hub.config.notify:
+            raise HTTPException(400, "no notify: channels in config.yaml")
+        message = Message(Severity.CRITICAL, "Kastellan test", f"sent by {w.user or 'an admin'}")
+        await notify.send(hub.config.notify, [message], datetime.now(UTC))
+        hub.audit.record("notify.test", w.user, client_address(request.scope))
+        return {"channels": len(hub.config.notify)}
+
+    return api

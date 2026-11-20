@@ -34,8 +34,7 @@
 			: check.type === 'tcp'
 				? `port ${check.target}`
 				: String(check.target);
-	const cols =
-		'lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1.3fr)_6.5rem_4.5rem_6.5rem_minmax(0,1.4fr)]';
+	const cols = 'lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1.3fr)_6.5rem_4.5rem_9rem_minmax(0,1.3fr)]';
 </script>
 
 <div class="card overflow-hidden">

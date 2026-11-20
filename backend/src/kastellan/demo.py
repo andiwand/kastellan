@@ -169,6 +169,7 @@ INFO = {
 
 def _c(name, image, tag, update_to=None, unchecked=None, state="running"):
     return {
+        "key": name,
         "name": name,
         "image": image,
         "tag": tag,
@@ -191,9 +192,19 @@ CONTAINERS = {
     ],
     "homeserver": [
         _c("homeassistant", "home-assistant/home-assistant", "2026.11.2", update_to="2026.11.3"),
-        _c("mosquitto", "library/eclipse-mosquitto", "2"),
+        _c(
+            "mosquitto",
+            "library/eclipse-mosquitto",
+            "2",
+            unchecked="only newer tags are checked, not new builds of :2",
+        ),
         _c("zigbee2mqtt", "koenkk/zigbee2mqtt", "latest", update_to="newer build"),
-        _c("wud", "getwud/wud", "latest"),
+        _c(
+            "wud",
+            "getwud/wud",
+            "latest",
+            unchecked="WUD doesn't watch the digest of :latest (label wud.watch.digest=true)",
+        ),
     ],
 }
 

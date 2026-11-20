@@ -55,6 +55,7 @@ def test_wud_container() -> None:
                 "digest": {"watch": False},
             },
             "updateAvailable": False,
+            "result": {"tag": "latest"},
         }
     )
     assert unwatched.unchecked and "digest" in unwatched.unchecked  # not "up to date"
@@ -78,3 +79,36 @@ def test_wud_container() -> None:
         }
     )
     assert lscr.unchecked == "Unsupported Registry unknown" and not lscr.update
+
+
+def test_wud_honesty_and_bad_records() -> None:
+    from kastellan.docker import from_wud
+
+    fresh = from_wud({"name": "new", "image": {"name": "x/y", "tag": {"value": "1.2.3", "semver": True}}})
+    assert fresh.unchecked == "not checked by WUD yet"
+    moving = from_wud(
+        {
+            "name": "pg",
+            "image": {"name": "library/postgres", "tag": {"value": "15", "semver": True}},
+            "result": {"tag": "15"},
+        }
+    )
+    assert moving.unchecked and "new builds of :15" in moving.unchecked
+    exact = from_wud(
+        {
+            "name": "n",
+            "image": {"name": "a/n", "tag": {"value": "0.10.0", "semver": True}},
+            "result": {"tag": "0.10.0"},
+        }
+    )
+    assert exact.unchecked is None  # really checked: up to date
+    for broken in (
+        {"image": "x"},
+        {"image": {"tag": "latest"}},
+        {"result": "x", "updateAvailable": True},
+        {"updateKind": "tag"},
+        {"image": {"digest": "x"}},
+        {},
+    ):
+        from_wud(broken)  # never raises
+    assert from_wud({"image": {"tag": {"value": "1"}}}).running_version is None  # no id: no "update"

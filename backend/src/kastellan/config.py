@@ -95,6 +95,8 @@ class Check(BaseModel):
             raise ValueError("http needs a URL starting with http:// or https://")
         if not self.name:
             self.name = self.type.value if self.type is CheckType.PING else f"{self.type.value}:{self.target}"
+        if self.name.startswith("@"):
+            raise ValueError("check names can't start with @ (kept for firmware and containers)")
         return self
 
 
@@ -145,6 +147,9 @@ class Device(BaseModel):
     desktop: DesktopAccess | None = None  # set to open its screen in the browser
     driver: str | None = None  # what else Kastellan can ask it, e.g. fritzbox (see drivers/)
     docker: DockerSource | None = None  # its containers and their updates
+    # Reachable from the internet (a port forward, a public server): known vulnerabilities in
+    # what it runs count as urgent, and may trigger automatic updates (see vulns.py).
+    exposed: bool = False
     checks: list[Check] = Field(default_factory=lambda: [Check(type=CheckType.PING)])
 
     @model_validator(mode="after")
@@ -189,6 +194,30 @@ class User(BaseModel):
         return self
 
 
+class AlarmSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    down_after: int = Field(default=180, ge=30)  # seconds down before an alarm
+
+
+class NotifyChannel(BaseModel):
+    """Where alarms go (notify.py). One of ntfy or webhook."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ntfy: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")
+    webhook: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")
+    token: str | None = None  # ntfy access token
+    min: Literal["info", "warning", "critical"] = "warning"
+    quiet: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$")  # only critical then
+
+    @model_validator(mode="after")
+    def _one_target(self) -> Self:
+        if (self.ntfy is None) == (self.webhook is None):
+            raise ValueError("a notify channel is either ntfy: <url> or webhook: <url>")
+        return self
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -197,6 +226,8 @@ class Config(BaseModel):
     devices: dict[str, Device] = Field(default_factory=dict)
     # Sign-in is off while this is empty; see auth.py.
     users: dict[str, User] = Field(default_factory=dict)
+    alarms: AlarmSettings = Field(default_factory=AlarmSettings)
+    notify: list[NotifyChannel] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _ids_and_parents(self) -> Self:

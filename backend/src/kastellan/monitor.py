@@ -83,6 +83,7 @@ class Monitor:
         self.versions = versions
         self.status: dict[str, DeviceStatus] = {}
         self._targets: dict[tuple[str, str], str] = {}
+        self._hosts: dict[str, str] = {}
         self._software_seen: dict[tuple[str, str], tuple[str, int]] = {}
         self._tasks: dict[tuple[str, str], tuple[asyncio.Task[None], Device, Check, float]] = {}
 
@@ -123,6 +124,11 @@ class Monitor:
         }
         for id, device in config.devices.items():
             status = self.status.setdefault(id, DeviceStatus())
+            if device.docker is None or self._hosts.get(id, device.host) != device.host:
+                status.containers = status.containers_checked = status.containers_error = None
+            if device.driver is None or self._hosts.get(id, device.host) != device.host:
+                status.info = status.info_checked = None
+            self._hosts[id] = device.host
             names = {c.name for c in device.checks}
             status.checks = {n: s for n, s in status.checks.items() if n in names}
             for name in names:

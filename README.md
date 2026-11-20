@@ -159,6 +159,24 @@ login. Prefer `security: nla`, and give the PC a certificate guacd trusts, then 
 `ignore_cert: false`. guacd itself has no sign-in: anything on the hub's host can use it, which is
 why it listens on localhost only.
 
+## Alarms and notifications
+
+Kastellan raises an alarm when a device that should always be on is down for 3 minutes
+(critical), or one of its services is (warning). A device that is down covers the devices
+behind it (its `parent` chain): one alarm, not one per device. Container updates and changed
+software or firmware are sent as info. Alarms show on the overview; an admin can acknowledge
+them, and mute a device for an hour. Every alarm goes to `data/alarms.log`.
+
+```yaml
+alarms:
+  down_after: 180             # seconds
+notify:
+  - ntfy: https://ntfy.sh/your-secret-topic   # or your own ntfy server
+    min: warning              # info, warning, critical
+    quiet: "22:00-07:00"      # only critical at night
+  - webhook: https://example.org/hook         # JSON: title, body, severity, device
+```
+
 ## Security
 
 Run Kastellan only where your own network or VPN can reach it, never on the internet. The security design (keys instead of passwords, per-device limits, roles,

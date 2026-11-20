@@ -33,3 +33,14 @@ def test_demo(tmp_path: Path) -> None:
         ssh = next(c for c in devices["homeserver"]["checks"] if c["name"] == "ssh")
         assert ssh["software"] == "OpenSSH 10.2p1 (Debian)"
     assert not (tmp_path / "checks").exists()  # demo history stays out of the real data
+
+
+def test_demo_containers_have_unique_keys(tmp_path: Path) -> None:
+    """The web app keys lists by these; a missing key crashed the overview."""
+    from kastellan.demo import CONTAINERS
+    from kastellan.docker import Container
+
+    fields = set(Container.__dataclass_fields__)
+    for containers in CONTAINERS.values():
+        assert all(set(c) == fields for c in containers)
+        assert len({c["key"] for c in containers}) == len(containers)

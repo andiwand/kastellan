@@ -3,7 +3,7 @@
 	import { api, type Change, type Series } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { statusOf, uptimeOf } from '#lib/status.js';
-	import { ago, ms, percent, stateFor } from '#lib/format.js';
+	import { ago, dayClock, ms, percent, stateFor } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
@@ -12,6 +12,8 @@
 	import ExternalLink from '@lucide/svelte/icons/external-link';
 	import SquareTerminal from '@lucide/svelte/icons/square-terminal';
 	import MonitorPlay from '@lucide/svelte/icons/monitor-play';
+	import Bell from '@lucide/svelte/icons/bell';
+	import BellOff from '@lucide/svelte/icons/bell-off';
 	import Copy from '@lucide/svelte/icons/copy';
 	import Check from '@lucide/svelte/icons/check';
 	import ActivityItem from '#lib/components/ActivityItem.svelte';
@@ -150,6 +152,21 @@
 					<SquareTerminal class="size-4 text-muted" /> Terminal
 				</a>
 			{/if}
+			{#if store.me?.role === 'admin'}
+				{@const mutedUntil = store.alarms?.muted[device.id]}
+				<button
+					onclick={async () => {
+						await api.mute(device.id, mutedUntil ? 0 : 60);
+						store.refreshHistory();
+					}}
+					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
+					title={mutedUntil ? `No alarms until ${dayClock(mutedUntil)}` : 'No alarms for an hour'}
+				>
+					{#if mutedUntil}<BellOff class="size-4 text-muted" /> Muted{:else}<Bell
+							class="size-4 text-muted"
+						/> Mute 1 h{/if}
+				</button>
+			{/if}
 			{#if device.desktop && store.me?.role === 'admin' && store.me.user}
 				<a
 					href="/devices/{device.id}/desktop"
@@ -215,12 +232,18 @@
 			<p class="text-xs text-muted">
 				{#if device.containers_error}
 					<span style:color="var(--warning-text)">{device.containers_error}</span>
+					{#if device.containers_checked}
+						· last read {ago(device.containers_checked, store.now)}
+					{/if}
 				{:else}
 					from WUD, {ago(device.containers_checked, store.now)}
 				{/if}
 			</p>
 		</div>
-		{#if device.containers}<ContainersTable containers={device.containers} />{/if}
+		{#if device.containers}<ContainersTable
+				containers={device.containers}
+				stale={!!device.containers_error}
+			/>{/if}
 	{/if}
 
 	<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">

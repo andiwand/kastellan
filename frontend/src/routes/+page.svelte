@@ -10,6 +10,7 @@
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ActivityItem from '#lib/components/ActivityItem.svelte';
+	import { api } from '#lib/api.js';
 
 	const devices = $derived(store.devices ?? []);
 	const counts = $derived(
@@ -169,10 +170,10 @@
 						{updates.length}
 						{updates.length === 1 ? 'container update' : 'container updates'}:
 					</span>
-					{#each updates.slice(0, 6) as { device, c } (`${device.id}/${c.name}`)}
+					{#each updates.slice(0, 6) as { device, c } (`${device.id}/${c.key}`)}
 						<a href="/devices/{device.id}" class="text-muted hover:text-text">
 							{c.name} <span class="text-faint">→</span>
-							{c.update_to}
+							{c.update_to ?? 'newer image'}
 						</a>
 					{/each}
 				{/if}
@@ -185,6 +186,52 @@
 			</div>
 		{/if}
 	</section>
+
+	{#if store.alarms?.open.length}
+		<section class="mt-6">
+			<div class="mb-3 flex items-baseline justify-between">
+				<h2 class="text-sm font-semibold">Alarms</h2>
+				<p class="text-xs text-muted">
+					{store.alarms.channels
+						? `sent to ${store.alarms.channels} ${store.alarms.channels === 1 ? 'channel' : 'channels'}`
+						: 'no notify: channels in config.yaml'}
+				</p>
+			</div>
+			<ul class="card divide-y divide-line">
+				{#each store.alarms.open as alarm (alarm.key)}
+					<li class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
+						<StatusDot status={alarm.severity === 'critical' ? 'down' : 'degraded'} size="size-2" />
+						<a
+							href="/devices/{alarm.device}"
+							class="min-w-0 flex-1 truncate font-medium hover:underline"
+						>
+							{alarm.title}
+						</a>
+						{#if alarm.acknowledged_by}
+							<span class="text-xs text-muted">
+								{alarm.acknowledged_by} is on it{alarm.acknowledged_note
+									? `: ${alarm.acknowledged_note}`
+									: ''}
+							</span>
+						{:else if store.me?.role === 'admin'}
+							<button
+								onclick={async () => {
+									await api.acknowledge(alarm.key);
+									store.refreshHistory();
+								}}
+								class="h-7 rounded-lg border border-line px-2.5 text-xs font-medium hover:border-line-strong"
+							>
+								Acknowledge
+							</button>
+						{/if}
+						<span class="tabular text-xs text-faint">
+							{ago(alarm.since ?? alarm.opened, store.now)}
+						</span>
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
 
 	<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">
 		<!-- Devices -->

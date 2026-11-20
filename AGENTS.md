@@ -40,6 +40,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `unchecked` says why an update can't be known (unsupported registry, a non-semver tag whose
     digest WUD doesn't watch); never show those as "up to date". Each container's running
     image (`image:tag (id)`) goes to versions.log as `container <name>`.
+  - `alarms.py`: `evaluate()` (pure) turns status into problems: critical for an always-on device
+    down `down_after` seconds, warning for a down service; a down device folds in the devices
+    behind it. `Alarms` keeps open ones in `<data>/alarms.json`, logs to `<data>/alarms.log`,
+    sends info events once. `notify.py`: ntfy and webhooks with `min` and `quiet` hours (critical
+    always). `alarms_api.py`: list, acknowledge, mute, test. The hub evaluates every 30 s.
+  - Version-log keys starting with `@` are not checks: `@firmware`, `@container <key>`.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
   - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)

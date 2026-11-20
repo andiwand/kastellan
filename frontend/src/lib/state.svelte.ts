@@ -1,4 +1,13 @@
-import { api, SignedOut, type Change, type Device, type Health, type Me, type Series } from './api';
+import {
+	api,
+	SignedOut,
+	type Alarms,
+	type Change,
+	type Device,
+	type Health,
+	type Me,
+	type Series
+} from './api';
 
 /** The app's live data: devices every 5 s, the last day's buckets and changes every 30 s. */
 class Store {
@@ -6,6 +15,7 @@ class Store {
 	health = $state<Health | null>(null);
 	series = $state<Series | null>(null);
 	changes = $state<Change[]>([]);
+	alarms = $state<Alarms | null>(null);
 	error = $state<string | null>(null);
 	/** Who is signed in; null until the hub has answered. */
 	me = $state<Me | null>(null);
@@ -49,6 +59,7 @@ class Store {
 		this.devices = null;
 		this.series = null;
 		this.changes = [];
+		this.alarms = null;
 	}
 
 	async signOut() {
@@ -63,7 +74,11 @@ class Store {
 	async refreshHistory() {
 		if (this.me?.signin && !this.me.user) return;
 		try {
-			[this.series, this.changes] = await Promise.all([api.series(24, 48), api.changes(24)]);
+			[this.series, this.changes, this.alarms] = await Promise.all([
+				api.series(24, 48),
+				api.changes(24),
+				api.alarms()
+			]);
 		} catch {
 			// refresh() reports a broken connection
 		}

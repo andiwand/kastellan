@@ -35,6 +35,7 @@ export interface Device {
 }
 
 export interface Container {
+	key: string;
 	name: string;
 	image: string;
 	tag: string;
@@ -43,6 +44,26 @@ export interface Container {
 	update: boolean;
 	update_to: string | null;
 	unchecked: string | null;
+}
+
+export interface Alarm {
+	key: string;
+	severity: 'info' | 'warning' | 'critical';
+	device: string;
+	title: string;
+	detail: string;
+	opened: string;
+	since: string | null;
+	hidden: string[];
+	acknowledged_by: string | null;
+	acknowledged_note: string | null;
+	acknowledged_at: string | null;
+}
+
+export interface Alarms {
+	open: Alarm[];
+	muted: Record<string, string>;
+	channels: number;
 }
 
 export interface Health {
@@ -114,6 +135,13 @@ export const api = {
 	changes: (hours = 24, device?: string, limit = 100) =>
 		get<Change[]>('/changes', { hours, device, limit }),
 	me: () => get<Me>('/auth/me'),
+	alarms: () => get<Alarms>('/alarms'),
+	acknowledge: (key: string, note = '') =>
+		call<Alarm>('POST', `/alarms/${encodeURIComponent(key)}/ack`, { note }),
+	mute: (device: string, minutes: number) =>
+		call<{ muted_until: string | null }>('POST', `/devices/${encodeURIComponent(device)}/mute`, {
+			minutes
+		}),
 	login: (user: string, password: string) =>
 		call<{ user: string; role: string }>('POST', '/auth/login', { user, password }),
 	logout: () => call<{ ok: boolean }>('POST', '/auth/logout'),

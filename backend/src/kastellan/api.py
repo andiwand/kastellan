@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from . import __version__, checks, stats
+from .alarms_api import router as alarms_router
 from .auth_api import Guard
 from .auth_api import router as auth_router
 from .config import Check
@@ -45,6 +46,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(auth_router(hub))
     app.include_router(terminal_router(hub))
     app.include_router(desktop_router(hub))
+    app.include_router(alarms_router(hub))
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:

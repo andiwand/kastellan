@@ -14,7 +14,10 @@ The agent will be the other source later (PLAN.md); this module is where both me
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -23,64 +26,99 @@ import httpx
 log = logging.getLogger(__name__)
 
 
+MAX_BYTES = 5 * 1024 * 1024  # WUD's answer for a few hundred containers is far below this
+FULL_VERSION = re.compile(r"^v?\d+\.\d+\.\d+")
+
+
 @dataclass(frozen=True)
 class Container:
+    key: str  # unique per host: WUD's watcher and the container's name
     name: str
     image: str  # "andiwand/norn"
     tag: str  # "0.10.0", "latest"
     image_id: str  # short id of the image it runs; changes with every pulled update
     state: str  # running, exited, ...
     update: bool
-    update_to: str | None  # the newer tag, or "newer digest" for the same tag
-    unchecked: str | None  # why WUD can't tell, or None
+    update_to: str | None  # the newer tag, or "newer build" for the same tag
+    unchecked: str | None  # why WUD can't tell (or hasn't yet), or None
     registry: str | None
 
     @property
-    def running_version(self) -> str:
-        """What the version log keeps: the image, its tag, and which build of that tag."""
-        return f"{self.image}:{self.tag} ({self.image_id})" if self.image_id else f"{self.image}:{self.tag}"
+    def running_version(self) -> str | None:
+        """What the version log keeps: image, tag, and which build of it. None without an id
+        (a missing field must not look like an update)."""
+        return f"{self.image}:{self.tag} ({self.image_id})" if self.image_id else None
+
+
+def _obj(value: Any) -> dict[str, Any]:
+    """WUD's nested fields, read defensively: anything but an object counts as empty."""
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value: Any, limit: int) -> str:
+    return str(value)[:limit] if value is not None else ""
 
 
 def from_wud(item: dict[str, Any]) -> Container:
-    image = item.get("image") or {}
-    tag = (image.get("tag") or {}).get("value") or "?"
-    result = item.get("result") or {}
-    kind = (item.get("updateKind") or {}).get("kind")
-    update = bool(item.get("updateAvailable"))
+    image = _obj(item.get("image"))
+    tag_info = _obj(image.get("tag"))
+    digest = _obj(image.get("digest"))
+    result = _obj(item.get("result"))
+    tag = _text(tag_info.get("value") or "?", 100)
+    update = item.get("updateAvailable") is True
     update_to = None
     if update:
         new_tag = result.get("tag")
-        update_to = new_tag if new_tag and new_tag != tag else "newer build" if kind == "digest" else new_tag
-    error = (item.get("error") or {}).get("message") if isinstance(item.get("error"), dict) else None
-    tag_info = image.get("tag") or {}
-    digest = image.get("digest") or {}
-    if not error and not update and not tag_info.get("semver") and not digest.get("watch"):
-        # A tag like latest or alpine only changes its content; WUD sees that only when it
-        # watches the digest. Without that, "no update" means "not looked", not "up to date".
-        error = f"WUD doesn't watch the digest of :{tag} (label wud.watch.digest=true)"
-    image_id = str(image.get("id") or "").removeprefix("sha256:")[:12]
+        update_to = _text(new_tag, 100) if new_tag and new_tag != tag else "newer build"
+    unchecked = _text(_obj(item.get("error")).get("message"), 200) or None
+    if not unchecked and not update:
+        if not result:
+            unchecked = "not checked by WUD yet"
+        elif not digest.get("watch") and not tag_info.get("semver"):
+            # A tag like latest or alpine only changes its content; WUD sees that only when it
+            # watches the digest. Without that, "no update" means "not looked", not "up to date".
+            unchecked = f"WUD doesn't watch the digest of :{tag} (label wud.watch.digest=true)"
+        elif not digest.get("watch") and not FULL_VERSION.match(tag):
+            # :15 or :3.19 is a moving tag: WUD compares tags, so rebuilds of it go unseen.
+            unchecked = f"only newer tags are checked, not new builds of :{tag}"
+    name = _text(item.get("displayName") or item.get("name") or "?", 100)
+    watcher = _text(item.get("watcher") or "local", 50)
     return Container(
-        name=str(item.get("displayName") or item.get("name") or "?")[:100],
-        image=str(image.get("name") or "?")[:200],
-        tag=str(tag)[:100],
-        image_id=image_id,
-        state=str(item.get("status") or "?")[:40],
+        key=name if watcher == "local" else f"{watcher}/{name}",
+        name=name,
+        image=_text(image.get("name") or "?", 200),
+        tag=tag,
+        image_id=_text(image.get("id") or "", 80).removeprefix("sha256:")[:12],
+        state=_text(item.get("status") or "?", 40),
         update=update,
-        update_to=str(update_to)[:100] if update_to else None,
-        unchecked=str(error)[:200] if error else None,
-        registry=((image.get("registry") or {}).get("name")),
+        update_to=update_to,
+        unchecked=unchecked,
+        registry=_text(_obj(image.get("registry")).get("name"), 60) or None,
     )
 
 
 async def read_wud(url: str) -> list[Container]:
-    """All containers WUD watches; raises httpx.HTTPError or ValueError when it can't be read."""
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(url.rstrip("/") + "/api/containers")
-    response.raise_for_status()
-    items = response.json()
+    """All containers WUD watches. Raises on any problem; the caller keeps what it knew."""
+    async with (
+        asyncio.timeout(20),
+        httpx.AsyncClient(timeout=10) as client,
+        client.stream("GET", url.rstrip("/") + "/api/containers") as response,
+    ):
+        response.raise_for_status()
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body += chunk
+            if len(body) > MAX_BYTES:
+                raise ValueError("WUD's answer is too large")
+    items = json.loads(body)
     if not isinstance(items, list):
         raise ValueError("unexpected answer from WUD")
-    return sorted((from_wud(i) for i in items if isinstance(i, dict)), key=lambda c: c.name.lower())
+    containers = sorted((from_wud(i) for i in items if isinstance(i, dict)), key=lambda c: c.key.lower())
+    # The same key twice (a WUD quirk): keep the first, so nothing flips back and forth.
+    unique: dict[str, Container] = {}
+    for c in containers:
+        unique.setdefault(c.key, c)
+    return list(unique.values())
 
 
 def as_dicts(containers: list[Container]) -> list[dict[str, Any]]:
