@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 
 import uvicorn
 
@@ -18,7 +19,10 @@ def main() -> None:
     )
     parser.add_argument("--version", action="version", version=f"kastellan {__version__}")
     commands = parser.add_subparsers(dest="command")
-    commands.add_parser("hash-password", help="make a password hash for a user in config.yaml")
+    hashing = commands.add_parser("hash-password", help="make a password hash for a user in config.yaml")
+    hashing.add_argument(
+        "--short", action="store_true", help="take a password under 10 characters without asking"
+    )
     secret = commands.add_parser(
         "secret", help="store a secret (a password, a token) for config.yaml to name"
     )
@@ -26,7 +30,7 @@ def main() -> None:
     secret.add_argument("name", nargs="?")
     args = parser.parse_args()
     if args.command == "hash-password":
-        hash_password_command()
+        hash_password_command(allow_short=args.short)
         return
     if args.command == "secret":
         secret_command(args.action, args.name)
@@ -69,15 +73,31 @@ def secret_command(action: str, name: str | None) -> None:
     print(f"Stored {name}.")
 
 
-def hash_password_command() -> None:
-    """Ask for a password twice and print its hash, for `users: <name>: password:`."""
+SHORT = 10  # under this, a password is easy to guess; allowed, after a warning
+
+
+def hash_password_command(allow_short: bool = False) -> None:
+    """Ask for a password twice and print its hash, for `users: <name>: password:`. A short one
+    is your call: a warning and a question (or --short), not a refusal. Sign-in slows down
+    guessing (5 tries per address in 5 minutes), and the hub is meant to be reached only from
+    home or through the VPN."""
     import getpass
 
     from .auth import hash_password
 
     password = getpass.getpass("Password: ")
-    if len(password) < 10:
-        raise SystemExit("Use at least 10 characters.")
+    if not password:
+        raise SystemExit("No password given.")
+    if len(password) < SHORT and not allow_short:
+        # On stderr: stdout is the hash alone, so it can be copied or piped.
+        print(
+            f"That is {len(password)} characters; under {SHORT} is easy to guess for anyone who "
+            "reaches the hub.",
+            file=sys.stderr,
+        )
+        print("Use it anyway? [y/N] ", end="", file=sys.stderr, flush=True)
+        if sys.stdin.readline().strip().lower() not in ("y", "yes"):
+            raise SystemExit("Not used.")
     if getpass.getpass("Again: ") != password:
         raise SystemExit("The two don't match.")
     print(hash_password(password))

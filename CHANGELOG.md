@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `kastellan hash-password` takes a password under 10 characters after a warning (or with
+  `--short`) instead of refusing it.
+
 ## 0.2.0 (2026-11-20)
 
 Changing things from the app: the config, devices, SSH keys. Editing needs sign-in on (add a

@@ -127,6 +127,7 @@ Sign-in is off until config.yaml has a user. Make a password hash and add it:
 
 ```sh
 cd backend && uv run kastellan hash-password      # Docker: docker exec -it kastellan kastellan hash-password
+# Under 10 characters it asks whether you mean it; --short takes it without asking.
 ```
 
 ```yaml
