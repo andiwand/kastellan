@@ -51,37 +51,24 @@ Published images may lag behind `main`; see the changelog's Unreleased section.
 - [ ] Stronger isolation for proxied device pages (separate origins and request guards exist;
       the names still share a browser site).
 - [ ] HTTP checks with expected response text.
-- [ ] Central logs: a first-party **Logs** page (its own sidebar entry) with every device's and
-      container's lines interleaved by time, filtered by device, group, source (unit,
-      container, program), level and time range, with text search and live follow; a line links
-      to its device and sits next to that device's events. Ways in, chosen per device:
-  - Fetched by the hub over channels it already authenticates and encrypts (the default):
-    Linux hosts through the collector key (`journalctl` and container logs since a cursor,
-    read-only), OpenWrt through its HTTPS API (`log read`, a new read-only rpcd ability;
-    pinned certificate, Kastellan's own login).
-  - VPN servers as a source of their own: the OpenVPN server's log (connections,
-    authentication failures, revoked certificates refused) through the same collector or
-    OpenWrt fetch, and for WireGuard (which logs next to nothing) lines made by Kastellan from
-    the peer handshakes it reads: who connected, from where, when a peer went quiet.
-  - SSH logins as a source of their own: sshd (journal) and Dropbear (OpenWrt), parsed into
-    who, from where, how (key, password) and whether it worked.
-  - Received on a syslog port (UDP/TCP 514), for devices that can only send: off by default,
-    an explicit opt-in with the risk stated (unencrypted, unauthenticated: anyone on the LAN
-    can read or forge lines), accepted only from known device addresses and tagged as
-    unverified. Syslog over TLS (RFC 5425, port 6514) where the device supports it, or plain
-    syslog only through a Kastellan VPN tunnel, as safer variants.
-  - Stored in a capped, time-indexed store with a retention limit; who read what in the audit
-    log. Later: alarms on matching lines.
-- [ ] Access page, built on central logs: every login attempt into the network and its
-      devices in one place — VPN connections, SSH, Kastellan's own sign-ins, router web logins
-      and, where the router logs them, connections through forwarded ports. Each attempt as
-      who, from which address, into what, how, and whether it worked; outside addresses kept
-      apart from the LAN's. Correlated: attempts grouped by source address across devices
-      (one address trying SSH on three hosts is one story), a success after failures from the
-      same address highlighted, a login from an address never seen before for that user
-      marked, a VPN connection followed by logins inside the network shown as one path.
-      Alarms for the sharp cases (success after many failures, a new outside address for an
-      admin login); nothing sent outside the hub to look addresses up unless turned on.
+- [ ] **Logs page:** interleave device and container logs by time, with source/device/group,
+      severity and time filters, text search, live follow, and links to device events.
+      Enable collection per device with explicit source permissions; existing collector access
+      must not silently gain access to logs.
+  - Fetch Linux journals and container logs through restricted collector commands with cursors;
+    OpenWrt logs through a new read-only rpcd ability over pinned HTTPS.
+  - Include OpenVPN connection/authentication events and sshd/Dropbear login outcomes.
+    Show WireGuard handshake activity as inferred peer presence, not proof of a login.
+  - Optional UDP/TCP syslog on port 514: disabled by default, limited to known device addresses,
+    and marked unverified. Plain syslog is unencrypted and forgeable; prefer TLS on 6514 with
+    client authentication or a VPN tunnel.
+  - Cap storage and retention, index by time, restrict reading to admins, and audit access
+    without copying log content. Later: alarms on matching lines.
+- [ ] **Access page:** combine reported VPN, SSH, hub and router login events, plus forwarded
+      connections where logged. Show account, source address, destination, method and outcome.
+      Group attempts across devices; highlight success after repeated failures and new outside
+      addresses for an admin. Time/address correlations suggest possible paths, not proven
+      identities. Keep address lookups local unless external lookup is enabled.
 
 ## Proposed priorities
 

@@ -81,7 +81,7 @@
 							{#if f.confidence === 'patch'}
 								<span
 									class="text-[11px] text-faint"
-									title="The software doesn't say its patch level (OpenSSH 10.6 may be 10.6p2), and only some patch levels of this version are affected; check the version on the device"
+									title="NVD distinguishes patch levels that this banner omits. Check the full version on the device."
 								>
 									patch level unknown: check the device
 								</span>

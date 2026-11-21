@@ -10,9 +10,8 @@ known product mapping. Each becomes a `Product`, and each source answers in its 
   finds none by itself.
 
 Honesty rules:
-- When the software doesn't say its patch level ("OpenSSH_10.6", where 10.6p2 may be meant) and
-  NVD names only some patch levels of exactly that version as affected (10.6 and 10.6p1, no
-  range over the whole 10.6 line), a later patch level may have fixed it: `confidence="patch"`,
+- When a banner omits its patch level and NVD distinguishes affected updates of that release,
+  the match is uncertain unless an entry covers all its updates: `confidence="patch"`,
   "check the device", never an alarm or an automatic action.
 - When the software carries a distribution's package revision ("OpenSSH 10.2p1
   (Ubuntu-2ubuntu3.8)"), the distribution may have patched the bug without changing the upstream
@@ -46,6 +45,7 @@ NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 OSV_URL = "https://api.osv.dev/v1/query"
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 CACHE_SECONDS = 24 * 3600
+CACHE_SCHEMA = 2  # confidence depends on CPE update fields and range boundaries
 MAX_BYTES = 20 * 1024 * 1024
 DISTROS = tuple(d.lower() for d in software.DISTROS)
 
@@ -184,54 +184,83 @@ def _severity(score: float | None) -> str:
     return "critical" if score >= 9 else "high" if score >= 7 else "medium" if score >= 4 else "low"
 
 
-def _base(version: str) -> tuple[int, ...] | None:
-    m = VERSION.match(version)
-    return version_key(m.group(1)) if m else None
+def _version_parts(version: str) -> tuple[tuple[int, ...], str] | None:
+    """Numeric release and optional update suffix; do not guess at other version schemes."""
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)([a-z]\w*)?", version, re.I)
+    if not m:
+        return None
+    number = tuple(int(n) for n in m[1].split("."))
+    while len(number) > 1 and number[-1] == 0:
+        number = number[:-1]
+    return number, m[2] or ""
 
 
-def _covers(match: dict[str, Any], number: tuple[int, ...]) -> bool:
-    """Whether a range entry ("*" with start/end) covers every patch level of `number`. An end at
-    a patch level of the version itself (excluding 10.6p2) leaves the later ones out."""
-    start_in, start_ex = match.get("versionStartIncluding"), match.get("versionStartExcluding")
-    end_in, end_ex = match.get("versionEndIncluding"), match.get("versionEndExcluding")
-    for value, ok in (
-        (start_in, lambda b: b <= number),
-        (start_ex, lambda b: b < number),
-        (end_in, lambda b: number <= b),
-        (end_ex, lambda b: number < b),
+def _range_coverage(match: dict[str, Any], number: tuple[int, ...]) -> tuple[bool, bool, bool]:
+    """May overlap this release, covers all its updates, has a boundary at one of its updates.
+    A range ending at 10.6p2 cannot prove that every 10.6 patch level is affected."""
+    whole, patch = True, False
+    for key in (
+        "versionStartIncluding",
+        "versionStartExcluding",
+        "versionEndIncluding",
+        "versionEndExcluding",
     ):
+        value = match.get(key)
         if value is None:
             continue
-        b = _base(str(value))
-        if b is None or not ok(b):
-            return False
-    return True
+        parsed = _version_parts(str(value))
+        if parsed is None:
+            whole = False
+            continue
+        base, update = parsed
+        start = key.startswith("versionStart")
+        exclusive = key.endswith("Excluding")
+        if (start and base > number) or (not start and base < number):
+            return False, False, False
+        if base == number:
+            if not start and exclusive and not update:
+                return False, False, False
+            patch |= bool(update)
+            # All updates follow the plain release, but not a boundary within that release.
+            if not start or exclusive or update:
+                whole = False
+    return True, whole, patch
+
+
+def _cpe_matches(cve: dict[str, Any]):
+    pending = list(cve.get("configurations") or [])
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, dict) or node.get("negate"):
+            continue
+        yield from (m for m in node.get("cpeMatch") or [] if isinstance(m, dict))
+        pending.extend(node.get("nodes") or [])
+        pending.extend(node.get("children") or [])
 
 
 def _patch_level_only(cve: dict[str, Any], asked: str | None) -> bool:
-    """True when `asked` (a CPE without a patch level: ...:openssh:10.6:-:...) matched this CVE
-    only through entries for some patch levels of exactly that version (10.6:-, 10.6:p1), not
-    through a range over the whole line: a later patch level (10.6p2) may be fixed."""
+    """A plain version is ambiguous when NVD distinguishes its updates and no applicable
+    entry covers the whole release. Explicit update versions keep NVD's original verdict."""
     parts = (asked or "").split(":")
     if len(parts) < 7 or parts[6] != "-":
         return False
-    product, number = parts[3:5], _base(parts[5])
-    if number is None:
+    version = _version_parts(parts[5])
+    if version is None:
         return False
-    updates: set[str] = set()
-    for config in cve.get("configurations") or []:
-        for node in (config or {}).get("nodes") or []:
-            for m in (node or {}).get("cpeMatch") or []:
-                c = str((m or {}).get("criteria") or "").split(":")
-                if not m.get("vulnerable") or len(c) < 7 or c[3:5] != product:
-                    continue
-                if c[5] == "*":
-                    if _covers(m, number):
-                        return False  # the whole line, whatever the patch level
-                elif c[5] == parts[5]:
-                    updates.add(c[6])
-    # Only named patch levels, and more than "none": the version has them, NVD tells them apart.
-    return bool(updates) and "*" not in updates and bool(updates - {"-"})
+    patch = False
+    for match in _cpe_matches(cve):
+        c = str(match.get("criteria") or "").split(":")
+        if not match.get("vulnerable") or len(c) < 7 or c[2:5] != parts[2:5]:
+            continue
+        if c[5] not in ("*", parts[5]):
+            continue
+        overlaps, whole, boundary_patch = _range_coverage(match, version[0])
+        if not overlaps:
+            continue
+        if whole and c[6] == "*":
+            return False
+        patch |= boundary_patch or c[6] not in ("-", "*")
+    return patch
 
 
 def parse_nvd(data: dict[str, Any], asked: str | None = None) -> list[Finding]:
@@ -401,8 +430,8 @@ class Sources:
         """Findings for a product; None when no source could be asked (not "none found")."""
         key = product.cpe or "|".join(product.osv or ())
         cached = self._cache.get(key)
-        # Entries cached before patch_level was known are asked again.
-        current = cached and all("patch_level" in f for f in cached["findings"])
+        # Old cache entries lack the evidence needed to classify unknown patch levels.
+        current = cached and cached.get("schema") == CACHE_SCHEMA
         if cached and current and time.time() - cached["fetched"] < CACHE_SECONDS:
             findings = [Finding(**f) for f in cached["findings"]]
         else:
@@ -412,9 +441,13 @@ class Sources:
                 else self._osv(client, product.osv)
             )
             if findings is not None:
-                self._cache[key] = {"fetched": time.time(), "findings": [asdict(f) for f in findings]}
+                self._cache[key] = {
+                    "schema": CACHE_SCHEMA,
+                    "fetched": time.time(),
+                    "findings": [asdict(f) for f in findings],
+                }
                 self._dirty = True
-            elif cached:  # a day old or more, but better than nothing; still marked below
+            elif current:  # stale but classified by this parser; source errors still accompany it
                 findings = [Finding(**f) for f in cached["findings"]]
             else:
                 return None
@@ -437,7 +470,8 @@ class Sources:
                 if data is None:
                     return None
                 for f in parse_nvd(data, cpe):
-                    found.setdefault(f.id, f)
+                    known = found.setdefault(f.id, f)
+                    known.patch_level &= f.patch_level  # any firm match takes precedence
                 total, per_page = int(data.get("totalResults") or 0), int(data.get("resultsPerPage") or 0)
                 start += per_page
                 if per_page <= 0 or start >= total:

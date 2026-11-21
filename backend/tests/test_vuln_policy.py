@@ -150,3 +150,41 @@ def test_a_public_address_counts_like_the_network_view() -> None:
     assert assess(vps, CRITICAL, "service ssh").alarm is Severity.CRITICAL
     # A global IPv6 address may well be at home: not by itself a way in.
     assert not device(host="2001:db8::5", checks=[{"tcp": 22}]).faces_internet()
+
+
+def test_unknown_patch_levels_never_authorize_automatic_updates() -> None:
+    finding = {**CRITICAL, "confidence": "patch"}
+    exposed = device(exposed=True, auto_update=True, act={})
+    assert assess(exposed, finding).alarm is None
+    assert assess(exposed, finding).message
+    container = {"name": "app", "update": True, "unchecked": None, "tag": "1.2.0", "update_to": "1.2.1"}
+    assert auto_update_reason(exposed, container, [finding]) is None
+
+
+async def test_patch_notifications_explain_the_uncertainty(tmp_path) -> None:
+    from datetime import UTC, datetime
+
+    from kastellan.hub import Hub
+    from kastellan.monitor import DeviceStatus
+    from kastellan.settings import Settings
+
+    config = tmp_path / "config.yaml"
+    config.write_text("devices:\n  gw:\n    host: 127.0.0.1\n    checks: []\n")
+    hub = Hub(Settings(config=config, data=tmp_path))
+    hub.reload()
+    hub.monitor.status["gw"] = DeviceStatus(
+        vulns={
+            "items": [
+                {
+                    "where": "service ssh",
+                    "product": "OpenSSH 10.6",
+                    "findings": [{**CRITICAL, "confidence": "patch"}],
+                }
+            ]
+        }
+    )
+    messages = hub._events(datetime.now(UTC))
+    [message] = [m for m in messages if "CVE-2" in m.body]
+    assert "patch level unknown" in message.body
+    assert "distribution" not in message.body
+    await hub.monitor.stop()

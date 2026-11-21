@@ -214,3 +214,81 @@ async def test_lookup_says_check_the_device_for_an_unknown_patch_level(tmp_path:
     exposed = Device(host="wifi1", exposed=True)
     assert assess(exposed, asdict(plain)).alarm is None  # no alarm, shown as "check the device"
     assert assess(exposed, asdict(said)).alarm is not None
+
+
+@pytest.mark.parametrize(
+    "match, ambiguous",
+    [
+        ({**RANGE, "versionEndIncluding": "10.6p1", "versionEndExcluding": None}, True),
+        ({**RANGE, "versionEndExcluding": "10.6p2"}, True),
+        ({**RANGE, "versionStartIncluding": "10.6p1", "versionEndExcluding": "10.7"}, True),
+        ({**RANGE, "criteria": f"{OPENSSH}:*:p1:*:*:*:*:*:*", "versionEndExcluding": "10.7"}, True),
+        ({**RANGE, "versionStartIncluding": "0", "versionEndExcluding": "10.7"}, False),
+        ({**RANGE, "versionStartIncluding": "10.6.0", "versionEndExcluding": "10.7"}, False),
+        ({**RANGE, "versionEndIncluding": "10.6", "versionEndExcluding": None}, True),
+        ({**RANGE, "versionStartIncluding": "10.7", "versionEndExcluding": "11.0"}, True),
+    ],
+)
+def test_ranges_do_not_overstate_patch_coverage(match, ambiguous) -> None:
+    assert vulns.parse_nvd(sshhole(PLAIN, P1, match), cpe_of("10.6"))[0].patch_level is ambiguous
+
+
+def test_a_patch_boundary_alone_is_enough_evidence() -> None:
+    data = sshhole({**RANGE, "versionEndExcluding": "10.6p2"})
+    assert vulns.parse_nvd(data, cpe_of("10.6"))[0].patch_level
+    assert not vulns.parse_nvd(data, cpe_of("10.5"))[0].patch_level
+    assert not vulns.parse_nvd(data, cpe_of("10.6p1"))[0].patch_level
+
+
+def test_nested_and_negated_entries_do_not_hide_uncertainty() -> None:
+    data = sshhole(PLAIN, P1)
+    nodes = data["vulnerabilities"][0]["cve"]["configurations"][0]["nodes"]
+    whole = {**RANGE, "versionEndExcluding": "10.7"}
+    nodes.append({"negate": True, "cpeMatch": [whole]})
+    assert vulns.parse_nvd(data, cpe_of("10.6"))[0].patch_level
+    nodes.append({"children": [{"cpeMatch": [whole]}]})
+    assert not vulns.parse_nvd(data, cpe_of("10.6"))[0].patch_level
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_duplicate_cves_keep_the_strongest_evidence(tmp_path, monkeypatch, reverse) -> None:
+    sources = Sources(tmp_path)
+    matches = [sshhole(PLAIN, P1), sshhole({**PLAIN, "criteria": f"{OPENSSH}:10.6:*:*:*:*:*:*:*"})]
+    if reverse:
+        matches.reverse()
+
+    async def page(client, cpe, start):
+        return matches.pop(0)
+
+    monkeypatch.setattr(sources, "_nvd_page", page)
+    async with httpx.AsyncClient() as client:
+        [finding] = await sources._nvd(client, [cpe_of("10.6"), cpe_of("10.6")])
+    assert not finding.patch_level
+
+
+async def test_legacy_cache_is_not_treated_as_confirmed_on_refresh_failure(tmp_path) -> None:
+    import time
+
+    product = from_software("OpenSSH", "10.6")
+    entry = asdict(vulns.parse_nvd(sshhole(PLAIN, P1))[0])
+    entry.pop("patch_level")
+    sources = Sources(tmp_path)
+    sources._cache[product.cpe] = {"fetched": time.time(), "findings": [entry]}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(503))) as client:
+        assert await sources.lookup(client, product) is None
+    assert "nvd" in sources.errors
+
+
+async def test_patch_confidence_survives_cache_and_distro_lookups(tmp_path) -> None:
+    def nvd(request):
+        return httpx.Response(200, json=sshhole(PLAIN, P1))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(nvd)) as client:
+        sources = Sources(tmp_path)
+        [plain] = await sources.lookup(client, from_software("OpenSSH", "10.6"))
+        [distro] = await sources.lookup(client, from_software("OpenSSH", "10.6", "Ubuntu"))
+        assert plain.confidence == "patch" and distro.confidence == "upstream"
+        sources.flush()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(503))) as client:
+        [cached] = await Sources(tmp_path).lookup(client, from_software("OpenSSH", "10.6"))
+        assert cached.confidence == "patch"

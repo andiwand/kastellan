@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- Missing patch levels are marked uncertain when NVD distinguishes affected updates, including
+  patch-bounded ranges. These findings cannot raise alarms or authorize automatic updates.
+  Duplicate CVEs retain firm evidence; legacy caches require a fresh lookup.
+- Notifications distinguish unknown patch levels from possible distribution fixes.
+- Long service errors stay within their columns; refresh buttons and alarm times align.
+
 ## 0.9.0 (2026-11-21)
 
 Maintenance windows, alarm reminders, disk forecasts, backup reports, container rollback and
@@ -9,9 +17,9 @@ logs, and release notices.
 
 ### Upgrading
 
-- To use rollback, container logs and service journals, set up the **actor** again on each host
-  (device Setup, or Renew on Updates) and tick the new abilities. Only updates made after that
-  keep a previous image to go back to.
+- To use rollback, container logs and service journals, open device Setup and select the new
+  **actor** abilities. Renew on Updates preserves existing permissions. Renewing the update
+  script enables retaining the previous image for subsequent updates.
 - Renew outdated collectors so they report each container's previous image.
 
 ### Added
@@ -40,10 +48,6 @@ logs, and release notices.
 
 ### Fixed
 
-- Vulnerabilities: software that doesn't say its patch level (OpenWrt's OpenSSH 10.6p2 reports
-  "OpenSSH_10.6") no longer raises an alarm for a CVE that NVD lists only for some patch levels
-  of that version (CVE-2026-123158: 10.6 and 10.6p1). It shows as "patch level unknown: check
-  the device". Old versions inside an affected range stay firm findings.
 - OpenWrt with OpenSSH uses its authorized_keys path, including VPN key rotation.
   Access instructions distinguish OpenSSH’s source-address restriction from Dropbear.
 - Rollback runs through SSH; replacement checks inherited image health checks.

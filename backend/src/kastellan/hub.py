@@ -930,7 +930,10 @@ class Hub:
                     is_new = key not in self.alarms.seen_events
                     self.alarms.event(key, "", "", id, now, send=False)  # remember, or keep remembering
                     if is_new and send:
-                        note = " (maybe fixed by the distribution)" if f.get("confidence") != "exact" else ""
+                        note = {
+                            "upstream": " (maybe fixed by the distribution)",
+                            "patch": " (patch level unknown: check the device)",
+                        }.get(f.get("confidence"), "")
                         new.append(f"{f['id']} in {item['product']}{note}")
             if new:
                 noun = "vulnerability" if len(new) == 1 else "vulnerabilities"

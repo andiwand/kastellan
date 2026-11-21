@@ -11,7 +11,7 @@ only when a known vulnerability meets a device that faces the internet. Concrete
 
 Exposed: the device as a whole (`exposed: true`), or the service the finding is in (a check's
 `exposed: true`); firmware and containers count as exposed when any service of the device is.
-An unconfirmed finding (the distribution may have patched it) is an info message at most.
+An unconfirmed finding (unknown patch level or a possible distribution fix) is an info message at most.
 
 Automatic update: only a container, only with `auto_update: true` on the device, only when the
 device as a whole is marked exposed (`exposed: true`; one exposed service isn't enough), a
