@@ -1,24 +1,10 @@
-"""Kastellan's own backup: its configuration and state, so a new hub can take over from a lost
-one. Built on the device backups' store (devbackups.Store): each version once, file contents
-deduplicated and encrypted, "what changed" with secrets masked, the oldest versions going.
+"""Encrypted hub snapshots, isolated destination copies, and offline restore.
 
-What is in it: config.yaml (as `@config/config.yaml`), and the data folder: the key rings
-(vault.json, itself encrypted under the admins' passwords and recovery keys), the SSH keys and
-pinned host keys, secrets kept as files, the OpenWrt and FRITZ!Box certificate pins, the syslog
-certificate authority, alarms, backup tokens, the history (optional), the audit log, the device
-configuration backups. Not in it: sign-in sessions (people sign in again), the logs (optional),
-caches, and the hub backup itself.
-
-The key is not one of the hub's own: a store whose key lives only inside the hub is lost with
-it. It comes from a passphrase Kastellan makes once and shows once (`new_passphrase`): scrypt
-over it and a salt; the store's folder holds the salt and a check value (`kastellan-backup.json`)
-so a restore asks only for the passphrase, and the hub keeps the derived key as the secret
-`hub-backup-key` to back up by itself. "Check the passphrase" (`check`) proves you still have it.
-
-Where it goes: the store in `<data>/hub-backup` (on the hub's own disk: it is not the copy
-that saves you), copied after every backup to each target: a folder (`path:`, e.g. a NAS share
-mounted into the container) or a device over SFTP with Kastellan's SSH login there (`device:` +
-`path:`). Every copy is a whole store: `kastellan restore <folder>` takes any of them.
+The backup key comes from a recovery passphrase; the hub keeps only its derived key.
+Contents use devbackups.Store; the hub index is authenticated too. Copies go into a separate
+kastellan-<key id> folder per passphrase, preserving earlier generations. Restore stages and
+validates all files before replacing state. Sessions and caches are excluded; SQLite logs
+use the online backup API. External unlock keys must be kept separately.
 """
 
 from __future__ import annotations
@@ -26,33 +12,44 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import gzip
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
 import secrets as random
 import shutil
+import sqlite3
+import stat
+import tarfile
+import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-from . import devbackups
+from . import config_edit, devbackups
 
 log = logging.getLogger(__name__)
 
 ID = "kastellan"  # the store's one "device"
 KIND = "kastellan-state"
 KEY_SECRET = "hub-backup-key"
+INDEX_MAGIC = b"KASTELLAN-INDEX-2\n"
 HEADER = "kastellan-backup.json"
 # Left out of the data folder (relative paths, or their first part).
 SKIP = {"sessions.json", "hub-backup", "vulns", "signin-required.tmp", "web"}
 LOGS = ("logs.db", "logs.db-wal", "logs.db-shm")
+MAX_FILE = 128 * 1024 * 1024
+MAX_TOTAL = 512 * 1024 * 1024
+MAX_FILES = 100_000
 WORDS = 8  # a passphrase: 8 groups of 5 letters and digits, ~200 bits
 
 
@@ -88,56 +85,153 @@ def key_from(header: dict[str, Any], passphrase: str) -> bytes:
     return key
 
 
-def collect(data: Path, config: Path, history: bool, logs: bool) -> list[tuple[devbackups.File, bytes]]:
-    """The files to keep, read now."""
-    out: list[tuple[devbackups.File, bytes]] = []
+def private_write(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, name = tempfile.mkstemp(prefix=".backup-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(content)
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
-    def add(path: Path, name: str) -> None:
-        try:
-            content = path.read_bytes()
+
+def read_bounded(path: Path, limit: int = MAX_FILE) -> bytes:
+    with path.open("rb") as src:
+        content = src.read(limit + 1)
+    if len(content) > limit:
+        raise ValueError(f"backup file exceeds {limit // 1048576} MiB: {path.name}")
+    return content
+
+
+def valid_config(content: bytes) -> str:
+    from ruamel.yaml import YAML
+
+    from .config import Config
+
+    try:
+        text = content.decode("utf-8")
+        Config.model_validate(YAML(typ="safe").load(text))
+    except Exception as e:
+        raise ValueError("backup configuration is invalid") from e
+    return text
+
+
+def collect(data: Path, config: Path, history: bool, logs: bool) -> list[tuple[devbackups.File, bytes]]:
+    """Read state without following symlinks; unreadable files fail the backup."""
+    out: list[tuple[devbackups.File, bytes]] = []
+    total = 0
+    stamps = {}
+
+    def add(path: Path, name: str, content: bytes | None = None) -> None:
+        nonlocal total
+        if content is None:
             st = path.stat()
-        except OSError:
-            return
+            content = read_bounded(path)
+            if not path.name.endswith((".log", ".jsonl", ".csv")):
+                stamps[path] = (st.st_ino, st.st_size, st.st_mtime_ns)
+        total += len(content)
+        if total > MAX_TOTAL or len(out) >= MAX_FILES:
+            raise ValueError("hub backup exceeds its size or file-count limit")
+        st = path.stat()
         sha = hashlib.sha256(content).hexdigest()
-        out.append(
-            (
-                devbackups.File(
-                    name, sha, len(content), "file", st.st_mode & 0o777, int(st.st_mtime), "", sha
-                ),
-                content,
-            )
+        out.append((devbackups.File(name, sha, len(content), "file", 0o600, int(st.st_mtime)), content))
+
+    add(config, "@config/config.yaml")  # a missing or unreadable config is never a successful backup
+    valid_config(out[0][1])
+
+    def unreadable(error):
+        raise error
+
+    for root, dirs, files in os.walk(data, onerror=unreadable):
+        kept = []
+        for directory in dirs:
+            if directory.startswith((".", "hub-backup")) or (
+                Path(root) == data and directory in SKIP | ({"checks"} if not history else set())
+            ):
+                continue
+            if (Path(root) / directory).is_symlink():
+                raise ValueError("data contains a symlink; back its target up separately")
+            kept.append(directory)
+        dirs[:] = sorted(kept)
+        for name in sorted(files):
+            path = Path(root) / name
+            rel = path.relative_to(data)
+            if name.startswith(".") or name.endswith(".tmp") or rel.parts[0] in SKIP:
+                continue
+            if name.startswith("hub-backup") or name in LOGS:
+                continue
+            if path.resolve() == config.resolve():
+                continue  # the explicitly configured file was already read, including through its symlink
+            if path.is_symlink():
+                raise ValueError("data contains a symlink; back its target up separately")
+            if not stat.S_ISREG(path.stat().st_mode):
+                continue
+            add(path, rel.as_posix())
+    if logs and (data / "logs.db").exists():
+        # SQLite's online backup includes committed WAL pages in one consistent database.
+        with tempfile.TemporaryDirectory(prefix="kastellan-logs-") as tmp:
+            dest = Path(tmp) / "logs.db"
+            with (
+                contextlib.closing(
+                    sqlite3.connect((data / "logs.db").resolve().as_uri() + "?mode=ro", uri=True)
+                ) as src,
+                contextlib.closing(sqlite3.connect(dest)) as dst,
+            ):
+                src.backup(dst)
+            add(dest, "logs.db", read_bounded(dest))
+    for path, before in stamps.items():
+        st = path.stat()
+        if before != (st.st_ino, st.st_size, st.st_mtime_ns):
+            raise ValueError("state changed while backing up; retry the backup")
+    return out
+
+
+class Store(devbackups.Store):
+    """The hub's index is authenticated too: a copy must not be able to rename encrypted files."""
+
+    @devbackups.locked
+    def snapshots(self, device: str) -> list[devbackups.Snapshot]:
+        if device != ID:
+            return []
+        path = self._index(device)
+        if not path.exists():
+            return []
+        sealed = read_bounded(path)
+        if not sealed.startswith(INDEX_MAGIC):
+            raise ValueError("unsigned hub backup index; create a new backup passphrase")
+        sealed = sealed[len(INDEX_MAGIC) :]
+        raw = AESGCM(self._key()).decrypt(sealed[:12], sealed[12:], b"kastellan-backup-index")
+        return [
+            devbackups.Snapshot(**(s | {"files": [devbackups.File(**f) for f in s["files"]]}))
+            for s in json.loads(raw)["snapshots"]
+        ]
+
+    def _save(self, device: str, snaps: list[devbackups.Snapshot]) -> None:
+        raw = json.dumps({"snapshots": [asdict(s) for s in snaps]}).encode()
+        nonce = os.urandom(12)
+        private_write(
+            self._index(device),
+            INDEX_MAGIC + nonce + AESGCM(self._key()).encrypt(nonce, raw, b"kastellan-backup-index"),
         )
 
-    if config.is_file():
-        add(config, "@config/config.yaml")
-    for path in sorted(data.rglob("*")):
-        rel = path.relative_to(data)
-        parts = rel.parts
-        if not path.is_file() or path.is_symlink():
-            continue
-        if (
-            parts[0] in SKIP
-            or parts[0].startswith("hub-backup")
-            or rel.name.endswith(".tmp")
-            or rel.name.startswith(".")
-        ):
-            continue
-        if not history and parts[0] == "checks":
-            continue
-        if not logs and rel.name in LOGS:
-            continue
-        if path.resolve() == config.resolve():
-            continue  # config.yaml in the data folder: taken once, as @config
-        add(path, rel.as_posix())
-    return out
+    def get(self, sha: str) -> bytes:
+        sealed = read_bounded(self._object(sha), MAX_FILE + 1048576)
+        packed = AESGCM(self._key()).decrypt(sealed[:12], sealed[12:], sha.encode())
+        with gzip.GzipFile(fileobj=io.BytesIO(packed)) as src:
+            content = src.read(MAX_FILE + 1)
+        if len(content) > MAX_FILE or hashlib.sha256(content).hexdigest() != sha:
+            raise ValueError("a stored file is damaged or too large")
+        return content
 
 
 class HubBackup:
     """The hub's store and its copies."""
 
     def __init__(self, data: Path, key: Callable[[], bytes]) -> None:
-        self.folder = data / "hub-backup"
-        self.store = devbackups.Store(self.folder, key)
+        self.folder = data.resolve() / "hub-backup"
+        self.store = Store(self.folder, key)
+        self.operation = asyncio.Lock()
         self.status: dict[str, Any] = {}  # the last run: ok, error, copies per target
 
     def header(self) -> dict[str, Any] | None:
@@ -146,127 +240,284 @@ class HubBackup:
         except (OSError, ValueError):
             return None
 
-    def start(self, made: dict[str, str]) -> None:
-        """A store for a new key: one made with another key is set aside (its passphrase still
-        opens it), never mixed."""
-        if self.folder.exists() and any(self.folder.iterdir()):
-            aside = self.folder.with_name(f"hub-backup-{datetime.now(UTC):%Y%m%d-%H%M%S}")
-            self.folder.rename(aside)
-        self.folder.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.folder, 0o700)
-        (self.folder / HEADER).write_text(
-            json.dumps({"version": 1, "salt": made["salt"], "check": made["check"], "made": made["made"]})
-        )
+    def start(self, made: dict[str, str]) -> Path | None:
+        """Set the old store aside; prepare the replacement before renaming either folder."""
+        self.folder.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".hub-backup-", dir=self.folder.parent))
+        aside = None
+        try:
+            private_write(
+                staging / HEADER,
+                json.dumps({"version": 2, **{k: made[k] for k in ("salt", "check", "made")}}).encode(),
+            )
+            if self.folder.exists():
+                aside = self.folder.with_name(f"hub-backup-{random.token_hex(8)}")
+                self.folder.rename(aside)
+            try:
+                staging.rename(self.folder)
+            except BaseException:
+                if aside:
+                    aside.rename(self.folder)
+                raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+        return aside
 
     def take(self, data: Path, config: Path, keep: int, history: bool, logs: bool, by: str | None = None):
+        header = self.header()
+        if not header or header.get("version") != 2:
+            raise ValueError("create a new backup passphrase before backing up")
+        if not hmac.compare_digest(
+            header["check"], hmac.new(self.store._key(), b"kastellan backup", hashlib.sha256).hexdigest()
+        ):
+            raise ValueError("the backup key does not match its passphrase")
         members = collect(data, config, history, logs)
         return self.store.add(ID, KIND, members, keep, by)
 
 
+def copy_path(path: str, header: dict[str, Any]) -> str:
+    """Each passphrase has its own destination, so old copies remain restorable."""
+    return str(PurePosixPath(path) / ("kastellan-" + header["check"][:24]))
+
+
+def no_symlinks(path: Path) -> None:
+    if any(p.is_symlink() for p in (path, *path.parents)):
+        raise ValueError("backup paths must not contain symlinks")
+
+
+def copy_files(source: Path) -> list[Path]:
+    # Index last. Do not copy stray files or follow links in a backup store.
+    files = [source / HEADER, *sorted((source / "objects").glob("*/*")), source / f"{ID}.json"]
+    for path in files:
+        no_symlinks(path)
+        if not path.is_file():
+            raise ValueError("incomplete backup store")
+    return files
+
+
 def copy_tree(source: Path, target: Path) -> int:
-    """Make `target` the same store as `source`: new files copied, gone ones removed (objects
-    first, the index last, so a copy is never an index naming objects it lacks). How many
-    files were written."""
-    target.mkdir(parents=True, exist_ok=True)
+    """Copy a store into a dedicated folder; never remove unrelated destination files."""
+    no_symlinks(target)
+    src, dst = source.resolve(), target.resolve()
+    if src == dst or src in dst.parents or dst in src.parents:
+        raise ValueError("backup source and destination overlap")
+    files = copy_files(source)
+    header = (source / HEADER).read_bytes()
+    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if any(target.iterdir()) and (
+        not (target / HEADER).is_file() or (target / HEADER).read_bytes() != header
+    ):
+        raise ValueError("backup destination contains another store or unrelated files")
     written = 0
-    wanted = {p.relative_to(source) for p in source.rglob("*") if p.is_file()}
-    have = {p.relative_to(target) for p in target.rglob("*") if p.is_file()}
-    order = sorted(wanted, key=lambda r: (r.parts[0] != "objects", str(r)))
-    for rel in order:
-        src, dst = source / rel, target / rel
-        if rel in have and rel.parts[0] == "objects":
-            continue  # named by their content: the same name, the same bytes
-        if rel in have and dst.read_bytes() == src.read_bytes():
+    for path in files:
+        dest = target / path.relative_to(source)
+        no_symlinks(dest)
+        content = read_bounded(path, MAX_FILE + 1048576)
+        if dest.is_file() and read_bounded(dest, MAX_FILE + 1048576) == content:
             continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dst.with_name(f".{dst.name}.{os.getpid()}.tmp")
-        shutil.copyfile(src, tmp)
-        tmp.replace(dst)
+        private_write(dest, content)
         written += 1
-    for rel in have - wanted:
-        if not rel.name.startswith("."):
-            (target / rel).unlink(missing_ok=True)
+    # Only obsolete objects belonging to this store are eligible for pruning.
+    wanted = {p.relative_to(source) for p in files}
+    for path in (target / "objects").glob("*/*"):
+        if (
+            path.relative_to(target) not in wanted
+            and len(path.name) == 64
+            and all(c in "0123456789abcdef" for c in path.name)
+        ):
+            no_symlinks(path)
+            path.unlink()
     return written
 
 
 async def copy_sftp(source: Path, conn: Any, path: str) -> int:
-    """The same as copy_tree, to a folder over SFTP."""
+    """Copy through SFTP, with atomic replacement and no deletion of unrelated files."""
+    import asyncssh
+
+    files = await blocking(copy_files, source)
+    header = await blocking((source / HEADER).read_bytes)
     written = 0
     async with conn.start_sftp_client() as sftp:
-        await sftp.makedirs(path, exist_ok=True)
-        have: set[str] = set()
 
-        async def walk(rel: str) -> None:
-            for entry in await sftp.readdir(f"{path}/{rel}" if rel else path):
-                name = entry.filename
-                if name in (".", ".."):
-                    continue
-                sub = f"{rel}/{name}" if rel else name
-                if entry.attrs.type == 2:  # a directory
-                    await walk(sub)
+        async def safe_directory(folder: str) -> None:
+            for parent in reversed((PurePosixPath(folder), *PurePosixPath(folder).parents)):
+                name = str(parent)
+                try:
+                    attrs = await sftp.lstat(name)
+                except asyncssh.SFTPNoSuchFile:
+                    await sftp.mkdir(name, attrs=asyncssh.SFTPAttrs(permissions=0o700))
                 else:
-                    have.add(sub)
+                    if attrs.type != asyncssh.FILEXFER_TYPE_DIRECTORY:
+                        raise ValueError("SFTP backup path is not a directory or contains a symlink")
 
-        await walk("")
-        wanted = await asyncio.to_thread(
-            lambda: {p.relative_to(source).as_posix(): p for p in source.rglob("*") if p.is_file()}
-        )
-        for rel in sorted(wanted, key=lambda r: (not r.startswith("objects/"), r)):
-            if rel in have and rel.startswith("objects/"):
-                continue
-            parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
-            if parent:
-                await sftp.makedirs(f"{path}/{parent}", exist_ok=True)
-            tmp = f"{path}/{rel}.tmp"
-            await sftp.put(str(wanted[rel]), tmp)
-            with contextlib.suppress(Exception):
-                await sftp.remove(f"{path}/{rel}")
-            await sftp.rename(tmp, f"{path}/{rel}")
+        await safe_directory(path)
+        entries = [e.filename for e in await sftp.readdir(path) if e.filename not in (".", "..")]
+        if entries:
+            if (
+                HEADER not in entries
+                or (await sftp.lstat(f"{path}/{HEADER}")).type != asyncssh.FILEXFER_TYPE_REGULAR
+            ):
+                raise ValueError("SFTP backup destination contains unrelated files")
+            async with sftp.open(f"{path}/{HEADER}", "rb") as remote:
+                if await remote.read(len(header) + 1) != header:
+                    raise ValueError("SFTP backup destination belongs to another passphrase")
+        wanted = set()
+        for file in files:
+            rel = file.relative_to(source).as_posix()
+            dest = f"{path}/{rel}"
+            wanted.add(rel)
+            await safe_directory(str(PurePosixPath(dest).parent))
+            try:
+                attrs = await sftp.lstat(dest)
+            except asyncssh.SFTPNoSuchFile:
+                attrs = None
+            if attrs is not None and attrs.type != asyncssh.FILEXFER_TYPE_REGULAR:
+                raise ValueError("SFTP backup destination contains a non-regular file")
+            content = await blocking(read_bounded, file, MAX_FILE + 1048576)
+            if attrs is not None and attrs.size == len(content):
+                async with sftp.open(dest, "rb") as remote:
+                    if await remote.read(len(content) + 1) == content:
+                        continue
+            tmp = dest + "." + random.token_hex(8) + ".tmp"
+            try:
+                async with sftp.open(tmp, "xb", attrs=asyncssh.SFTPAttrs(permissions=0o600)) as remote:
+                    await remote.write(content)
+                # Never unlink the old index first: an interrupted copy must keep it readable.
+                await sftp.posix_rename(tmp, dest)
+            finally:
+                with contextlib.suppress(asyncssh.SFTPError):
+                    await sftp.remove(tmp)
             written += 1
-        for rel in have - set(wanted):
-            if not rel.rsplit("/", 1)[-1].startswith("."):
-                with contextlib.suppress(Exception):
-                    await sftp.remove(f"{path}/{rel}")
+        # Only prune content-addressed files under objects, after publishing the index.
+        for entry in await sftp.readdir(f"{path}/objects"):
+            prefix = entry.filename
+            if len(prefix) != 2 or any(c not in "0123456789abcdef" for c in prefix):
+                continue
+            await safe_directory(f"{path}/objects/{prefix}")
+            for obj in await sftp.readdir(f"{path}/objects/{prefix}"):
+                name = obj.filename
+                if (
+                    len(name) == 64
+                    and all(c in "0123456789abcdef" for c in name)
+                    and f"objects/{prefix}/{name}" not in wanted
+                ):
+                    await sftp.remove(f"{path}/objects/{prefix}/{name}")
     return written
+
+
+async def blocking(call, *args):
+    """A cancelled request waits for its file operation before releasing the backup lock."""
+    task = asyncio.create_task(asyncio.to_thread(call, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await task
+        raise
 
 
 # --- Restoring (the CLI: `kastellan restore`) -------------------------------------------------
 
 
+def restore_members(members, data: Path, config: Path, force: bool) -> int:
+    """Validate and stage every file before replacing state. Forced restores replace old state,
+    including old sessions, rather than merging keys from two different hubs."""
+    data, config = data.absolute(), config.absolute()
+    no_symlinks(data)
+    no_symlinks(config)
+    if not force and ((data.exists() and any(data.iterdir())) or config.exists()):
+        raise ValueError("destination already holds data or configuration; use empty folders (or --force)")
+    if data == config or config in data.parents:
+        raise ValueError("configuration path overlaps the data directory")
+    if data == Path(data.anchor):
+        raise ValueError("the filesystem root cannot be a restore destination")
+    # Keep staging on the destination filesystem, including Docker's mounted /data.
+    data.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix=".kastellan-restore-", dir=data) as work:
+        stage, previous = Path(work) / "new", Path(work) / "previous"
+        stage.mkdir(mode=0o700)
+        previous.mkdir(mode=0o700)
+        seen, total, config_text = set(), 0, None
+        for name, content in members:
+            parts = PurePosixPath(name).parts
+            if (
+                not parts
+                or name.startswith("/")
+                or ".." in parts
+                or name != PurePosixPath(name).as_posix()
+                or "\x00" in name
+            ):
+                raise ValueError("invalid backup member path")
+            if name in seen or any(parent.as_posix() in seen for parent in PurePosixPath(name).parents):
+                raise ValueError("duplicate or conflicting backup member path")
+            seen.add(name)
+            total += len(content)
+            if len(content) > MAX_FILE or total > MAX_TOTAL or len(seen) > MAX_FILES:
+                raise ValueError("backup exceeds restore limits")
+            if name == "@config/config.yaml":
+                config_text = content.decode("utf-8")
+                continue
+            if parts[0].startswith("@") or parts[0] in ("sessions.json", *LOGS[1:]):
+                raise ValueError("unexpected backup member")
+            target = stage / name
+            if target.exists() or target.is_symlink():
+                raise ValueError("conflicting backup member path")
+            private_write(target, content)
+        if config_text is None:
+            raise ValueError("backup has no configuration")
+        valid_config(config_text.encode())
+        try:
+            relative_config = config.relative_to(data)
+        except ValueError:
+            relative_config = None
+        if relative_config is not None and (stage / relative_config).exists():
+            raise ValueError("data member conflicts with configuration path")
+        old_config = config.read_text() if config.is_file() else ""
+        data.mkdir(parents=True, exist_ok=True, mode=0o700)
+        moved, installing = [], False
+        try:
+            for item in data.iterdir():
+                if item == Path(work):
+                    continue
+                item.rename(previous / item.name)
+                moved.append(item.name)
+            installing = True
+            for item in stage.iterdir():
+                item.rename(data / item.name)
+            config_edit.write(config, data / "config-backups", old_config, config_text)
+        except BaseException:
+            if installing:
+                for item in data.iterdir():
+                    if item == Path(work):
+                        continue
+                    if item.is_dir() and not item.is_symlink():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink(missing_ok=True)
+            for name in moved:
+                (previous / name).rename(data / name)
+            raise
+    return len(seen)
+
+
 def restore(
     source: Path, passphrase: str, data: Path, config: Path, version: str | None = None, force: bool = False
 ) -> dict[str, Any]:
-    """Write a version (the newest by default) from a store folder into `data` and `config`.
-    Refuses a data folder that already has key rings or keys, unless forced."""
     header = json.loads((source / HEADER).read_text())
     key = key_from(header, passphrase)
-    store = devbackups.Store(source, lambda: key)
+    if header.get("version") != 2:
+        raise ValueError("unsigned backup store: download a .kbak from the original hub or make a new backup")
+    store = Store(source, lambda: key)
     snaps = store.snapshots(ID)
     if not snaps:
         raise ValueError("no version in this backup")
     snap = next((s for s in snaps if s.id == version), None) if version else snaps[-1]
     if snap is None:
-        raise ValueError(f"no version {version}; there are: {', '.join(s.id for s in snaps)}")
-    if not force and any((data / name).exists() for name in ("vault.json", "ssh")):
-        raise ValueError(f"{data} already holds a hub's keys; move them away first (or --force)")
-    data.mkdir(parents=True, exist_ok=True)
-    written = 0
-    for f in snap.files:
-        if f.type != "file":
-            continue
-        if f.path.startswith("@config/"):
-            target = config
-        else:
-            target = (data / f.path).resolve()
-            if data.resolve() not in target.parents:
-                raise ValueError(f"refusing a path outside the data folder: {f.path}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.restore")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, f.mode or 0o600)
-        with os.fdopen(fd, "wb") as out:
-            out.write(store.get(f.sha))
-        tmp.replace(target)
-        written += 1
+        raise ValueError("no such backup version")
+    if any(f.type != "file" for f in snap.files):
+        raise ValueError("unexpected non-file backup member")
+    written = restore_members(((f.path, store.get(f.sha)) for f in snap.files), data, config, force)
     return {"version": snap.id, "taken": snap.taken, "files": written}
 
 
@@ -281,39 +532,67 @@ def due(status: dict[str, Any], every_hours: float, now: float) -> bool:
 
 
 async def run_once(hub: Any, by: str | None = None) -> dict[str, Any]:
-    """Back the hub up now and copy it to every target; what happened."""
+    """Serialize snapshot, copy and key rotation; a disconnected browser cannot overlap them."""
+    async with hub.hub_backup.operation:
+        return await _run_once(hub, by)
+
+
+async def _run_once(hub: Any, by: str | None) -> dict[str, Any]:
     cfg = hub.config.hub_backup
-    status: dict[str, Any] = {"tried": time.time(), "targets": {}}
+    status: dict[str, Any] = {"tried": time.time(), "targets": {}, "ok": hub.hub_backup.status.get("ok")}
     hub.hub_backup.status = status | {"running": True}
     try:
-        if hub.hub_backup.header() is None:
+        header = hub.hub_backup.header()
+        if header is None:
             raise ValueError("no passphrase yet: make one on the Backups page")
-        snap, new = await asyncio.to_thread(
-            hub.hub_backup.take, hub.settings.data, hub.settings.config, cfg.keep, cfg.history, cfg.logs, by
-        )
-        status |= {"ok": datetime.now(UTC).isoformat(timespec="seconds"), "new": new, "version": snap.id}
-        for i, t in enumerate(cfg.targets):
-            name = (t.device and f"{t.device}:{t.path}") or t.path
-            try:
-                if t.device:
-                    from .ssh import Target
+        for target in cfg.targets:
+            if not target.device:
+                path, data = await blocking(Path(target.path).resolve), hub.settings.data.resolve()
+                if path == data or path in data.parents or data in path.parents:
+                    raise ValueError("a backup destination must be outside the hub's data folder")
+                if hub.settings.config.resolve().is_relative_to(path):
+                    raise ValueError("a backup destination must not contain the hub's configuration")
 
-                    device = hub.config.devices[t.device]
-                    if device.ssh is None:
-                        raise ValueError(f"{t.device} has no ssh: login")
-                    target = Target(device.host, device.ssh.port, device.ssh.user)
-                    async with await hub.keys.connect(target) as conn:
-                        n = await copy_sftp(hub.hub_backup.folder, conn, t.path)
-                else:
-                    n = await asyncio.to_thread(copy_tree, hub.hub_backup.folder, Path(t.path))
+        # Device-backup pruning must not delete objects while we read their indexes and files.
+        def take():
+            with hub.device_backups._lock, hub.vault._lock:
+                return hub.hub_backup.take(
+                    hub.settings.data, hub.settings.config, cfg.keep, cfg.history, cfg.logs, by
+                )
+
+        snap, new = await blocking(take)
+        status |= {
+            "local_ok": datetime.now(UTC).isoformat(timespec="seconds"),
+            "new": new,
+            "version": snap.id,
+        }
+        for t in cfg.targets:
+            name = f"{t.device}:{t.path}" if t.device else t.path
+            destination = copy_path(t.path, header)
+            try:
+                async with asyncio.timeout(180):
+                    if t.device:
+                        from .ssh import Target
+
+                        device = hub.config.devices[t.device]
+                        if device.ssh is None:
+                            raise ValueError(f"{t.device} has no ssh: login")
+                        target = Target(device.host, device.ssh.port, device.ssh.user)
+                        async with await hub.keys.connect(target) as conn:
+                            n = await copy_sftp(hub.hub_backup.folder, conn, destination)
+                    else:
+                        n = await blocking(copy_tree, hub.hub_backup.folder, Path(destination))
                 status["targets"][name] = {
                     "ok": datetime.now(UTC).isoformat(timespec="seconds"),
                     "written": n,
+                    "path": destination,
                 }
             except Exception as e:
-                status["targets"][name] = {"error": (str(e) or type(e).__name__)[:200], "index": i}
-        failed = [n for n, s in status["targets"].items() if s.get("error")]
+                status["targets"][name] = {"error": (str(e) or type(e).__name__)[:200], "path": destination}
+        failed = [n for n, st in status["targets"].items() if st.get("error")]
         status["error"] = f"couldn't copy to {', '.join(failed)}" if failed else None
+        if cfg.targets and not failed:
+            status["ok"] = datetime.now(UTC).isoformat(timespec="seconds")
     except Exception as e:
         status["error"] = (str(e) or type(e).__name__)[:200]
         raise
@@ -325,7 +604,10 @@ async def run_once(hub: Any, by: str | None = None) -> dict[str, Any]:
 
 def _save_status(hub: Any) -> None:
     with contextlib.suppress(OSError):
-        (hub.settings.data / "hub-backup-status.json").write_text(json.dumps(hub.hub_backup.status))
+        private_write(
+            hub.hub_backup.folder.parent / "hub-backup-status.json",
+            json.dumps(hub.hub_backup.status).encode(),
+        )
 
 
 def load_status(hub: Any) -> None:
@@ -334,12 +616,15 @@ def load_status(hub: Any) -> None:
 
 
 async def run(hub: Any) -> None:
+    if hub.demo:
+        return
     load_status(hub)
     await asyncio.sleep(240)
     while True:
         if (
             not hub.demo
             and hub.hub_backup.header() is not None
+            and not hub.hub_backup.operation.locked()
             and due(hub.hub_backup.status, hub.config.hub_backup.every_hours, time.time())
         ):
             try:
@@ -355,10 +640,14 @@ def problems(hub: Any, now: float) -> list[Any]:
     from .alarms import Problem, Severity
 
     st = hub.hub_backup.status
-    if hub.demo or hub.hub_backup.header() is None or not st.get("error"):
+    header = hub.hub_backup.header()
+    if hub.demo or header is None:
         return []
+    error = st.get("error") or (
+        "no external backup destination configured" if not hub.config.hub_backup.targets else None
+    )
     ok = st.get("ok")
-    since = datetime.fromisoformat(ok).timestamp() if ok else hub.started.timestamp()
+    since = datetime.fromisoformat(ok or header["made"]).timestamp()
     if now - since < 2 * hub.config.hub_backup.every_hours * 3600:
         return []
     return [
@@ -368,7 +657,7 @@ def problems(hub: Any, now: float) -> list[Any]:
             "",
             "Kastellan's own backup",
             "Kastellan's own backup is failing",
-            st["error"],
+            error or "no recent successful backup copy",
         )
     ]
 
@@ -388,34 +677,29 @@ def encrypted_archive(store: devbackups.Store, header: dict[str, Any], sid: str,
 def restore_file(
     source: Path, passphrase: str, data: Path, config: Path, force: bool = False
 ) -> dict[str, Any]:
-    """`kastellan restore <file>`: a downloaded single-file backup."""
-    import io
-    import tarfile
-
-    raw = source.read_bytes()
+    """Restore a downloaded archive, authenticating and staging it before changing any files."""
+    raw = read_bounded(source, MAX_TOTAL + MAX_FILES * 1024 + 1048576)
     if not raw.startswith(MAGIC):
         raise ValueError("not a Kastellan backup file")
     head, _, rest = raw[len(MAGIC) :].partition(b"\n")
-    key = key_from(json.loads(head), passphrase)
-    tar = AESGCM(key).decrypt(rest[:12], rest[12:], b"kastellan-backup")
-    if not force and any((data / name).exists() for name in ("vault.json", "ssh")):
-        raise ValueError(f"{data} already holds a hub's keys; move them away first (or --force)")
-    written = 0
-    with tarfile.open(fileobj=io.BytesIO(tar), mode="r:gz") as t:
-        for m in t.getmembers():
-            if not m.isfile():
-                continue
-            if m.name.startswith("@config/"):
-                target = config
-            else:
-                target = (data / m.name).resolve()
-                if data.resolve() not in target.parents:
-                    raise ValueError(f"refusing a path outside the data folder: {m.name}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            f = t.extractfile(m)
-            content = f.read() if f else b""
-            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, m.mode or 0o600)
-            with os.fdopen(fd, "wb") as out:
-                out.write(content)
-            written += 1
+    header = json.loads(head)
+    if header.get("version") not in (1, 2):
+        raise ValueError("unsupported backup version")
+    key = key_from(header, passphrase)
+    packed = AESGCM(key).decrypt(rest[:12], rest[12:], b"kastellan-backup")
+    with gzip.GzipFile(fileobj=io.BytesIO(packed)) as zipped:
+        tar = zipped.read(MAX_TOTAL + MAX_FILES * 1024 + 1)
+    if len(tar) > MAX_TOTAL + MAX_FILES * 1024:
+        raise ValueError("expanded backup is too large")
+    with tarfile.open(fileobj=io.BytesIO(tar), mode="r:") as archive:
+
+        def members():
+            for m in archive:
+                if not m.isfile() or m.size > MAX_FILE:
+                    raise ValueError("unexpected or oversized backup member")
+                member = archive.extractfile(m)
+                assert member is not None
+                yield m.name, member.read(MAX_FILE + 1)
+
+        written = restore_members(members(), data, config, force)
     return {"files": written}

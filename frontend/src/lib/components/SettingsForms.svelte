@@ -456,7 +456,7 @@
 
 		<SettingsCard
 			title="Kastellan's own backup"
-			description="Where Kastellan's own backup goes besides the hub's disk: a folder (a NAS share mounted into the container, e.g. /backup) or a folder on a device over SFTP (Kastellan's SSH login there). Each copy is a whole backup; the passphrase is made on the Backups page."
+			description="Copy backups to a mounted folder or an SFTP device. Each passphrase gets a separate kastellan-… subfolder. Create the passphrase on the Backups page."
 			dirty={json(hubBackup) !== base.hub_backup}
 			reset={() => (hubBackup = JSON.parse(base.hub_backup))}
 			save={() =>
@@ -484,8 +484,8 @@
 				<input type="checkbox" bind:checked={hubBackup.logs} /> With the central logs (large)
 			</label>
 			{#each hubBackup.targets as t, i (i)}
-				<div class="flex flex-wrap items-end gap-2">
-					<label class="field">
+				<div class="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 sm:flex sm:flex-wrap">
+					<label class="field col-span-2">
 						On
 						<select class="input" bind:value={t.device}>
 							<option value="">this hub (a mounted folder)</option>
@@ -494,7 +494,7 @@
 							{/each}
 						</select>
 					</label>
-					<label class="field min-w-64 flex-1">
+					<label class="field min-w-0 sm:min-w-64 sm:flex-1">
 						Folder
 						<input class="input" placeholder="/backup/kastellan" bind:value={t.path} />
 					</label>
@@ -511,6 +511,7 @@
 			<button
 				class="btn btn-sm self-start"
 				type="button"
+				disabled={hubBackup.targets.length >= 8}
 				onclick={() => hubBackup.targets.push({ path: '', device: '' })}
 			>
 				<Plus class="size-3.5" /> A place for copies

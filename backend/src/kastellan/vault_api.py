@@ -85,7 +85,7 @@ class EntryForm(BaseModel):
 
 def own(id: str) -> bool:
     """Kastellan's own keys: made and replaced by Kastellan (rotation), never edited here."""
-    return id.startswith("ssh/") or id in (PUSH_ID, "device-backups", "syslog-ca-key")
+    return id.startswith("ssh/") or id in (PUSH_ID, "device-backups", "syslog-ca-key", "hub-backup-key")
 
 
 def router(hub: Hub) -> APIRouter:
@@ -123,6 +123,8 @@ def router(hub: Hub) -> APIRouter:
             out.append("groups: Wi-Fi password fingerprints")
         if id == "syslog-ca-key":
             out.append("syslog certificate authority")
+        if id == "hub-backup-key":
+            out.append("hub backup encryption")
         if id == "device-backups":
             out.append("device backup encryption")
         for dev, device in hub.config.devices.items():

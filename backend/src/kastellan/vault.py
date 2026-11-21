@@ -500,6 +500,13 @@ class Vault:
                 for s in (ring["slots"] if ring else [])
             )
 
+    def recovery_tag(self, rid: str) -> str:
+        """An opaque identifier for the current recovery slots, to expire old check results."""
+        with self._lock:
+            ring = self._read()["rings"].get(rid) or {}
+            slots = [s for s in ring.get("slots", []) if s["way"] == "recovery"]
+            return hashlib.sha256(json.dumps(slots, sort_keys=True).encode()).hexdigest()
+
     def check_recovery(self, rid: str, recovery: str) -> bool:
         """Whether this recovery key opens the ring (without opening it)."""
         with self._lock:

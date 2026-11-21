@@ -403,6 +403,10 @@ def mask(path: str, text: str, salt: bytes) -> str:
     """The text with every secret value replaced by its fingerprint."""
     if secret_file(path):
         return fingerprint(text, salt)
+    if path == "@config/config.yaml":
+        from .config_edit import _masked_text
+
+        return _masked_text(text) or fingerprint(text, salt)
     if path in TEXT_CONFIGS:
         # A multiline value or an unfamiliar statement needs a real UCI parser;
         # hide the whole file rather than accidentally showing its continuation.

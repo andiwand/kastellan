@@ -9,10 +9,19 @@
 	let view = $state<{ result: BackupDiff | null; error?: string }>({ result: null });
 	let dialog: HTMLDialogElement | undefined = $state();
 	$effect(() => {
+		let current = true;
+		view = { result: null };
 		load().then(
-			(result) => (view = { result }),
-			(e) => (view = { result: null, error: (e as Error).message })
+			(result) => {
+				if (current) view = { result };
+			},
+			(e) => {
+				if (current) view = { result: null, error: (e as Error).message };
+			}
 		);
+		return () => {
+			current = false;
+		};
 	});
 </script>
 
@@ -37,7 +46,7 @@
 			{:else}
 				{@const r = view.result}
 				<p class="text-xs text-muted">
-					Passwords and keys show as fingerprints: a change is visible, the value isn't.
+					Sensitive values are masked; unknown file formats are hidden.
 				</p>
 				{#if !r.added.length && !r.removed.length && !r.changed.length}
 					<p class="mt-3">Nothing.</p>
@@ -57,7 +66,7 @@
 				{#each r.changed as c (c.path)}
 					<p class="mt-4 font-mono text-xs font-semibold">{c.path}</p>
 					{#if c.secret}
-						<p class="text-xs text-muted">A secret as a whole (keys, passwords): it changed.</p>
+						<p class="text-xs text-muted">Contents hidden; the file changed.</p>
 					{:else if c.binary}
 						<p class="text-xs text-muted">
 							Not text: it changed ({c.size[0]} → {c.size[1]} bytes).

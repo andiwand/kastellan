@@ -583,7 +583,7 @@ def test_a_kept_secret_goes_back_only_to_its_own_channel(hub_client) -> None:
 
 def test_the_vpn_form_cant_aim_at_kastellans_own_secrets(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
-    for name in ("group-fingerprints", "openwrt-router", "openwrt-other"):
+    for name in ("openwrt-router", "openwrt-other"):
         config.write_text(
             TEXT + f"vpn:\n  wireguard:\n    wg_easy: http://sv1:51821\n    password_secret: {name}\n"
         )

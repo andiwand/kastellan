@@ -872,9 +872,14 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def _hub_backup(self) -> Self:
+        seen = set()
         for t in self.hub_backup.targets:
-            if t.device is not None and t.device not in self.devices:
-                raise ValueError(f"hub_backup.targets: no device {t.device!r}")
+            identity = (t.device, t.path.rstrip("/") or "/")
+            if identity in seen:
+                raise ValueError("hub_backup.targets: duplicate destination")
+            seen.add(identity)
+            if t.device is not None and (t.device not in self.devices or self.devices[t.device].ssh is None):
+                raise ValueError("hub_backup.targets: device needs an SSH login")
         return self
 
     @model_validator(mode="after")
@@ -890,14 +895,16 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def _device_secret_names(self) -> Self:
-        for device in self.devices.values():
-            for access in (device.openwrt, device.fritzbox):
-                if access and access.password_secret in {
-                    "device-backups",
-                    "group-fingerprints",
-                    "syslog-ca-key",
-                }:
-                    raise ValueError("a device login cannot use Kastellan's encryption or fingerprint key")
+        accesses = [a for d in self.devices.values() for a in (d.openwrt, d.fritzbox) if a]
+        accesses += [v for v in self.vpns.values() if v.kind == "wireguard"]
+        for access in accesses:
+            if access.password_secret in {
+                "device-backups",
+                "group-fingerprints",
+                "syslog-ca-key",
+                "hub-backup-key",
+            }:
+                raise ValueError("a device login cannot use Kastellan's encryption or fingerprint key")
         return self
 
     @model_validator(mode="after")

@@ -12,12 +12,14 @@
 	 * the copies away from the hub, and checks that the passphrase and recovery keys still work. */
 	type View = {
 		ready: boolean;
+		legacy: boolean;
 		made: string | null;
 		status: {
 			ok?: string;
+			local_ok?: string;
 			error?: string | null;
 			running?: boolean;
-			targets?: Record<string, { ok?: string; error?: string; written?: number }>;
+			targets?: Record<string, { ok?: string; error?: string; written?: number; path?: string }>;
 		};
 		versions: {
 			id: string;
@@ -48,7 +50,10 @@
 	async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const r = await fetch(`/api/hub-backup${path}`, {
 			method,
-			headers: method === 'GET' ? {} : { 'X-Kastellan': '1', 'Content-Type': 'application/json' },
+			headers:
+				method === 'GET'
+					? { 'X-Kastellan-Auto': '1' }
+					: { 'X-Kastellan': '1', 'Content-Type': 'application/json' },
 			body: body === undefined ? undefined : JSON.stringify(body)
 		});
 		if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? `HTTP ${r.status}`);
@@ -69,12 +74,15 @@
 	});
 
 	async function makePhrase(replace = false) {
+		busy = true;
 		error = null;
 		try {
 			phrase = (await call<{ passphrase: string }>('POST', '/passphrase', { replace })).passphrase;
 			await load();
 		} catch (e) {
 			error = (e as Error).message;
+		} finally {
+			busy = false;
 		}
 	}
 	async function now() {
@@ -82,7 +90,7 @@
 		note = null;
 		try {
 			const s = await call<{ error?: string | null; new?: boolean }>('POST', '');
-			note = s.error ?? (s.new ? 'A new version, copied.' : 'Nothing changed; copies checked.');
+			note = s.error ?? (s.new ? 'Backup saved.' : 'No changes; destinations checked.');
 			await load();
 		} catch (e) {
 			note = (e as Error).message;
@@ -95,7 +103,7 @@
 		try {
 			const r = await call<{ right: boolean }>('POST', '/check', body);
 			checkNote = r.right
-				? { ok: true, text: 'Right. Keep it where you keep it.' }
+				? { ok: true, text: 'Recovery key verified.' }
 				: { ok: false, text: "That isn't it." };
 			checkPhrase = recovery = '';
 			await load();
@@ -114,15 +122,17 @@
 	<div class="flex flex-wrap items-baseline justify-between gap-2">
 		<h2 class="text-sm font-semibold">Kastellan itself</h2>
 		{#if view?.ready && signedIn}
-			<button class="btn btn-sm" disabled={busy} onclick={now}>
+			<button
+				class="btn btn-sm"
+				disabled={busy || view.status.running || view.legacy}
+				onclick={now}
+			>
 				{busy ? 'Backing up…' : 'Back up now'}
 			</button>
 		{/if}
 	</div>
 	<p class="mt-1 max-w-3xl text-xs text-muted">
-		Its configuration, key rings, SSH keys, certificates, alarms, history and the devices' backups,
-		so a new hub can take over. Encrypted with a passphrase only you keep; copied to places away
-		from the hub.
+		Encrypted backups of configuration, keys and state. Keep the recovery passphrase separately.
 	</p>
 	{#if error}<p class="mt-2 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
 
@@ -131,8 +141,8 @@
 			<p class="text-sm font-medium">The passphrase: write it down now, away from the hub.</p>
 			<p class="mt-2 font-mono text-base tracking-wide break-all select-all">{phrase}</p>
 			<p class="mt-2 text-xs text-muted">
-				It is shown only now. Restoring needs it; without it the backup can't be opened by anyone,
-				Kastellan included.
+				Shown once. Restoring on a new hub requires it; this hub keeps a derived key for scheduled
+				backups.
 			</p>
 			<button class="btn btn-sm mt-3" onclick={() => (phrase = null)}>I wrote it down</button>
 		</div>
@@ -141,16 +151,22 @@
 	{#if view && !view.ready}
 		<p class="mt-4 text-sm">No backup yet: it needs its passphrase first.</p>
 		{#if signedIn}
-			<button class="btn btn-primary btn-sm mt-2" onclick={() => makePhrase()}>
+			<button class="btn btn-primary btn-sm mt-2" disabled={busy} onclick={() => makePhrase()}>
 				Make the passphrase
 			</button>
 		{:else}<p class="mt-1 text-xs text-muted">Needs sign-in to be on.</p>{/if}
 	{:else if view}
+		{#if view.legacy}
+			<p class="mt-3 text-sm" style:color="var(--warning-text)">
+				This backup uses the old folder format. Download a .kbak to keep it, then make a new
+				passphrase.
+			</p>
+		{/if}
 		<p class="mt-4 text-sm">
 			{#if view.status.error}
 				<span style:color="var(--warning-text)">{view.status.error}</span>
-			{:else if view.status.ok}
-				Backed up {ago(view.status.ok, store.now)}
+			{:else if view.status.local_ok || view.status.ok}
+				Backed up {ago(view.status.local_ok ?? view.status.ok!, store.now)}
 			{:else}
 				Not backed up yet (within minutes)
 			{/if}
@@ -167,7 +183,9 @@
 					{@const name = t.device ? `${t.device}:${t.path}` : t.path}
 					{@const st = view.status.targets?.[name]}
 					<li>
-						<span class="font-mono text-xs">{name}</span>
+						<span class="font-mono text-xs break-all">
+							{t.device ? `${t.device}:` : ''}{st?.path ?? t.path}
+						</span>
 						{#if st?.error}<span class="text-xs" style:color="var(--warning-text)">
 								· {st.error}
 							</span>{:else if st?.ok}<span class="text-xs text-muted">
@@ -178,8 +196,8 @@
 			</ul>
 		{:else}
 			<p class="mt-1 text-sm" style:color="var(--warning-text)">
-				Only on the hub's own disk, which is no help if that disk goes. Add a folder (a NAS share
-				mounted into the container) or a device over SFTP under Settings → Kastellan's own backup.
+				No external copy. Add a mounted folder or an SFTP destination in Settings → Kastellan's own
+				backup.
 			</p>
 		{/if}
 
@@ -238,7 +256,7 @@
 		{#if signedIn}
 			<div class="mt-2 flex flex-wrap items-end gap-2">
 				<input
-					class="h-8 min-w-64 flex-1 rounded-lg border border-line bg-surface px-3 font-mono text-xs"
+					class="h-8 w-full min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 font-mono text-xs sm:w-auto sm:min-w-64"
 					type="password"
 					placeholder="The passphrase"
 					bind:value={checkPhrase}
@@ -260,7 +278,7 @@
 						{#each view.rings as r (r)}<option value={r}>{r}</option>{/each}
 					</select>
 					<input
-						class="h-8 min-w-64 flex-1 rounded-lg border border-line bg-surface px-3 font-mono text-xs"
+						class="h-8 w-full min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 font-mono text-xs sm:w-auto sm:min-w-64"
 						type="password"
 						placeholder="Its recovery key"
 						bind:value={recovery}
@@ -283,24 +301,25 @@
 		<details class="mt-5 text-sm">
 			<summary class="cursor-pointer text-xs font-medium text-muted">How to restore</summary>
 			<p class="mt-2 text-xs text-muted">
-				On a new machine: Kastellan's compose.yaml as before, the copy of the backup folder (or a
-				downloaded .kbak file) where the container sees it, then once, with the hub stopped:
+				Use the same Kastellan version and empty data and config folders. Mount a copied kastellan-…
+				folder or a .kbak file, then run with the hub stopped:
 			</p>
 			<CodeBlock
-				text={'docker compose run --rm -v /path/to/the/copy:/restore kastellan kastellan restore /restore\n# asks for the passphrase; --list shows the versions, --version <id> takes an older one\ndocker compose up -d'}
+				text={'docker compose stop kastellan\ndocker compose run --rm --no-deps -v /path/to/the/copy:/restore:ro kastellan kastellan restore /restore\n# asks for the passphrase; --list shows the versions, --version <id> takes an older one\ndocker compose up -d'}
 			/>
 			<p class="mt-2 text-xs text-muted">
-				Then sign in as before: the key rings open with your password (or a recovery key). People
-				sign in again; the logs start afresh unless they were included.
+				Restore external unlock keys separately. Sign in with the saved account, or unlock the key
+				rings with their recovery keys.
 			</p>
 		</details>
 		{#if signedIn}
 			{#if replacing}
 				<p class="mt-4 text-xs">
-					A new passphrase starts a new backup; the old one stays aside, openable only with the old
-					passphrase.
+					Start a new backup? Old local and destination copies stay under their old passphrase;
+					remove them manually when no longer needed.
 					<button
 						class="ml-1 underline"
+						disabled={busy}
 						style:color="var(--critical-text)"
 						onclick={() => ((replacing = false), makePhrase(true))}
 					>

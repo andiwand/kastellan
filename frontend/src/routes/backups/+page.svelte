@@ -59,8 +59,7 @@
 
 <h1 class="text-2xl font-semibold tracking-tight">Backups</h1>
 <p class="mt-1 max-w-2xl text-sm text-muted">
-	Your backup jobs that report in, and the devices' own configurations, which Kastellan keeps
-	itself: each version once, encrypted, with what changed from one to the next.
+	Hub backups, device configurations and reports from your backup jobs.
 </p>
 {#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
 

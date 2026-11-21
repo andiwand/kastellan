@@ -33,7 +33,9 @@ def main() -> None:
     )
     restoring.add_argument("source", help="a copy of the backup folder, or a downloaded .kbak file")
     restoring.add_argument("--version", help="a version's id (default: the newest)")
-    restoring.add_argument("--force", action="store_true", help="write over a data folder with keys")
+    restoring.add_argument(
+        "--force", action="store_true", help="replace existing data and configuration (hub must be stopped)"
+    )
     restoring.add_argument("--list", action="store_true", help="only list the versions")
     args = parser.parse_args()
     if args.command == "restore":
@@ -95,19 +97,21 @@ def restore_command(source: str, version: str | None, force: bool, only_list: bo
     import os
     from pathlib import Path
 
-    from . import devbackups, hubbackup
+    from . import hubbackup
 
     settings = Settings.from_env()
     path = Path(source)
     if not path.exists():
         raise SystemExit(f"No {path}.")
+    if path.is_file() and (only_list or version):
+        raise SystemExit("--list and --version apply only to backup folders; nothing restored.")
     phrase = os.environ.get("KASTELLAN_BACKUP_PASSPHRASE") or getpass.getpass("The backup's passphrase: ")
     try:
         if path.is_dir():
             if only_list:
                 header = json.loads((path / hubbackup.HEADER).read_text())
                 key = hubbackup.key_from(header, phrase)
-                for s in devbackups.Store(path, lambda: key).snapshots(hubbackup.ID):
+                for s in hubbackup.Store(path, lambda: key).snapshots(hubbackup.ID):
                     print(f"{s.id}  {s.taken}  {len(s.files)} files")
                 return
             done = hubbackup.restore(path, phrase, settings.data, settings.config, version, force)

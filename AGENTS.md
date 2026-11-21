@@ -114,16 +114,18 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     known UCI credential fields; unknown file formats are hidden (`secret_file`). HMAC
     fingerprints use `group-fingerprints`. Taken by `devbackups.run` every
     `device_backups.every_hours`; failures beyond two periods warn (`devbackup:<id>`).
-  - `hubbackup.py` + `hubbackup_api.py`: Kastellan's own backup on a `devbackups.Store` in
-    `<data>/hub-backup` (id `kastellan`): config.yaml as `@config/config.yaml` and the data folder
-    (not sessions, logs unless `hub_backup.logs`, checks unless `history`, vulns, hub-backup*).
-    The key: scrypt of a passphrase made once (`/api/hub-backup/passphrase`, shown once), kept as
-    the secret `hub-backup-key`; the folder's `kastellan-backup.json` holds the salt and an HMAC
-    check so `restore` needs only the passphrase. A new passphrase sets the old store aside.
-    After each backup the folder is copied to `hub_backup.targets` (a path, or a device's path
-    over SFTP with its `ssh:` login; objects first, indexes last). `kastellan restore <folder|
-    .kbak>` (CLI) writes it into KASTELLAN_DATA/CONFIG, refusing a folder with keys unless
-    `--force`. `/check` verifies the passphrase or a ring's recovery key (`vault.check_recovery`).
+  - `hubbackup.py` + `hubbackup_api.py`: hub snapshots in `<data>/hub-backup`, using
+    `devbackups.Store` with an authenticated index (format 2). The key is derived from a
+    generated passphrase and kept as the protected secret `hub-backup-key`; headers hold its
+    salt and check. Config is `@config/config.yaml`; sessions, caches and hub backups are
+    excluded. Optional SQLite logs use online backup. Files are bounded (128 MiB each,
+    512 MiB total); unreadable or changing state fails the snapshot. An operation lock covers
+    snapshots, copies, downloads and rotation; browser disconnects don't cancel backups.
+    Copies go into `kastellan-<key id>` under each local/SFTP target; only owned objects are
+    pruned, and old generations remain. `kastellan restore` stages and validates every file
+    before writing; `--force` replaces existing state. Old unsigned stores can still be
+    downloaded as authenticated `.kbak` files from the original hub. Recovery checks don't
+    unlock rings. External unlock keys must be backed up separately.
   - `fritzbox/client.py` + `fritzbox_api.py`: TR-064 over HTTPS (49443) with a FRITZ!Box user
     (`fritzbox: {user, port}`, secret `fritzbox-<id>`), Digest auth by hand over a TLS connection
     whose certificate is pinned (`<data>/fritzbox/<id>.sha256`, confirmed by an admin at setup:

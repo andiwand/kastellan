@@ -212,7 +212,26 @@ keys and any external unlock keys separately. Restore both directories and their
 before starting the same Kastellan version. Backups contain credentials; protect them accordingly.
 Device backups preserve OpenWrt configuration archives and FRITZ!Box exports. Extract a FRITZ!Box
 ZIP before restoring its `.export`; the included `export-password.txt` contains the restore password.
-These and automatic config-file backups do not replace a complete hub backup.
+For scheduled hub backups, create a passphrase on **Backups**, then add a mounted folder or
+SFTP destination in **Settings → Kastellan's own backup**. Keep the passphrase separately.
+Each destination gets a `kastellan-…` folder per passphrase; old generations remain until removed.
+
+Restore a copied folder or downloaded `.kbak` using the same Kastellan version, with the hub
+stopped and empty data/config directories:
+
+```sh
+docker compose stop kastellan
+docker compose run --rm --no-deps -v /path/to/backup:/restore:ro kastellan kastellan restore /restore
+docker compose up -d
+```
+
+The command prompts for the passphrase. For folders, `--list` lists versions and `--version ID`
+selects one. `--force` replaces existing state, including sessions and old secrets. External
+unlock keys are not included. Central logs are optional; backups currently allow 128 MiB per
+file and 512 MiB total. Unreadable or changing state fails the backup instead of silently omitting files.
+
+Backups from the first hub-backup implementation have unsigned folder indexes. Download a
+`.kbak` from the original hub before creating a new passphrase; those files remain restorable.
 
 ## Development
 
