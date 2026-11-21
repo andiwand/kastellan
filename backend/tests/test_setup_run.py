@@ -154,3 +154,76 @@ async def test_a_quiet_run_says_it_is_alive(monkeypatch) -> None:
     lines = [chunk async for chunk in response.body_iterator]
     assert lines[-1] == b"KASTELLAN-DONE {}\n"
     assert lines.count(b"KASTELLAN-ALIVE\n") >= 2
+
+
+def test_a_large_script_goes_packed_as_an_argument() -> None:
+    import subprocess
+
+    from kastellan.host import actor
+    from kastellan.setup_run import ARGUMENT_MAX, as_argument
+
+    small = "echo hi"
+    assert as_argument(small) == small
+    script = actor.install_script(set(actor.ABILITIES), ["*"], "ssh-ed25519 AAAA x", "10.0.0.1", vms=["*"])
+    script = f"cat <<'KASTELLAN_TEST'\n{script}\nKASTELLAN_TEST\n"
+    packed = as_argument(script)
+    assert (
+        len(script.encode()) > 128 * 1024 > ARGUMENT_MAX > len(packed.encode())
+    )  # Linux's limit per argument
+    out = subprocess.run(["sh", "-c", "exec </dev/null; " + packed], capture_output=True, text=True)
+    assert out.returncode == 0 and out.stdout.rstrip("\n") == script.split("\n", 1)[1].rsplit(
+        "\nKASTELLAN_TEST", 1
+    )[0].rstrip("\n")
+
+
+def test_new_abilities_until_set_up_or_not_needed(tmp_path) -> None:
+    from kastellan.abilities import Offered
+
+    offered = Offered(tmp_path / "offered.json")
+    assert offered.new("sv1", "actor", None) == []  # not known yet
+    assert offered.new("sv1", "actor", ["update-container", "journal"]) == [
+        "rollback-container",
+        "container-logs",
+        "unit-logs",
+        "docker-logs",
+    ]
+    offered.passed("sv1", "actor", {"rollback-container", "container-logs", "unit-logs"})
+    assert offered.new("sv1", "actor", ["journal"]) == ["docker-logs"]
+    offered.passed("sv1", "actor", ["docker-logs"])
+    assert offered.new("sv1", "actor", []) == ["journal"]  # removed again: offered again
+    assert offered.new("ap", "openwrt", ["logs"]) == ["backup", "scan"]
+
+
+def test_a_stored_login_only_for_its_device(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    import pytest
+    from fastapi import HTTPException
+
+    from kastellan import setup_run
+    from kastellan.auth import hash_password, password_tag
+    from kastellan.config import Config
+    from kastellan.vault import PEOPLE, Vault
+
+    hashed = hash_password("ada's password")
+    vault = Vault(tmp_path / "vault.json")
+    vault.create("ada", "ada's password", password_tag(hashed))
+    vault.put(
+        "ssh-sv1-root", "root pw", ring=PEOPLE, kind="password", name="sv1", user="root", devices=["sv1"]
+    )
+    config = Config.model_validate(
+        {
+            "devices": {"sv1": {"host": "sv1"}, "nas": {"host": "nas"}},
+            "users": {"ada": {"role": "admin", "password": hashed}},
+        }
+    )
+    hub = SimpleNamespace(vault=vault, config=config)
+    assert [e["id"] for e in setup_run.stored_logins(hub, "sv1", "ada")["stored"]] == ["ssh-sv1-root"]
+    assert setup_run.stored_logins(hub, "nas", "ada")["stored"] == []
+    body = setup_run.Login(stored="ssh-sv1-root")
+    setup_run.resolve(hub, "sv1", body, "ada")
+    assert (body.login, body.password) == ("root", "root pw")
+    with pytest.raises(HTTPException):  # never sent to another device
+        setup_run.resolve(hub, "nas", setup_run.Login(stored="ssh-sv1-root"), "ada")
+    with pytest.raises(HTTPException):  # a typed login needs both
+        setup_run.resolve(hub, "sv1", setup_run.Login(login="root"), "ada")

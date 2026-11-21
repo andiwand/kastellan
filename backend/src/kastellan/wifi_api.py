@@ -68,6 +68,10 @@ class PlanApply(BaseModel):
     after: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
+LIVE_WAIT = 10.0  # seconds one access point may take
+LIVE_FRESH = 60.0  # seconds a reading is shown as it is
+
+
 def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api/wifi")
     scans = hub.wifi_scans
@@ -129,26 +133,75 @@ def router(hub: Hub) -> APIRouter:
 
     def job(action: str, request: Request, w, work, **logged: Any) -> StreamingResponse:
         audit = partial(hub.audit.record, f"wifi.{action}", w.user, client_address(request.scope), **logged)
-        return setup_run.stream_work(work, audit)
+
+        async def then_read_again(say):
+            try:
+                return await work(say)
+            finally:
+                cache["t"] = 0.0  # what changed shows at the next look
+
+        return setup_run.stream_work(then_read_again, audit)
+
+    # What the access points say live (their Wi-Fi configuration, password fingerprints): asked
+    # of all at once, each within LIVE_WAIT, and kept LIVE_FRESH seconds; older, it is shown
+    # while a fresh reading is under way.
+    cache: dict[str, Any] = {"t": 0.0, "value": None, "task": None}
+
+    async def read_live() -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
+        key = salt()
+
+        async def one(id: str, ubus: Any) -> dict[str, Any]:
+            try:
+                return await asyncio.wait_for(sync.survey({id: ubus}, key), LIVE_WAIT)
+            except TimeoutError:
+                return {"errors": {id: "didn't answer in time"}, "networks": []}
+
+        parts = await asyncio.gather(*(one(i, u) for i, u in members().items()))
+        networks: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
+        for part in parts:
+            errors |= part.get("errors") or {}
+            for n in part.get("networks") or []:
+                networks.setdefault(n["ssid"], {"ssid": n["ssid"], "on": []})["on"].extend(n["on"])
+
+        async def fingerprint(id: str, index: int) -> tuple[tuple[str, int], str | None]:
+            try:
+                secret = await asyncio.wait_for(fb.wifi_key(hub.fritz(id), index), LIVE_WAIT)
+                return (id, index), _fp(secret, key)
+            except Exception:
+                return (id, index), None
+
+        found = await asyncio.gather(
+            *(fingerprint(id, n["index"]) for id, nets in fritz_networks().items() for n in nets)
+        )
+        return {"errors": errors, "networks": list(networks.values())}, dict(found)
+
+    async def live() -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
+        age = time.monotonic() - cache["t"]
+        if cache["value"] is not None and age < LIVE_FRESH:
+            return cache["value"]
+        if cache["task"] is None or cache["task"].done():
+
+            async def refresh() -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
+                value = await read_live()
+                cache["t"], cache["value"] = time.monotonic(), value
+                return value
+
+            cache["task"] = asyncio.create_task(refresh())
+        if cache["value"] is not None:  # stale: shown now, the fresh one comes with the next look
+            return cache["value"]
+        return await asyncio.shield(cache["task"])
 
     @api.get("")
     async def overview(request: Request) -> dict[str, Any]:
         require_admin(request)
+        fritz = fritz_networks()
         if hub.demo:
             from . import demo
 
-            survey = demo.WIFI_SURVEY
+            survey, keys = demo.WIFI_SURVEY, {}
         else:
-            survey = await sync.survey(members(), salt())
-        fritz = fritz_networks()
-        keys: dict[tuple[str, int], str | None] = {}
-        if not hub.demo:
-            for id, nets in fritz.items():
-                for n in nets:
-                    try:
-                        keys[(id, n["index"])] = _fp(await fb.wifi_key(hub.fritz(id), n["index"]), salt())
-                    except Exception:
-                        keys[(id, n["index"])] = None
+            survey, keys = await live()
         settings = router_settings()
         all_scans = scans.all(time.time() - 7 * 86400)
         radios = wifi.radios_from(settings, all_scans, fritz)
@@ -238,7 +291,12 @@ def router(hub: Hub) -> APIRouter:
                         await fb.change_wifi(
                             hub.fritz(id),
                             n["index"],
-                            {"ssid": body.new_ssid, "key": body.key, "enabled": body.enabled},
+                            {
+                                "ssid": body.new_ssid,
+                                "key": body.key,
+                                "enabled": body.enabled,
+                                "encryption": body.encryption,
+                            },
                         )
                         outcome[f"{id}/wlan{n['index']}"] = "done"
                     except Exception as e:
@@ -331,6 +389,7 @@ def router(hub: Hub) -> APIRouter:
         except Exception as e:
             audit(outcome=f"failed: {str(e)[:120]}")
             raise HTTPException(400 if isinstance(e, ValueError) else 502, str(e)[:300]) from e
+        cache["t"] = 0.0
         audit(outcome="done")
         return {"done": True}
 
@@ -440,9 +499,66 @@ async def scan_all(hub: Hub, say=None) -> int:
             say(f"{id}: {str(e)[:160] or type(e).__name__}")
         finally:
             hub.wifi_scanning.discard(id)
+    for id, d in list(hub.config.devices.items()):
+        if d.fritzbox is None or id in hub.wifi_scanning:
+            continue
+        hub.wifi_scanning.add(id)
+        try:
+            found += await scan_fritz(hub, id)
+            say(f"{id}: its Wi-Fi environment read")
+        except Exception as e:
+            say(f"{id}: {str(e)[:160] or type(e).__name__}")
+        finally:
+            hub.wifi_scanning.discard(id)
     if found:
         await asyncio.to_thread(hub.wifi_scans.add, found)
     return len(found)
+
+
+def _mhz(channel: int, band: str) -> int:
+    return 2407 + 5 * channel if band == "2g" else 5000 + 5 * channel
+
+
+async def scan_fritz(hub: Hub, id: str) -> list[dict[str, Any]]:
+    """A FRITZ!Box's Wi-Fi environment (it scans by itself; the web interface's `chan` page) as
+    scans like an OpenWrt radio's, one per band, under its network of that band (wlanN)."""
+    from .fritzbox import web
+
+    st = hub.monitor.status.get(id)
+    nets = [n for n in ((st.fritz or {}).get("wifi") or []) if not n.get("guest")] if st else []
+    env = web.environment(await hub.fritz_web(id).data("chan", "environment"))
+    out = []
+    for band, b in env.items():
+        net = next((n for n in nets if n.get("band") == band), None)
+        if net is None:
+            continue
+        out.append(
+            {
+                "t": time.time(),
+                "device": id,
+                "radio": f"wlan{net['index']}",
+                "band": band,
+                "channel": b["channel"] or net.get("channel"),
+                "neighbours": b["neighbours"],
+                "survey": [
+                    {"mhz": _mhz(b["channel"], band), "busy": b["busy"], "noise": None, "in_use": True}
+                ]
+                if b["busy"] is not None and b["channel"]
+                else [],
+                "freqs": [
+                    {
+                        "channel": c["channel"],
+                        "mhz": _mhz(c["channel"], band),
+                        "restricted": c["dfs"],
+                        "active": False,
+                    }
+                    for c in b["channels"]
+                ],
+                "bssids": [n["bssid"] for n in nets if n.get("bssid")],
+                "auto": b["auto"],
+            }
+        )
+    return out
 
 
 def due(scan_at: str | None, last: str | None, now: datetime) -> bool:

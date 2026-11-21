@@ -447,8 +447,9 @@ def kind_of(device: Any) -> str | None:
     return None
 
 
-async def fetch(hub: Any, id: str) -> list[tuple[File, bytes]]:
-    """A device's backup now, as files."""
+async def fetch(hub: Any, id: str, at_the_box: bool = False) -> list[tuple[File, bytes]]:
+    """A device's backup now, as files. `at_the_box`: someone asked and can confirm a FRITZ!Box's
+    second factor (its export asks for it), so it is waited for."""
     import asyncio
 
     device = hub.config.devices[id]
@@ -461,7 +462,10 @@ async def fetch(hub: Any, id: str) -> list[tuple[File, bytes]]:
         from .fritzbox import client as fb
 
         password = hub.own_secret(f"fritzbox-export-{id}")
-        content = await fb.config_export(hub.fritz(id), password)
+        box = hub.fritz(id)
+        content = await fb.confirmed(
+            box, lambda: fb.config_export(box, password), wait=90 if at_the_box else 0
+        )
         sha = hashlib.sha256(content).hexdigest()
         password_bytes = password.encode()
         return [
@@ -477,6 +481,13 @@ def _denied(e: Exception) -> bool:
     return (isinstance(e, ow.UbusError) and e.code in (6, ow.DENIED)) or bool(getattr(e, "denied", False))
 
 
+SECOND_FACTOR_NOTE = (
+    "FRITZ!OS asks for its second factor (a button on the box) for every settings export, so it"
+    " isn't backed up by itself: use “Back up now” and press the button when asked, or turn that"
+    " confirmation off in FRITZ!OS (System → FRITZ!Box Users → Login to the Home Network)"
+)
+
+
 async def take(hub: Any, id: str, by: str | None = None) -> dict[str, Any]:
     """Back one device up now; what happened (also kept in hub.backup_status)."""
     import asyncio
@@ -486,17 +497,21 @@ async def take(hub: Any, id: str, by: str | None = None) -> dict[str, Any]:
     state = dict(hub.backup_status.get(id) or {})
     state["tried"] = now
     try:
-        members = await fetch(hub, id)
+        members = await fetch(hub, id, at_the_box=by is not None)
         snap, new = await asyncio.to_thread(
             hub.device_backups.add, id, kind, members, hub.config.device_backups.keep, by
         )
     except Exception as e:
         denied = _denied(e)
+        second = getattr(e, "code", None) == 866 and kind == "fritzbox-export"
         state |= {
             "error": "not allowed: tick “Download its configuration backup” in its setup"
             if denied and kind == "openwrt-sysupgrade"
+            else SECOND_FACTOR_NOTE
+            if second and by is None
             else (str(e) or type(e).__name__)[:200],
-            "denied": denied,
+            # Not a failure to warn about: it waits for someone at the box (or that setting).
+            "denied": denied or second,
         }
         hub.backup_status[id] = state
         raise

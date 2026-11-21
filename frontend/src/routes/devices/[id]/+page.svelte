@@ -44,6 +44,7 @@
 	import OpenWrtSetup from '#lib/components/OpenWrtSetup.svelte';
 	import RouterReboot from '#lib/components/RouterReboot.svelte';
 	import HostReboot from '#lib/components/HostReboot.svelte';
+	import WebLogin from '#lib/components/WebLogin.svelte';
 	import SetupCard from '#lib/components/SetupCard.svelte';
 	import WifiDialog from '#lib/components/WifiDialog.svelte';
 	import FirmwareDialog from '#lib/components/FirmwareDialog.svelte';
@@ -293,6 +294,9 @@
 				>
 					Open web interface <ExternalLink class="size-3.5 text-muted" />
 				</a>
+			{/if}
+			{#if webUi && store.me?.role === 'admin' && store.me.user}
+				<WebLogin device={device.id} />
 			{/if}
 			{#if device.fritzbox && device.fritz && store.me?.role === 'admin' && store.me.user}
 				<RouterReboot device={device.id} kind="fritzbox" />

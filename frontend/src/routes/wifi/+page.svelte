@@ -10,6 +10,7 @@
 	import { store } from '#lib/state.svelte.js';
 	import { ago, dayClock } from '#lib/format.js';
 	import JobDialog from '#lib/components/JobDialog.svelte';
+	import FritzMesh from '#lib/components/FritzMesh.svelte';
 	import Radar from '@lucide/svelte/icons/radar';
 	import Sparkles from '@lucide/svelte/icons/sparkles';
 	import KeyRound from '@lucide/svelte/icons/key-round';
@@ -221,6 +222,12 @@
 			</div>
 		{/each}
 	</div>
+
+	<!-- FRITZ!Mesh: it sets itself up between AVM devices; shown as the boxes report it. -->
+	{#each (store.devices ?? []).filter((d) => d.fritz?.mesh?.members.length) as d (d.id)}
+		<h2 class="mt-8 mb-3 text-sm font-semibold">FRITZ!Mesh · {d.name}</h2>
+		<div class="card p-4"><FritzMesh mesh={d.fritz!.mesh!} /></div>
+	{/each}
 
 	<!-- Radios -->
 	<div class="mt-10 mb-3 flex flex-wrap items-baseline justify-between gap-2">
@@ -488,7 +495,7 @@
 			<input class={input} type="password" bind:value={newKey} autocomplete="new-password" />
 		</label>
 		<label class={label}>
-			Encryption (OpenWrt; a FRITZ!Box keeps its own)
+			Encryption
 			<select class={input} bind:value={encryption}>
 				<option value="">as it is</option>
 				{#each ENCRYPTIONS as [v, l] (v)}<option value={v}>{l}</option>{/each}

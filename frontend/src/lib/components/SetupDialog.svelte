@@ -45,6 +45,11 @@
 	let password = $state('');
 	let how = $state<'sudo' | 'sudo-other' | 'su'>('sudo');
 	let rootPassword = $state('');
+	// Logins stored in the People key ring for this device (vault: the terminal offers them too).
+	let stored = $state<{ id: string; name: string; user: string }[]>([]);
+	let vaultExists = $state(false);
+	let useStored = $state('');
+	let keep = $state(false);
 	let log = $state<string[]>([]);
 	let outcome = $state<SetupOutcome | null>(null);
 	let error = $state<string | null>(null);
@@ -61,6 +66,20 @@
 	const unknownKey = $derived(error?.match(/is not trusted yet; its key is (SHA256:\S+?) /)?.[1]);
 	const device = $derived(decodeURIComponent(path.match(/^\/devices\/([^/]+)\//)?.[1] ?? ''));
 	let trusting = $state(false);
+	$effect(() => {
+		if (!device || !canRun) return;
+		fetch(`/api/devices/${encodeURIComponent(device)}/stored-logins`)
+			.then((r) => (r.ok ? r.json() : null))
+			.then((d) => {
+				if (!d) return;
+				stored = d.stored;
+				vaultExists = d.vault;
+				if (stored.length && !login) useStored = stored[0].id;
+			})
+			.catch(() => {});
+	});
+	const storedUser = $derived(stored.find((x) => x.id === useStored)?.user ?? '');
+	const who = $derived(useStored ? storedUser : login.trim());
 
 	async function trustAndRetry() {
 		if (!unknownKey || !device) return;
@@ -81,15 +100,16 @@
 		step = 'running';
 		log = [];
 		error = null;
-		const isRoot = login.trim() === 'root';
-		const rootNeeded = needsRoot && login.trim() !== noRootFor;
+		const isRoot = who === 'root';
+		const rootNeeded = needsRoot && who !== noRootFor;
 		try {
 			outcome = await streamSetup(
 				path,
 				{
 					...body,
-					login: login.trim(),
-					password,
+					...(useStored
+						? { stored: useStored, login: '', password: '' }
+						: { login: login.trim(), password, remember: keep }),
 					port,
 					elevate: !rootNeeded || isRoot ? 'none' : how === 'su' ? 'su' : 'sudo',
 					root_password: how === 'sudo' || !rootNeeded ? null : rootPassword
@@ -144,21 +164,40 @@
 					</p>
 				{/if}
 				<form id="setup-form" hidden={!canRun} class="grid gap-3 sm:grid-cols-2" onsubmit={start}>
-					<label class={label}>
-						Your login on the device
-						<input class={input} bind:value={login} autocomplete="off" required />
-					</label>
-					<label class={label}>
-						Its password
-						<input
-							class={input}
-							type="password"
-							bind:value={password}
-							autocomplete="off"
-							required
-						/>
-					</label>
-					{#if needsRoot && login.trim() !== 'root' && login.trim() !== noRootFor}
+					{#if stored.length}
+						<label class="{label} sm:col-span-2">
+							Login
+							<select class={input} bind:value={useStored}>
+								{#each stored as x (x.id)}
+									<option value={x.id}>{x.name} · {x.user} (stored)</option>
+								{/each}
+								<option value="">type another login</option>
+							</select>
+						</label>
+					{/if}
+					{#if !useStored}
+						<label class={label}>
+							Your login on the device
+							<input class={input} bind:value={login} autocomplete="off" required />
+						</label>
+						<label class={label}>
+							Its password
+							<input
+								class={input}
+								type="password"
+								bind:value={password}
+								autocomplete="off"
+								required
+							/>
+						</label>
+						{#if vaultExists}
+							<label class="flex items-center gap-2 text-xs text-muted sm:col-span-2">
+								<input type="checkbox" bind:checked={keep} />
+								Keep this login in the People key ring (only for this device)
+							</label>
+						{/if}
+					{/if}
+					{#if needsRoot && who !== 'root' && who !== noRootFor}
 						<label class="{label} sm:col-span-2">
 							Getting root
 							<select class={input} bind:value={how}>
@@ -183,7 +222,11 @@
 				</form>
 				{#if canRun}
 					<p class="text-xs text-faint">
-						The passwords are used for this one connection and never stored or logged.
+						{useStored
+							? 'The stored password is read from the key ring for this one connection.'
+							: keep
+								? 'The login is kept in the key ring once it works; root’s password never is.'
+								: 'The passwords are used for this one connection and never stored or logged.'}
 					</p>
 				{/if}
 				<details bind:open={manual} class="text-sm">

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import DhcpPool from './DhcpPool.svelte';
 	import { api, type RouterReport } from '#lib/api.js';
 	import { ago, duration } from '#lib/format.js';
 	import { store } from '#lib/state.svelte.js';
@@ -139,6 +140,11 @@
 				</li>
 			{/each}
 		</ul>
+	{/if}
+
+	{#if report.dhcp}
+		<h3 class="mt-5 text-xs font-medium text-muted">DHCP</h3>
+		<DhcpPool pool={report.dhcp} />
 	{/if}
 
 	{#if services.length}

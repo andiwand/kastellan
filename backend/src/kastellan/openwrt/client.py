@@ -332,10 +332,23 @@ async def read(ubus: Ubus) -> dict[str, Any]:
     except Exception as e:
         report["errors"]["interfaces"] = str(e)[:200]
     leases: dict[str, str] = {}
+    lease_list: list[dict[str, Any]] | None = None
     with contextlib.suppress(Exception):
+        lease_list = []
         for lease in (await ubus.call("luci-rpc", "getDHCPLeases")).get("dhcp_leases", []):
-            if lease.get("macaddr") and lease.get("hostname"):
-                leases[lease["macaddr"].lower()] = lease["hostname"]
+            mac = str(lease.get("macaddr") or "").lower()
+            if mac and lease.get("hostname"):
+                leases[mac] = lease["hostname"]
+            if mac and lease.get("ipaddr"):
+                lease_list.append(
+                    {
+                        "mac": mac,
+                        "name": lease.get("hostname") or None,
+                        "address": lease.get("ipaddr"),
+                        "expires": lease.get("expires"),
+                    }
+                )
+    report["dhcp"] = await _dhcp(ubus, lease_list) if lease_list is not None else None
     try:
         try:
             status = await ubus.call("network.wireless", "status")
@@ -476,6 +489,33 @@ async def _radios_from_iwinfo(ubus: Ubus, leases: dict[str, str]) -> list[dict[s
             }
         )
     return sorted(radios.values(), key=lambda r: r["name"])
+
+
+async def _dhcp(ubus: Ubus, leases: list[dict[str, Any]]) -> dict[str, Any]:
+    """The DHCP server: its pools (uci dhcp: start, limit per interface; the read group's uci
+    scope, set up again on older logins) and the leases handed out."""
+    pools: list[dict[str, Any]] | None = None
+    with contextlib.suppress(Exception):
+        values = (await ubus.call("uci", "get", {"config": "dhcp"})).get("values", {})
+        pools = []
+        for name, sec in values.items():
+            if (
+                sec.get(".type") != "dhcp"
+                or str(sec.get("ignore", "0")) == "1"
+                or sec.get("dhcpv4") == "disabled"
+            ):
+                continue
+            with contextlib.suppress(TypeError, ValueError):
+                pools.append(
+                    {
+                        "interface": sec.get("interface") or name,
+                        "start": int(sec.get("start", 100)),
+                        "size": int(sec.get("limit", 150)),
+                        "leasetime": sec.get("leasetime"),
+                    }
+                )
+    size = sum(p["size"] for p in pools) if pools else None
+    return {"pools": pools, "size": size, "used": len(leases), "leases": leases[:500]}
 
 
 async def service(ubus: Ubus, name: str, action: str) -> str:

@@ -75,8 +75,54 @@ def make_key(passphrase: str) -> dict[str, str]:
     }
 
 
+KEYRING = "keyring.json"  # a key-ring store: the key rings it opens with (vault.json, encrypted)
+
+
+def make_keyring_key() -> dict[str, Any]:
+    """A random key for a store that opens with the key rings (kept as the ring's entry)."""
+    key = os.urandom(32)
+    return {
+        "key": base64.b64encode(key).decode(),
+        "check": hmac.new(key, b"kastellan backup", hashlib.sha256).hexdigest(),
+        "made": datetime.now(UTC).isoformat(timespec="seconds"),
+        "keyring": True,
+    }
+
+
+def key_from_keyring(
+    header: dict[str, Any], vault_json: bytes, user: str | None, password: str | None, recovery: str | None
+) -> bytes:
+    """The key of a key-ring store, from its copy of the key rings, opened with an admin's
+    password (as it was then) or the Kastellan ring's recovery key; ValueError if neither opens."""
+    from .vault import KASTELLAN, Vault, WrongKey
+
+    with tempfile.TemporaryDirectory(prefix="kastellan-restore-") as tmp:
+        path = Path(tmp) / "vault.json"
+        path.write_bytes(vault_json)
+        vault = Vault(path)
+        try:
+            if recovery:
+                vault.unlock_recovery(KASTELLAN, recovery)
+            elif user and password:
+                if KASTELLAN not in vault.unlock(user, password):
+                    raise ValueError(f"{user}'s password doesn't open the Kastellan key ring of this backup")
+            else:
+                raise ValueError("an admin's login or the Kastellan ring's recovery key")
+            stored = json.loads(vault.get(KEY_SECRET, by=user or "restore"))
+        except (WrongKey, KeyError) as e:
+            raise ValueError("that doesn't open this backup's key rings") from e
+    key = base64.b64decode(stored["key"])
+    if not hmac.compare_digest(
+        hmac.new(key, b"kastellan backup", hashlib.sha256).hexdigest(), header["check"]
+    ):
+        raise ValueError("the key rings hold another backup's key")
+    return key
+
+
 def key_from(header: dict[str, Any], passphrase: str) -> bytes:
     """The key a store was made with, from its header and the passphrase; ValueError if wrong."""
+    if header.get("keyring"):
+        raise ValueError("this backup opens with the key rings: an admin's login or a recovery key")
     key = _scrypt(passphrase, base64.b64decode(header["salt"]))
     if not hmac.compare_digest(
         hmac.new(key, b"kastellan backup", hashlib.sha256).hexdigest(), header["check"]
@@ -248,7 +294,9 @@ class HubBackup:
         try:
             private_write(
                 staging / HEADER,
-                json.dumps({"version": 2, **{k: made[k] for k in ("salt", "check", "made")}}).encode(),
+                json.dumps(
+                    {"version": 2, **{k: made[k] for k in ("salt", "check", "made", "keyring") if k in made}}
+                ).encode(),
             )
             if self.folder.exists():
                 aside = self.folder.with_name(f"hub-backup-{random.token_hex(8)}")
@@ -272,6 +320,13 @@ class HubBackup:
             header["check"], hmac.new(self.store._key(), b"kastellan backup", hashlib.sha256).hexdigest()
         ):
             raise ValueError("the backup key does not match its passphrase")
+        if header.get("keyring"):
+            # The key rings as they are now (encrypted under the admins' passwords and the
+            # recovery keys), next to the store: what opens it again.
+            vault = data / "vault.json"
+            if not vault.is_file():
+                raise ValueError("the backup opens with the key rings, but there are none")
+            private_write(self.folder / KEYRING, read_bounded(vault))
         members = collect(data, config, history, logs)
         return self.store.add(ID, KIND, members, keep, by)
 
@@ -288,7 +343,8 @@ def no_symlinks(path: Path) -> None:
 
 def copy_files(source: Path) -> list[Path]:
     # Index last. Do not copy stray files or follow links in a backup store.
-    files = [source / HEADER, *sorted((source / "objects").glob("*/*")), source / f"{ID}.json"]
+    keyring = [source / KEYRING] if (source / KEYRING).exists() else []
+    files = [source / HEADER, *keyring, *sorted((source / "objects").glob("*/*")), source / f"{ID}.json"]
     for path in files:
         no_symlinks(path)
         if not path.is_file():
@@ -502,10 +558,21 @@ def restore_members(members, data: Path, config: Path, force: bool) -> int:
 
 
 def restore(
-    source: Path, passphrase: str, data: Path, config: Path, version: str | None = None, force: bool = False
+    source: Path,
+    passphrase: str,
+    data: Path,
+    config: Path,
+    version: str | None = None,
+    force: bool = False,
+    user: str | None = None,
+    password: str | None = None,
+    recovery: str | None = None,
 ) -> dict[str, Any]:
     header = json.loads((source / HEADER).read_text())
-    key = key_from(header, passphrase)
+    if header.get("keyring"):
+        key = key_from_keyring(header, read_bounded(source / KEYRING), user, password, recovery)
+    else:
+        key = key_from(header, passphrase)
     if header.get("version") != 2:
         raise ValueError("unsigned backup store: download a .kbak from the original hub or make a new backup")
     store = Store(source, lambda: key)
@@ -670,12 +737,22 @@ def encrypted_archive(store: devbackups.Store, header: dict[str, Any], sid: str,
     encrypted with the backup key (`kastellan restore <file>` takes it)."""
     _, tar = store.archive(ID, sid)
     nonce = os.urandom(12)
-    head = json.dumps({k: header[k] for k in ("version", "salt", "check")}).encode() + b"\n"
+    fields = {k: header[k] for k in ("version", "salt", "check", "keyring") if k in header}
+    if header.get("keyring"):  # what opens it travels with it
+        fields["vault"] = base64.b64encode(read_bounded(store.folder / KEYRING)).decode()
+    head = json.dumps(fields).encode() + b"\n"
     return MAGIC + head + nonce + AESGCM(key).encrypt(nonce, tar, b"kastellan-backup")
 
 
 def restore_file(
-    source: Path, passphrase: str, data: Path, config: Path, force: bool = False
+    source: Path,
+    passphrase: str,
+    data: Path,
+    config: Path,
+    force: bool = False,
+    user: str | None = None,
+    password: str | None = None,
+    recovery: str | None = None,
 ) -> dict[str, Any]:
     """Restore a downloaded archive, authenticating and staging it before changing any files."""
     raw = read_bounded(source, MAX_TOTAL + MAX_FILES * 1024 + 1048576)
@@ -685,7 +762,10 @@ def restore_file(
     header = json.loads(head)
     if header.get("version") not in (1, 2):
         raise ValueError("unsupported backup version")
-    key = key_from(header, passphrase)
+    if header.get("keyring"):
+        key = key_from_keyring(header, base64.b64decode(header["vault"]), user, password, recovery)
+    else:
+        key = key_from(header, passphrase)
     packed = AESGCM(key).decrypt(rest[:12], rest[12:], b"kastellan-backup")
     with gzip.GzipFile(fileobj=io.BytesIO(packed)) as zipped:
         tar = zipped.read(MAX_TOTAL + MAX_FILES * 1024 + 1)

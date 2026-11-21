@@ -171,7 +171,9 @@ def acl() -> dict:
                     "luci": ["getFeatures"],  # whether its Wi-Fi software can do mesh
                     "file": ["exec", "read"],
                     "session": ["access"],  # which of these groups it has (the page shows them)
+                    "uci": ["get"],  # with the uci scope below: the DHCP pools only
                 },
+                "uci": ["dhcp"],
                 "file": {UPGRADABLE: ["exec"], SERVICES_ALLOW: ["read"]},
             },
         },

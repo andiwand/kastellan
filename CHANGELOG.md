@@ -2,7 +2,38 @@
 
 ## Unreleased
 
+### Added
+
+- FRITZ!Box Wi-Fi: its neighbour networks and channel use feed the Wi-Fi page's scans and
+  channel plan; encryption and hidden networks can be changed; each network's clients with
+  signal and speed. FRITZ!Mesh members and links on the device and Wi-Fi pages. Its WireGuard
+  connections on the device and VPN pages. Neighbours and WireGuard come from the FRITZ!Box web
+  interface's own (undocumented) API, signed in with Kastellan's FRITZ!Box user.
+- Kastellan's own backup can open with the key rings: an admin's password (as it was at that
+  backup) or the Kastellan ring's recovery key, with no passphrase to keep. The passphrase stays
+  for hubs without key rings. `kastellan restore` asks for whichever the backup needs.
+- DHCP: a `dhcp` check asks the network for an address like a new device and is up when the
+  device's own server answers; another DHCP server answering raises a warning. OpenWrt and
+  FRITZ!Box show their pool and leases, warn when the pool is nearly used up, and a device that
+  gets an address for the first time is notified once.
+- Stored logins: setups (collector, actor, access, OpenWrt) and Renew can use a login stored
+  in the People key ring for that device, and keep a typed one there. A device with a web
+  interface gets "Login" next to it: its stored logins, the password copied after typing your
+  own again, never shown.
+- Updates lists abilities Kastellan offers that a device's actor or OpenWrt login hasn't been
+  given yet, with "Set up" and "Not needed".
+
+### Upgrading
+
+- OpenWrt logins: set them up again to read the DHCP pool (the read group may now read the
+  `dhcp` configuration); without that, the leases show but not the pool size.
+
 ### Fixed
+
+- Setting up the actor with sudo or su failed with "Argument list too long" (the script grew
+  past Linux's 128 KB per argument): large scripts go compressed.
+- A FRITZ!Box's settings export waits for its second factor when asked from "Back up now"
+  (press the button on the box); the daily backup says why it can't, instead of warning.
 
 - OpenWrt 25.12: radios and Wi-Fi clients are read through iwinfo, since `network.wireless
   status` refuses calls over HTTP there (the session field uhttpd adds); Wi-Fi changes check

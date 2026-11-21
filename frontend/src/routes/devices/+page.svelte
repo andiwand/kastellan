@@ -1,4 +1,6 @@
 <script lang="ts">
+	import GroupsView from '#lib/components/GroupsView.svelte';
+	import Tabs from '#lib/components/Tabs.svelte';
 	import { store } from '#lib/state.svelte.js';
 	import {
 		checkStatusOf,
@@ -70,6 +72,12 @@
 
 	// List or graph, kept in the address so a link or a reload keeps it.
 	type View = 'list' | 'graph';
+	// Devices, or their groups (an admin's tab; /groups leads here).
+	const section = $derived(
+		page.url.searchParams.get('section') === 'groups' && store.me?.role === 'admin'
+			? 'groups'
+			: 'devices'
+	);
 	const view = $derived<View>(page.url.searchParams.get('view') === 'graph' ? 'graph' : 'list');
 	function show(v: View) {
 		const url = new URL(page.url.href);
@@ -94,7 +102,7 @@
 	];
 </script>
 
-<svelte:head><title>Devices · Kastellan</title></svelte:head>
+<svelte:head><title>{section === 'groups' ? 'Groups' : 'Devices'} · Kastellan</title></svelte:head>
 <svelte:window onkeydown={key} />
 
 <div class="flex flex-wrap items-end justify-between gap-4">
@@ -105,7 +113,7 @@
 			what can be reached from the internet.
 		</p>
 	</div>
-	{#if store.me?.role === 'admin' && !adding}
+	{#if store.me?.role === 'admin' && !adding && section === 'devices'}
 		<button
 			onclick={() => (adding = true)}
 			disabled={store.editBlocked !== null}
@@ -117,163 +125,180 @@
 	{/if}
 </div>
 
-{#if adding}
-	<h2 class="mt-6 mb-3 text-sm font-semibold">Add a device</h2>
-	<DeviceEditor onclose={() => (adding = false)} />
+{#if store.me?.role === 'admin'}
+	<div class="mt-5">
+		<Tabs
+			tabs={[
+				{ id: 'devices', label: 'Devices' },
+				{ id: 'groups', label: 'Groups' }
+			]}
+			current={section}
+			onselect={(t) => goto(t === 'groups' ? '?section=groups' : '?', { replaceState: true })}
+		/>
+	</div>
 {/if}
 
-<div class="mt-6 flex flex-wrap items-center gap-3">
-	<label class="relative w-full sm:w-auto sm:max-w-sm sm:flex-1">
-		<Search
-			class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint"
-		/>
-		<input
-			bind:this={input}
-			bind:value={query}
-			type="search"
-			placeholder="Search name, host, tag, check"
-			class="h-10 w-full rounded-xl border border-line bg-surface pr-10 pl-9 text-sm shadow-card outline-none placeholder:text-faint focus:border-accent"
-		/>
-		<kbd
-			class="pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded border border-line px-1.5 font-mono text-[11px] text-faint sm:block"
-		>
-			/
-		</kbd>
-	</label>
-	<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card" role="tablist">
-		{#each filters as f (f.id)}
-			<button
-				role="tab"
-				aria-selected={filter === f.id}
-				onclick={() => (filter = f.id)}
-				class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors {filter ===
-				f.id
-					? 'bg-surface-3 text-text'
-					: 'text-muted hover:text-text'}"
-			>
-				{f.label}
-				<span class="tabular text-xs text-faint">{counts[f.id]}</span>
-			</button>
-		{/each}
-	</div>
-	<div
-		class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card sm:ml-auto"
-		role="tablist"
-		aria-label="View"
-	>
-		{#each [{ id: 'list', label: 'List', icon: List }, { id: 'graph', label: 'Networks', icon: Workflow }] as const as v (v.id)}
-			<button
-				role="tab"
-				aria-selected={view === v.id}
-				onclick={() => show(v.id)}
-				class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors {view ===
-				v.id
-					? 'bg-surface-3 text-text'
-					: 'text-muted hover:text-text'}"
-			>
-				<v.icon class="size-4" strokeWidth={1.9} />
-				{v.label}
-			</button>
-		{/each}
-	</div>
-</div>
-
-{#if view === 'graph'}
-	<div class="mt-4">
-		{#if store.devices === null}
-			<div class="card h-96 animate-pulse"></div>
-		{:else}
-			<NetworkMap {devices} {matching} />
-		{/if}
-	</div>
+{#if section === 'groups'}
+	<div class="mt-6"><GroupsView /></div>
 {:else}
-	<div class="card mt-4 overflow-hidden">
-		<div
-			class="hidden grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_4.5rem] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted lg:grid"
-		>
-			<span>Device</span><span>Status</span><span>Checks</span><span>Last 24 hours</span><span
-				class="text-right"
+	{#if adding}
+		<h2 class="mt-6 mb-3 text-sm font-semibold">Add a device</h2>
+		<DeviceEditor onclose={() => (adding = false)} />
+	{/if}
+
+	<div class="mt-6 flex flex-wrap items-center gap-3">
+		<label class="relative w-full sm:w-auto sm:max-w-sm sm:flex-1">
+			<Search
+				class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint"
+			/>
+			<input
+				bind:this={input}
+				bind:value={query}
+				type="search"
+				placeholder="Search name, host, tag, check"
+				class="h-10 w-full rounded-xl border border-line bg-surface pr-10 pl-9 text-sm shadow-card outline-none placeholder:text-faint focus:border-accent"
+			/>
+			<kbd
+				class="pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded border border-line px-1.5 font-mono text-[11px] text-faint sm:block"
 			>
-				Ping
-			</span>
-		</div>
-		{#if rows.length === 0}
-			<p class="px-5 py-10 text-center text-sm text-muted">
-				{store.devices === null ? 'Loading…' : 'No device matches.'}
-			</p>
-		{/if}
-		<ul class="divide-y divide-line">
-			{#each sections as section (section.site)}
-				{#if section.name}
-					<li
-						class="bg-surface-2/60 px-5 py-1.5 text-xs font-semibold tracking-wide text-muted uppercase"
-					>
-						{section.name}
-					</li>
-				{/if}
-				{#each section.rows as { device, depth } (device.id)}
-					{@const status = statusOf(device)}
-					{@const buckets = deviceBuckets(store.series?.devices[device.id])}
-					{@const ping = device.checks.find((c) => c.type === 'ping')}
-					<li>
-						<a
-							href="/devices/{device.id}"
-							class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-5 py-3.5 transition-colors hover:bg-surface-2/70 lg:grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_4.5rem]"
-						>
-							<div
-								class="flex min-w-0 items-center gap-3"
-								style:padding-left="{flat ? 0 : depth * 1.25}rem"
-							>
-								{#if depth && !flat}<span class="-ml-3 h-px w-2 shrink-0 bg-line-strong"
-									></span>{/if}
-								<div
-									class="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-2 text-muted"
-								>
-									<KindIcon kind={device.kind} />
-								</div>
-								<div class="min-w-0">
-									<p class="truncate text-sm font-medium">{device.name}</p>
-									<p class="truncate font-mono text-xs text-faint">{device.host}</p>
-								</div>
-							</div>
-							<div><StatusBadge {status} /></div>
-							<div class="col-span-2 flex flex-wrap gap-1 lg:col-span-1">
-								{#each device.checks as check (check.name)}
-									<span
-										class="inline-flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 text-[11px] text-muted"
-										title={check.detail || ''}
-									>
-										<span
-											class="size-1.5 rounded-full"
-											style:background={statusColor[checkStatusOf(device, check)].fill}
-										></span>
-										{check.name}
-									</span>
-								{/each}
-							</div>
-							<div class="col-span-2 flex items-center gap-3 lg:col-span-1">
-								<div class="flex-1">
-									{#if store.series && buckets.length}
-										<UptimeStrip
-											{buckets}
-											start={store.series.start}
-											step={store.series.step_seconds}
-											alwaysOn={device.always_on}
-											height="h-4"
-										/>
-									{/if}
-								</div>
-								<span class="tabular w-14 shrink-0 text-right text-xs text-muted">
-									{percent(uptimeOf(buckets))}
-								</span>
-							</div>
-							<span class="tabular hidden text-right text-sm lg:block">
-								{ping?.up ? ms(ping.latency_ms) : '–'}
-							</span>
-						</a>
-					</li>
-				{/each}
+				/
+			</kbd>
+		</label>
+		<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card" role="tablist">
+			{#each filters as f (f.id)}
+				<button
+					role="tab"
+					aria-selected={filter === f.id}
+					onclick={() => (filter = f.id)}
+					class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors {filter ===
+					f.id
+						? 'bg-surface-3 text-text'
+						: 'text-muted hover:text-text'}"
+				>
+					{f.label}
+					<span class="tabular text-xs text-faint">{counts[f.id]}</span>
+				</button>
 			{/each}
-		</ul>
+		</div>
+		<div
+			class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card sm:ml-auto"
+			role="tablist"
+			aria-label="View"
+		>
+			{#each [{ id: 'list', label: 'List', icon: List }, { id: 'graph', label: 'Networks', icon: Workflow }] as const as v (v.id)}
+				<button
+					role="tab"
+					aria-selected={view === v.id}
+					onclick={() => show(v.id)}
+					class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors {view ===
+					v.id
+						? 'bg-surface-3 text-text'
+						: 'text-muted hover:text-text'}"
+				>
+					<v.icon class="size-4" strokeWidth={1.9} />
+					{v.label}
+				</button>
+			{/each}
+		</div>
 	</div>
+
+	{#if view === 'graph'}
+		<div class="mt-4">
+			{#if store.devices === null}
+				<div class="card h-96 animate-pulse"></div>
+			{:else}
+				<NetworkMap {devices} {matching} />
+			{/if}
+		</div>
+	{:else}
+		<div class="card mt-4 overflow-hidden">
+			<div
+				class="hidden grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_4.5rem] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted lg:grid"
+			>
+				<span>Device</span><span>Status</span><span>Checks</span><span>Last 24 hours</span><span
+					class="text-right"
+				>
+					Ping
+				</span>
+			</div>
+			{#if rows.length === 0}
+				<p class="px-5 py-10 text-center text-sm text-muted">
+					{store.devices === null ? 'Loading…' : 'No device matches.'}
+				</p>
+			{/if}
+			<ul class="divide-y divide-line">
+				{#each sections as section (section.site)}
+					{#if section.name}
+						<li
+							class="bg-surface-2/60 px-5 py-1.5 text-xs font-semibold tracking-wide text-muted uppercase"
+						>
+							{section.name}
+						</li>
+					{/if}
+					{#each section.rows as { device, depth } (device.id)}
+						{@const status = statusOf(device)}
+						{@const buckets = deviceBuckets(store.series?.devices[device.id])}
+						{@const ping = device.checks.find((c) => c.type === 'ping')}
+						<li>
+							<a
+								href="/devices/{device.id}"
+								class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-5 py-3.5 transition-colors hover:bg-surface-2/70 lg:grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_4.5rem]"
+							>
+								<div
+									class="flex min-w-0 items-center gap-3"
+									style:padding-left="{flat ? 0 : depth * 1.25}rem"
+								>
+									{#if depth && !flat}<span class="-ml-3 h-px w-2 shrink-0 bg-line-strong"
+										></span>{/if}
+									<div
+										class="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-2 text-muted"
+									>
+										<KindIcon kind={device.kind} />
+									</div>
+									<div class="min-w-0">
+										<p class="truncate text-sm font-medium">{device.name}</p>
+										<p class="truncate font-mono text-xs text-faint">{device.host}</p>
+									</div>
+								</div>
+								<div><StatusBadge {status} /></div>
+								<div class="col-span-2 flex flex-wrap gap-1 lg:col-span-1">
+									{#each device.checks as check (check.name)}
+										<span
+											class="inline-flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 text-[11px] text-muted"
+											title={check.detail || ''}
+										>
+											<span
+												class="size-1.5 rounded-full"
+												style:background={statusColor[checkStatusOf(device, check)].fill}
+											></span>
+											{check.name}
+										</span>
+									{/each}
+								</div>
+								<div class="col-span-2 flex items-center gap-3 lg:col-span-1">
+									<div class="flex-1">
+										{#if store.series && buckets.length}
+											<UptimeStrip
+												{buckets}
+												start={store.series.start}
+												step={store.series.step_seconds}
+												alwaysOn={device.always_on}
+												height="h-4"
+											/>
+										{/if}
+									</div>
+									<span class="tabular w-14 shrink-0 text-right text-xs text-muted">
+										{percent(uptimeOf(buckets))}
+									</span>
+								</div>
+								<span class="tabular hidden text-right text-sm lg:block">
+									{ping?.up ? ms(ping.latency_ms) : '–'}
+								</span>
+							</a>
+						</li>
+					{/each}
+				{/each}
+			</ul>
+		</div>
+	{/if}
 {/if}

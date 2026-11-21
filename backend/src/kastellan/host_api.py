@@ -98,7 +98,7 @@ def router(hub: Hub) -> APIRouter:
             login=body.login,
             elevate=body.elevate,
         )
-        conn = await setup_run.connect(hub, device.host, body, audit)
+        conn = await setup_run.connect(hub, device.host, body, audit, device=id, user=w.user)
 
         def after() -> dict[str, Any]:
             # Kastellan reads it from now on: collect: in config.yaml.
@@ -124,7 +124,7 @@ def router(hub: Hub) -> APIRouter:
             login=body.login,
             elevate=body.elevate,
         )
-        conn = await setup_run.connect(hub, device.host, body, audit)
+        conn = await setup_run.connect(hub, device.host, body, audit, device=id, user=w.user)
 
         def after() -> dict[str, Any]:
             setup_run.remove_device_key(hub, w.user, client_address(request.scope), id, "collect")

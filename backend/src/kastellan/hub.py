@@ -37,6 +37,7 @@ from . import (
     wifi_api,
 )
 from . import config as config_mod
+from .abilities import Offered
 from .access import hub_address
 from .alarms import Alarms, Message, Problem, Severity, evaluate
 from .audit import Audit
@@ -160,6 +161,7 @@ class Hub:
             else lambda: base64.b64decode(self.own_secret(devbackups.KEY_SECRET, devbackups.new_key)),
         )
         self.backup_status: dict[str, dict[str, Any]] = {}  # per device: the last attempt
+        self.offered = Offered(settings.data / "abilities-offered.json")  # new abilities passed on
         # Kastellan's own backup (hubbackup.py): its key comes from a passphrase, not the hub.
         self.hub_backup = HubBackup(data if self.demo else settings.data, self._hub_backup_key)
         self.internet = Internet(data / "internet")  # the internet connection (internet.py)
@@ -665,6 +667,12 @@ class Hub:
                 try:
                     ubus = self.ubus(id)
                     report = await openwrt_client.read(ubus)
+                    with contextlib.suppress(Exception):
+                        access = await ubus.call("session", "access", {})
+                        groups = access.get("access-group") or {}
+                        status.router_abilities = sorted(
+                            g.removeprefix("kastellan-") for g in groups if g.startswith("kastellan-")
+                        )
                     old = status.router or {}
                     report["packages"] = old.get("packages")
                     report["packages_checked"] = old.get("packages_checked")
@@ -732,6 +740,15 @@ class Hub:
             self._fritz = {k: v for k, v in self._fritz.items() if k[0] != id} | {key: client}
         return client
 
+    def fritz_web(self, id: str):
+        """The FRITZ!Box's web interface API (fritzbox/web.py), with its TR-064 client's user."""
+        from .fritzbox.web import Web
+
+        box = self.fritz(id)
+        if getattr(box, "web", None) is None:
+            box.web = Web(box)
+        return box.web
+
     async def _poll_fritzboxes(self) -> None:
         """Every FRITZ!Box with a login: its state every FRITZ_EVERY seconds."""
 
@@ -742,6 +759,12 @@ class Hub:
             try:
                 async with asyncio.timeout(90):
                     report = await fritz_client.read(self.fritz(id))
+                    try:  # the web interface's own API (undocumented): WireGuard
+                        from .fritzbox import web
+
+                        report["wireguard"] = web.wireguard(await self.fritz_web(id).data("shareWireguard"))
+                    except Exception as e:
+                        report["errors"]["wireguard"] = _brief(e)
             except Exception as e:
                 status.fritz_error = _brief(e)
                 log.info("%s: %s", id, status.fritz_error)
@@ -877,7 +900,8 @@ class Hub:
         if status is None or device is None:
             return
         try:
-            status.actor_outdated = (await actor.ask(self.keys, device))[1]
+            allowed, status.actor_outdated = await actor.ask(self.keys, device)
+            status.actor_abilities = sorted(allowed)
         except Exception as e:  # it doesn't answer now: what it said last stays
             log.info("%s: asking the actor failed: %s", id, _brief(e))
 
@@ -953,6 +977,7 @@ class Hub:
                 problems += self._vuln_problems()
                 problems += self.backups.problems(self.config, now)
                 problems += devbackups.problems(self, now)
+                problems += self._dhcp_problems()
                 problems += hubbackup.problems(self, time.time())
                 problems += internet_api.problems(self)
                 problems += self.alarms.carry(self._vuln_keys_unknown())
@@ -1088,6 +1113,30 @@ class Hub:
                 key, title = f"fritz-{way}:{id}", f"{label}: {name} is on"
                 if remote.get(way) and (m := self.alarms.event(key, title, "a way in", id, now, send)):
                     out.append(m)
+            # Devices that got an address for the first time (a router's DHCP leases): said once;
+            # a router seen with many at once (just set up) says how many, not each.
+            pool = (status.router or {}).get("dhcp") or fritz.get("dhcp") or {}
+            known_hosts = {d.host for d in self.config.devices.values() if d.host}
+            fresh = []
+            for lease in pool.get("leases") or []:
+                mac, addr = lease.get("mac"), lease.get("address")
+                if not mac or addr in known_hosts or f"newdevice:{mac}" in self.alarms.seen_events:
+                    continue
+                self.alarms.event(f"newdevice:{mac}", "", "", id, now, send=False)
+                fresh.append(f"{lease.get('name') or mac} ({addr})")
+            if fresh and send:
+                if len(fresh) <= 3:
+                    for f in fresh:
+                        out.append(Message(Severity.INFO, f"New on the network: {f}", f"from {label}", id))
+                else:
+                    out.append(
+                        Message(
+                            Severity.INFO,
+                            f"{len(fresh)} devices new on the network",
+                            "; ".join(fresh[:8]),
+                            id,
+                        )
+                    )
             # The host wants a reboot (kernel or libc updates): once per set of packages.
             updates = (status.host or {}).get("updates") or {}  # normalized (host/report.py)
             if updates.get("reboot"):
@@ -1135,6 +1184,56 @@ class Hub:
             ):
                 out.append(m)
         self._events_since = now
+        return out
+
+    def _dhcp_problems(self) -> list[Problem]:
+        """DHCP: a router's pool nearly used up (warning, from 90 %); a DHCP server answering that
+        isn't the one a device's dhcp check expects (warning: a second router, a misconfigured
+        device, or someone handing out addresses)."""
+        from . import dhcp
+
+        out: list[Problem] = []
+        for id, status in self.monitor.status.items():
+            if id not in self.config.devices:
+                continue
+            pool = ((status.router or {}).get("dhcp") or (status.fritz or {}).get("dhcp")) or {}
+            size, used = pool.get("size"), pool.get("used")
+            if size and used is not None and used >= 0.9 * size:
+                label = self.config.label(id)
+                out.append(
+                    Problem(
+                        f"dhcp:pool:{id}",
+                        Severity.WARNING,
+                        id,
+                        f"{label}: DHCP pool",
+                        f"{label}: its DHCP pool is nearly used up ({used} of {size})",
+                        "new devices may get no address",
+                    )
+                )
+        hosts = {d.host: id for id, d in self.config.devices.items() if d.host}
+        for server, seen in dhcp.UNEXPECTED.items():
+            id = hosts.get(seen["device"])
+            if id is None:
+                continue
+            known = next(
+                (
+                    i
+                    for i, d in self.config.devices.items()
+                    if d.host and (d.host == server or self.resolver.address(d.host) == server)
+                ),
+                None,
+            )
+            who = self.config.label(known) if known else server
+            out.append(
+                Problem(
+                    f"dhcp:rogue:{server}",
+                    Severity.WARNING,
+                    id,
+                    f"DHCP server {server}",
+                    f"Another DHCP server answers: {who}",
+                    f"it offered {seen['offered']}; only {self.config.label(id)} is expected",
+                )
+            )
         return out
 
     def _vuln_problems(self) -> list[Problem]:

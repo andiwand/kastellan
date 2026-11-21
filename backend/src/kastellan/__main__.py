@@ -105,25 +105,62 @@ def restore_command(source: str, version: str | None, force: bool, only_list: bo
         raise SystemExit(f"No {path}.")
     if path.is_file() and (only_list or version):
         raise SystemExit("--list and --version apply only to backup folders; nothing restored.")
-    phrase = os.environ.get("KASTELLAN_BACKUP_PASSPHRASE") or getpass.getpass("The backup's passphrase: ")
+    try:
+        if path.is_dir():
+            header = json.loads((path / hubbackup.HEADER).read_text())
+        else:
+            raw = path.read_bytes()[: 64 * 1024 * 1024]
+            header = (
+                json.loads(raw[len(hubbackup.MAGIC) :].partition(b"\n")[0])
+                if raw.startswith(hubbackup.MAGIC)
+                else {}
+            )
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"Not a Kastellan backup: {e}") from e
+    phrase, user, password, recovery = "", None, None, None
+    if header.get("keyring"):
+        # It opens with the key rings as they were then: an admin's password, or a recovery key.
+        user = (
+            os.environ.get("KASTELLAN_RESTORE_USER")
+            or input("An admin's user (empty: use a recovery key): ").strip()
+        )
+        if user:
+            password = os.environ.get("KASTELLAN_RESTORE_PASSWORD") or getpass.getpass(
+                f"{user}'s password (as it was at that backup): "
+            )
+        else:
+            recovery = os.environ.get("KASTELLAN_RESTORE_RECOVERY") or getpass.getpass(
+                "The Kastellan key ring's recovery key: "
+            )
+    else:
+        phrase = os.environ.get("KASTELLAN_BACKUP_PASSPHRASE") or getpass.getpass("The backup's passphrase: ")
+    opening = {"user": user, "password": password, "recovery": recovery}
     try:
         if path.is_dir():
             if only_list:
-                header = json.loads((path / hubbackup.HEADER).read_text())
-                key = hubbackup.key_from(header, phrase)
+                if header.get("keyring"):
+                    key = hubbackup.key_from_keyring(
+                        header, (path / hubbackup.KEYRING).read_bytes(), user, password, recovery
+                    )
+                else:
+                    key = hubbackup.key_from(header, phrase)
                 for s in hubbackup.Store(path, lambda: key).snapshots(hubbackup.ID):
                     print(f"{s.id}  {s.taken}  {len(s.files)} files")
                 return
-            done = hubbackup.restore(path, phrase, settings.data, settings.config, version, force)
+            done = hubbackup.restore(path, phrase, settings.data, settings.config, version, force, **opening)
         else:
-            done = hubbackup.restore_file(path, phrase, settings.data, settings.config, force)
+            done = hubbackup.restore_file(path, phrase, settings.data, settings.config, force, **opening)
     except (ValueError, OSError, KeyError) as e:
         raise SystemExit(f"Not restored: {e}") from e
     except Exception as e:  # a damaged or altered backup (AES-GCM refuses it)
         why = f"the backup is damaged or not this passphrase's ({type(e).__name__})"
         raise SystemExit(f"Not restored: {why}") from e
     print(f"Restored {done['files']} files into {settings.data} (and {settings.config}).")
-    print("Start the hub, sign in, and create a new backup passphrase to resume scheduled backups.")
+    if header.get("keyring"):
+        print("Start the hub and sign in (the key rings open with your password); on Backups,")
+        print("make the backup key again (with the key rings) to resume scheduled backups.")
+    else:
+        print("Start the hub, sign in, and create a new backup passphrase to resume scheduled backups.")
 
 
 SHORT = 10  # under this, a password is easy to guess; allowed, after a warning

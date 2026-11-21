@@ -344,11 +344,6 @@
 </div>
 {#if facets}
 	<p class="mt-3 text-xs text-faint">
-		{facets.total.toLocaleString()} lines kept{info?.devices
-			? `; fetched from ${Object.keys(info.devices).length} devices`
-			: ''}.
-		{#each Object.entries(info?.devices ?? {}).filter(([, s]) => s.ok) as [id, s], i (id)}
-			{i ? ' · ' : ''}{name(id)} {ago(s.ok, store.now)}
-		{/each}
+		{facets.total.toLocaleString()} lines kept, up to {info?.days ?? 14} days.
 	</p>
 {/if}

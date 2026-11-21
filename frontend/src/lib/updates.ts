@@ -15,7 +15,8 @@ export type Update =
 			supported: boolean;
 	  }
 	| { kind: 'router-packages'; device: Device; names: string[] }
-	| { kind: 'scripts'; device: Device; names: string[] };
+	| { kind: 'scripts'; device: Device; names: string[] }
+	| { kind: 'abilities'; device: Device; login: 'actor' | 'openwrt'; names: string[] };
 
 export function updatesOf(devices: Device[]): Update[] {
 	const out: Update[] = [];
@@ -47,6 +48,10 @@ export function updatesOf(devices: Device[]): Update[] {
 		if (pk?.length) out.push({ kind: 'router-packages', device: d, names: pk });
 		if (d.outdated_scripts?.length)
 			out.push({ kind: 'scripts', device: d, names: d.outdated_scripts });
+		for (const login of ['actor', 'openwrt'] as const) {
+			const names = d.new_abilities?.[login];
+			if (names?.length) out.push({ kind: 'abilities', device: d, login, names });
+		}
 	}
 	// What matters most first: no more fixes, security updates, internet-facing devices.
 	const weight = (u: Update) =>

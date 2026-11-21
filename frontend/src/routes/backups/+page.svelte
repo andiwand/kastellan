@@ -94,14 +94,7 @@
 						)}{#if c.latest.checked !== c.latest.taken}
 							· the same until {ago(c.latest.checked, store.now)}{/if}{/if}
 				</span>
-				<span class="ml-auto flex items-center gap-3 text-xs">
-					{#if c.status.error}
-						<span style:color={c.status.denied ? 'var(--muted)' : 'var(--warning-text)'}>
-							{c.status.error}
-						</span>
-					{:else if notes[c.device]}
-						<span class="text-muted">{notes[c.device]}</span>
-					{/if}
+				<span class="ml-auto flex items-center gap-2 text-xs">
 					{#if c.kind}
 						<button class="btn btn-sm" disabled={busy !== null} onclick={() => now(c.device)}>
 							{busy === c.device ? 'Backing up…' : 'Back up now'}
@@ -109,6 +102,21 @@
 					{/if}
 					<a class="btn btn-sm" href="/devices/{c.device}#config-backups">Versions</a>
 				</span>
+				<!-- What happened, on its own line: a long message never pushes the buttons around. -->
+				{#if busy === c.device && c.kind === 'fritzbox-export'}
+					<p class="basis-full text-xs" style:color="var(--warning-text)">
+						If FRITZ!OS asks, press a button on the FRITZ!Box now (within 90 seconds).
+					</p>
+				{:else if c.status.error}
+					<p
+						class="basis-full text-xs"
+						style:color={c.status.denied ? 'var(--muted)' : 'var(--warning-text)'}
+					>
+						{c.status.error}
+					</p>
+				{:else if notes[c.device]}
+					<p class="basis-full text-xs text-muted">{notes[c.device]}</p>
+				{/if}
 			</div>
 		{/each}
 	</div>

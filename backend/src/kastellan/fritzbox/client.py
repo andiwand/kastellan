@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import ipaddress
+import json
 import os
 import re
 import ssl
@@ -105,8 +107,17 @@ class Fritz:
         self.changing = asyncio.Lock()
 
     async def _http(
-        self, method: str, path: str, headers: dict[str, str], body: bytes, timeout: float
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        body: bytes,
+        timeout: float,
+        port: int | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
+        """One request over a connection whose certificate is the pinned one (the web interface
+        on `port` 443 shows the same certificate as TR-064)."""
+        port = port or self.port
         if not path.startswith("/") or any(ord(c) <= 32 or ord(c) == 127 for c in path):
             raise ValueError("invalid TR-064 request path")
         if any("\r" in v or "\n" in v for v in headers.values()):
@@ -114,14 +125,14 @@ class Fritz:
         if self.transport is not None:
             async with httpx.AsyncClient(timeout=timeout, transport=self.transport) as c:
                 r = await c.request(
-                    method, f"https://{self.host}:{self.port}{path}", content=body, headers=headers
+                    method, f"https://{self.host}:{port}{path}", content=body, headers=headers
                 )
                 return r.status_code, {k.lower(): v for k, v in r.headers.items()}, r.content
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE  # checked below, by the pinned fingerprint
         async with asyncio.timeout(timeout):
-            reader, writer = await asyncio.open_connection(self.host, self.port, ssl=ctx)
+            reader, writer = await asyncio.open_connection(self.host, port, ssl=ctx)
             try:
                 der = writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
                 pin = self.pins.get(self.id)
@@ -133,7 +144,7 @@ class Fritz:
                         " (confirm the new one if the FRITZ!Box made a new one)"
                     )
                 host = f"[{self.host}]" if ":" in self.host else self.host
-                head = f"{method} {path} HTTP/1.1\r\nHost: {host}:{self.port}\r\nConnection: close\r\n"
+                head = f"{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n"
                 head += "".join(f"{k}: {v}\r\n" for k, v in headers.items())
                 head += f"Content-Length: {len(body)}\r\n\r\n"
                 writer.write(head.encode() + body)
@@ -326,7 +337,119 @@ async def read(fb: Fritz) -> dict[str, Any]:
     report["clients"] = await _hosts(fb, errors)
     report["forwards"] = await _forwards(fb, errors)
     report["remote"] = await _remote(fb)
+    report["mesh"] = await _mesh(fb, errors)
+    report["dhcp"] = await _dhcp(fb, report["clients"])
+    for w in report["wifi"]:
+        w["associated"] = await _associated(fb, w["index"])
     return report
+
+
+async def _dhcp(fb: Fritz, clients: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Its DHCP server: on or off, the pool, and the active clients with an address in it."""
+    from ..dhcp import in_range
+
+    info = await _try(fb.call("LANHostConfigManagement:1", "GetInfo"))
+    if not info:
+        return None
+    low, high = info.get("NewMinAddress"), info.get("NewMaxAddress")
+    size = None
+    with contextlib.suppress(ValueError, TypeError):
+        size = int(ipaddress.ip_address(high)) - int(ipaddress.ip_address(low)) + 1
+    leases = [
+        {"mac": c.get("mac"), "name": c.get("name"), "address": c.get("address"), "expires": None}
+        for c in clients
+        if c.get("address") and low and high and in_range(c["address"], low, high)
+    ]
+    return {
+        "server": _bool(info.get("NewDHCPServerEnable")),
+        "pools": [{"interface": "lan", "start": low, "end": high, "size": size}],
+        "size": size,
+        "used": len(leases),
+        "leases": leases,
+    }
+
+
+def _rcpi(value: Any) -> int | None:
+    """IEEE 802.11k's RCPI (0..220, 255 unknown) as dBm."""
+    v = _int(value)
+    return None if v is None or v >= 221 else round(v / 2 - 110)
+
+
+async def _mesh(fb: Fritz, errors: dict[str, str]) -> dict[str, Any] | None:
+    """FRITZ!Mesh: its members (master, repeaters) and how they are linked (Wi-Fi with signal,
+    or cable), from the mesh list (Hosts: X_AVM-DE_GetMeshListPath, JSON)."""
+    try:
+        path = (await fb.call("Hosts:1", "X_AVM-DE_GetMeshListPath")).get("NewX_AVM-DE_MeshListPath")
+        if not path:
+            return None
+        data = json.loads(await fb.fetch(path))
+    except Exception as e:
+        errors["mesh"] = (str(e) or type(e).__name__)[:120]
+        return None
+    nodes = [n for n in data.get("nodes") or [] if isinstance(n, dict)]
+    meshed = {n.get("uid"): n for n in nodes if n.get("is_meshed")}
+    members = [
+        {
+            "uid": n.get("uid"),
+            "name": n.get("device_name"),
+            "model": n.get("device_model"),
+            "role": {"master": "master", "slave": "repeater"}.get(
+                str(n.get("mesh_role")), n.get("mesh_role")
+            ),
+            "mac": str(n.get("device_mac_address") or "").lower() or None,
+            "firmware": n.get("device_firmware_version"),
+        }
+        for n in meshed.values()
+    ]
+    links, seen = [], set()
+    for n in meshed.values():
+        for iface in n.get("node_interfaces") or []:
+            for link in iface.get("node_links") or []:
+                a, b = link.get("node_1_uid"), link.get("node_2_uid")
+                if a not in meshed or b not in meshed or link.get("state") != "CONNECTED":
+                    continue
+                key = (link.get("uid"), tuple(sorted((str(a), str(b)))))
+                if key in seen:
+                    continue
+                seen.add(key)
+                links.append(
+                    {
+                        "a": a,
+                        "b": b,
+                        "type": iface.get("type"),  # WLAN, LAN, PLC
+                        "rate_rx": _int(link.get("cur_data_rate_rx")),  # kbit/s
+                        "rate_tx": _int(link.get("cur_data_rate_tx")),
+                        "signal": _rcpi(link.get("rx_rcpi")),
+                    }
+                )
+    return {"members": members, "links": links}
+
+
+async def _associated(fb: Fritz, index: int) -> list[dict[str, Any]]:
+    """A Wi-Fi network's clients with signal (percent) and speed, from its device list."""
+    try:
+        path = (await fb.call(f"WLANConfiguration:{int(index)}", "X_AVM-DE_GetWLANDeviceListPath")).get(
+            "NewX_AVM-DE_WLANDeviceListPath"
+        )
+        if not path:
+            return []
+        root = ET.fromstring(await fb.fetch(path))
+    except Exception:
+        return []
+    out = []
+    for item in root.iter():
+        if _local(item.tag) != "Item":
+            continue
+        kids = {_local(c.tag): (c.text or "").strip() for c in item}
+        out.append(
+            {
+                "mac": (kids.get("AssociatedDeviceMACAddress") or "").lower() or None,
+                "address": kids.get("AssociatedDeviceIPAddress") or None,
+                "signal": _int(kids.get("X_AVM-DE_SignalStrength")),  # percent
+                "speed": _int(kids.get("X_AVM-DE_Speed")),  # Mbit/s
+            }
+        )
+    return out[:200]
 
 
 async def _internet(fb: Fritz, errors: dict[str, str]) -> dict[str, Any]:
@@ -573,6 +696,36 @@ async def update_firmware(fb: Fritz) -> None:
         await fb.call("UserInterface:1", "X_AVM-DE_DoUpdate", timeout=60)
 
 
+SECOND_FACTOR = (866, 867, 868)
+
+
+async def confirmed(fb: Fritz, call, wait: float = 90, say=None, poll: float = 2):
+    """`call()` (an action FRITZ!OS may want confirmed on the box), and when it asks for its
+    second factor (866): start the confirmation (X_AVM-DE_Auth), wait up to `wait` seconds for
+    someone to press a button on the box (or dial the code it names), then call again."""
+    try:
+        return await call()
+    except FritzError as e:
+        if e.code != 866 or wait <= 0:
+            raise
+    started = await fb.call("X_AVM-DE_Auth:1", "SetConfig", {"NewAction": "start"})
+    methods = started.get("NewMethods") or "button"
+    if say:
+        say(f"FRITZ!OS asks to confirm it on the box ({methods}): press a button there now")
+    loop = asyncio.get_running_loop()
+    until = loop.time() + wait
+    while loop.time() < until:
+        await asyncio.sleep(poll)
+        state = (await fb.call("X_AVM-DE_Auth:1", "GetState")).get("NewState", "")
+        if state == "authenticated":
+            return await call()
+        if state in ("stopped", "failure", "blocked"):
+            raise FritzError(867, f"the confirmation on the FRITZ!Box ended ({state})")
+    with contextlib.suppress(Exception):
+        await fb.call("X_AVM-DE_Auth:1", "SetConfig", {"NewAction": "stop"})
+    raise FritzError(866, "nobody confirmed it on the FRITZ!Box in time")
+
+
 async def config_export(fb: Fritz, password: str) -> bytes:
     """The settings export, its passwords encrypted with `password` (needed to restore it)."""
     res = await fb.call(
@@ -608,8 +761,13 @@ def check_key(v: str) -> str:
     return v
 
 
+# Kastellan's encryption words (OpenWrt's) to a FRITZ!Box's beacon types.
+BEACON = {"sae-mixed": "11iandWPA3", "sae": "WPA3", "psk2": "11i", "psk-mixed": "WPAand11i"}
+
+
 async def change_wifi(fb: Fritz, index: int, values: dict[str, Any]) -> None:
-    """Name, password, on/off, channel (0: automatic) of one WLANConfiguration."""
+    """Name, password, encryption, hidden, on/off, channel (0: automatic) of one
+    WLANConfiguration."""
     svc = f"WLANConfiguration:{int(index)}"
     # Validate the whole request before the first change.
     if values.get("ssid") is not None:
@@ -618,7 +776,15 @@ async def change_wifi(fb: Fritz, index: int, values: dict[str, Any]) -> None:
         check_key(str(values["key"]))
     if values.get("channel") is not None and not 0 <= int(values["channel"]) <= 233:
         raise ValueError("not a channel")
+    if values.get("encryption") and values["encryption"] not in BEACON:
+        raise ValueError("a FRITZ!Box takes WPA2, WPA3, WPA2/WPA3 or WPA/WPA2")
     async with fb.changing:
+        if values.get("encryption"):
+            await fb.call(svc, "SetBeaconType", {"NewBeaconType": BEACON[values["encryption"]]})
+        if values.get("hidden") is not None:
+            await fb.call(
+                svc, "SetBeaconAdvertisement", {"NewBeaconAdvertisementEnabled": 0 if values["hidden"] else 1}
+            )
         if values.get("ssid"):
             await fb.call(svc, "SetSSID", {"NewSSID": check_ssid(str(values["ssid"]))})
         if values.get("key"):

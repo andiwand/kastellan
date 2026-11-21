@@ -39,6 +39,14 @@ def script_or_none(user: str, key: str, hub_ip: str | None, create: bool, sudo: 
 def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api/devices")
 
+    @api.get("/{id}/stored-logins")
+    async def stored_logins(id: str, request: Request) -> dict[str, Any]:
+        """Logins in the People key ring a setup on this device may use (never their passwords)."""
+        w = require_signin(request)
+        if id not in hub.config.devices:
+            raise HTTPException(404, "no such device")
+        return setup_run.stored_logins(hub, id, w.user)
+
     def device_of(id: str):
         device = hub.config.devices.get(id)
         if device is None:
@@ -146,7 +154,7 @@ def router(hub: Hub) -> APIRouter:
             "elevate": body.elevate,
         }
         audit = partial(hub.audit.record, "access.setup", w.user, client_address(request.scope), **details)
-        conn = await setup_run.connect(hub, device.host, body, audit)
+        conn = await setup_run.connect(hub, device.host, body, audit, device=id, user=w.user)
 
         def after() -> dict[str, Any]:
             # Kastellan logs in as this user from now on: ssh: in config.yaml says so (replacing

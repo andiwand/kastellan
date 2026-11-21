@@ -9,7 +9,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 class Passphrase(BaseModel):
     replace: bool = False  # a new one: the old store is set aside, its passphrase still opens it
+    # keyring: the backup opens with the key rings (an admin's password or a recovery key), no
+    # passphrase to keep; passphrase: one made now and shown once.
+    mode: Literal["keyring", "passphrase"] = "passphrase"
 
 
 class Check(BaseModel):
@@ -85,6 +88,8 @@ def router(hub: Hub) -> APIRouter:
         return {
             "ready": header is not None,
             "legacy": bool(header and header.get("version") == 1),
+            "keyring": bool(header and header.get("keyring")),
+            "vault": hub.vault.exists and not hub.demo,
             "made": (header or {}).get("made"),
             "status": hb.status,
             "versions": [s.view() for s in reversed(snaps)],
@@ -106,8 +111,18 @@ def router(hub: Hub) -> APIRouter:
             async with hub.hub_backup.operation:
                 if hub.hub_backup.header() is not None and not body.replace:
                     raise HTTPException(409, "there is one already; a new one starts a new backup")
-                phrase = hubbackup.new_passphrase()
-                made = await hubbackup.blocking(hubbackup.make_key, phrase)
+                if body.mode == "keyring":
+                    from .vault import KASTELLAN
+
+                    if not (hub.vault.exists and hub.vault.is_open(KASTELLAN)):
+                        raise HTTPException(
+                            409, "the backup opens with the key rings: make them (Keys) or open them"
+                        )
+                    phrase = None
+                    made = hubbackup.make_keyring_key()
+                else:
+                    phrase = hubbackup.new_passphrase()
+                    made = await hubbackup.blocking(hubbackup.make_key, phrase)
                 # Fail before moving the store when its existing secret cannot be read (locked ring).
                 if hub.secrets.has(hubbackup.KEY_SECRET):
                     hub.secrets.get(hubbackup.KEY_SECRET)
@@ -117,7 +132,8 @@ def router(hub: Hub) -> APIRouter:
                     aside = hub.hub_backup.start(made)
                     try:
                         hub.secrets.set(
-                            hubbackup.KEY_SECRET, json.dumps({"salt": made["salt"], "key": made["key"]})
+                            hubbackup.KEY_SECRET,
+                            json.dumps({"salt": made.get("salt", ""), "key": made["key"]}),
                         )
                     except BaseException:
                         import shutil
@@ -131,7 +147,11 @@ def router(hub: Hub) -> APIRouter:
                     old_checks.pop("passphrase", None)
                     hubbackup.private_write(checks_file, json.dumps(old_checks).encode())
                     hub.audit.record(
-                        "hubbackup.passphrase", w.user, client_address(request.scope), replaced=body.replace
+                        "hubbackup.passphrase",
+                        w.user,
+                        client_address(request.scope),
+                        replaced=body.replace,
+                        mode=body.mode,
                     )
 
                 await hubbackup.blocking(commit)

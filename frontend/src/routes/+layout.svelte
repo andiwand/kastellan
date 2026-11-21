@@ -9,7 +9,6 @@
 	import MonitorSmartphone from '@lucide/svelte/icons/monitor-smartphone';
 	import Container from '@lucide/svelte/icons/container';
 	import ServerCog from '@lucide/svelte/icons/server-cog';
-	import Group from '@lucide/svelte/icons/group';
 	import AppWindow from '@lucide/svelte/icons/app-window';
 	import GlobeLock from '@lucide/svelte/icons/globe-lock';
 	import LockKeyhole from '@lucide/svelte/icons/lock-keyhole';
@@ -38,7 +37,7 @@
 		href: string;
 		label: string;
 		short?: string;
-		icon: typeof Group;
+		icon: typeof LayoutDashboard;
 		admin?: boolean;
 	}[] = [
 		{ href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -47,7 +46,6 @@
 		{ href: '/wifi', label: 'Wi-Fi', icon: Wifi, admin: true },
 		{ href: '/containers', label: 'Containers', icon: Container },
 		{ href: '/vms', label: 'Virtual machines', short: 'VMs', icon: ServerCog },
-		{ href: '/groups', label: 'Groups', icon: Group, admin: true },
 		{ href: '/services', label: 'Services', icon: AppWindow },
 		{ href: '/vpn', label: 'VPN', icon: GlobeLock },
 		{ href: '/logs', label: 'Logs', icon: ScrollText, admin: true },

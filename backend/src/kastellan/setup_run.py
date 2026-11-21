@@ -14,6 +14,8 @@ Then the output follows line by line, and the last line is the outcome:
 from __future__ import annotations
 
 import asyncio
+import base64
+import gzip
 import json
 import shlex
 from collections.abc import AsyncIterator, Callable, Coroutine
@@ -36,8 +38,12 @@ TIMEOUT = 1800  # seconds the whole script may take
 
 
 class Login(BaseModel):
-    login: str = Field(min_length=1, max_length=32)
-    password: str = Field(min_length=1, max_length=1024)  # for this one connection, never kept
+    login: str = Field(default="", max_length=32)
+    password: str = Field(default="", max_length=1024)  # for this one connection, never kept
+    # Or a login stored in the People key ring for this device (its id); `remember`: keep the
+    # typed one there (for this device only) once it worked.
+    stored: str | None = Field(default=None, max_length=128)
+    remember: bool = False
     port: int = Field(default=22, ge=1, le=65535)
     # How to get root when the login isn't root: sudo (with `root_password` if it is another
     # password than the login's), or su with root's password.
@@ -45,16 +51,89 @@ class Login(BaseModel):
     root_password: str | None = Field(default=None, max_length=1024)
 
 
+def stored_logins(hub: Hub, device: str, user: str | None) -> dict[str, Any]:
+    """The People ring's logins a setup on this device may use: the ring open, the admin with
+    a way of their own into it, and only logins stored for this device."""
+    from .auth import password_tag
+    from .vault import PEOPLE
+
+    ring_open = hub.vault.exists and hub.vault.is_open(PEOPLE)
+    me = hub.config.users.get(user or "")
+    mine = me is not None and hub.vault.has_slot(PEOPLE, user or "", password_tag(me.password))
+    entries = [
+        {"id": e.id, "name": e.name, "user": e.user}
+        for e in (hub.vault.entries() if ring_open and mine else [])
+        if e.ring == PEOPLE and e.kind == "password" and device in e.devices
+    ]
+    return {"vault": hub.vault.exists, "ring_open": ring_open, "stored": entries}
+
+
+def resolve(hub: Hub, device: str | None, body: Login, user: str | None) -> None:
+    """A stored login into the body (its user and password), checked like the terminal's: only
+    for the devices it was stored for, read for the signed-in admin who asked."""
+    if not body.stored:
+        if not body.login or not body.password:
+            raise HTTPException(400, "a login and its password, or a stored login")
+        return
+    if device is None or not any(e["id"] == body.stored for e in stored_logins(hub, device, user)["stored"]):
+        raise HTTPException(403, "no such stored login for this device (or the People ring is locked)")
+    entry = hub.vault.entry(body.stored)
+    assert entry is not None
+    body.login, body.password = entry.user, hub.vault.get(entry.id, by=user)
+    body.remember = False
+
+
+def remember(hub: Hub, device: str, body: Login, user: str | None, address: str | None) -> str | None:
+    """The typed login kept in the People ring for this device (asked for); a note, or None."""
+    from .vault import PEOPLE, Locked
+
+    if not body.remember or body.stored or not hub.vault.exists:
+        return None
+    base = f"ssh-{device}-{body.login}".lower().replace("_", "-")
+    entry_id, n = base, 2
+    while hub.vault.has(entry_id):
+        entry_id, n = f"{base}-{n}", n + 1
+    name = hub.config.devices[device].name if device in hub.config.devices else device
+    try:
+        hub.vault.put(
+            entry_id,
+            body.password,
+            ring=PEOPLE,
+            kind="password",
+            name=f"{name} ({body.login})",
+            user=body.login,
+            devices=[device],
+        )
+    except Locked as e:
+        return f"not kept: {e}"
+    except Exception:  # never the password in a message
+        return "not kept: the key ring can't be written"
+    hub.audit.record("vault.add", user, address, entry=entry_id, ring=PEOPLE, kind="password")
+    return f"kept in the People ring as {entry_id}"
+
+
 async def connect(
-    hub: Hub, host: str, body: Login, audit: Callable[..., None]
+    hub: Hub,
+    host: str,
+    body: Login,
+    audit: Callable[..., None],
+    device: str | None = None,
+    user: str | None = None,
 ) -> asyncssh.SSHClientConnection:
-    """Log in with the typed password; HTTP errors for the page (and audited)."""
+    """Log in with the typed password (or the stored login); HTTP errors for the page (and
+    audited). A typed login is kept in the People ring when asked, once it worked."""
+    resolve(hub, device, body, user)
     if hub.demo:  # its hosts are made up: a real machine at that address must never be touched
         raise HTTPException(409, "demo mode shows a made-up network; nothing is set up there")
     if not host:  # "" would be this machine: the hub's own
         raise HTTPException(400, "this device has no address of its own")
     try:
-        return await hub.keys.connect(Target(host, body.port, body.login), password=body.password)
+        conn = await hub.keys.connect(Target(host, body.port, body.login), password=body.password)
+        if device is not None and body.remember:
+            note = remember(hub, device, body, user, None)
+            if note:
+                audit(remembered=note)
+        return conn
     except (UnknownHost, ChangedHost) as e:
         audit(outcome="host key")
         raise HTTPException(409, f"{e} (trust the host key first)") from e
@@ -69,9 +148,24 @@ async def connect(
         raise HTTPException(502, f"can't reach {host} on port {body.port}: {reason(e)}") from e
 
 
+# Linux takes at most 128 KB in one argument (MAX_ARG_STRLEN): a script given to `sh -c`
+# (sudo, su: their stdin is for the password) larger than this goes compressed.
+ARGUMENT_MAX = 100_000
+
+
+def as_argument(script: str) -> str:
+    """The script as `sh -c` takes it: itself, or, when large, packed (gzip, base64) with the
+    line that unpacks and runs it (its stdin then is that pipe, never the password)."""
+    if len(script.encode()) <= ARGUMENT_MAX:
+        return script
+    packed = base64.b64encode(gzip.compress(script.encode(), 9)).decode()
+    return f"printf '%s' '{packed}' | base64 -d | gzip -dc | sh"
+
+
 async def _lines(conn: asyncssh.SSHClientConnection, script: str, body: Login) -> AsyncIterator[str | int]:
     """The script's output, line by line, then its exit status."""
     q = shlex.quote
+    argument = as_argument(script)
     if body.login == "root" or body.elevate == "none":
         process = await conn.create_process("sh -s", stderr=asyncssh.STDOUT)
         process.stdin.write(script)
@@ -83,20 +177,20 @@ async def _lines(conn: asyncssh.SSHClientConnection, script: str, body: Login) -
         if probe.exit_status == 0:
             # sudo without a password here: none is given (it would end up on the script's stdin).
             process = await conn.create_process(
-                f"sudo -n sh -c {q(script)}", stdin=asyncssh.DEVNULL, stderr=asyncssh.STDOUT
+                f"sudo -n sh -c {q(argument)}", stdin=asyncssh.DEVNULL, stderr=asyncssh.STDOUT
             )
         else:
             # sudo reads the password from stdin (-S), with no prompt; the script is its argument
             # and starts with its stdin closed (exec </dev/null), so it never reads the password.
             process = await conn.create_process(
-                f"sudo -S -p '' sh -c {q('exec </dev/null; ' + script)}", stderr=asyncssh.STDOUT
+                f"sudo -S -p '' sh -c {q('exec </dev/null; ' + argument)}", stderr=asyncssh.STDOUT
             )
             process.stdin.write((body.root_password or body.password) + "\n")
             process.stdin.write_eof()
     else:
         # su asks on a terminal: one is requested; the password goes in at its prompt. A marker
         # first tells "root now" apart from a prompt (some systems' su asks for nothing).
-        inner = f"echo {MARK}; exec sh -c {q('exec </dev/null; ' + script)}"
+        inner = f"echo {MARK}; exec sh -c {q('exec </dev/null; ' + argument)}"
         process = await conn.create_process(
             f"LC_ALL=C su root -c {q(inner)}", term_type="dumb", stderr=asyncssh.STDOUT
         )

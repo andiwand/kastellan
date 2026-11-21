@@ -13,6 +13,8 @@
 	type View = {
 		ready: boolean;
 		legacy: boolean;
+		keyring: boolean; // opens with the key rings (an admin's password, a recovery key)
+		vault: boolean; // the hub has key rings
 		made: string | null;
 		status: {
 			ok?: string;
@@ -73,11 +75,12 @@
 		return () => clearInterval(t);
 	});
 
-	async function makePhrase(replace = false) {
+	async function makePhrase(replace = false, mode: 'keyring' | 'passphrase' = 'passphrase') {
 		busy = true;
 		error = null;
 		try {
-			phrase = (await call<{ passphrase: string }>('POST', '/passphrase', { replace })).passphrase;
+			phrase = (await call<{ passphrase: string | null }>('POST', '/passphrase', { replace, mode }))
+				.passphrase;
 			await load();
 		} catch (e) {
 			error = (e as Error).message;
@@ -149,11 +152,37 @@
 	{/if}
 
 	{#if view && !view.ready}
-		<p class="mt-4 text-sm">No backup yet: it needs its passphrase first.</p>
+		{#if view.vault}
+			<p class="mt-4 text-sm">
+				No backup yet. It can open with the key rings: an admin's password (as it was at that
+				backup) or the Kastellan ring's recovery key, nothing else to keep. Or with a passphrase of
+				its own, shown once.
+			</p>
+		{:else}
+			<p class="mt-4 text-sm">
+				No backup yet: it needs its passphrase first. (With key rings, made on the Keys page, it
+				opens with an admin's password or a recovery key instead.)
+			</p>
+		{/if}
 		{#if signedIn}
-			<button class="btn btn-primary btn-sm mt-2" disabled={busy} onclick={() => makePhrase()}>
-				Make the passphrase
-			</button>
+			<div class="mt-2 flex flex-wrap gap-2">
+				{#if view.vault}
+					<button
+						class="btn btn-primary btn-sm"
+						disabled={busy}
+						onclick={() => makePhrase(false, 'keyring')}
+					>
+						Use the key rings
+					</button>
+					<button class="btn btn-sm" disabled={busy} onclick={() => makePhrase()}>
+						A passphrase instead
+					</button>
+				{:else}
+					<button class="btn btn-primary btn-sm" disabled={busy} onclick={() => makePhrase()}>
+						Make the passphrase
+					</button>
+				{/if}
+			</div>
 		{:else}<p class="mt-1 text-xs text-muted">Needs sign-in to be on.</p>{/if}
 	{:else if view}
 		{#if view.legacy}
@@ -240,11 +269,18 @@
 			<ShieldCheck class="size-3.5" /> Can you still open it?
 		</h3>
 		<ul class="mt-1 text-xs">
-			<li style:color={old(view.checks.passphrase) ? 'var(--warning-text)' : undefined}>
-				The backup's passphrase: {view.checks.passphrase
-					? `checked ${ago(view.checks.passphrase, store.now)}`
-					: 'never checked'}
-			</li>
+			{#if view.keyring}
+				<li>
+					It opens with an admin's password as it was at that backup, or the Kastellan ring's
+					recovery key:
+				</li>
+			{:else}
+				<li style:color={old(view.checks.passphrase) ? 'var(--warning-text)' : undefined}>
+					The backup's passphrase: {view.checks.passphrase
+						? `checked ${ago(view.checks.passphrase, store.now)}`
+						: 'never checked'}
+				</li>
+			{/if}
 			{#each view.rings as r (r)}
 				<li style:color={old(view.checks[`recovery:${r}`]) ? 'var(--warning-text)' : undefined}>
 					The {r} key ring's recovery key: {view.checks[`recovery:${r}`]
@@ -254,21 +290,23 @@
 			{/each}
 		</ul>
 		{#if signedIn}
-			<div class="mt-2 flex flex-wrap items-end gap-2">
-				<input
-					class="h-8 w-full min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 font-mono text-xs sm:w-auto sm:min-w-64"
-					type="password"
-					placeholder="The passphrase"
-					bind:value={checkPhrase}
-				/>
-				<button
-					class="btn btn-sm"
-					disabled={!checkPhrase}
-					onclick={() => check({ passphrase: checkPhrase })}
-				>
-					Check
-				</button>
-			</div>
+			{#if !view.keyring}
+				<div class="mt-2 flex flex-wrap items-end gap-2">
+					<input
+						class="h-8 w-full min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 font-mono text-xs sm:w-auto sm:min-w-64"
+						type="password"
+						placeholder="The passphrase"
+						bind:value={checkPhrase}
+					/>
+					<button
+						class="btn btn-sm"
+						disabled={!checkPhrase}
+						onclick={() => check({ passphrase: checkPhrase })}
+					>
+						Check
+					</button>
+				</div>
+			{/if}
 			{#if view.rings.length}
 				<div class="mt-2 flex flex-wrap items-end gap-2">
 					<select
@@ -305,7 +343,7 @@
 				folder or a .kbak file, then run with the hub stopped:
 			</p>
 			<CodeBlock
-				text={'docker compose stop kastellan\ndocker compose run --rm --no-deps -v /path/to/the/copy:/restore:ro kastellan kastellan restore /restore\n# asks for the passphrase; --list shows the versions, --version <id> takes an older one\ndocker compose up -d'}
+				text={'docker compose stop kastellan\ndocker compose run --rm --no-deps -v /path/to/the/copy:/restore:ro kastellan kastellan restore /restore\n# asks for the passphrase (key-ring backups: an admin login or a recovery key); --list shows the versions, --version <id> takes an older one\ndocker compose up -d'}
 			/>
 			<p class="mt-2 text-xs text-muted">
 				Restore external unlock keys separately. Sign in with the saved account, or unlock the key

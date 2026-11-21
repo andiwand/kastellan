@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import setup_run
+from .abilities import ADDED
 from .auth_api import client_address, require_admin, require_signin
 from .openwrt import client as ow
 from .openwrt import firmware as fw
@@ -135,7 +136,7 @@ def router(hub: Hub) -> APIRouter:
             abilities=sorted(body.abilities),
             services=sorted(body.services) if "services" in body.abilities else [],
         )
-        conn = await setup_run.connect(hub, device.host, body, audit)
+        conn = await setup_run.connect(hub, device.host, body, audit, device=id, user=w.user)
         output: list[str] = []
 
         def after() -> dict[str, Any]:
@@ -145,6 +146,7 @@ def router(hub: Hub) -> APIRouter:
             hub.pins.set(id, fp)  # read on the device itself, over SSH with a checked host key
             hub._ubus = {k: v for k, v in hub._ubus.items() if k[0] != id}  # a fresh session
             setup_run.add_device_key(hub, w.user, client_address(request.scope), id, "openwrt", 443, {})
+            hub.offered.passed(id, "openwrt", set(ADDED["openwrt"]) - set(body.abilities))
             return {"certificate": fp}
 
         return setup_run.stream(conn, text, body, audit, after, keep=output)

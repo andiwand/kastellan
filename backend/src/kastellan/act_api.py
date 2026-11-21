@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import setup_run
+from .abilities import ADDED
 from .access import USER, hub_address
 from .auth_api import client_address, require_admin, require_signin
 from .host import actor
@@ -125,10 +126,12 @@ def router(hub: Hub) -> APIRouter:
             vms=body.vms,
             allowed=body.allowed,
         )
-        conn = await setup_run.connect(hub, device.host, body, audit)
+        conn = await setup_run.connect(hub, device.host, body, audit, device=id, user=w.user)
 
         def after() -> dict[str, Any]:
             setup_run.add_device_key(hub, w.user, client_address(request.scope), id, "act", body.port)
+            # What was offered and left out at this setup was a choice: not new any more.
+            hub.offered.passed(id, "actor", set(ADDED["actor"]) - set(body.abilities))
             # Its scripts are new now: ask again, not in up to ten minutes (Updates says "older").
             task = asyncio.get_running_loop().create_task(hub._poll_actor(id))
             setup_run._running.add(task)
@@ -154,7 +157,7 @@ def router(hub: Hub) -> APIRouter:
             login=body.login,
             elevate=body.elevate,
         )
-        conn = await setup_run.connect(hub, device.host, body, audit)
+        conn = await setup_run.connect(hub, device.host, body, audit, device=id, user=w.user)
 
         def after() -> dict[str, Any]:
             setup_run.remove_device_key(hub, w.user, client_address(request.scope), id, "act")

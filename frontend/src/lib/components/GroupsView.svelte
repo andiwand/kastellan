@@ -16,7 +16,7 @@
 	import MaintenanceButton from '#lib/components/MaintenanceButton.svelte';
 	import Wrench from '@lucide/svelte/icons/wrench';
 
-	/** Groups of devices (`groups:` in config.yaml), any kind. For their OpenWrt members: Wi-Fi
+	/** The Devices page's Groups tab (?section=groups). Groups of devices (`groups:` in config.yaml), any kind. For their OpenWrt members: Wi-Fi
 	 * networks lined up by name, the mesh, root's password, each changed on all at once; for
 	 * those with `ssh:`, their authorized_keys and known_hosts (GroupSsh). The devices are the
 	 * truth: nothing of that is stored, it is read from them. */
@@ -115,7 +115,7 @@
 	// Status: what the members say (read); Setup: the same with every way to change it.
 	const setup = $derived(page.url.searchParams.get('tab') === 'setup');
 	function showTab(t: 'status' | 'setup') {
-		goto(t === 'setup' ? '?tab=setup' : '?', { replaceState: true });
+		goto(t === 'setup' ? '?section=groups&tab=setup' : '?section=groups', { replaceState: true });
 	}
 	const keyOk = (k: string) => k.length >= 8 && k.length <= 63;
 	const input =
@@ -133,12 +133,9 @@
 	const ENCRYPTION_NAME = Object.fromEntries(ENCRYPTIONS);
 </script>
 
-<svelte:head><title>Groups · Kastellan</title></svelte:head>
-
 <div class="flex flex-wrap items-end justify-between gap-4">
 	<div>
-		<h1 class="text-2xl font-semibold tracking-tight">Groups</h1>
-		<p class="mt-1 max-w-2xl text-sm text-muted">
+		<p class="max-w-2xl text-sm text-muted">
 			Devices that belong together, any kind. For OpenWrt members, a group also keeps Wi-Fi, the
 			mesh and root's password the same: read from the devices, changed on all of them with a
 			rollback. Passwords are only compared, never shown.

@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import dataclasses
 import ipaddress
+import socket
 import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -68,6 +69,8 @@ async def _run_once(host: str, check: Check) -> Result:
                     return await _http(check)
                 case CheckType.DNS:
                     return await _dns(check)
+                case CheckType.DHCP:
+                    return await _dhcp(host)
     except TimeoutError:
         return Result(False, detail="timed out")
     except Exception as e:  # a check reports a failure, it never takes the monitor down
@@ -92,6 +95,34 @@ async def _ping(host: str, check: Check) -> Result:
     if not reply.is_alive:
         return Result(False, detail="no reply")
     return Result(True, round(reply.avg_rtt, 2))
+
+
+async def _dhcp(host: str) -> Result:
+    """Ask for an address like a new device (dhcp.py): up when this device's server offers one.
+    Offers from other servers are noted (an unexpected DHCP server is an alarm of its own)."""
+    from . import dhcp
+
+    loop = asyncio.get_running_loop()
+    expected = set()
+    try:
+        infos = await loop.getaddrinfo(host, None, family=socket.AF_INET)
+        expected = {str(i[4][0]) for i in infos}
+    except OSError:
+        expected = {host}
+    start = time.monotonic()
+    try:
+        offers = await dhcp.probe(wait=2.5)
+    except PermissionError:
+        return Result(False, detail="the hub may not listen on UDP port 68 (it needs root)")
+    except OSError as e:
+        return Result(False, detail=f"can't ask: {e.strerror or e}")
+    dhcp.note_unexpected(host, offers, expected)
+    mine = [o for o in offers if o.server in expected]
+    others = [o.server for o in offers if o.server not in expected]
+    also = f"; also answered: {', '.join(others)}" if others else ""
+    if not mine:
+        return Result(False, detail=(f"no offer from {host}" + also) if offers else "no DHCP server answered")
+    return Result(True, round((time.monotonic() - start) * 1000, 1), f"offers {mine[0].offered}{also}")
 
 
 async def _tcp(host: str, check: Check) -> Result:

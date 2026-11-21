@@ -73,7 +73,7 @@
 
 	/** What a service is called when its name is left empty (as config.yaml names it). */
 	const defaultName = (c: CheckForm) =>
-		c.type === 'ping' ? 'ping' : `${c.type}:${c.target ?? ''}`;
+		c.type === 'ping' || c.type === 'dhcp' ? c.type : `${c.type}:${c.target ?? ''}`;
 
 	async function load() {
 		error = null;
@@ -390,6 +390,7 @@
 										<option value="tcp">port</option>
 										<option value="http">web</option>
 										<option value="dns">dns</option>
+										<option value="dhcp">dhcp</option>
 									</select>
 								</label>
 								{#if check.type === 'tcp'}
@@ -520,6 +521,16 @@
 					<button type="button" class={button} onclick={() => addCheck('dns')}>
 						<Plus class="size-4" /> DNS
 					</button>
+					{#if ['router', 'access-point'].includes(form.kind) && !form.checks.some((c) => c.type === 'dhcp')}
+						<button
+							type="button"
+							class={button}
+							title="Asks the network for an address like a new device: up when this device's DHCP server answers; another server answering raises an alarm"
+							onclick={() => addCheck('dhcp')}
+						>
+							<Plus class="size-4" /> DHCP
+						</button>
+					{/if}
 					{#if !form.checks.some((c) => c.type === 'ping')}
 						<button type="button" class={button} onclick={() => addCheck('ping')}>
 							<Plus class="size-4" /> Ping

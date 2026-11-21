@@ -27,8 +27,8 @@
 	} = $props();
 
 	const target = (check: CheckStatus) =>
-		check.type === 'ping'
-			? 'ping'
+		check.type === 'ping' || check.type === 'dhcp'
+			? check.type
 			: check.type === 'tcp'
 				? `port ${check.target}`
 				: check.type === 'dns'

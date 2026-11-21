@@ -27,6 +27,7 @@ SERVICES = [
     "WLANConfiguration:2",
     "WLANConfiguration:3",
     "X_AVM-DE_RemoteAccess:1",
+    "X_AVM-DE_Auth:1",
 ]
 
 
@@ -308,3 +309,183 @@ async def test_failed_setup_save_preserves_the_live_login(tmp_path: Path, monkey
         await route.endpoint("gw", body, request)
     assert secrets.get("fritzbox-gw") == "old-password"
     assert pins.get("gw") == "a" * 64
+
+
+def test_the_web_login_answer() -> None:
+    from kastellan.fritzbox.web import response
+
+    # AVM's own example (login_sid.lua, PBKDF2 since FRITZ!OS 7.24).
+    assert (
+        response("2$10000$5A1711$2000$5A1722", "1example!")
+        == "5A1722$1798a1672bca7c6463d6b245f82b53703b0f50813401b03e4045a5861e689adb"
+    )
+    assert response("1234567z", "äbc").startswith("1234567z-")  # MD5, before 7.24
+
+
+def test_the_wifi_environment_and_wireguard_as_fritzos_8_25_shows_them() -> None:
+    from kastellan.fritzbox import web
+
+    data = {
+        "channelSelectMode": "auto",
+        "scanlist": [
+            {"mac": "AA:00:00:00:00:01", "nrssi": 5, "channel": "1", "ssid": "Stefl", "bandId": "24ghz"},
+            {"mac": "AA:00:00:00:00:02", "nrssi": 1, "channel": 6, "ssid": "Neighbour", "bandId": "24ghz"},
+            {"mac": "AA:00:00:00:00:03", "nrssi": 0, "channel": 52, "ssid": "Far", "bandId": "5ghz"},
+        ],
+        "24ghz": {
+            "usedChannels": [1],
+            "currentChannel": 0,
+            "airtimedata": "1795290069,1,600,14:5,20:6,30:4",
+            "channels": [{"value": 1, "dfs": False, "interference": False}],
+        },
+        "5ghz": {"usedChannels": [52], "airtimedata": "", "channels": [{"value": 52, "dfs": True}]},
+    }
+    env = web.environment(data)
+    assert env["2g"]["channel"] == 1 and env["2g"]["busy"] == 21 and env["2g"]["auto"]
+    assert [(n["ssid"], n["channel"], n["signal"]) for n in env["2g"]["neighbours"]] == [
+        ("Neighbour", 6, -80)
+    ]
+    assert env["5g"]["channels"] == [{"channel": 52, "dfs": True, "interference": False}]
+    wg = web.wireguard(
+        {
+            "init": {
+                "server": "x.myfritz.net",
+                "wg_list_port": "51820",
+                "userConnections": [{"name": "phone", "active": True, "lastHandshake": "21.11.2026 10:00"}],
+                "boxConnections": [],
+            }
+        }
+    )
+    assert wg["port"] == "51820" and wg["connections"][0]["name"] == "phone"
+    assert web.wireguard({}) == {
+        "server": None,
+        "port": None,
+        "address": None,
+        "connections": [],
+        "error": None,
+    }
+
+
+async def test_the_mesh_and_each_networks_clients(tmp_path: Path) -> None:
+    import json
+
+    fake = FakeBox()
+    mesh = {
+        "nodes": [
+            {
+                "uid": "n1",
+                "device_name": "gw1",
+                "device_model": "FRITZ!Box 7530",
+                "is_meshed": True,
+                "mesh_role": "master",
+                "node_interfaces": [
+                    {
+                        "type": "WLAN",
+                        "node_links": [
+                            {
+                                "uid": "l1",
+                                "node_1_uid": "n1",
+                                "node_2_uid": "n2",
+                                "state": "CONNECTED",
+                                "cur_data_rate_rx": 866000,
+                                "cur_data_rate_tx": 650000,
+                                "rx_rcpi": 100,
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "uid": "n2",
+                "device_name": "rep1",
+                "is_meshed": True,
+                "mesh_role": "slave",
+                "node_interfaces": [],
+            },
+            {"uid": "n3", "device_name": "phone", "is_meshed": False, "node_interfaces": []},
+        ]
+    }
+    original = fake.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/mesh.json" and fake.authorized(request):
+            return httpx.Response(200, text=json.dumps(mesh))
+        if request.url.path == "/wlan.lua" and fake.authorized(request):
+            return httpx.Response(
+                200,
+                text="<List><Item><AssociatedDeviceMACAddress>AA:BB:CC:00:11:22"
+                "</AssociatedDeviceMACAddress><X_AVM-DE_SignalStrength>70"
+                "</X_AVM-DE_SignalStrength><X_AVM-DE_Speed>866</X_AVM-DE_Speed></Item></List>",
+            )
+        if fake.authorized(request) and b"GetMeshListPath" in request.headers.get("soapaction", "").encode():
+            return httpx.Response(
+                200,
+                text='<s:Envelope xmlns:s="x"><s:Body><u:X_AVM-DE_GetMeshListPathResponse '
+                'xmlns:u="y"><NewX_AVM-DE_MeshListPath>/mesh.json</NewX_AVM-DE_MeshListPath>'
+                "</u:X_AVM-DE_GetMeshListPathResponse></s:Body></s:Envelope>",
+            )
+        if (
+            fake.authorized(request)
+            and b"GetWLANDeviceListPath" in request.headers.get("soapaction", "").encode()
+        ):
+            return httpx.Response(
+                200,
+                text='<s:Envelope xmlns:s="x"><s:Body><u:X_AVM-DE_GetWLANDeviceListPathResponse '
+                'xmlns:u="y"><NewX_AVM-DE_WLANDeviceListPath>/wlan.lua</NewX_AVM-DE_WLANDeviceListPath>'
+                "</u:X_AVM-DE_GetWLANDeviceListPathResponse></s:Body></s:Envelope>",
+            )
+        return original(request)
+
+    b = fb.Fritz(
+        "gw", "192.168.178.1", 49443, "kastellan", "pw", Pins(tmp_path), transport=httpx.MockTransport(handle)
+    )
+    report = await fb.read(b)
+    assert [(m["name"], m["role"]) for m in report["mesh"]["members"]] == [
+        ("gw1", "master"),
+        ("rep1", "repeater"),
+    ]
+    (link,) = report["mesh"]["links"]
+    assert (link["type"], link["rate_rx"], link["signal"]) == ("WLAN", 866000, -60)
+    assert report["wifi"][0]["associated"] == [
+        {"mac": "aa:bb:cc:00:11:22", "address": None, "signal": 70, "speed": 866}
+    ]
+    await fb.change_wifi(b, 1, {"encryption": "sae", "hidden": True})
+    assert ("WLANConfiguration:1#SetBeaconType", {"NewBeaconType": "WPA3"}) in fake.calls
+    assert (
+        "WLANConfiguration:1#SetBeaconAdvertisement",
+        {"NewBeaconAdvertisementEnabled": "0"},
+    ) in fake.calls
+    with pytest.raises(ValueError):
+        await fb.change_wifi(b, 1, {"encryption": "owe"})
+
+
+async def test_the_second_factor_is_waited_for(tmp_path: Path) -> None:
+    fake = FakeBox(second_factor=True)
+    b = box(tmp_path, fake)
+    states = iter(["waitingforauth", "authenticated"])
+    original = fake.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        action = request.headers.get("soapaction", "")
+        if fake.authorized(request) and "X_AVM-DE_Auth" in action:
+            name = action.strip('"').split("#")[1]
+            out = {
+                "SetConfig": "<NewState>waitingforauth</NewState><NewMethods>button</NewMethods>",
+                "GetState": f"<NewState>{next(states)}</NewState>",
+            }[name]
+            if name == "GetState" and "authenticated" in out:
+                fake.second_factor = False
+            return httpx.Response(
+                200,
+                text=f'<s:Envelope xmlns:s="x"><s:Body><u:{name}Response xmlns:u="y">{out}'
+                f"</u:{name}Response></s:Body></s:Envelope>",
+            )
+        return original(request)
+
+    b.transport = httpx.MockTransport(handle)
+    said = []
+    await fb.confirmed(b, lambda: fb.change_wifi(b, 1, {"ssid": "x"}), wait=5, say=said.append, poll=0)
+    assert fake.ssid[1] == "x" and "press a button" in said[0]
+    fake.second_factor = True
+    with pytest.raises(fb.FritzError):  # nobody at the box (a scheduled run): no waiting
+        await fb.confirmed(b, lambda: fb.change_wifi(b, 1, {"ssid": "y"}), wait=0)

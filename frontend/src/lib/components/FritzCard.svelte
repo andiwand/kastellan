@@ -1,7 +1,10 @@
 <script lang="ts">
+	import DhcpPool from './DhcpPool.svelte';
 	import { more, type FritzReport } from '#lib/api.js';
 	import { ago, duration } from '#lib/format.js';
 	import { store } from '#lib/state.svelte.js';
+	import FritzMesh from './FritzMesh.svelte';
+	import FritzWireguard from './FritzWireguard.svelte';
 
 	/** A FRITZ!Box through TR-064 with Kastellan's user: the internet line, Wi-Fi, who is
 	 * connected, and the ways in from the internet (port forwards, remote access, MyFRITZ!). */
@@ -125,7 +128,10 @@
 							w.encryption ?? ''
 						] ?? w.encryption}
 						· {w.clients}
-						{w.clients === 1 ? 'client' : 'clients'}
+						{w.clients === 1 ? 'client' : 'clients'}{#if w.associated?.length}
+							(signal {Math.min(...w.associated.map((a) => a.signal ?? 100))}–{Math.max(
+								...w.associated.map((a) => a.signal ?? 0)
+							)} %){/if}
 						{#if w.guest}· guest network{/if}
 					</span>
 					{#if !w.enabled}<span class="text-xs text-faint">off</span>{/if}
@@ -139,6 +145,20 @@
 			</p>
 		{/if}
 		<p class="mt-1 text-xs text-faint">Names, passwords and channels: on the Wi-Fi page.</p>
+	{/if}
+
+	{#if report.dhcp}
+		<h3 class="mt-5 text-xs font-medium text-muted">DHCP</h3>
+		<DhcpPool pool={report.dhcp} />
+	{/if}
+
+	{#if report.mesh?.members.length}
+		<h3 class="mt-5 text-xs font-medium text-muted">FRITZ!Mesh</h3>
+		<FritzMesh mesh={report.mesh} />
+	{/if}
+	{#if report.wireguard}
+		<h3 class="mt-5 text-xs font-medium text-muted">WireGuard</h3>
+		<FritzWireguard wg={report.wireguard} />
 	{/if}
 
 	<h3 class="mt-5 text-xs font-medium text-muted">Ways in from the internet</h3>

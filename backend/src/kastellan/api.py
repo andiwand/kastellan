@@ -18,7 +18,7 @@ from . import ups as upsmod
 from .access_api import router as access_router
 from .act_api import router as act_router
 from .alarms_api import router as alarms_router
-from .auth_api import Guard
+from .auth_api import Guard, client_address, require_admin
 from .auth_api import router as auth_router
 from .backups_api import router as backups_router
 from .config import Check, Device, Kind
@@ -330,6 +330,14 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "host_checked": status.host_checked if status else None,
                     "host_error": status.host_error if status else None,
                     "outdated_scripts": [] if hub.demo else outdated_scripts(device, status),
+                    "new_abilities": {
+                        kind: new
+                        for kind, configured, installed in (
+                            ("actor", device.act, status.actor_abilities if status else None),
+                            ("openwrt", device.openwrt, status.router_abilities if status else None),
+                        )
+                        if configured is not None and (new := hub.offered.new(id, kind, installed))
+                    },
                     "exposed": device.exposed,
                     "web_url": web_upstream(device),
                     **where(device, status),
@@ -340,6 +348,21 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                 }
             )
         return out
+
+    @app.post("/api/devices/{id}/abilities/{kind}/not-needed")
+    def not_needed(id: str, kind: str, request: Request) -> dict[str, Any]:
+        """New abilities of the actor or OpenWrt login there: not wanted (Updates stops asking)."""
+        w = require_admin(request)
+        status = hub.monitor.status.get(id)
+        if id not in hub.config.devices or kind not in ("actor", "openwrt") or status is None:
+            raise HTTPException(404, "no such device or kind")
+        installed = status.actor_abilities if kind == "actor" else status.router_abilities
+        new = hub.offered.new(id, kind, installed)
+        hub.offered.passed(id, kind, new)
+        hub.audit.record(
+            "abilities.not-needed", w.user, client_address(request.scope), device=id, kind=kind, abilities=new
+        )
+        return {"passed": new}
 
     @app.get("/api/devices/{id}/history")
     def history(id: str, hours: Hours = 24) -> list[dict[str, Any]]:

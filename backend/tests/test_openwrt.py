@@ -113,8 +113,14 @@ class FakeRpcd:
         if obj == "file":  # the file plugin checks the path too
             path = args.get("command") or args.get("path")
             return self.file_allowed(path, {"remove": "write"}.get(method, method))
-        if obj == "uci":
-            return args.get("config") in (None, "wireless")
+        if obj == "uci":  # rpcd's uci scope: the configurations a group names
+            configs = {
+                c
+                for g in self.groups
+                for kind in ("read", "write")
+                for c in acl()[g].get(kind, {}).get("uci", [])
+            }
+            return args.get("config") is None or args.get("config") in configs
         return True
 
     def upload(self, request: httpx.Request) -> httpx.Response:

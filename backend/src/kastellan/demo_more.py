@@ -145,6 +145,46 @@ FRITZ = {
             },
         ],
         "remote": {"remote_access": False, "myfritz": True},
+        "mesh": {
+            "members": [
+                {
+                    "uid": "n1",
+                    "name": "fritz.box",
+                    "model": "FRITZ!Box 7590",
+                    "role": "master",
+                    "mac": None,
+                    "firmware": "8.20",
+                },
+                {
+                    "uid": "n2",
+                    "name": "Repeater hall",
+                    "model": "FRITZ!Repeater 1200 AX",
+                    "role": "repeater",
+                    "mac": None,
+                    "firmware": "8.20",
+                },
+            ],
+            "links": [
+                {"a": "n1", "b": "n2", "type": "WLAN", "rate_rx": 1201000, "rate_tx": 960000, "signal": -58}
+            ],
+        },
+        "wireguard": {
+            "server": "abc123.myfritz.net",
+            "port": "51820",
+            "address": "192.168.178.1",
+            "connections": [
+                {
+                    "kind": "device",
+                    "name": "Ada's phone",
+                    "active": True,
+                    "status": "connected",
+                    "last_handshake": "2 min ago",
+                    "endpoint": None,
+                    "networks": None,
+                },
+            ],
+            "error": None,
+        },
         "errors": {},
     }
 }

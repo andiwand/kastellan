@@ -59,6 +59,8 @@ class DeviceStatus:
     fritz: dict[str, Any] | None = None  # a FRITZ!Box's state (fritzbox/client.py)
     fritz_checked: datetime | None = None
     fritz_error: str | None = None
+    actor_abilities: list[str] | None = None  # what the actor there may do (host/actor.py)
+    router_abilities: list[str] | None = None  # what the OpenWrt login there may do
     actor_outdated: list[str] | None = None  # the actor's scripts older than the hub's (host/actor.py)
 
     @property

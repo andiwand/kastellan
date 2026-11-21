@@ -325,6 +325,21 @@ def radios_from(
         for b in s.get("bssids") or []:
             own_bssids[b.lower()] = f"{s['device']}/{s['radio']}"
     out: list[Radio] = []
+
+    def heard(radio: Radio, scan: dict[str, Any]) -> None:
+        """What the radio's newest scan heard: our other radios, the neighbours, busy channels."""
+        for n in scan.get("neighbours") or []:
+            mine = own_bssids.get(str(n.get("bssid") or "").lower())
+            if mine and mine != radio.key:
+                radio.hears[mine] = max(radio.hears.get(mine, -200), n.get("signal") or -100)
+            elif not mine:
+                radio.neighbours.append(n)
+        radio.busy = {
+            _channel_of(int(x["mhz"])): int(x["busy"])
+            for x in scan.get("survey") or []
+            if x.get("mhz") and x.get("busy") is not None
+        }
+
     for device, values in settings.items():
         for r in values.get("radios") or []:
             band = r.get("band") or ""
@@ -347,17 +362,7 @@ def radios_from(
                 if scan.get("freqs")
                 else None,
             )
-            for n in scan.get("neighbours") or []:
-                mine = own_bssids.get(str(n.get("bssid") or "").lower())
-                if mine and mine != radio.key:
-                    radio.hears[mine] = max(radio.hears.get(mine, -200), n.get("signal") or -100)
-                elif not mine:
-                    radio.neighbours.append(n)
-            radio.busy = {
-                _channel_of(int(x["mhz"])): int(x["busy"])
-                for x in scan.get("survey") or []
-                if x.get("mhz") and x.get("busy") is not None
-            }
+            heard(radio, scan)
             out.append(radio)
     for device, networks in fritz.items():
         seen: set[str] = set()
@@ -365,16 +370,16 @@ def radios_from(
             if n.get("guest") or n.get("band") not in ("2g", "5g") or n["band"] in seen:
                 continue
             seen.add(n["band"])
-            out.append(
-                Radio(
-                    device,
-                    f"wlan{n['index']}",
-                    n["band"],
-                    n.get("channel") or None,
-                    20 if n["band"] == "2g" else 80,
-                    allowed=[c for c in n.get("possible_channels") or [] if c] or None,
-                )
+            radio = Radio(
+                device,
+                f"wlan{n['index']}",
+                n["band"],
+                n.get("channel") or None,
+                20 if n["band"] == "2g" else 80,
+                allowed=[c for c in n.get("possible_channels") or [] if c] or None,
             )
+            heard(radio, newest.get(radio.key) or {})  # its own scan, from its web interface
+            out.append(radio)
     return out
 
 

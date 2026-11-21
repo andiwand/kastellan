@@ -1,4 +1,5 @@
 <script lang="ts">
+	import FritzWireguard from '#lib/components/FritzWireguard.svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
@@ -129,6 +130,19 @@
 	Who can reach the network from outside, and how. Kastellan manages each VPN's clients; it doesn't
 	run the VPN itself.
 </p>
+
+{#each (store.devices ?? []).filter((d) => d.fritz?.wireguard) as d (d.id)}
+	<section class="card mt-5 p-4">
+		<h2 class="text-sm font-semibold">
+			WireGuard on <a class="hover:underline" href="/devices/{d.id}">{d.name}</a>
+		</h2>
+		<div class="mt-1"><FritzWireguard wg={d.fritz!.wireguard!} /></div>
+		<p class="mt-2 text-xs text-faint">
+			Read from the FRITZ!Box; connections are added in FRITZ!OS (Internet → Permit Access → VPN
+			(WireGuard)).
+		</p>
+	</section>
+{/each}
 
 {#if canSetUp}
 	<div class="mt-5">

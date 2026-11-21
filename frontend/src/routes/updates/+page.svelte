@@ -1,4 +1,15 @@
 <script lang="ts">
+	import { more } from '#lib/api.js';
+	const ABILITY: Record<string, string> = {
+		'rollback-container': 'going back to a container’s previous image',
+		'container-logs': 'container logs',
+		'unit-logs': 'service logs',
+		journal: 'the host’s journal for Logs',
+		'docker-logs': 'every container’s log for Logs',
+		logs: 'its system log for Logs',
+		backup: 'configuration backups',
+		scan: 'Wi-Fi scans'
+	};
 	import { store } from '#lib/state.svelte.js';
 	import { updatesOf, type Update } from '#lib/updates.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
@@ -49,7 +60,8 @@
 		reboot: 'Reboot',
 		firmware: 'Update firmware',
 		'router-packages': '',
-		scripts: ''
+		scripts: '',
+		abilities: ''
 	};
 	// Whether Kastellan may do it on that device at all (the host decides in the end).
 	const possible = (u: Update) =>
@@ -157,13 +169,13 @@
 				/>
 				<span>All Kastellan can do here</span>
 			</label>
-			<button
-				class="btn btn-sm btn-primary"
-				disabled={!chosen.length}
-				onclick={() => (confirmAll = true)}
-			>
-				Update selected{chosen.length ? ` (${chosen.length})` : ''}
-			</button>
+			{#if chosen.length}
+				<button class="btn btn-sm btn-primary" onclick={() => (confirmAll = true)}>
+					Update selected ({chosen.length})
+				</button>
+			{:else}
+				<span class="text-xs text-muted">or tick some to run them one after another</span>
+			{/if}
 		</div>
 		{#if confirmAll && chosen.length}
 			<div class="card mt-3 p-4 text-sm">
@@ -195,14 +207,19 @@
 			{@const key = keyOf(u)}
 			<li class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
 				{#if runnable.length}
-					<input
-						type="checkbox"
-						class="shrink-0"
-						aria-label="Choose this update"
-						value={key}
-						bind:group={selected}
-						disabled={!jobOf(u) || busyOf(u)}
-					/>
+					<!-- Only what can go in a batch gets a box; the rest has its own button. -->
+					{#if jobOf(u)}
+						<input
+							type="checkbox"
+							class="shrink-0"
+							aria-label="Choose this update"
+							value={key}
+							bind:group={selected}
+							disabled={busyOf(u)}
+						/>
+					{:else}
+						<span class="inline-block size-[13px] shrink-0" aria-hidden="true"></span>
+					{/if}
 				{/if}
 				<a href="/devices/{u.device.id}" class="flex w-48 min-w-0 items-center gap-2.5 text-sm">
 					<KindIcon kind={u.device.kind} class="size-4 shrink-0 text-muted" />
@@ -233,6 +250,10 @@
 					{:else if u.kind === 'scripts'}
 						Kastellan's {u.names.join(' and ')} there
 						<span class="text-xs text-muted">· older than this Kastellan</span>
+					{:else if u.kind === 'abilities'}
+						New for its {u.login === 'actor' ? 'actor' : 'OpenWrt login'}:
+						{u.names.map((n) => ABILITY[n] ?? n).join(', ')}
+						<span class="text-xs text-muted">· not ticked there yet</span>
 					{:else}
 						{u.names.length} OpenWrt {u.names.length === 1 ? 'package' : 'packages'}
 						<span class="text-xs text-muted">· come with the next firmware</span>
@@ -268,6 +289,22 @@
 							</button>
 						{/if}
 					</div>
+				{:else if u.kind === 'abilities'}
+					{#if admin}
+						<div class="flex items-center gap-2">
+							<a class="btn btn-sm" href="/devices/{u.device.id}?tab=setup">Set up</a>
+							<button
+								class="btn btn-sm"
+								title="Updates stops offering these for this device"
+								onclick={async () => {
+									await more.notNeeded(u.device.id, u.login);
+									await store.refresh();
+								}}
+							>
+								Not needed
+							</button>
+						</div>
+					{/if}
 				{:else if u.kind === 'scripts'}
 					{#if admin}
 						<button

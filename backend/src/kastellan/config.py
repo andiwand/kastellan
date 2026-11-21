@@ -72,6 +72,7 @@ class CheckType(StrEnum):
     TCP = "tcp"
     HTTP = "http"
     DNS = "dns"  # does a name resolve (to what): checks.py
+    DHCP = "dhcp"  # does the device's DHCP server answer (and nobody else's): dhcp.py
 
 
 LABEL = r"[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?"
@@ -109,7 +110,7 @@ class Check(BaseModel):
             return data
         kinds = [t for t in CheckType if t.value in data]
         if len(kinds) != 1:
-            raise ValueError("a check is one of: ping, tcp: <port>, http: <url>, dns: <name>")
+            raise ValueError("a check is one of: ping, tcp: <port>, http: <url>, dns: <name>, dhcp")
         data = dict(data)
         kind = kinds[0]
         return {"type": kind, "target": data.pop(kind.value), **data}
@@ -138,8 +139,14 @@ class Check(BaseModel):
             raise ValueError("expect: a status code for http, addresses for dns")
         if self.server and self.type is not CheckType.DNS:
             raise ValueError("server: is for dns checks")
+        if self.type is CheckType.DHCP and self.target is not None:
+            raise ValueError("dhcp takes nothing: it asks the network and expects the device to answer")
         if not self.name:
-            self.name = self.type.value if self.type is CheckType.PING else f"{self.type.value}:{self.target}"
+            self.name = (
+                self.type.value
+                if self.type in (CheckType.PING, CheckType.DHCP)
+                else f"{self.type.value}:{self.target}"
+            )
         if self.tls and not (isinstance(self.target, str) and self.target.startswith("https://")):
             raise ValueError("tls: true is for https checks")
         if self.name.startswith("@"):
@@ -281,7 +288,7 @@ class Device(BaseModel):
         def reachable(check: Check) -> bool:
             if check.exposed:
                 return True
-            if check.type in (CheckType.PING, CheckType.DNS):
+            if check.type in (CheckType.PING, CheckType.DNS, CheckType.DHCP):
                 return False  # not a service of the device
             target = check.hostname or self.host
             return public_name(target) or (own if target == self.host else is_public(target))

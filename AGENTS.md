@@ -126,6 +126,17 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     before writing; `--force` replaces existing state. Old unsigned stores can still be
     downloaded as authenticated `.kbak` files from the original hub. Recovery checks don't
     unlock rings. External unlock keys must be backed up separately.
+  - `dhcp.py`: the `dhcp` check (a DHCPDISCOVER from UDP 68 with a fixed local MAC, offers
+    collected; up when the device's address offers), `UNEXPECTED` servers for
+    `hub._dhcp_problems` (also a pool at 90 %); router pools: OpenWrt `report["dhcp"]` (leases +
+    uci dhcp start/limit, the read group's `uci: [dhcp]` scope), FRITZ!Box LANHostConfigManagement.
+    New lease MACs are info events (`newdevice:<mac>`, many at once summed up).
+  - Stored logins (`setup_run.stored_logins`/`resolve`/`remember`): a setup's `Login` may name a
+    People-ring entry stored for that device (never another), or keep the typed one there;
+    `WebLogin.svelte` copies a device's stored web login after the admin's password.
+  - `fritzbox/web.py`: the FRITZ!Box web interface's undocumented API (login_sid.lua PBKDF2,
+    data.lua: `chan`/`environment` neighbours, `shareWireguard`), port 443, same pin as TR-064.
+    `fritzbox.client.confirmed`: AVM's second factor (866) waited for via X_AVM-DE_Auth.
   - `fritzbox/client.py` + `fritzbox_api.py`: TR-064 over HTTPS (49443) with a FRITZ!Box user
     (`fritzbox: {user, port}`, secret `fritzbox-<id>`), Digest auth by hand over a TLS connection
     whose certificate is pinned (`<data>/fritzbox/<id>.sha256`, confirmed by an admin at setup:

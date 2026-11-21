@@ -467,3 +467,43 @@ def test_symlinked_state_is_reported_instead_of_silently_omitted(tmp_path):
     (data / "ssh/external").symlink_to(target)
     with pytest.raises(ValueError, match="symlink"):
         hb.take(data, config, 2, False, False)
+
+
+def test_a_backup_that_opens_with_the_key_rings(tmp_path: Path) -> None:
+    import json
+
+    from kastellan.vault import KASTELLAN, Vault
+
+    data, config = hub_data(tmp_path / "old")
+    (data / "vault.json").unlink()
+    vault = Vault(data / "vault.json")
+    recovery = vault.create("ada", "ada's password", "tag")[KASTELLAN]
+    made = hubbackup.make_keyring_key()
+    vault.put(hubbackup.KEY_SECRET, json.dumps({"salt": "", "key": made["key"]}), ring=KASTELLAN)
+    key = base64.b64decode(made["key"])
+    hb = hubbackup.HubBackup(data, lambda: key)
+    hb.start(made)
+    assert hb.header()["keyring"] and "salt" not in hb.header()
+    snap, _ = hb.take(data, config, keep=10, history=True, logs=False)
+    assert (hb.folder / hubbackup.KEYRING).read_bytes() == (data / "vault.json").read_bytes()
+    target = tmp_path / "nas"
+    hubbackup.copy_tree(hb.folder, target)
+    assert (target / hubbackup.KEYRING).exists()
+
+    with pytest.raises(ValueError):
+        hubbackup.restore(target, "", tmp_path / "x", tmp_path / "x.yaml", user="ada", password="wrong")
+    with pytest.raises(ValueError):  # a passphrase is no way into it
+        hubbackup.restore(target, "ANY-PASSPHRASE", tmp_path / "y", tmp_path / "y.yaml")
+    done = hubbackup.restore(
+        target, "", tmp_path / "a", tmp_path / "a.yaml", user="ada", password="ada's password"
+    )
+    assert done["version"] == snap.id and (tmp_path / "a.yaml").read_text() == config.read_text()
+    done = hubbackup.restore(target, "", tmp_path / "r", tmp_path / "r.yaml", recovery=recovery)
+    assert (tmp_path / "r" / "ssh" / "hub_ed25519").read_text() == "PRIVATE KEY"
+
+    blob = hubbackup.encrypted_archive(hb.store, hb.header(), snap.id, key)
+    (tmp_path / "k.kbak").write_bytes(blob)
+    out = hubbackup.restore_file(
+        tmp_path / "k.kbak", "", tmp_path / "f", tmp_path / "f.yaml", user="ada", password="ada's password"
+    )
+    assert out["files"] >= 7

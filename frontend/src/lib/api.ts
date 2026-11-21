@@ -2,7 +2,7 @@ export type CheckState = 'unknown' | 'up' | 'partial' | 'down';
 
 export interface CheckStatus {
 	name: string;
-	type: 'ping' | 'tcp' | 'http' | 'dns';
+	type: 'ping' | 'tcp' | 'http' | 'dns' | 'dhcp';
 	target: string | number | null;
 	exposed?: boolean; // reachable from the internet (this service)
 	up?: boolean | null;
@@ -63,6 +63,8 @@ export interface Device {
 	router?: RouterReport | null;
 	router_checked?: string | null;
 	router_error?: string | null;
+	/** Abilities Kastellan offers that its login there hasn't been given (Updates). */
+	new_abilities?: { actor?: string[]; openwrt?: string[] };
 	syslog_cert?: boolean; // it has a certificate to send syslog over TLS
 	fritzbox?: boolean; // a FRITZ!Box Kastellan reads through TR-064 with its own user
 	fritz?: FritzReport | null;
@@ -152,7 +154,29 @@ export interface ActSetup {
 }
 
 /** An OpenWrt device's state (openwrt/client.py). */
+/** A router's DHCP server (openwrt/client.py, fritzbox/client.py). */
+export interface DhcpPool {
+	server?: boolean;
+	pools:
+		| {
+				interface: string;
+				start: number | string | null;
+				end?: string | null;
+				size: number | null;
+		  }[]
+		| null;
+	size: number | null;
+	used: number;
+	leases: {
+		mac: string | null;
+		name: string | null;
+		address: string | null;
+		expires: number | null;
+	}[];
+}
+
 export interface RouterReport {
+	dhcp?: DhcpPool | null;
 	board: {
 		model: string | null;
 		hostname: string | null;
@@ -782,7 +806,7 @@ export type Change =
 
 /** A check as config.yaml has it (the forms). */
 export interface CheckForm {
-	type: 'ping' | 'tcp' | 'http' | 'dns';
+	type: 'ping' | 'tcp' | 'http' | 'dns' | 'dhcp';
 	target: string | number | null;
 	name: string;
 	expect?: number | string[] | null; // http: a status; dns: addresses among the answers
@@ -1112,6 +1136,12 @@ export interface FritzWifi {
 	clients: number;
 	bssid: string | null;
 	wps?: boolean;
+	associated?: {
+		mac: string | null;
+		address: string | null;
+		signal: number | null;
+		speed: number | null;
+	}[];
 }
 
 export interface FritzReport {
@@ -1163,6 +1193,41 @@ export interface FritzReport {
 		  }[]
 		| null;
 	remote: { remote_access?: boolean; remote_port?: number | null; myfritz?: boolean };
+	dhcp?: DhcpPool | null;
+	mesh?: {
+		members: {
+			uid: string;
+			name: string | null;
+			model: string | null;
+			role: string | null;
+			mac: string | null;
+			firmware: string | null;
+		}[];
+		links: {
+			a: string;
+			b: string;
+			type: string | null;
+			rate_rx: number | null;
+			rate_tx: number | null;
+			signal: number | null;
+		}[];
+	} | null;
+	/** Read through the web interface's undocumented API: may be missing after a FRITZ!OS update. */
+	wireguard?: {
+		server: string | null;
+		port: string | null;
+		address: string | null;
+		connections: {
+			kind: 'device' | 'network';
+			name: string;
+			active: unknown;
+			status: unknown;
+			last_handshake: unknown;
+			endpoint: unknown;
+			networks: unknown;
+		}[];
+		error: string | null;
+	};
 	errors: Record<string, string>;
 }
 
@@ -1353,6 +1418,11 @@ export const more = {
 		call<{ lines: LogLine[]; levels: string[] }>('GET', `/logs${logQuery(f)}`),
 	logFacets: (hours = 24) => get<LogFacets>('/logs/facets', { hours }),
 	logSources: () => get<LogSources>('/logs/sources'),
+	notNeeded: (id: string, kind: 'actor' | 'openwrt') =>
+		call<{ passed: string[] }>(
+			'POST',
+			`/devices/${encodeURIComponent(id)}/abilities/${kind}/not-needed`
+		),
 	syslogState: (id: string) =>
 		get<{
 			issued: boolean;
