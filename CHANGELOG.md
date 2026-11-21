@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.10.0 (2026-11-21)
+
+Kastellan's own backup, central logs, device configuration backups, FRITZ!Box accounts,
+internet monitoring and a Wi-Fi page.
+
+### Upgrading
+
+- Make the hub backup's passphrase on the Backups page (shown once: write it down) and add a
+  place for copies away from the hub (Settings → Kastellan's own backup).
+- Set up OpenWrt logins again and tick the new abilities (logs, backup, scan); existing logins
+  keep exactly what they had.
+- For hosts' journals and container logs, set the actor up again and tick "Read the host's
+  journal" and "Read every container's log".
+- A FRITZ!Box gets its own Kastellan user from its Setup tab.
+
 ### Added
 
 - **Hub backups:** encrypted configuration and state, local or SFTP copies, offline restore,
@@ -21,12 +36,6 @@
 - **Wi-Fi:** networks across OpenWrt and FRITZ!Box, scans and channel suggestions. Changes
   require approval; OpenWrt uses rollback. Optional daily scans default to 04:00 hub time.
 - Settings forms for internet checks, scans, logs and device backups.
-
-### Upgrading
-
-- Set up OpenWrt logins again and tick the new abilities (logs, backup, scan) to use them;
-  existing logins keep exactly what they had. For hosts' journals, set the actor up again and
-  tick "Read the host's journal" and "Read every container's log".
 
 ### Fixed
 
