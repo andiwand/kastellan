@@ -58,13 +58,14 @@ own; it does not talk to Norn.
 - [x] Push notifications to browsers (behind HTTPS)
 - [x] VPN: its key rotated; last seen per client
 - [x] Sites; DNS checks
+- [x] Key rings: encrypted secrets and logins, ways to open and levels per ring
 
 ## Next
 
 - [ ] A consistent DNS + HTTPS setup for Kastellan and the services (to discuss)
 - [ ] Signing in to device pages for you (needs stored passwords: see the next item)
-- [ ] Stored credentials encrypted at rest; maybe unlocked by the user's own sign-in (to think
-      through)
+- [ ] Key rings, phase 2: service accounts per device, config.yaml naming credentials
+      (notification tokens, the NVD key), where each is used
 - [ ] Device pages kept apart from each other (they share one site through the hub now)
 - [ ] Versions for the OpenWrt and VPN helper scripts (as for the collector and actor)
 - [ ] Same-major updates offered next to a newer major (auto-update needs them)

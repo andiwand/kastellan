@@ -218,6 +218,7 @@
         <li><svg><use href="#i-server"/></svg><div><b>Hosts</b><span>Disks, RAID, health, services, containers; updates and restarts where allowed.</span></div></li>
         <li><svg><use href="#i-terminal"/></svg><div><b>Terminal &amp; desktop</b><span>SSH, RDP and VNC in the browser, through Apache Guacamole.</span></div></li>
         <li><svg><use href="#i-key"/></svg><div><b>VPN &amp; keys</b><span>WireGuard and OpenVPN clients and when they were last seen; SSH keys and known hosts kept alike across hosts, rotation of Kastellan's own.</span></div></li>
+        <li><svg><use href="#i-lock"/></svg><div><b>Key rings</b><span>Passwords, tokens and keys encrypted, each ring opened as securely as you choose.</span></div></li>
         <li><svg><use href="#i-desktop"/></svg><div><b>Device pages</b><span>A router's or camera's own web page, opened through Kastellan.</span></div></li>
         <li><svg><use href="#i-wifi"/></svg><div><b>OpenWrt</b><span>Clients, services, Wi-Fi and firmware updates; Wi-Fi, mesh and root password kept the same across a group.</span></div></li>
       </ul>
@@ -226,7 +227,6 @@
       <h3><span class="badge">Next</span></h3>
       <ul>
         <li><svg><use href="#i-laptop"/></svg><div><b>A small agent</b><span>For Windows, macOS and laptops away from home, downloaded ready from the app; it reports in, no open ports.</span></div></li>
-        <li><svg><use href="#i-lock"/></svg><div><b>Secrets at rest</b><span>Passwords and tokens Kastellan keeps, encrypted with age.</span></div></li>
         <li><svg><use href="#i-radar"/></svg><div><b>Discovery</b><span>New devices on the network, as they appear.</span></div></li>
       </ul>
     </div>
@@ -264,7 +264,7 @@
   <div class="code">
     <div class="code-bar"><span>Terminal</span><button class="copy" data-copy="run" type="button">Copy</button></div>
 <pre id="run"><code>docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 \
-  ghcr.io/andiwand/kastellan:0.6.0
+  ghcr.io/andiwand/kastellan:0.7.0
 <span class="c"># then open http://localhost:8100</span></code></pre>
   </div>
 </section>

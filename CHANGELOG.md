@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-11-21)
+
+Key rings: Kastellan's secrets and people's logins encrypted, opened as securely as you choose.
+And the actor works with today's Docker again.
 
 - Key rings (Keys): passwords, tokens and Kastellan's SSH keys that can change things,
   encrypted, with nothing of them (nor the keys that open them) on disk as plain text. Rings
