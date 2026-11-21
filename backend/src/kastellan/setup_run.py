@@ -47,6 +47,8 @@ async def connect(
     hub: Hub, host: str, body: Login, audit: Callable[..., None]
 ) -> asyncssh.SSHClientConnection:
     """Log in with the typed password; HTTP errors for the page (and audited)."""
+    if hub.demo:  # its hosts are made up: a real machine at that address must never be touched
+        raise HTTPException(409, "demo mode shows a made-up network; nothing is set up there")
     try:
         return await hub.keys.connect(Target(host, body.port, body.login), password=body.password)
     except (UnknownHost, ChangedHost) as e:
@@ -205,6 +207,21 @@ def stream(
         queue.put_nowait(None)
 
     return _hub_task(run(), queue)
+
+
+def remove_device_key(hub: Hub, user: str | None, address: str | None, id: str, key: str) -> bool:
+    """After removing something from a host: its `<key>:` off the device in config.yaml (checked,
+    saved and audited like any edit). Whether it was there."""
+    from . import config_edit
+
+    if getattr(hub.config.devices[id], key) is None:
+        return False
+    old = config_edit.read(hub.settings.config)
+    new = config_edit.set_device_key(old, id, key, None)
+    hub.check(new)
+    hub.save_config(old, new)
+    hub.audit.record("config.device.change", user, address, device=id, changes=config_edit.diff(old, new))
+    return True
 
 
 def add_device_key(

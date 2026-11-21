@@ -3,6 +3,7 @@
 	import { store } from '#lib/state.svelte.js';
 	import JobDialog from '#lib/components/JobDialog.svelte';
 	import GroupDialog from '#lib/components/GroupDialog.svelte';
+	import GroupSsh from '#lib/components/GroupSsh.svelte';
 	import StatusDot from '#lib/components/StatusDot.svelte';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import { settings, copy } from '#lib/settings.svelte.js';
@@ -11,11 +12,12 @@
 	import { untrack } from 'svelte';
 
 	/** Groups of devices (`groups:` in config.yaml), any kind. For their OpenWrt members: Wi-Fi
-	 * networks lined up by name, the mesh, root's password, each changed on all at once. The
-	 * devices are the truth: nothing of that is stored, it is read from them. */
-	let groups = $state<{ id: string; name: string; devices: string[]; openwrt: string[] }[] | null>(
-		null
-	);
+	 * networks lined up by name, the mesh, root's password, each changed on all at once; for
+	 * those with `ssh:`, their authorized_keys and known_hosts (GroupSsh). The devices are the
+	 * truth: nothing of that is stored, it is read from them. */
+	let groups = $state<
+		{ id: string; name: string; devices: string[]; openwrt: string[]; ssh: string[] }[] | null
+	>(null);
 	let editing = $state<{ id: string | null } | null>(null);
 	let deleting = $state<string | null>(null);
 	let deleteError = $state<string | null>(null);
@@ -311,6 +313,9 @@
 					{/if}
 				{/if}
 			</div>
+		{/if}
+		{#if g.ssh.length && store.me?.role === 'admin' && !store.health?.demo}
+			<GroupSsh group={g.id} {canChange} />
 		{/if}
 	</section>
 {/each}

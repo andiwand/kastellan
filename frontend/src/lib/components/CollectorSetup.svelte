@@ -12,6 +12,7 @@
 	let note = $state<string | null>(null);
 	let busy = $state(false);
 	let installing = $state(false);
+	let removing = $state(false);
 
 	async function load() {
 		error = null;
@@ -74,8 +75,11 @@
 					<button class={button} onclick={test} disabled={busy}>Try it now</button>
 				{/if}
 				<button class={button} onclick={() => (installing = true)}>
-					{setup.configured ? 'Install again' : 'Install'}
+					{setup.configured ? 'Set up again' : 'Install'}
 				</button>
+				{#if setup.configured}
+					<button class={button} onclick={() => (removing = true)}>Remove</button>
+				{/if}
 			</span>
 		</div>
 	{/if}
@@ -90,6 +94,24 @@
 		port={setup.port}
 		canRun={canInstall}
 		onclose={() => (installing = false)}
+		ondone={async (o) => {
+			if (o.ok) {
+				await store.refresh();
+				await load();
+			}
+		}}
+	/>
+{/if}
+
+{#if removing && setup}
+	<SetupDialog
+		title="Remove the collector"
+		intro="Kastellan logs in once with your login and takes the collector off this host as root: its user, script and sudo rule. Then collect: goes from this device in config.yaml."
+		path="/devices/{encodeURIComponent(device)}/collect/uninstall"
+		script={setup.uninstall}
+		port={setup.port}
+		canRun={canInstall}
+		onclose={() => (removing = false)}
 		ondone={async (o) => {
 			if (o.ok) {
 				await store.refresh();

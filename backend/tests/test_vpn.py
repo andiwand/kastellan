@@ -74,3 +74,36 @@ def test_openvpn_status_versions_and_last_seen(tmp_path: Path) -> None:
     seen.note([], datetime(2026, 11, 21, 11, tzinfo=UTC))  # gone: the last time stays
     again = Seen(tmp_path / "vpn")
     assert again.last == {"carol": "2026-11-21T10:00:00+00:00"}
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ("!no-servers\n", "no OpenVPN server found on gw"),
+        ("== server\n!no-status\n", "keeps no status file"),
+        ("== server\n!unreadable\n", "can't be read"),
+        ("== server\n", None),  # a server nobody is connected to
+    ],
+)
+async def test_the_hub_says_why_nobody_is_seen(tmp_path: Path, monkeypatch, text: str, error) -> None:
+    from types import SimpleNamespace
+
+    from kastellan import hub as hub_module
+    from kastellan.vpn.openvpn import Seen
+
+    async def status(ubus) -> str:
+        return text
+
+    monkeypatch.setattr(hub_module.openwrt_client, "openvpn_status", status)
+    me = SimpleNamespace(ovpn_seen=Seen(tmp_path), ovpn_status={"connected": [{"name": "old"}]})
+    await hub_module.Hub._read_openvpn(me, "gw", None)  # type: ignore[arg-type]
+    assert me.ovpn_status["connected"] == []
+    assert (error is None and me.ovpn_status["error"] is None) or error in me.ovpn_status["error"]
+
+    async def broken(ubus) -> str:
+        raise RuntimeError("Access denied")
+
+    monkeypatch.setattr(hub_module.openwrt_client, "openvpn_status", broken)
+    me.ovpn_status = {"checked": "x", "connected": [{"name": "old"}], "error": None}
+    await hub_module.Hub._read_openvpn(me, "gw", None)  # type: ignore[arg-type]
+    assert me.ovpn_status["connected"] == [] and me.ovpn_status["error"]

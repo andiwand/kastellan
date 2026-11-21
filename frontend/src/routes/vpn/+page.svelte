@@ -288,7 +288,7 @@
 									· ↓ {bytes(c.connected.rx)} ↑ {bytes(c.connected.tx)}{/if}
 							{:else if c.last_seen}
 								· last seen {ago(c.last_seen, store.now)}
-							{:else if vpn.openvpn.seen?.how === 'openwrt' && vpn.openvpn.seen.checked}
+							{:else if vpn.openvpn.seen?.how === 'openwrt' && vpn.openvpn.seen.checked && !vpn.openvpn.seen.error}
 								· not seen yet
 							{/if}
 						</p>

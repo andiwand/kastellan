@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from kastellan import checks
 from kastellan.config import Check
@@ -75,6 +76,7 @@ async def test_http_with_a_wrong_charset_still_works() -> None:
 
 async def test_dns(monkeypatch) -> None:
     import dns.asyncresolver
+    import dns.exception
     import dns.resolver
 
     asked: list[tuple[str, str, list[str]]] = []
@@ -83,10 +85,14 @@ async def test_dns(monkeypatch) -> None:
         def __init__(self, configure: bool = True) -> None:
             self.nameservers: list[str] = []
 
-        async def resolve(self, name: str, rdtype: str):
+        async def resolve(self, name: str, rdtype: str, search: bool = False):
+            assert search  # a single name gets the search domains
             asked.append((name, rdtype, self.nameservers))
             if name == "gone.example":
                 raise dns.resolver.NXDOMAIN
+            if rdtype == "AAAA" and name == "router.example":
+                await asyncio.sleep(30)  # a router that drops AAAA questions: no answer at all
+                raise dns.exception.Timeout
             if rdtype == "AAAA":
                 raise dns.resolver.NoAnswer
             return [type("R", (), {"to_text": lambda self: "192.0.2.1"})()]
@@ -98,3 +104,7 @@ async def test_dns(monkeypatch) -> None:
     assert not wrong.up and "not 192.0.2.9" in wrong.detail
     gone = await checks.run("x", Check.model_validate({"dns": "gone.example"}))
     assert not gone.up and gone.detail == "no such name"
+    started = time.perf_counter()
+    dropped = await checks.run("x", Check.model_validate({"dns": "router.example"}))
+    assert dropped.up and dropped.detail == "192.0.2.1" and dropped.latency_ms < 100
+    assert time.perf_counter() - started < 2  # AAAA got a moment, not the time limit

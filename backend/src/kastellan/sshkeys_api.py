@@ -41,20 +41,7 @@ def router(hub: Hub) -> APIRouter:
     rotator = sshkeys.Rotator(hub.keys)
 
     def labels() -> dict[str, str]:
-        """Kastellan's own keys by fingerprint, named for the page."""
-        out = {hub.keys.hub_key().get_fingerprint(): "Kastellan"}
-        for which, name in (("next", "Kastellan (new key)"), ("old", "Kastellan (old key)")):
-            key = hub.keys.side_key(which)
-            if key is not None:
-                out[key.get_fingerprint()] = name
-        named = {"vpn": "Kastellan VPN", "collect": "Kastellan collector", "act": "Kastellan actor"}
-        for which, name in named.items():
-            if (hub.keys.folder / hub.keys.NAMES[which]).exists():
-                out[hub.keys.hub_key(which).get_fingerprint()] = name
-        for side in ("next", "old"):  # a VPN key rotation's other key
-            if key := hub.keys.side_key(side, "vpn"):
-                out[key.get_fingerprint()] = f"Kastellan VPN ({side} key)"
-        return out
+        return sshkeys.kastellan_keys(hub.keys)
 
     def device_of(id: str):
         device = hub.config.devices.get(id)

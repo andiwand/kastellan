@@ -217,7 +217,7 @@
         <li><svg><use href="#i-shield"/></svg><div><b>Vulnerabilities</b><span>NVD, OSV and CISA KEV for software, firmware and containers.</span></div></li>
         <li><svg><use href="#i-server"/></svg><div><b>Hosts</b><span>Disks, RAID, health, services, containers; updates and restarts where allowed.</span></div></li>
         <li><svg><use href="#i-terminal"/></svg><div><b>Terminal &amp; desktop</b><span>SSH, RDP and VNC in the browser, through Apache Guacamole.</span></div></li>
-        <li><svg><use href="#i-key"/></svg><div><b>VPN &amp; keys</b><span>WireGuard and OpenVPN clients and when they were last seen; SSH keys per host, rotation of Kastellan's own.</span></div></li>
+        <li><svg><use href="#i-key"/></svg><div><b>VPN &amp; keys</b><span>WireGuard and OpenVPN clients and when they were last seen; SSH keys and known hosts kept alike across hosts, rotation of Kastellan's own.</span></div></li>
         <li><svg><use href="#i-desktop"/></svg><div><b>Device pages</b><span>A router's or camera's own web page, opened through Kastellan.</span></div></li>
         <li><svg><use href="#i-wifi"/></svg><div><b>OpenWrt</b><span>Clients, services, Wi-Fi and firmware updates; Wi-Fi, mesh and root password kept the same across a group.</span></div></li>
       </ul>
@@ -264,7 +264,7 @@
   <div class="code">
     <div class="code-bar"><span>Terminal</span><button class="copy" data-copy="run" type="button">Copy</button></div>
 <pre id="run"><code>docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 \
-  ghcr.io/andiwand/kastellan:0.5.0
+  ghcr.io/andiwand/kastellan:0.6.0
 <span class="c"># then open http://localhost:8100</span></code></pre>
   </div>
 </section>

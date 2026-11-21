@@ -196,3 +196,20 @@ def test_terminal_ends_with_the_session(tmp_path: Path, ssh_server, monkeypatch:
 
         log = (tmp_path / "data" / "audit.log").read_text()
         assert log.count('"terminal.close"') == 2
+
+
+def test_trusting_a_device_before_its_ssh_is_set_up(tmp_path: Path, ssh_server) -> None:
+    """A setup's first login meets the host key before the device has `ssh:`: trusted by port."""
+    port, host_key = ssh_server
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"devices:\n  box:\n    host: 127.0.0.1\nusers:\n  ada:\n    role: admin\n    password: {HASH}\n"
+    )
+    with TestClient(
+        create_app(Settings(config=config, data=tmp_path / "data")), base_url="http://hub.lan"
+    ) as c:
+        signin(c, "ada")
+        body = {"fingerprint": host_key.get_fingerprint(), "port": port}
+        assert c.post("/api/devices/box/ssh/trust", json=body, headers=H).status_code == 200
+        known = (tmp_path / "data" / "ssh" / "known_hosts").read_text()
+        assert known.startswith(f"[127.0.0.1]:{port} ")

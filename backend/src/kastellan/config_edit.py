@@ -367,13 +367,19 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
 
 def set_device_key(text: str, id: str, key: str, value: Any) -> str:
     """config.yaml with one key of a device set (e.g. collect: after installing the collector),
-    everything else as it was."""
+    or removed (None), everything else as it was."""
     y = _yaml()
     doc = y.load(text)
     device = (doc or {}).get("devices", {}).get(id) if isinstance(doc, CommentedMap) else None
     if not isinstance(device, CommentedMap):
         raise KeyError(id)
     tail = _take_tail(device)
+    if value is None:
+        device.pop(key, None)
+        _put_tail(device, tail)
+        out = io.StringIO()
+        y.dump(doc, out)
+        return _keep_gaps(text, out.getvalue())
     node: Any = value
     if isinstance(value, dict):
         node = CommentedMap(value)
@@ -497,10 +503,21 @@ def _device_lines(lines: list[str], id: str) -> tuple[int, int, int]:
     start, col = devices.lc.key(id)
     if lines[start].split(":", 1)[1].split("#", 1)[0].strip():
         raise ValueError("the device is written on one line; change it in config.yaml")
+
+    def depth(line: str) -> int:
+        return len(line) - len(line.lstrip())
+
+    def comment(line: str) -> bool:
+        return line.lstrip().startswith("#")
+
+    # It ends at the next line of YAML as far left as its key; comments on the way (a line
+    # commented out at column 0 included) are inside it, except those just before what's next.
     end = start + 1
-    while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > col):
+    while end < len(lines) and (not lines[end].strip() or comment(lines[end]) or depth(lines[end]) > col):
         end += 1
-    while end > start + 1 and not lines[end - 1].strip():
+    while end > start + 1 and (
+        not lines[end - 1].strip() or (comment(lines[end - 1]) and depth(lines[end - 1]) <= col)
+    ):
         end -= 1
     body = [ln for ln in lines[start + 1 : end] if ln.strip() and not ln.lstrip().startswith("#")]
     indent = min((len(ln) - len(ln.lstrip()) for ln in body), default=col + 2)
@@ -523,4 +540,12 @@ def set_device_text(text: str, id: str, block: str) -> str:
     lines = text.splitlines()
     start, end, indent = _device_lines(lines, id)
     new = [" " * indent + ln if ln.strip() else "" for ln in block.expandtabs(2).rstrip().splitlines()]
-    return "\n".join([*lines[: start + 1], *new, *lines[end:]]) + "\n"
+    out = "\n".join([*lines[: start + 1], *new, *lines[end:]]) + "\n"
+    # Only this device may change: an anchor or alias in its text must not reach others.
+    before, after = YAML(typ="safe").load(text) or {}, YAML(typ="safe").load(out) or {}
+    for doc in (before, after):
+        if isinstance(doc, dict) and isinstance(doc.get("devices"), dict):
+            doc["devices"].pop(id, None)
+    if before != after:
+        raise ValueError("this would change more than this device (an anchor or alias?); use config.yaml")
+    return out

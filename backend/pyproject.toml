@@ -1,6 +1,6 @@
 [project]
 name = "kastellan"
-version = "0.5.0"
+version = "0.6.0"
 readme = "README.md"
 description = "One place to watch and administer every device on your home network"
 requires-python = ">=3.13"

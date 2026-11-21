@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from kastellan.host import actor
+from kastellan.host import actor, collector
 
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBgfPq3YGT1qT0EzQAp9VUdHPu+P2Q0Ck0tUjJmQNlpc kastellan-act"
 
@@ -413,3 +413,29 @@ def test_one_action_at_a_time(host) -> None:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)  # an upgrade runs
         r = run("restart-container", "app")
     assert r.returncode == 1 and "another action runs" in r.stderr
+
+
+def test_the_uninstall_scripts() -> None:
+    for script in (actor.uninstall_script(), collector.uninstall_script()):
+        assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
+    assert "rm -rf /usr/local/lib/kastellan/act /etc/kastellan/act" in actor.uninstall_script()
+    assert (
+        "rm -f /etc/sudoers.d/kastellan-collect /usr/local/lib/kastellan/collect"
+        in collector.uninstall_script()
+    )
+    assert "userdel -r kastellan-act" in actor.uninstall_script()
+
+
+def test_no_setup_runs_in_demo_mode(tmp_path: Path) -> None:
+    """Demo devices are made up: a real machine at one of their addresses is never logged in to."""
+    from fastapi.testclient import TestClient
+
+    from kastellan.api import create_app
+    from kastellan.settings import Settings
+
+    with TestClient(create_app(Settings(config=tmp_path / "c.yaml", data=tmp_path, demo=True))) as c:
+        body = {"login": "root", "password": "x", "port": 22, "elevate": "none"}
+        device = c.get("/api/devices").json()[0]["id"]
+        for path in ("collect/install", "collect/uninstall", "act/uninstall"):
+            r = c.post(f"/api/devices/{device}/{path}", json=body, headers={"X-Kastellan": "1"})
+            assert r.status_code in (403, 409), (path, r.status_code)

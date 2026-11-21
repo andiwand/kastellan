@@ -41,30 +41,64 @@ def test_the_scripts_hand_on_only_their_own_power(tmp_path: Path, name: str) -> 
     keys_file = tmp_path / "authorized_keys"
     script, conf = install(tmp_path, name, keys_file)
     old, new, other = _blob(key()), _blob(key()), _blob(key())
-    mine = f'from="10.0.0.2",restrict,command="{script} {conf}"'
+    mine = f'from="10.0.0.2,10.0.0.3",restrict,command="{script} {conf}"'
     keys_file.write_text(
         f"ssh-ed25519 {other} me@laptop\n"  # someone's own key: never touched
         f'command="/usr/bin/other" ssh-ed25519 {old} bound-elsewhere\n'  # old, but not this script's
-        f"{mine} ssh-ed25519 {old} kastellan-vpn\n"
+        f'command="{script}-other" ssh-ed25519 {old} similar-name\n'  # another script, same prefix
+        f"{mine}\tssh-ed25519 {old} kastellan-vpn\n"  # a tab before the key: still found by field
     )
     r = run(script, conf, f"add-key {old} {new}")
     assert r.returncode == 0, r.stderr
     lines = keys_file.read_text().splitlines()
-    assert lines[-1] == f"{mine} ssh-ed25519 {new} kastellan-vpn" and len(lines) == 4
+    assert lines[-1] == f"{mine} ssh-ed25519 {new} kastellan-vpn" and len(lines) == 5  # options exact
     assert run(script, conf, f"add-key {old} {new}").returncode == 0  # again: nothing more
-    assert len(keys_file.read_text().splitlines()) == 4
+    assert len(keys_file.read_text().splitlines()) == 5
 
     # Only ed25519 keys, and nothing but the key: no options sneak in.
     for bad in [f'{new[:-1]}"', "AAAAB3NzaC1yc2EAAAADAQABAAABAQ", f"{new},command=x", "x"]:
         assert run(script, conf, f"add-key {old} {bad}").returncode != 0, bad
     assert run(script, conf, f"add-key {other} {_blob(key())}").returncode != 0  # not its line
+    assert run(script, conf, f"keep-key {other}").returncode != 0  # not its line: nothing changes
+    assert len(keys_file.read_text().splitlines()) == 5
 
-    assert run(script, conf, f"remove-key {old}").returncode == 0
+    # A leaked key handed its power on: keep-key leaves only the new key, whatever else was added.
+    attacker = _blob(key())
+    assert run(script, conf, f"add-key {old} {attacker}").returncode == 0
+    r = run(script, conf, f"keep-key {new}")
+    assert r.returncode == 0 and "removed 2 other key line(s)" in r.stdout, r.stdout + r.stderr
     text = keys_file.read_text()
-    assert f"{mine} ssh-ed25519 {old}" not in text and "bound-elsewhere" in text and "me@laptop" in text
-    r = run(script, conf, f"remove-key {new}")
-    assert r.returncode != 0 and "only key" in r.stderr  # never the last one
-    assert f"ssh-ed25519 {new}" in keys_file.read_text()
+    assert attacker not in text and f"{mine} ssh-ed25519 {new}" in text
+    assert "bound-elsewhere" in text and "similar-name" in text and "me@laptop" in text
+    assert run(script, conf, f"keep-key {old}").returncode != 0  # gone: it can't come back
+
+
+@pytest.mark.parametrize("name", ["kastellan-pki", "kastellan-crl"])
+def test_the_scripts_take_the_line_as_documented(tmp_path: Path, name: str) -> None:
+    """command="<script>" without its config argument (as a hand install may write it)."""
+    keys_file = tmp_path / "authorized_keys"
+    script, _ = install(tmp_path, name, keys_file)
+    old, new = _blob(key()), _blob(key())
+    keys_file.write_text(f'command="{script}",no-pty ssh-ed25519 {old} kastellan-vpn')  # no newline
+    env = {"PATH": "/usr/bin:/bin", "SSH_ORIGINAL_COMMAND": f"add-key {old} {new}"}
+    shell = "bash" if name == "kastellan-pki" else "sh"
+    # Its config here only points at the test file; the real one is found the usual way.
+    script.write_text(script.read_text().replace("AUTHORIZED_KEYS=  #", f"AUTHORIZED_KEYS={keys_file}  #", 1))
+    r = subprocess.run([shell, "-c", f'"{script}"'], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert (
+        keys_file.read_text().splitlines()[-1] == f'command="{script}",no-pty ssh-ed25519 {new} kastellan-vpn'
+    )
+
+
+def test_both_scripts_share_one_key_block() -> None:
+    """The key commands are the same text in both scripts (one is sh, one bash)."""
+
+    def block(name: str) -> str:
+        text = (SCRIPTS / name).read_text()
+        return text[text.index("# Rotating Kastellan's VPN key") : text.index('  if [ "$op" = keep ]')]
+
+    assert block("kastellan-pki") == block("kastellan-crl")
 
 
 @pytest.fixture
@@ -169,7 +203,10 @@ async def test_cancelling_takes_the_next_key_off_again(hosts) -> None:
     await rotator.start(targets)
     nxt = keys.side_key("next", "vpn")
     assert nxt is not None and all(_blob(nxt) in f.read_text() for f in files)
-    await rotator.cancel(targets)
+    out = await rotator.cancel(targets)
+    assert out.stage == "cancelled" and all(
+        "removed 1 other key line" in (x.note or "") for x in out.devices.values()
+    )
     assert not any(_blob(nxt) in f.read_text() for f in files)
     assert keys.side_key("next", "vpn") is None and rotator.state() is None
 
@@ -183,3 +220,54 @@ async def test_a_host_that_fails_holds_the_switch(hosts) -> None:
     with pytest.raises(ValueError, match="server"):
         await rotator.finish(broken)
     assert keys.side_key("next", "vpn") is not None and rotator.state().stage == "adding"  # not switched
+
+
+async def test_a_leaked_key_is_gone_after_rotating(hosts) -> None:
+    """Whoever held the key may have handed its power on (add-key): rotating ends that too."""
+    keys, targets, (pki_keys, crl_keys) = hosts
+    attacker = _blob(key())
+    current = keys.hub_key("vpn")
+    for target in targets.values():
+        async with await keys.connect(target, "vpn", only=current) as conn:
+            r = await conn.run(f"add-key {_blob(current)} {attacker}", check=False, stdin=asyncssh.DEVNULL)
+            assert r.exit_status == 0, r.stderr
+    rotator = VpnRotator(keys)
+    await rotator.start(targets)
+    rot = await rotator.finish(targets)
+    assert rot.stage == "done", rot.devices
+    assert all("removed 2 other key lines" in (s.note or "") for s in rot.devices.values()), rot.devices
+    assert attacker not in pki_keys.read_text() + crl_keys.read_text()
+
+
+async def test_a_skipped_host_holds_the_end_until_it_works_or_is_forgotten(hosts) -> None:
+    keys, targets, (_, crl_keys) = hosts
+    old = keys.hub_key("vpn")
+    rotator = VpnRotator(keys)
+    saved = crl_keys.read_text()
+    crl_keys.unlink()  # the server doesn't let anyone in for now
+    await rotator.start(targets)
+    rot = await rotator.finish(targets, anyway=True)
+    # Switched, but not done: the server still trusts the old key, so the old private key stays.
+    assert rot.stage == "removing" and rot.devices["pki"].removed
+    assert not rot.devices["server"].removed and rot.devices["server"].error
+    assert keys.side_key("old", "vpn") is not None
+    # It answers again: it gets the new key from the old one, and only that stays.
+    crl_keys.write_text(saved)
+    rot = await rotator.finish(targets)
+    assert rot.stage == "done", rot.devices
+    assert _blob(old) not in crl_keys.read_text() and _blob(keys.hub_key("vpn")) in crl_keys.read_text()
+
+
+async def test_forgetting_a_host_finishes_with_a_warning(hosts) -> None:
+    keys, targets, _ = hosts
+    rotator = VpnRotator(keys)
+    broken = {**targets, "server": Target("127.0.0.1", targets["server"].port, "nobody")}
+    await rotator.start(broken)
+    rot = await rotator.finish(broken, anyway=True)
+    assert rot.stage == "removing"
+    with pytest.raises(ValueError):
+        await rotator.forget("nope")
+    rot = await rotator.forget("server")
+    assert rot.stage == "done" and rot.devices["server"].forgotten
+    assert "may still be trusted" in (rot.devices["server"].error or "")
+    assert keys.side_key("old", "vpn") is None

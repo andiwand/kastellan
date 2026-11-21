@@ -351,14 +351,14 @@ class Hub:
 
         async def one(id: str, device: Device) -> None:
             async with limit:
+                if device.act is not None and not self.demo:
+                    await self._poll_actor(id)  # never raises
                 try:
                     # With a collector, it lists the containers (except in the demo, which has none).
                     if device.docker is not None and (device.collect is None or self.demo):
                         await self._poll_docker(id, device.docker.wud)
                     if device.driver is not None:
                         await self._poll_driver(id, device)
-                    if device.act is not None and not self.demo:
-                        await self._poll_actor(id)
                 except Exception:
                     log.exception("asking %s failed", id)
 
@@ -452,6 +452,9 @@ class Hub:
                 except Exception as e:  # what it said last stays, marked by its time
                     status.router_error = _brief(e)
                     log.info("%s: %s", id, status.router_error)
+                    ovpn = self.config.vpn.openvpn
+                    if ovpn and ovpn.server == id:  # nobody is known to be connected now
+                        self.ovpn_status = {**self.ovpn_status, "connected": [], "error": status.router_error}
                     return
                 status.router, status.router_checked, status.router_error = report, datetime.now(UTC), None
                 board = report["board"]
@@ -467,7 +470,7 @@ class Hub:
                     self._note_firmware(id, f"OpenWrt {firmware}", datetime.now(UTC))
                 ovpn = self.config.vpn.openvpn
                 if ovpn and ovpn.server == id:
-                    await self._read_openvpn(ubus)
+                    await self._read_openvpn(id, ubus)
 
         while True:
             if self.demo:  # the made-up network's made-up access points
@@ -479,19 +482,29 @@ class Hub:
                 await asyncio.gather(*(one(id, d) for id, d in routers), return_exceptions=True)
             await asyncio.sleep(ROUTER_EVERY)
 
-    async def _read_openvpn(self, ubus: Ubus) -> None:
+    async def _read_openvpn(self, id: str, ubus: Ubus) -> None:
         """Who is connected to the OpenVPN server now (its OpenWrt login's `openvpn` ability)."""
         now = datetime.now(UTC)
         try:
-            connected = parse_status(await openwrt_client.openvpn_status(ubus))
+            text = await openwrt_client.openvpn_status(ubus)
         except Exception as e:  # not granted (set up its login again), or it doesn't answer
-            self.ovpn_status = {**self.ovpn_status, "error": _brief(e)}
+            self.ovpn_status = {**self.ovpn_status, "connected": [], "error": _brief(e)}
             return
+        connected = parse_status(text)
+        error = None
+        if not connected:  # nothing to read there: say why, not "not seen yet"
+            markers = {ln for ln in text.splitlines() if ln.startswith("!")}
+            if "!no-servers" in markers:
+                error = f"no OpenVPN server found on {id}"
+            elif "!no-status" in markers:
+                error = f"the OpenVPN server on {id} keeps no status file (`status` in its config)"
+            elif "!unreadable" in markers:
+                error = f"the OpenVPN status file on {id} can't be read"
         self.ovpn_seen.note(connected, now)
         self.ovpn_status = {
             "checked": now.isoformat(timespec="seconds"),
             "connected": [asdict(c) for c in connected],
-            "error": None,
+            "error": error,
         }
 
     async def _heartbeat(self) -> None:
@@ -630,6 +643,11 @@ class Hub:
             else:
                 later.append((channel, message, first_try, last_try, tries))
         self._outbox = later
+        # Push tries each browser again on its own (push.py), within the same kind of limit.
+        async with httpx.AsyncClient(timeout=10) as client:
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(20):
+                    await self.push.retry_due(client)
         if not due:
             return
 

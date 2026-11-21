@@ -35,7 +35,8 @@ lets you look after them: through narrow doors you open host by host.</p>
   updating or restarting a container, a reboot: as far as the host allows.
 - **Terminal and remote desktop** in the browser (SSH; RDP and VNC through Apache Guacamole).
 - **VPN**: WireGuard clients through wg-easy, OpenVPN clients through easy-rsa.
-- **SSH keys**: which keys may log in where; rotating Kastellan's own.
+- **SSH keys**: which keys may log in where; rotating Kastellan's own; a group's
+  authorized_keys and known_hosts side by side (several users per device), changed on all at once.
 - **A YAML file, no database**: edit `config.yaml` by hand or in the app; comments stay.
 - **Local**: no account, no cloud, no telemetry. Reach it from home or through a VPN only.
 
@@ -174,10 +175,12 @@ web:
 ```
 
 and one wildcard DNS entry (`kastellan.home.arpa` and `*.kastellan.home.arpa` → the hub), the NAS
-is at `nas.kastellan.home.arpa` (an id's `_` becomes `-`). Only signed-in admins get through; you
-sign in to the device itself as usual (Kastellan keeps no device logins). The page is the
-device's first `http` check (or `web: https://...` on the device). Behind an HTTPS reverse proxy,
-the proxy needs a wildcard certificate for those names and must pass the `Host` header on.
+is at `nas.kastellan.home.arpa` (an id's `_` becomes `-`). Open it with the device page's "Open
+web interface": only signed-in admins get through, each device name with its own access tied to
+your Kastellan session (signing out ends it), and a device's page can't use another's. You sign
+in to the device itself as usual (Kastellan keeps no device logins). The page is the device's
+first `http` check (or `web: https://...` on the device). Behind an HTTPS reverse proxy, the proxy
+needs a wildcard certificate for those names and must pass the `Host` header on.
 
 ## Access to your hosts
 

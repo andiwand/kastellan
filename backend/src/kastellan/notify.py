@@ -40,6 +40,8 @@ from .push import Push
 
 log = logging.getLogger(__name__)
 
+JOB_LIMIT = 45  # seconds for one message on one channel (e-mail may take 30)
+
 PRIORITY = {Severity.INFO: "low", Severity.WARNING: "default", Severity.CRITICAL: "urgent"}
 
 
@@ -71,8 +73,17 @@ async def send(
     jobs = [(c, m) for m in messages for c in channels if wants(c, m, now)]
     if not jobs:
         return []
+
+    async def bounded(client: httpx.AsyncClient, c: NotifyChannel, m: Message) -> bool:
+        # All at once, each within a limit: one slow channel never holds the others back.
+        try:
+            return await asyncio.wait_for(_send_one(client, c, m, push), JOB_LIMIT)
+        except TimeoutError:
+            log.warning("notify: %s took too long", _where(c))
+            return False
+
     async with httpx.AsyncClient(timeout=10, transport=transport) as client:
-        results = await asyncio.gather(*(_send_one(client, c, m, push) for c, m in jobs))
+        results = await asyncio.gather(*(bounded(client, c, m) for c, m in jobs))
     return [job for job, ok in zip(jobs, results, strict=True) if not ok]
 
 
@@ -150,7 +161,10 @@ async def _send_one(
                     "url": f"/devices/{message.device}" if message.device else "/",
                     "tag": message.device or title,
                 }
-                return await push.send(client, channel.push or "", payload)
+                # Push tries each browser again by itself (push.py): one that is away must not
+                # make the others get it twice.
+                await push.send(client, channel.push or "", payload)
+                return True
             case _:
                 r = await client.post(
                     channel.webhook or "",

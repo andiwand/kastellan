@@ -1,20 +1,23 @@
 """Groups over HTTP: for a group's OpenWrt members (openwrt/sync.py), how their Wi-Fi networks,
-mesh and root's password line up, and changing them on every one at once. (The groups themselves
-are edited as a part of config.yaml: config_api's settings.) Seeing: admins; changing:
+mesh and root's password line up, and changing them on every one at once; for its members with
+`ssh:`, their authorized_keys and known_hosts side by side, changed on all (sshsync.py). (The
+groups themselves are edited as a part of config.yaml: config_api's settings.) Seeing: admins; changing:
 signed-in admins, streamed (device by device), audited without passwords."""
 
 from __future__ import annotations
 
+import asyncio
 import secrets as random
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import setup_run
+from . import setup_run, sshkeys, sshsync
 from .auth_api import client_address, require_admin, require_signin
+from .config import Device
 from .openwrt import client as ow
 from .openwrt import sync
 
@@ -40,6 +43,17 @@ class MeshChange(BaseModel):
 
 class RootPassword(BaseModel):
     password: str = Field(max_length=256)
+
+
+class ColumnChange(BaseModel):
+    version: str = Field(max_length=32)  # the file as fetched ("none": there was none)
+    add: list[str] = Field(default_factory=list, max_length=200)
+    remove: list[str] = Field(default_factory=list, max_length=200)  # entries' keys
+
+
+class SshPush(BaseModel):
+    file: sshsync.File
+    changes: dict[str, ColumnChange] = Field(max_length=500)  # "device/user" -> what to change
 
 
 def router(hub: Hub) -> APIRouter:
@@ -82,9 +96,9 @@ def router(hub: Hub) -> APIRouter:
             hub.secrets.set(SALT_SECRET, value)
             return value.encode()
 
-    def check(fn, *args) -> None:
+    def check(fn, *args):
         try:
-            fn(*args)
+            return fn(*args)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
@@ -116,6 +130,7 @@ def router(hub: Hub) -> APIRouter:
                 "name": g.name,
                 "devices": g.devices,
                 "openwrt": [id for id in g.devices if (d := hub.config.devices.get(id)) and d.openwrt],
+                "ssh": [id for id in g.devices if (d := hub.config.devices.get(id)) and d.ssh],
             }
             for gid, g in sorted(hub.config.groups.items())
         ]
@@ -188,6 +203,137 @@ def router(hub: Hub) -> APIRouter:
             "group.root_password",
             request,
             lambda say: sync.set_root_password(ubus, body.password, say=say),
+        )
+
+    @api.get("/{gid}/ssh")
+    async def ssh_files(
+        gid: str,
+        request: Request,
+        file: sshsync.File = "authorized_keys",
+        users: Annotated[list[str] | None, Query(max_length=20)] = None,
+    ) -> dict[str, Any]:
+        """One file of the given users on every member with `ssh:`, side by side: a column per
+        device and user ("device/user"), a row per entry."""
+        require_admin(request)
+        group = group_of(gid)
+        users = users or [sshsync.LOGIN]
+        if hub.demo:
+            raise HTTPException(409, "demo mode shows a made-up network; it has no files to read")
+        members = {id: d for id in group.devices if (d := hub.config.devices.get(id)) and d.ssh}
+
+        async def one(id: str) -> dict[str, sshsync.Copy | Exception]:
+            device = members[id]
+            try:
+                return await sshsync.fetch(hub.keys, device, file, users)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            except Exception as e:  # the device: unreachable, its key not trusted, ...
+                why = RuntimeError(
+                    f"{e} (trust the host key first)" if "not trusted" in str(e) else str(e)[:200]
+                )
+                return dict.fromkeys(sshsync.users_of(device, users), why)
+
+        found = dict(zip(members, await asyncio.gather(*(one(id) for id in members)), strict=True))
+        columns, copies = [], {}
+        for id, per_user in found.items():
+            for user, got in per_user.items():
+                column = f"{id}/{user}"
+                if isinstance(got, Exception):
+                    columns.append(
+                        {"id": column, "device": id, "user": user, "error": str(got) or type(got).__name__}
+                    )
+                else:
+                    copies[column] = got
+                    columns.append(
+                        {
+                            "id": column,
+                            "device": id,
+                            "user": user,
+                            "path": got.path,
+                            "exists": got.exists,
+                            "version": got.version,
+                            "login": user == members[id].ssh.user,
+                        }
+                    )
+        return {
+            "file": file,
+            "users": users,
+            "columns": columns,
+            "no_ssh": [id for id in group.devices if id not in members],
+            "rows": sshsync.merge(file, copies, sshkeys.kastellan_keys(hub.keys)),
+        }
+
+    @api.post("/{gid}/ssh/push")
+    async def ssh_push(gid: str, body: SshPush, request: Request) -> StreamingResponse:
+        """The changes, column by column (a device's user's file), each only if the file is as
+        it was fetched. Kastellan's own keys are never removed here."""
+        w = signed_in(request)
+        group = group_of(gid)
+        own = sshkeys.kastellan_keys(hub.keys)
+        plan: list[tuple[str, str, Device, ColumnChange]] = []
+        for column, change in body.changes.items():
+            id, _, user = column.partition("/")
+            device = hub.config.devices.get(id)
+            if id not in group.devices or device is None or device.ssh is None:
+                raise HTTPException(400, f"{column}: not a member with ssh:")
+            for line in change.add:
+                entry = check(sshsync.check_line, body.file, line)
+                # Kastellan's keys go onto devices only through their setup (from=, restrict).
+                if body.file == "authorized_keys" and entry.fingerprint in own:
+                    raise HTTPException(400, "that is one of Kastellan's own keys; its setup adds it")
+            if body.file == "authorized_keys":
+                for key in change.remove:
+                    kind, _, data = key.partition(" ")
+                    if sshsync._fingerprint(kind, data) in own:
+                        raise HTTPException(400, "that is one of Kastellan's own keys; rotate it instead")
+            if change.add or change.remove:
+                plan.append((id, user, device, change))
+        if not plan:
+            raise HTTPException(400, "nothing to change")
+        address = client_address(request.scope)
+
+        async def work(say):
+            outcome = {}
+            for id, user, device, change in plan:
+                column = f"{id}/{user}"
+                logged = partial(
+                    hub.audit.record,
+                    "ssh.sync",
+                    w.user,
+                    address,
+                    group=gid,
+                    device=id,
+                    account=user,
+                    file=body.file,
+                )
+                try:
+                    async with sshkeys.device_lock(id):
+                        added, removed = await sshsync.push(
+                            hub.keys, device, body.file, user, change.version, change.add, set(change.remove)
+                        )
+                except Exception as e:
+                    why = str(e)[:200] or type(e).__name__
+                    say(f"{column}: {why}")
+                    logged(outcome=f"failed: {why}")
+                    outcome[column] = f"failed: {why}"
+                    continue
+                summary = f"added {len(added)}, removed {len(removed)}" if added or removed else "unchanged"
+                say(f"{column}: {summary}")
+                logged(
+                    outcome="done",
+                    added=[e.fingerprint for e in added],
+                    # What an added key may do (not the key): an unrestricted grant shows as such.
+                    options=[
+                        (sshkeys.parse_line(e.line) or ("",))[0] if body.file == "authorized_keys" else ""
+                        for e in added
+                    ],
+                    removed=[e.fingerprint for e in removed],
+                )
+                outcome[column] = summary
+            return outcome
+
+        return job(
+            gid, "group.ssh", request, work, file=body.file, columns=[f"{i}/{u}" for i, u, _, _ in plan]
         )
 
     return api

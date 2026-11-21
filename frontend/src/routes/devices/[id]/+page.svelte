@@ -53,13 +53,12 @@
 			? `Updated (${r.from} → ${r.to}).`
 			: `Nothing to do: ${r.why ?? 'already the newest'}.`;
 	}
-	// Through the hub on its own name (webproxy.py), when the hub is opened at web_domain and an
-	// admin is signed in (the session cookie reaches the device names then); else directly.
+	// Through the hub on its own name (webproxy.py) for signed-in admins when web: is set: the
+	// hub hands out a one-time ticket and sends the browser there; else the device directly.
 	const webUi = $derived.by(() => {
 		if (!device?.web_url) return undefined;
-		const domain = store.health?.web_domain;
-		if (domain && location.hostname === domain && store.me?.role === 'admin' && store.me.user)
-			return `${location.protocol}//${device.id.replaceAll('_', '-')}.${domain}/`;
+		if (store.health?.web_domain && store.me?.role === 'admin' && store.me.user)
+			return `/api/devices/${encodeURIComponent(device.id)}/web`;
 		return (device.checks.find((c) => c.type === 'http')?.target as string) ?? device.web_url;
 	});
 
@@ -237,9 +236,14 @@
 	{/if}
 
 	{#if tab === 'edit'}
-		<div class="mt-6"><DeviceEditor id={device.id} onclose={() => show('status')} /></div>
+		<!-- Keyed: another device's page must never keep (and save) this one's form or text. -->
+		{#key device.id}
+			<div class="mt-6"><DeviceEditor id={device.id} onclose={() => show('status')} /></div>
+		{/key}
 	{:else if tab === 'file'}
-		<div class="mt-6"><ConfigFile device={device.id} /></div>
+		{#key device.id}
+			<div class="mt-6"><ConfigFile device={device.id} /></div>
+		{/key}
 	{:else}
 		<!-- Range -->
 		<div class="mt-8 flex items-center justify-between">

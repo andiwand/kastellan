@@ -6,8 +6,9 @@
 	import X from '@lucide/svelte/icons/x';
 
 	/** Rotating Kastellan's VPN key (restricted mode): the scripts on the PKI host and the
-	 * OpenVPN server take the new key from the old one, with exactly its rights; then the old key
-	 * goes. Both work until the end. */
+	 * OpenVPN server take the new key from the old one, with exactly its rights; then only the new
+	 * key stays (whatever else was bound to the scripts goes too). Both work until the end; a host
+	 * that can't be reached holds the end (and the old key) until it works or is forgotten. */
 	let { canChange }: { canChange: boolean } = $props();
 
 	let key = $state<VpnKey | null>(null);
@@ -24,11 +25,13 @@
 		}
 	}
 
-	async function act(step: 'start' | 'finish' | 'cancel') {
+	async function act(step: 'start' | 'finish' | 'cancel' | `forget:${string}`) {
 		busy = step;
 		error = null;
 		try {
-			key = await api.vpnKeyRotate(step, anyway);
+			key = step.startsWith('forget:')
+				? await api.vpnKeyForget(step.slice(7))
+				: await api.vpnKeyRotate(step as 'start' | 'finish' | 'cancel', anyway);
 		} catch (e) {
 			error = (e as Error).message;
 			await load();
@@ -38,6 +41,12 @@
 	}
 
 	const rot = $derived(key?.rotation && key.rotation.stage !== 'done' ? key.rotation : null);
+	// Given up on at the end: the old key may still be trusted there.
+	const forgotten = $derived(
+		key?.rotation?.stage === 'done'
+			? Object.entries(key.rotation.devices).filter(([, s]) => s.forgotten)
+			: []
+	);
 	const roles: Record<string, string> = { pki: 'PKI host', server: 'OpenVPN server' };
 	const missing = $derived(
 		rot ? Object.entries(rot.devices).filter(([, s]) => !s.added) : ([] as [string, unknown][])
@@ -53,8 +62,9 @@
 	<summary class="cursor-pointer text-sm font-medium">Kastellan's VPN key</summary>
 	<p class="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
 		The key that may run the two scripts on the hosts. Rotating it: the scripts add the new key with
-		exactly the old one's rights, Kastellan tries it, switches, and then the old key is removed and
-		must stop working.
+		exactly the old one's rights, Kastellan tries it, switches, and then only the new key stays
+		bound to the scripts (a key someone added with a leaked one goes too); the old key must stop
+		working.
 	</p>
 	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 	{#if key}
@@ -79,9 +89,19 @@
 										? 'has the new key, and it works'
 										: (step.error ?? 'not tried yet')
 									: step.removed
-										? 'old key removed'
-										: (step.error ?? 'old key still there')}
+										? `only the new key left${step.note ? ` (${step.note})` : ''}`
+										: (step.error ?? 'the old key is still trusted here')}
 							</span>
+							{#if rot.stage === 'removing' && !step.removed && canChange}
+								<button
+									class="ml-1 underline decoration-dotted hover:text-text"
+									disabled={busy !== null}
+									title="Finish without this host: the old key may stay trusted there until you remove it by hand"
+									onclick={() => act(`forget:${role}`)}
+								>
+									forget this host
+								</button>
+							{/if}
 						</span>
 					</li>
 				{/each}
@@ -90,6 +110,12 @@
 			<p class="mt-2 text-xs text-muted">
 				Last rotated {ago(key.rotation.finished ?? key.rotation.started, store.now)}.
 			</p>
+			{#each forgotten as [role, step] (role)}
+				<p class="mt-1 text-xs" style:color="var(--warning-text)">
+					{roles[role] ?? role} was left out: the old key may still be trusted on {step.target};
+					remove its line there by hand.
+				</p>
+			{/each}
 		{/if}
 		{#if canChange}
 			<div class="mt-3 flex flex-wrap items-center gap-1.5">
@@ -116,13 +142,13 @@
 					{#if missing.length}
 						<label class="choice text-xs text-muted">
 							<input type="checkbox" bind:checked={anyway} />
-							Switch anyway: Kastellan can't reach {missing.map(([r]) => roles[r] ?? r).join(', ')} with
-							the VPN key then
+							Switch anyway: {missing.map(([r]) => roles[r] ?? r).join(', ')} keeps trusting the old key
+							until it answers again (then it gets the new one), or you forget it
 						</label>
 					{/if}
 				{:else}
 					<button class={button} disabled={busy !== null} onclick={() => act('finish')}>
-						{busy === 'finish' ? 'Removing…' : 'Remove the old key where it is left'}
+						{busy === 'finish' ? 'Removing…' : 'Try the hosts left again'}
 					</button>
 				{/if}
 			</div>

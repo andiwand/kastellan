@@ -22,6 +22,7 @@
 	let error = $state<string | null>(null);
 	let opened = $state(false);
 	let installing = $state(false);
+	let removing = $state(false);
 
 	const targets = $derived(all ? ['*'] : picked);
 	const containerAbilities = $derived(chosen.some((a) => a.endsWith('-container')));
@@ -126,14 +127,22 @@
 				{/if}
 			</fieldset>
 		{/if}
-		<div class="mt-4 flex justify-end">
+		<div class="mt-4 flex justify-end gap-2">
+			{#if setup.configured}
+				<button
+					class="inline-flex h-8 items-center rounded-lg border border-line px-3 text-xs font-medium hover:border-line-strong"
+					onclick={() => (removing = true)}
+				>
+					Remove
+				</button>
+			{/if}
 			<button
 				class="inline-flex h-8 items-center rounded-lg border border-line px-3 text-xs font-medium hover:border-line-strong disabled:opacity-50"
 				disabled={!ready}
 				title={ready ? '' : 'tick at least one container'}
 				onclick={() => (installing = true)}
 			>
-				Set up exactly this
+				{setup.configured ? 'Set up again, exactly this' : 'Set up exactly this'}
 			</button>
 		</div>
 	{/if}
@@ -151,6 +160,24 @@
 		port={setup.port}
 		canRun={canInstall}
 		onclose={() => (installing = false)}
+		ondone={async (o) => {
+			if (o.ok) {
+				await store.refresh();
+				await load();
+			}
+		}}
+	/>
+{/if}
+
+{#if removing && setup}
+	<SetupDialog
+		title="Remove the actor"
+		intro="Kastellan logs in once with your login and takes the actor off this host as root: its user, scripts, lists and sudo rule. Then act: goes from this device in config.yaml."
+		path="/devices/{encodeURIComponent(device)}/act/uninstall"
+		script={setup.uninstall}
+		port={setup.port}
+		canRun={canInstall}
+		onclose={() => (removing = false)}
 		ondone={async (o) => {
 			if (o.ok) {
 				await store.refresh();

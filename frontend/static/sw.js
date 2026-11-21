@@ -1,5 +1,9 @@
 // Kastellan's service worker: shows the alarms the hub pushes (push.py), and opens the device's
 // page when one is clicked. Nothing is cached: the app always talks to the hub.
+// Control open pages at once: a page that turned push on before this worker ran is otherwise not
+// its client, and opening a notification there would fail.
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+
 self.addEventListener('push', (event) => {
 	let data = {};
 	try {
@@ -24,7 +28,12 @@ self.addEventListener('notificationclick', (event) => {
 	event.waitUntil(
 		self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
 			const open = windows.find((w) => new URL(w.url).origin === self.location.origin);
-			return open ? open.navigate(url).then((w) => (w || open).focus()) : self.clients.openWindow(url);
+			if (!open) return self.clients.openWindow(url);
+			// navigate() refuses a page this worker doesn't control: then a new window.
+			return open
+				.navigate(url)
+				.then((w) => (w || open).focus())
+				.catch(() => self.clients.openWindow(url));
 		})
 	);
 });

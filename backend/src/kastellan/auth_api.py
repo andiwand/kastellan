@@ -101,14 +101,6 @@ def same_origin(headers: dict[str, str]) -> bool:
     return bool(origin and host) and urlsplit(origin).netloc == host
 
 
-def cookie_domain(hub: Hub, request: Request) -> str | None:
-    """Signed in at web.domain itself: the session also reaches the devices' pages under it
-    (webproxy.py takes it out before anything goes to a device). Else the cookie stays host-only."""
-    web = hub.config.web
-    host = (request.headers.get("host") or "").lower().rsplit(":", 1)[0]
-    return web.domain if web and host == web.domain else None
-
-
 def client_address(scope: Scope) -> str:
     client = scope.get("client")
     return client[0] if client else "?"
@@ -260,8 +252,7 @@ def router(hub: Hub) -> APIRouter:
             httponly=True,
             samesite="strict",
             secure=request.url.scheme == "https",
-            path="/",
-            domain=cookie_domain(hub, request),
+            path="/",  # host-only: device names get their own access (webproxy.py)
         )
         hub.audit.record("signin", body.user, address)
         return {"user": body.user, "role": user.role}
@@ -277,7 +268,7 @@ def router(hub: Hub) -> APIRouter:
         hub.terminals.stop(token=token)  # its open terminals and desktops end with it
         hub.tickets.drop(session=token_key(token))
         hub.sessions.end(token)
-        response.delete_cookie(SESSION_COOKIE, path="/", domain=cookie_domain(hub, request))
+        response.delete_cookie(SESSION_COOKIE, path="/")
         if w and w.user:
             hub.audit.record("signout", w.user, client_address(request.scope))
         return {"ok": True}

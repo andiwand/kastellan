@@ -629,3 +629,36 @@ def test_a_site_and_a_dns_check_in_the_form(hub_client) -> None:
     f.update(site="", checks=[{"type": "http", "target": "http://x", "expect": 999}])
     del f["id"]
     assert c.put("/api/devices/vps", json=f, headers=H).status_code == 422  # a status is 100 to 599
+
+
+def test_a_device_as_text_keeps_its_comments_and_stays_its_own() -> None:
+    text = """x: &c [ping]
+devices:
+  nas:
+    host: 10.0.0.2
+#    driver: synology
+    checks:
+      - ping
+  # --- next ---
+  r:
+    host: 10.0.0.3
+    checks: *c
+"""
+    block = config_edit.device_text(text, "nas")
+    assert block == "host: 10.0.0.2\n#    driver: synology\nchecks:\n  - ping\n"
+    # Saved back, the commented-out line moves in to the device's indent; nothing else changes.
+    assert config_edit.set_device_text(text, "nas", block) == text.replace(
+        "\n#    driver", "\n    #    driver"
+    )
+    # An anchor in one device's text must not change another device through an alias.
+    with pytest.raises(ValueError):
+        config_edit.set_device_text(text, "nas", "host: 10.0.0.2\nfoo: &c [tcp: 1]\n")
+
+
+def test_a_device_key_removed() -> None:
+    text = (
+        "devices:\n  nas:\n    host: nas.lan # the NAS\n    collect: {}\n    checks:\n      - ping\n"
+        "\n  # next\n  pi:\n    host: pi.lan\n"
+    )
+    out = config_edit.set_device_key(text, "nas", "collect", None)
+    assert out == text.replace("    collect: {}\n", "")

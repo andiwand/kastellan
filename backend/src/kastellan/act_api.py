@@ -86,6 +86,7 @@ def router(hub: Hub) -> APIRouter:
             "abilities": actor.ABILITIES,
             "port": port,
             "script": script_for(body, hub_ip),
+            "uninstall": actor.uninstall_script(),
         }
 
     @api.post("/{id}/act/install")
@@ -113,9 +114,38 @@ def router(hub: Hub) -> APIRouter:
 
         def after() -> dict[str, Any]:
             setup_run.add_device_key(hub, w.user, client_address(request.scope), id, "act", body.port)
+            # Its scripts are new now: ask again, not in up to ten minutes (Updates says "older").
+            task = asyncio.get_running_loop().create_task(hub._poll_actor(id))
+            setup_run._running.add(task)
+            task.add_done_callback(setup_run._running.discard)
             return {}
 
         return setup_run.stream(conn, script, body, audit, after)
+
+    @api.post("/{id}/act/uninstall")
+    async def act_uninstall(id: str, body: Login, request: Request) -> StreamingResponse:
+        """Take the actor off the host (with a login typed once), streaming the output, and
+        remove `act:` from the device in config.yaml."""
+        w = require_signin(request)
+        device = device_of(id)
+        if not USER.match(body.login):
+            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
+        audit = partial(
+            hub.audit.record,
+            "act.uninstall",
+            w.user,
+            client_address(request.scope),
+            device=id,
+            login=body.login,
+            elevate=body.elevate,
+        )
+        conn = await setup_run.connect(hub, device.host, body, audit)
+
+        def after() -> dict[str, Any]:
+            setup_run.remove_device_key(hub, w.user, client_address(request.scope), id, "act")
+            return {}
+
+        return setup_run.stream(conn, actor.uninstall_script(), body, audit, after)
 
     @api.post("/{id}/act/{ability}")
     async def act_now(id: str, ability: str, body: Action, request: Request) -> dict[str, Any]:

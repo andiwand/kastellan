@@ -133,6 +133,7 @@ export interface ActSetup {
 	abilities: Record<string, string>; // every ability Kastellan knows, described
 	port: number;
 	script: string; // the commands for the choice asked about
+	uninstall: string; // the commands that take it off the host again
 }
 
 /** An OpenWrt device's state (openwrt/client.py). */
@@ -273,6 +274,36 @@ export interface GroupEntry {
 	key: string | null;
 	disabled: boolean;
 }
+/** A group's SSH files side by side (sshsync.py): a column per device and user. */
+export type SshFile = 'authorized_keys' | 'known_hosts';
+export interface SshColumn {
+	id: string; // "device/user"
+	device: string;
+	user: string;
+	error?: string; // no such user, can't read it, unreachable, ...
+	path?: string;
+	exists?: boolean;
+	version?: string;
+	login?: boolean; // the user Kastellan logs in as there
+}
+export interface SshRow {
+	key: string;
+	type: string;
+	label: string; // a key's comment, or a known host's hosts ("hashed")
+	line: string; // the line as most columns have it
+	fingerprint: string;
+	kastellan: string | null; // one of Kastellan's own keys: never removed here
+	on: Record<string, 'same' | 'differs'>;
+	conflict: boolean; // known_hosts: different keys for one host
+}
+export interface GroupSsh {
+	file: SshFile;
+	users: string[];
+	columns: SshColumn[];
+	no_ssh: string[];
+	rows: SshRow[];
+}
+
 export interface GroupSurvey {
 	id: string;
 	name: string;
@@ -305,6 +336,7 @@ export interface CollectSetup {
 	hub_ip: string | null;
 	user: string;
 	script: string;
+	uninstall: string; // the commands that take it off the host again
 }
 
 export interface NetworkRef {
@@ -421,7 +453,14 @@ export interface VpnKey {
 		finished: string | null;
 		devices: Record<
 			string,
-			{ added: boolean; removed: boolean; error: string | null; target: string | null }
+			{
+				added: boolean;
+				removed: boolean;
+				error: string | null;
+				target: string | null;
+				note: string | null; // e.g. how many other key lines it removed
+				forgotten: boolean; // given up on: the old key may still be trusted there
+			}
 		>;
 	} | null;
 }
@@ -679,6 +718,7 @@ export const api = {
 	vpnKey: () => get<VpnKey>('/vpn/key'),
 	vpnKeyRotate: (step: 'start' | 'finish' | 'cancel', anyway = false) =>
 		call<VpnKey>('POST', `/vpn/key/rotate/${step}`, step === 'finish' ? { anyway } : undefined),
+	vpnKeyForget: (host: string) => call<VpnKey>('POST', '/vpn/key/rotate/forget', { host }),
 	access: (device: string) => get<Access>(`/devices/${encodeURIComponent(device)}/access`),
 	ovpnInstall: (role: string) =>
 		call<{ output: string }>('POST', `/vpn/openvpn/setup/${role}/install`),
@@ -743,7 +783,14 @@ export const api = {
 		changes: Record<string, Record<string, string | number | boolean | null>>
 	) => call<WifiSettings>('PUT', `/devices/${encodeURIComponent(id)}/openwrt/wifi`, { changes }),
 	groups: () =>
-		get<{ id: string; name: string; devices: string[]; openwrt: string[] }[]>('/groups'),
+		get<{ id: string; name: string; devices: string[]; openwrt: string[]; ssh: string[] }[]>(
+			'/groups'
+		),
+	groupSsh: (id: string, file: SshFile, users: string[]) => {
+		const query = new URLSearchParams({ file });
+		for (const u of users) query.append('users', u);
+		return call<GroupSsh>('GET', `/groups/${encodeURIComponent(id)}/ssh?${query}`);
+	},
 	settings: () => get<Settings>('/settings'),
 	putSettings: (section: keyof Settings['sections'], value: object, version: string) =>
 		call<{ version: string }>('PUT', `/settings/${section}`, { value, version }),
@@ -782,9 +829,10 @@ export const api = {
 		call<{ user: string; role: string }>('POST', '/auth/login', { user, password }),
 	logout: () => call<{ ok: boolean }>('POST', '/auth/logout'),
 	sshKey: () => get<{ public_key: string }>('/ssh/key'),
-	trustHost: (device: string, fingerprint: string) =>
+	trustHost: (device: string, fingerprint: string, port?: number) =>
 		call<{ state: string }>('POST', `/devices/${encodeURIComponent(device)}/ssh/trust`, {
-			fingerprint
+			fingerprint,
+			port
 		}),
 	desktopTicket: (
 		device: string,

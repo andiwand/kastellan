@@ -40,7 +40,8 @@ own; it does not talk to Norn.
 - [x] Remote desktop (RDP, VNC) through guacd
 - [x] Drivers: FRITZ!Box (model, firmware); OpenWrt through its own API
 - [x] OpenWrt: state, Wi-Fi with rollback, services, packages, firmware updates
-- [x] Groups: Wi-Fi networks, mesh and root password across devices at once
+- [x] Groups: Wi-Fi networks, mesh and root password across devices at once; SSH keys and
+      known hosts kept alike (fetch, edit, push)
 - [x] Docker containers and updates (WUD or the registries directly)
 - [x] Collector (host health) and actor (update/restart containers, system updates, reboot)
 - [x] Updates page: everything waiting, with its action; outdated Kastellan scripts

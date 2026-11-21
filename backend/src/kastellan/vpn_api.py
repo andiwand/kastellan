@@ -37,6 +37,10 @@ class Finish(BaseModel):
     anyway: bool = False  # switch even if the new key isn't on every host yet
 
 
+class Forget(BaseModel):
+    host: str = Field(max_length=40)  # a role of the rotation: pki, server
+
+
 class NewClient(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     days: int | None = Field(default=None, ge=1, le=3650)  # None: wg-easy never; OpenVPN: the default
@@ -125,11 +129,24 @@ def router(hub: Hub) -> APIRouter:
             except Exception as e:
                 out["openvpn"]["error"] = say(e, "The PKI host")
             out["openvpn"]["seen"] = seen_view()
-            connected = {c["name"]: c for c in hub.ovpn_status.get("connected") or []}
+            connected = {c["name"]: c for c in fresh_connections()}
             for c in out["openvpn"]["clients"]:
                 c["connected"] = connected.get(c["name"])
                 c["last_seen"] = hub.ovpn_seen.last.get(c["name"])
         return out
+
+    def fresh_connections() -> list[dict[str, Any]]:
+        """Who the router said is connected, if it said so lately (else nobody is known to be)."""
+        from .hub import ROUTER_EVERY  # (hub imports this module)
+
+        checked = hub.ovpn_status.get("checked")
+        try:
+            age = (datetime.now(UTC) - datetime.fromisoformat(checked)).total_seconds() if checked else None
+        except ValueError:
+            age = None
+        if age is None or age > 3 * ROUTER_EVERY or hub.ovpn_status.get("error"):
+            return []
+        return hub.ovpn_status.get("connected") or []
 
     def seen_view() -> dict[str, Any]:
         """Whether Kastellan can see who is connected to the OpenVPN server, and if not, why."""
@@ -268,7 +285,15 @@ def router(hub: Hub) -> APIRouter:
             hub.audit.record(f"vpn.key.rotate.{what}", w.user, client_address(request.scope), outcome=str(e))
             raise HTTPException(409, str(e)) from e
         steps = {
-            r: "removed the old key" if s.removed else "has the new key" if s.added else s.error
+            r: "; ".join(
+                x
+                for x in (
+                    "removed the old key" if s.removed else "has the new key" if s.added else None,
+                    s.note,
+                    s.error,
+                )
+                if x
+            )
             for r, s in (rot.devices.items() if rot else [])
         }
         hub.audit.record(
@@ -291,6 +316,12 @@ def router(hub: Hub) -> APIRouter:
     @api.post("/key/rotate/cancel")
     async def rotate_cancel(request: Request) -> dict[str, Any]:
         return await rotate(request, "cancel", rotator.cancel)
+
+    @api.post("/key/rotate/forget")
+    async def rotate_forget(body: Forget, request: Request) -> dict[str, Any]:
+        """Give up on one host while removing (it can't be reached any more): the rotation ends
+        without it, and the old key may stay trusted there; audited as such."""
+        return await rotate(request, "forget", lambda hosts: rotator.forget(body.host))
 
     # --- Setting up OpenVPN on the hosts --------------------------------------------------------
 

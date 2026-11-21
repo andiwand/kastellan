@@ -106,6 +106,42 @@ def install_script(public_key: str, hub_ip: str | None, user: str = USER) -> str
     return "\n".join(lines) + "\n"
 
 
+def remove_user(user: str) -> list[str]:
+    """Shell lines (as root) that remove a Kastellan user and its home (its authorized_keys)."""
+    q = shlex.quote(user)
+    # Its key first (a running poll mustn't keep the way in), then its processes, then the user;
+    # judged by whether the user is gone, not by userdel's exit (its home may stay behind).
+    return [
+        f"if id -u {q} >/dev/null 2>&1; then",
+        f"  home=$(getent passwd {q} 2>/dev/null | cut -d: -f6 || true)",
+        '  [ -n "$home" ] && rm -f "$home/.ssh/authorized_keys"',
+        f"  pkill -KILL -u {q} 2>/dev/null || true",
+        "  sleep 1",
+        "  if command -v userdel >/dev/null; then",
+        f"    userdel -r {q} 2>/dev/null || userdel {q} 2>/dev/null || true",
+        f"  else deluser --remove-home {q} 2>/dev/null || deluser {q} 2>/dev/null || true; fi",
+        f"  if id -u {q} >/dev/null 2>&1; then echo 'the user {user} is still there' >&2; exit 1; fi",
+        "fi",
+    ]
+
+
+def uninstall_script(user: str = USER) -> str:
+    """Shell commands, run as root, that take the collector off a host again."""
+    return (
+        "\n".join(
+            [
+                "set -eu",
+                f"rm -f /etc/sudoers.d/{user} {SCRIPT}",
+                "rm -rf /run/kastellan-collect",
+                *remove_user(user),
+                "rmdir /usr/local/lib/kastellan 2>/dev/null || true  # if nothing else is left",
+                "echo 'The collector is removed from this host.'",
+            ]
+        )
+        + "\n"
+    )
+
+
 def target_of(device: Device) -> Target:
     if device.collect is None:
         raise ValueError("the device has no collect: in config.yaml")

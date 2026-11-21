@@ -51,6 +51,7 @@ def router(hub: Hub) -> APIRouter:
             "hub_ip": hub_ip,
             "user": collector.USER,
             "script": collector.install_script(hub.keys.public_key("collect"), hub_ip),
+            "uninstall": collector.uninstall_script(),
         }
 
     @api.post("/{id}/collect/install")
@@ -80,6 +81,31 @@ def router(hub: Hub) -> APIRouter:
             return {}
 
         return setup_run.stream(conn, script, body, audit, after)
+
+    @api.post("/{id}/collect/uninstall")
+    async def collect_uninstall(id: str, body: Login, request: Request) -> StreamingResponse:
+        """Log in once with the typed password, take the collector off the host as root
+        (streaming its output), and remove `collect:` from the device in config.yaml."""
+        w = require_signin(request)
+        device = device_of(id)
+        if not USER.match(body.login):
+            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
+        audit = partial(
+            hub.audit.record,
+            "collect.uninstall",
+            w.user,
+            client_address(request.scope),
+            device=id,
+            login=body.login,
+            elevate=body.elevate,
+        )
+        conn = await setup_run.connect(hub, device.host, body, audit)
+
+        def after() -> dict[str, Any]:
+            setup_run.remove_device_key(hub, w.user, client_address(request.scope), id, "collect")
+            return {}
+
+        return setup_run.stream(conn, collector.uninstall_script(), body, audit, after)
 
     @api.post("/{id}/collect/test")
     async def collect_test(id: str, request: Request) -> dict[str, Any]:

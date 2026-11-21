@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.6.0 (2026-11-21)
+
+SSH files kept alike across a group; the collector and actor removed or set up again from the
+page; a host key trusted where a setup meets it. And a review of 0.5.0's new parts, its findings
+fixed.
+
+- SSH across a group: on the Groups page, the members' authorized_keys or known_hosts side by
+  side, for one or more users per device (its login, root, a name): fetch, mark keys or hosts to
+  add where missing, change or remove everywhere (or per device), review, push. A file changed
+  since it was fetched is left alone (checked again on the device right before writing); every
+  other line stays; Kastellan's own keys are neither removed nor added there; a linked file is
+  written where it points. The review warns when root gets new keys, and when OpenWrt's dropbear
+  may ignore a key's options.
+- The collector and the actor can be removed from a host (with your login, like setting them
+  up: their user, scripts and sudo rules go, and the entry leaves config.yaml), or set up again.
+- A setup that meets a host Kastellan doesn't know yet offers to trust its key right there
+  (shown to compare), then goes on; a changed key is still never one click.
+- Device pages through Kastellan: Kastellan's sign-in cookie stays on its own name; each device
+  page gets its own (a one-time ticket from "Open web interface"). A device's page can't send
+  requests to another's; a closed tab, or a device that never answers, no longer holds a
+  connection; access ends with the sign-in.
+- Push: a browser that fails no longer makes the others get it again; at most 10 browsers per
+  person; only the browsers' own push services are accepted; one slow channel no longer holds
+  the others back; a refusal that may be the hub's own (a clock far off) no longer drops
+  subscriptions; clicking a notification always opens the page.
+- The VPN key's rotation ends with only the new key on each host (a key added with a leaked one
+  is removed too); a skipped host keeps the rotation open; lines are rebuilt with exactly their
+  options, and authorized_keys is never left half written. OpenVPN: no stale "connected";
+  servers in /etc/openvpn/*.conf are found, client configs aren't taken for servers.
+- A device's config.yaml tab: a commented-out line no longer cuts it short; it can't change
+  other devices; it never keeps another device's text when going from one device to another.
+- DNS checks: single names use the search domains; a router that drops AAAA questions isn't
+  "down" and doesn't slow the check; `expect: 200` on a dns check is refused instead of
+  crashing the config load.
+- After setting up the actor again, Updates stops saying it's older right away.
+
 ## 0.5.0 (2026-11-21)
 
 Device web pages through the hub, push notifications, sites and DNS checks, the VPN's own key

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from kastellan.config import CheckType, Config, load
+from kastellan.config import Check, CheckType, Config, load
 
 
 def test_shorthands_and_defaults(tmp_path: Path) -> None:
@@ -91,3 +91,8 @@ def test_sites() -> None:
     assert two.multi_site and two.label("b") == "b (Friends place)" and two.label("a") == "a"
     with pytest.raises(ValidationError):
         Config.model_validate({"devices": {"a": {"host": "a", "site": "Not An Id"}}})
+
+
+def test_a_dns_expect_is_addresses() -> None:
+    with pytest.raises(ValueError):
+        Check.model_validate({"dns": "example.org", "expect": 200})

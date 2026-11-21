@@ -118,6 +118,8 @@ class Check(BaseModel):
                 raise ValueError("dns needs a name to look up, like example.org")
             if isinstance(self.expect, str):
                 self.expect = [self.expect]
+            if self.expect is not None and not isinstance(self.expect, list):
+                raise ValueError("dns: expect is an address or a list of addresses")
             for address in [*(self.expect or []), *([self.server] if self.server else [])]:
                 try:
                     ipaddress.ip_address(address)

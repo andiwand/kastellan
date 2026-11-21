@@ -1,12 +1,12 @@
 #!/bin/sh
 # kastellan-crl: the only thing Kastellan's key may run on the OpenVPN server (OpenWrt): take a
 # new CRL on stdin and put it in place. OpenVPN reads the CRL at every connection. Also
-# add-key / remove-key, for rotating Kastellan's VPN key (see below).
+# add-key / keep-key, for rotating Kastellan's VPN key (see below).
 #
 # Install (on the OpenVPN server):
 #   install -m 755 kastellan-crl /usr/bin/kastellan-crl
 #   In /etc/dropbear/authorized_keys (OpenWrt), the hub's key, bound to this script:
-#     command="/usr/bin/kastellan-crl",no-port-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... kastellan-hub
+#     command="/usr/bin/kastellan-crl /etc/kastellan-crl.conf",no-port-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... kastellan-vpn
 #   and in the OpenVPN server config: crl-verify /etc/openvpn/crl.pem
 #   (CRL can be overridden in /etc/kastellan-crl.conf)
 set -eu
@@ -19,11 +19,13 @@ CONF=${1:-/etc/kastellan-crl.conf}
 [ -r "$CONF" ] && . "$CONF"
 
 fail() { echo "kastellan-crl: $*" >&2; exit 2; }
-# Rotating Kastellan's VPN key (add-key OLD NEW, then remove-key OLD): only lines bound to this
-# script change. A new line copies the options of the line with OLD (its command=, from=, limits)
-# with NEW in place of the key, so the new key may do exactly what the old one may. Keys are one
-# ed25519 key each (the base64 part only: no options, no other type, nothing else). The last key
-# for this script is never removed.
+# Rotating Kastellan's VPN key: `add-key OLD NEW` (run with OLD), then `keep-key NEW` (run with
+# NEW). Only lines bound to this script (command="<this script>" with or without arguments)
+# change. add-key copies the options of OLD's line exactly (its command=, from=, limits) with NEW
+# as the key, so the new key may do what the old one may and nothing more; keep-key removes every
+# other key line of this script (also ones added by whoever else held a key: a leaked key ends
+# here) and says how many. Keys are one ed25519 key each (the base64 part only: no options, no
+# other type). The new file is checked before it replaces the old one (BusyBox-safe).
 keys_file() {
   if [ -n "${AUTHORIZED_KEYS:-}" ]; then echo "$AUTHORIZED_KEYS"
   elif [ "$(id -u)" = 0 ] && [ -f /etc/openwrt_release ]; then echo /etc/dropbear/authorized_keys
@@ -35,32 +37,62 @@ ed25519() {
   [ ${#1} -eq 68 ] && [ -z "$(printf '%s' "$1" | tr -d 'A-Za-z0-9+/')" ] || fail "not an ed25519 key"
 }
 rekey() {
+  op=$1
   ed25519 "$2"
-  [ "$1" = remove ] || ed25519 "$3"
+  [ "$op" = keep ] || ed25519 "$3"
   f=$(keys_file)
   [ -f "$f" ] || fail "no $f"
-  awk -v op="$1" -v old="$2" -v new="${3:-}" -v mark="command=\"$0 " '
-    function key(line,   n, i, w) {
-      n = split(line, w, " ")
-      for (i = 1; i < n; i++) if (w[i] == "ssh-ed25519") return w[i + 1]
-      return ""
+  tmp="$f.kastellan-new"
+  rm -f "$tmp"
+  counts=$(awk -v op="$op" -v a="$2" -v b="${3:-}" -v script="$0" -v out="$tmp" '
+    # A line: its options (OPT), key type (TYPE) and key (KEY), by field; quoted options may hold
+    # spaces; tabs separate as spaces do.
+    function parse(s,   i, c, q, w) {
+      sub(/\r$/, "", s); OPT = ""; TYPE = ""; KEY = ""
+      sub(/^[ \t]+/, "", s)
+      if (s == "" || substr(s, 1, 1) == "#") return
+      if (s !~ /^(ssh-|ecdsa-|sk-)/) {
+        q = 0
+        for (i = 1; i <= length(s); i++) {
+          c = substr(s, i, 1)
+          if (c == "\"") q = !q
+          else if (!q && (c == " " || c == "\t")) break
+        }
+        OPT = substr(s, 1, i - 1); s = substr(s, i)
+        sub(/^[ \t]+/, "", s)
+      }
+      split(s, w, /[ \t]+/); TYPE = w[1]; KEY = w[2]
     }
-    { line[NR] = $0; mine[NR] = index($0, mark) > 0; k[NR] = key($0) }
+    function bound(o,   p, after) {
+      p = index(o, "command=\"" script)
+      if (!p || (p > 1 && substr(o, p - 1, 1) != ",")) return 0
+      after = substr(o, p + length("command=\"" script), 1)
+      return after == "\"" || after == " "
+    }
+    {
+      line[NR] = $0; parse($0); opt[NR] = OPT
+      mine[NR] = OPT != "" && bound(OPT); k[NR] = TYPE == "ssh-ed25519" ? KEY : ""
+    }
     END {
-      for (i = 1; i <= NR; i++) if (mine[i]) {
-        if (k[i] == old) src = i; else if (k[i] != "") others++
-        if (k[i] == new) has = 1
+      for (i = 1; i <= NR; i++) if (mine[i]) { if (k[i] == a) src = i; if (k[i] == b) has = 1 }
+      if (!src) { print "no line of this script with that key" > "/dev/stderr"; exit 3 }
+      n = 0; removed = 0
+      for (i = 1; i <= NR; i++) {
+        if (op == "keep" && mine[i] && k[i] != a) { removed++; continue }
+        print line[i] > out; n++
       }
-      if (op == "add" && !src) { print "no line of this script with that key" > "/dev/stderr"; exit 3 }
-      if (op == "remove" && src && !others) { print "that is the only key for this script" > "/dev/stderr"; exit 3 }
-      for (i = 1; i <= NR; i++) if (op == "add" || !(mine[i] && k[i] == old)) print line[i]
-      if (op == "add" && !has) {
-        p = index(line[src], " ssh-ed25519 " old)
-        print substr(line[src], 1, p) "ssh-ed25519 " new " kastellan-vpn"
-      }
-    }' "$f" > "$f.kastellan-new" || { rm -f "$f.kastellan-new"; fail "$f not changed"; }
-  chmod 600 "$f.kastellan-new" && mv "$f.kastellan-new" "$f"
-  echo "$1-key done"
+      if (op == "add" && !has) { print opt[src] " ssh-ed25519 " b " kastellan-vpn" > out; n++ }
+      close(out)
+      print n " " removed
+    }' "$f") || { rm -f "$tmp"; fail "$f not changed"; }
+  # Every line written, each ended: else (a full disk) the file in place stays as it is.
+  lines=$(wc -l < "$tmp" 2>/dev/null | tr -d ' ') || lines=
+  if [ ! -s "$tmp" ] || [ "$lines" != "${counts%% *}" ]; then
+    rm -f "$tmp"; fail "$f not changed (the new file came out short)"
+  fi
+  chmod 600 "$tmp" || { rm -f "$tmp"; fail "$f not changed (chmod)"; }
+  mv "$tmp" "$f" || { rm -f "$tmp"; fail "$f not changed (mv)"; }
+  if [ "$op" = keep ]; then echo "kept $2; removed ${counts#* } other key line(s)"; else echo "add-key done"; fi
 }
 set -f
 # shellcheck disable=SC2086 # split into words on purpose (globbing is off)
@@ -68,9 +100,9 @@ set -- ${SSH_ORIGINAL_COMMAND:-}
 set +f
 case "${1:-}:$#" in
   add-key:3) rekey add "$2" "$3"; exit 0 ;;
-  remove-key:2) rekey remove "$2"; exit 0 ;;
+  keep-key:2) rekey keep "$2"; exit 0 ;;
   install:1) ;;
-  *) fail "only 'install' (and add-key / remove-key)" ;;
+  *) fail "only 'install' (and add-key / keep-key)" ;;
 esac
 tmp="$CRL.new"
 head -c 1048576 > "$tmp"

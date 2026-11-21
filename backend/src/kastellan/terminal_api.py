@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import asyncssh
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .auth_api import (
     Who,
@@ -50,6 +50,8 @@ RECHECK_EVERY = 15  # seconds between checks that the session is still good
 
 class Trust(BaseModel):
     fingerprint: str
+    # The port a setup logs in on, for a device without `ssh:` yet; else the ssh: port.
+    port: int | None = Field(default=None, ge=1, le=65535)
 
 
 def router(hub: Hub) -> APIRouter:
@@ -87,7 +89,12 @@ def router(hub: Hub) -> APIRouter:
     @api.post("/devices/{id}/ssh/trust")
     async def trust(id: str, body: Trust, request: Request) -> dict[str, str]:
         w = require_signin(request)
-        t = target(id)
+        device = hub.config.devices.get(id)
+        if device is None:
+            raise HTTPException(404, "no such device")
+        # A host key belongs to the address and port, not to a login (setups trust it too).
+        port = body.port or (device.ssh.port if device.ssh else 22)
+        t = Target(device.host, port, device.ssh.user if device.ssh else "root")
         try:
             await hub.keys.trust(t, body.fingerprint)
         except ChangedHost as e:
@@ -95,7 +102,12 @@ def router(hub: Hub) -> APIRouter:
         except (OSError, TimeoutError, asyncssh.Error) as e:
             raise HTTPException(502, f"cannot reach {t.host}: {e}") from e
         hub.audit.record(
-            "ssh.trust", w.user, client_address(request.scope), device=id, fingerprint=body.fingerprint
+            "ssh.trust",
+            w.user,
+            client_address(request.scope),
+            device=id,
+            port=port,
+            fingerprint=body.fingerprint,
         )
         return {"state": "trusted"}
 

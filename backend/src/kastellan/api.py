@@ -35,7 +35,9 @@ from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
 from .tls import public_name
 from .vpn_api import router as vpn_router
+from .webproxy import Access as WebAccess
 from .webproxy import WebProxy
+from .webproxy import router as web_router
 from .webproxy import upstream as web_upstream
 
 WEB = Path(__file__).parent / "web"
@@ -84,7 +86,11 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         return JSONResponse({"detail": detail}, status_code=422)
 
     app.add_middleware(Guard, hub=hub)
-    app.add_middleware(WebProxy, hub=hub)  # outermost: a device's name never reaches the hub's routes
+    web_access = WebAccess()
+    app.add_middleware(
+        WebProxy, hub=hub, access=web_access
+    )  # outermost: a device's name never reaches the hub's routes
+    app.include_router(web_router(hub, web_access))
     app.include_router(auth_router(hub))
     app.include_router(terminal_router(hub))
     app.include_router(desktop_router(hub))

@@ -88,7 +88,7 @@ def router(hub: Hub) -> APIRouter:
             "url": "/",
         }
         async with httpx.AsyncClient(timeout=10) as client:
-            ok = await hub.push.send(client, name, payload)
+            ok = await hub.push.send(client, name, payload, retry=False)
         if not ok:
             raise HTTPException(502, "a push service didn't take it; try again later")
         return {"browsers": len(mine)}

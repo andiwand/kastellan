@@ -191,6 +191,23 @@ def parse(output: str) -> tuple[list[AuthorizedKey], bool]:
     return out, partial
 
 
+def kastellan_keys(keys: Keys) -> dict[str, str]:
+    """Kastellan's own keys by fingerprint, named for the page (never removed by hand)."""
+    out = {keys.hub_key().get_fingerprint(): "Kastellan"}
+    for which, name in (("next", "Kastellan (new key)"), ("old", "Kastellan (old key)")):
+        key = keys.side_key(which)
+        if key is not None:
+            out[key.get_fingerprint()] = name
+    named = {"vpn": "Kastellan VPN", "collect": "Kastellan collector", "act": "Kastellan actor"}
+    for which, name in named.items():
+        if (keys.folder / keys.NAMES[which]).exists():
+            out[keys.hub_key(which).get_fingerprint()] = name
+    for side in ("next", "old"):  # a VPN key rotation's other key
+        if key := keys.side_key(side, "vpn"):
+            out[key.get_fingerprint()] = f"Kastellan VPN ({side} key)"
+    return out
+
+
 def target_of(device: Device) -> Target:
     if device.ssh is None:
         raise ValueError("the device has no ssh: login in config.yaml")
@@ -266,6 +283,8 @@ class DeviceStep:
     removed: bool = False  # the old key is gone from it, and no longer works
     error: str | None = None
     target: str | None = None  # the login it was done for (user@host:port)
+    note: str | None = None  # what the step found (e.g. other keys it removed)
+    forgotten: bool = False  # given up on by an admin: the old key may still work there
 
 
 @dataclass

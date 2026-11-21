@@ -2,7 +2,7 @@
 	import { modal } from '#lib/modal.js';
 	import CodeBlock from '#lib/components/CodeBlock.svelte';
 	import { untrack } from 'svelte';
-	import { streamSetup, type SetupOutcome } from '#lib/api.js';
+	import { api, streamSetup, type SetupOutcome } from '#lib/api.js';
 	import X from '@lucide/svelte/icons/x';
 	import Check from '@lucide/svelte/icons/check';
 
@@ -56,6 +56,25 @@
 		void log.length;
 		if (logBox) logBox.scrollTop = logBox.scrollHeight;
 	});
+
+	// A host Kastellan hasn't met: its key, to trust here (a changed key is never one click).
+	const unknownKey = $derived(error?.match(/is not trusted yet; its key is (SHA256:\S+?) /)?.[1]);
+	const device = $derived(decodeURIComponent(path.match(/^\/devices\/([^/]+)\//)?.[1] ?? ''));
+	let trusting = $state(false);
+
+	async function trustAndRetry() {
+		if (!unknownKey || !device) return;
+		trusting = true;
+		try {
+			await api.trustHost(device, unknownKey, port);
+			error = null;
+			step = 'form'; // the passwords are gone: type them again, then it goes on
+		} catch (err) {
+			error = (err as Error).message;
+		} finally {
+			trusting = false;
+		}
+	}
 
 	async function start(e: SubmitEvent) {
 		e.preventDefault();
@@ -186,6 +205,20 @@
 						<span style:color="var(--critical-text)">It didn't work: {error}</span>
 					{/if}
 				</p>
+				{#if step === 'failed' && unknownKey && device}
+					<div class="rounded-lg border border-line p-3 text-sm">
+						<p>
+							Kastellan hasn't met this device before. If this is its key, trust it (compare it on
+							the device: <code class="font-mono text-xs">
+								ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+							</code>):
+						</p>
+						<p class="mt-1 font-mono text-xs break-all">{unknownKey}</p>
+						<button class="{button} mt-2" disabled={trusting} onclick={trustAndRetry}>
+							Trust this key and try again
+						</button>
+					</div>
+				{/if}
 				<pre
 					bind:this={logBox}
 					class="max-h-72 min-h-24 overflow-auto rounded-lg bg-surface-2 p-3 font-mono text-[11px] leading-relaxed">{log.join(

@@ -78,11 +78,26 @@ def client(tmp_path: Path):
         yield c
 
 
+def enter(c: TestClient, id: str = "nas_box") -> None:
+    """Open the device's page from the hub: the ticket, traded on its name for its cookie."""
+    r = c.get(f"{HUB}/api/devices/{id}/web", follow_redirects=False)
+    assert r.status_code == 303
+    where = r.headers["location"]
+    assert where.startswith(f"http://{webproxy.label(id)}.kastellan.test{webproxy.ENTER}?ticket=")
+    r = c.get(where, follow_redirects=False)
+    assert r.status_code == 200 and 'http-equiv="refresh"' in r.text
+
+
 def test_forwards_to_the_device_for_admins(client: TestClient, device) -> None:
     url = "http://nas-box.kastellan.test/status?x=1"
-    assert client.get(url).status_code == 401  # signed out
+    assert client.get(url).status_code == 401  # no access to this name
     signin(client)
-    assert any(c.domain.lstrip(".") == "kastellan.test" for c in client.cookies.jar)  # reaches devices
+    # The hub's session stays on the hub's name: device names don't get it.
+    assert all(c.domain in ("kastellan.test", "kastellan.test.local") for c in client.cookies.jar)
+    assert client.get(url).status_code == 401  # signed in at the hub, but not opened from it
+    enter(client)
+    web = [c for c in client.cookies.jar if c.name == webproxy.WEB_COOKIE]
+    assert [c.domain for c in web] == ["nas-box.kastellan.test"]  # host-only, on its own name
     client.cookies.set("sid", "dev", domain="nas-box.kastellan.test")  # the device's own
     r = client.get(url, headers={"X-Kastellan": "1"})
     assert r.status_code == 200 and r.text == "device page /status"
@@ -94,22 +109,126 @@ def test_forwards_to_the_device_for_admins(client: TestClient, device) -> None:
     assert cookies == ["sid=abc; Path=/; HttpOnly"]  # no Domain, no Secure over http
     r = client.get("http://nas-box.kastellan.test/go", follow_redirects=False)
     assert r.headers["location"] == "http://nas-box.kastellan.test/home"
-    # Opening is audited once per session and device, not per request.
+    # Opening is audited when it's opened from the hub, not per request.
     log = (client.app.state.hub.settings.data / "audit.log").read_text()  # type: ignore[attr-defined]
     assert sum(json.loads(ln)["action"] == "web.open" for ln in log.splitlines()) == 1
+    # Signing out at the hub ends the device name's access too.
+    client.post(f"{HUB}/api/auth/logout", headers=H)
+    assert client.get(url).status_code == 401
+
+
+def test_tickets(client: TestClient, device) -> None:
+    signin(client)
+    r = client.get(f"{HUB}/api/devices/nas_box/web", follow_redirects=False)
+    where = r.headers["location"]
+    other = where.replace("nas-box.", "printer.")
+    assert client.get(other).status_code == 401  # another device's name: not this ticket
+    assert client.get(where).status_code == 401  # ...and it was used up by that try
+    r = client.get(f"{HUB}/api/devices/nas_box/web", follow_redirects=False)
+    where = r.headers["location"]
+    assert client.get(where).status_code == 200
+    assert client.get(where).status_code == 401  # once only
+    access = webproxy.Access()
+    key = access.ticket("token", "nas-box")
+    access._tickets[key].expires = 0  # a minute later
+    assert access.enter(key, "nas-box") is None
+    assert client.get(f"{HUB}/api/devices/printer/web", follow_redirects=False).status_code == 404
 
 
 def test_who_and_what_is_refused(client: TestClient, device) -> None:
     signin(client, "obi", "observer password")
-    assert client.get("http://nas-box.kastellan.test/").status_code == 403  # observers open no sessions
+    r = client.get(f"{HUB}/api/devices/nas_box/web", follow_redirects=False)
+    assert r.status_code == 403  # observers open no sessions
     signin(client)
-    assert client.get("http://printer.kastellan.test/").status_code == 404  # no web interface
-    assert client.get("http://nope.kastellan.test/").status_code == 404
-    assert client.get("http://a.nas-box.kastellan.test/").status_code == 404
+    enter(client)
+    for name in ("printer", "nope", "a.nas-box"):  # its cookie is for its own name only
+        assert client.get(f"http://{name}.kastellan.test/").status_code == 401
     assert not device
     # The hub itself answers at the domain; a device's name never reaches the hub's API.
     assert client.get(f"{HUB}/api/devices").status_code == 200
     assert client.get("http://nas-box.kastellan.test/api/devices").text == "device page /api/devices"
+
+
+def test_another_page_cant_use_the_access(client: TestClient, device) -> None:
+    signin(client)
+    enter(client)
+    url = "http://nas-box.kastellan.test/settings"
+    for headers in (
+        {"Sec-Fetch-Site": "same-site"},  # another device's page
+        {"Sec-Fetch-Site": "cross-site"},
+        {"Origin": "http://printer.kastellan.test"},
+        {"Origin": "null"},
+    ):
+        assert client.post(url, headers=headers).status_code == 403, headers
+    assert not device
+    ok = {"Sec-Fetch-Site": "same-origin", "Origin": "http://nas-box.kastellan.test"}
+    assert client.post(url, headers=ok, content=b"x=1").status_code == 200
+    assert device[-1].headers["origin"] == "http://10.9.9.9:8080"  # its own address, for its checks
+
+
+def test_rewrites_only_its_own_address() -> None:
+    src, dst = "http://192.168.1.1", "https://router.kastellan.test"
+    assert webproxy.rebase("http://192.168.1.1/x", src, dst) == "https://router.kastellan.test/x"
+    assert webproxy.rebase("http://192.168.1.1:80/x", src, dst) == "https://router.kastellan.test/x"
+    assert webproxy.rebase("http://192.168.1.10/x", src, dst) == "http://192.168.1.10/x"
+    assert webproxy.rebase("http://192.168.1.1:8443/x", src, dst) == "http://192.168.1.1:8443/x"
+    assert webproxy.rebase("/relative", src, dst) == "/relative"
+
+
+def test_a_closed_tab_ends_the_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An endless stream (a camera): the browser leaving closes the device's response too."""
+    closed = asyncio.Event()
+
+    async def endless():
+        try:
+            while True:
+                yield b"frame"
+                await asyncio.sleep(0.01)
+        finally:
+            closed.set()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=endless())
+
+    monkeypatch.setattr(
+        webproxy, "new_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    )
+    write_config(tmp_path / "config.yaml")
+    hub_app = create_app(Settings(config=tmp_path / "config.yaml", data=tmp_path))
+    with TestClient(hub_app, base_url=HUB) as c:
+        signin(c)
+        enter(c)
+        cookie = "; ".join(f"{k.name}={k.value}" for k in c.cookies.jar)
+
+    async def run() -> None:
+        messages = [{"type": "http.request", "body": b""}]
+        got: list[dict] = []
+
+        async def receive():
+            if messages:
+                return messages.pop()
+            await asyncio.sleep(0.1)  # a moment of streaming, then the tab closes
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            got.append(message)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/cam",
+            "raw_path": b"/cam",
+            "query_string": b"",
+            "scheme": "http",
+            "headers": [(b"host", b"nas-box.kastellan.test"), (b"cookie", cookie.encode())],
+            "client": ("127.0.0.1", 1),
+        }
+        await asyncio.wait_for(hub_app(scope, receive, send), 5)
+        assert got[0]["status"] == 200 and len(got) > 2
+        await asyncio.wait_for(closed.wait(), 1)
+
+    with TestClient(hub_app, base_url=HUB):  # the hub running (its lifespan), for the access
+        asyncio.run(run())
 
 
 def test_a_device_page_cant_drive_the_hub(client: TestClient, device) -> None:
@@ -128,6 +247,7 @@ def test_not_while_signin_is_off(tmp_path: Path, device) -> None:
     write_config(tmp_path / "config.yaml", users=False)
     with TestClient(create_app(Settings(config=tmp_path / "config.yaml", data=tmp_path)), base_url=HUB) as c:
         assert c.get("http://nas-box.kastellan.test/").status_code == 403
+        assert c.get(f"{HUB}/api/devices/nas_box/web", follow_redirects=False).status_code == 403
     assert not device
 
 
@@ -156,10 +276,78 @@ def test_websockets_are_forwarded(tmp_path: Path) -> None:
     write_config(tmp_path / "config.yaml", upstream=f"http://127.0.0.1:{port[0]}")
     with TestClient(create_app(Settings(config=tmp_path / "config.yaml", data=tmp_path)), base_url=HUB) as c:
         signin(c)
-        with c.websocket_connect("ws://nas-box.kastellan.test/socket") as ws:
+        enter(c)
+        own = {"Origin": "http://nas-box.kastellan.test"}
+        with c.websocket_connect("ws://nas-box.kastellan.test/socket", headers=own) as ws:
             ws.send_text("hi")
             assert ws.receive_text() == "echo hi"
-    assert "kastellan_session" not in headers[0].get("cookie", "")
+        for origin in ({"Origin": "http://printer.kastellan.test"}, {}):  # another page's, or none
+            with (
+                pytest.raises(WebSocketDisconnect),
+                c.websocket_connect("ws://nas-box.kastellan.test/socket", headers=origin),
+            ):
+                pass
+    cookie = headers[0].get("cookie", "")
+    assert "kastellan_session" not in cookie and webproxy.WEB_COOKIE not in cookie
     loop.call_soon_threadsafe(stop.set)
     thread.join(5)
     loop.close()
+
+
+def test_open_streams_end_with_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Streams and WebSockets re-check their access: signing out ends them within a while."""
+    monkeypatch.setattr(webproxy, "RECHECK_EVERY", 0.01)
+    signed_in = [True]
+
+    async def run() -> None:
+        watch = asyncio.ensure_future(webproxy._watch(lambda: signed_in[0]))
+        await asyncio.sleep(0.05)
+        assert not watch.done()
+        signed_in[0] = False
+        await asyncio.wait_for(watch, 1)
+
+    asyncio.run(run())
+
+
+def test_a_device_that_never_answers_doesnt_hold_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hung device web server: when the browser gives up, the proxy lets go too."""
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+    monkeypatch.setattr(
+        webproxy, "new_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(hang))
+    )
+    write_config(tmp_path / "config.yaml")
+    hub_app = create_app(Settings(config=tmp_path / "config.yaml", data=tmp_path))
+    with TestClient(hub_app, base_url=HUB) as c:
+        signin(c)
+        enter(c)
+        cookie = "; ".join(f"{k.name}={k.value}" for k in c.cookies.jar)
+
+    async def run() -> None:
+        got: list[dict] = []
+
+        async def receive():
+            await asyncio.sleep(0.1)
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            got.append(message)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "scheme": "http",
+            "headers": [(b"host", b"nas-box.kastellan.test"), (b"cookie", cookie.encode())],
+            "client": ("127.0.0.1", 1),
+        }
+        await asyncio.wait_for(hub_app(scope, receive, send), 5)
+        assert got and got[0]["status"] == 504
+
+    with TestClient(hub_app, base_url=HUB):
+        asyncio.run(run())

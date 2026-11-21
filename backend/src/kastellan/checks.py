@@ -125,24 +125,46 @@ async def _dns(check: Check) -> Result:
 
     async def ask(rdtype: str) -> list[str]:
         try:
-            return [r.to_text() for r in await resolver.resolve(check.target, rdtype)]
+            # search: a single name (`nas`) gets resolv.conf's search domains, as other tools do
+            return [r.to_text() for r in await resolver.resolve(check.target, rdtype, search=True)]
         except dns.resolver.NoAnswer:
             return []
 
+    async def timed(rdtype: str) -> tuple[list[str], float]:
+        found = await ask(rdtype)
+        return found, time.perf_counter()
+
     start = time.perf_counter()
+    a, aaaa = asyncio.ensure_future(timed("A")), asyncio.ensure_future(timed("AAAA"))
     try:
-        found = [a for answers in await asyncio.gather(ask("A"), ask("AAAA")) for a in answers]
+        # One answer is enough: some home routers drop AAAA questions. Once A has answered,
+        # AAAA gets a moment more, not the whole time limit; the latency is the first answer's.
+        await asyncio.wait([a])
+        if a.exception() is None and a.result()[0]:
+            await asyncio.wait([aaaa], timeout=0.3)
+        else:
+            await asyncio.wait([aaaa])
+        results = [t.result() if t.done() and t.exception() is None else t for t in (a, aaaa)]
+        answers = [r for r in results if isinstance(r, tuple)]
+        found = [x for r, _ in answers for x in r]
+        if not found:
+            failed = next((t.exception() for t in (a, aaaa) if t.done() and t.exception()), None)
+            if failed is not None:
+                raise failed
     except dns.resolver.NXDOMAIN:
         return Result(False, detail="no such name")
     except dns.exception.Timeout:
         return Result(False, detail="the resolver didn't answer")
     except dns.exception.DNSException as e:
         return Result(False, detail=str(e) or type(e).__name__)
-    latency = round((time.perf_counter() - start) * 1000, 2)
+    finally:
+        aaaa.cancel()
+    first = min((t for r, t in answers if r), default=time.perf_counter())
+    latency = round((first - start) * 1000, 2)
     shown = ", ".join(found[:3]) + (", …" if len(found) > 3 else "")
     if not found:
         return Result(False, latency, "no addresses")
-    expected = {str(ipaddress.ip_address(a)) for a in check.expect or []}  # as dnspython writes them
+    expected = {str(ipaddress.ip_address(x)) for x in check.expect or []}  # as dnspython writes them
     missing = expected - {str(ipaddress.ip_address(a)) for a in found}
     if missing:
         return Result(False, latency, f"{shown}; not {', '.join(sorted(missing))}")

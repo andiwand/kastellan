@@ -254,6 +254,23 @@ def test_openvpn(tmp_path: Path, wg_easy, pki) -> None:
         assert c.post("/api/vpn/openvpn", json={"name": "../evil"}, headers=H).status_code == 400
         assert c.get("/api/vpn").json()["openvpn"]["clients"][0]["status"] == "valid"
 
+        from datetime import UTC, datetime
+
+        # Who the router said is connected counts only while it said so lately, and not on errors.
+        alice = {"name": "alice", "address": "203.0.113.5:1", "since": None, "rx": 1, "tx": 2}
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+
+        def connected() -> object:
+            clients = c.get("/api/vpn").json()["openvpn"]["clients"]
+            return next(x for x in clients if x["name"] == "alice")["connected"]
+
+        hub.ovpn_status = {"checked": now, "connected": [alice], "error": None}
+        assert connected() == alice
+        hub.ovpn_status = {"checked": "2026-11-20T00:00:00+00:00", "connected": [alice], "error": None}
+        assert connected() is None  # stale: the router hasn't been read for a while
+        hub.ovpn_status = {"checked": now, "connected": [alice], "error": "it doesn't answer"}
+        assert connected() is None
+
         r = c.get("/api/vpn/openvpn/alice/config")
         assert (
             r.status_code == 200
@@ -349,8 +366,11 @@ def test_last_seen_and_the_key(tmp_path: Path, wg_easy, pki) -> None:
         assert set(r["rotation"]["devices"]) == {"pki", "server"}
         assert not any(s["added"] for s in r["rotation"]["devices"].values())
         assert c.post("/api/vpn/key/rotate/finish", json={}, headers=H).status_code == 409
+        assert c.post("/api/vpn/key/rotate/forget", json={"host": "pki"}, headers=H).status_code == 409
         assert c.post("/api/vpn/key/rotate/cancel", headers=H).json()["rotation"] is None
         log = (tmp_path / "data" / "audit.log").read_text()
         assert '"vpn.key.rotate.start"' in log and '"vpn.key.rotate.cancel"' in log
+        cancel = json.loads(next(ln for ln in log.splitlines() if '"vpn.key.rotate.cancel"' in ln))
+        assert cancel["stage"] == "cancelled" and set(cancel["hosts"]) == {"pki", "server"}
         signin(c, "obi")
         assert c.get("/api/vpn/key").status_code == 403

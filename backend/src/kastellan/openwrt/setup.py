@@ -81,22 +81,40 @@ exit 0
 _OPENVPN_STATUS_SCRIPT = r"""#!/bin/sh
 # Kastellan: who is connected to this device's OpenVPN servers. No input, client lines only.
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
-for s in $(uci -q show openvpn | sed -n "s/^openvpn\.\([A-Za-z0-9_]*\)=openvpn$/\1/p"); do
-  [ "$(uci -q get "openvpn.$s.enabled")" = 1 ] || continue
-  f=$(uci -q get "openvpn.$s.status" | cut -d' ' -f1)
-  conf=$(uci -q get "openvpn.$s.config")
-  if [ -z "$f" ] && [ -n "$conf" ] && [ -r "$conf" ]; then
-    f=$(sed -n 's/^[[:space:]]*status[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p' "$conf" | head -n 1)
-  fi
-  echo "== $s"
-  [ -n "$f" ] || { echo "!no-status"; continue; }
-  [ -r "$f" ] || { echo "!unreadable"; continue; }
-  head -c 1048576 "$f" | awk '
+OPENVPN_DIR=/etc/openvpn
+seen=" "
+# The status file named by a config file (`status <file> [seconds]`).
+status_of() { sed -n 's/^[[:space:]]*status[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p' "$1" | head -n 1; }
+show() {
+  echo "== $1"
+  [ -n "$2" ] || { echo "!no-status"; return; }
+  case "$seen" in *" $2 "*) return ;; esac
+  seen="$seen$2 "
+  [ -r "$2" ] || { echo "!unreadable"; return; }
+  head -c 1048576 "$2" | awk '
     /^(HEADER[,\t])?CLIENT_LIST[,\t]/ { print; next }
     /^Common Name,Real Address/ { v1 = 1; print; next }
     /^ROUTING TABLE/ { v1 = 0 }
     v1 { print }'
+}
+found=0
+for s in $(uci -q show openvpn | sed -n "s/^openvpn\.\([A-Za-z0-9_]*\)=openvpn$/\1/p"); do
+  case "$(uci -q get "openvpn.$s.enabled")" in 1|true|yes|on) ;; *) continue ;; esac
+  found=1
+  f=$(uci -q get "openvpn.$s.status" | cut -d' ' -f1)
+  conf=$(uci -q get "openvpn.$s.config")
+  if [ -z "$f" ] && [ -n "$conf" ] && [ -r "$conf" ]; then f=$(status_of "$conf"); fi
+  show "$s" "$f"
 done
+# Servers started from their own files (OpenWrt's init also runs /etc/openvpn/*.conf).
+for conf in "$OPENVPN_DIR"/*.conf; do
+  # A server's file, not a client's (server-poll-timeout is a client option).
+  is_server='^[[:space:]]*(server|server-bridge|mode[[:space:]]+server)([[:space:]]|$)'
+  [ -r "$conf" ] && grep -Eq "$is_server" "$conf" || continue
+  found=1
+  show "${conf##*/}" "$(status_of "$conf")"
+done
+[ "$found" = 1 ] || echo "!no-servers"
 exit 0
 """
 

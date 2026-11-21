@@ -27,7 +27,7 @@ import asyncssh
 from ..access import authorize
 from ..config import Device
 from ..ssh import Keys, Target
-from .collector import PYTHON_CHECK, digest
+from .collector import PYTHON_CHECK, digest, remove_user
 
 USER = "kastellan-act"
 BASE = "/usr/local/lib/kastellan/act"
@@ -131,6 +131,23 @@ def install_script(
     what = ", ".join(sorted(chosen)) or "nothing (only listing)"
     lines.append(f"echo {q(f'The actor is set up; Kastellan may: {what}.')}")
     return "\n".join(lines) + "\n"
+
+
+def uninstall_script(user: str = USER) -> str:
+    """Shell commands, run as root, that take the actor off a host again (its log stays)."""
+    return (
+        "\n".join(
+            [
+                "set -eu",
+                f"rm -f /etc/sudoers.d/{user}",
+                f"rm -rf {BASE} /etc/kastellan/act",
+                *remove_user(user),
+                "rmdir /etc/kastellan /usr/local/lib/kastellan 2>/dev/null || true  # if empty",
+                "echo 'The actor is removed from this host.'",
+            ]
+        )
+        + "\n"
+    )
 
 
 def keep_only_new_key() -> list[str]:

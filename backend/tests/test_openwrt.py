@@ -649,28 +649,50 @@ def test_the_openvpn_status_script(tmp_path: Path) -> None:
         'case "$*" in\n'
         '  "-q show openvpn") printf "%s\\n" "openvpn.server=openvpn" "openvpn.server.enabled=\'1\'" '
         '"openvpn.other=openvpn" "openvpn.off=openvpn" ;;\n'
-        '  "-q get openvpn.server.enabled"|"-q get openvpn.other.enabled") echo 1 ;;\n'
+        '  "-q get openvpn.server.enabled") echo 1 ;;\n'
+        '  "-q get openvpn.other.enabled") echo true ;;\n'
         '  "-q get openvpn.off.enabled") echo 0 ;;\n'
         f'  "-q get openvpn.server.status") echo "{v2} 10" ;;\n'
         f'  "-q get openvpn.other.config") echo "{conf}" ;;\n'
         "esac\n"
     )
     (bin_dir / "uci").chmod(0o755)
-    script = setup._OPENVPN_STATUS_SCRIPT.replace(
-        "PATH=/usr/sbin:/usr/bin:/sbin:/bin", f"PATH={bin_dir}:/usr/bin:/bin"
-    )
-    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True).stdout
-    assert out.splitlines() == [
+    etc = tmp_path / "etc-openvpn"
+    etc.mkdir()
+    v3 = tmp_path / "own.status"
+    (etc / "own.conf").write_text(f"server 10.10.0.0 255.255.255.0\nstatus {v3}\n")
+    (etc / "client.conf").write_text("client\nremote vpn.example.net\nserver-poll-timeout 20\n")  # a client
+    (etc / "again.conf").write_text(f"server 10.11.0.0 255.255.255.0\nstatus {v2}\n")  # read once
+    v3.write_text("HEADER\tCLIENT_LIST\tCommon Name\tReal Address\nCLIENT_LIST\tcarol\t[2001:db8::1]:5000\n")
+
+    def run(uci_bin: Path, folder: Path) -> list[str]:
+        script = setup._OPENVPN_STATUS_SCRIPT.replace(
+            "PATH=/usr/sbin:/usr/bin:/sbin:/bin", f"PATH={uci_bin}:/usr/bin:/bin"
+        ).replace("OPENVPN_DIR=/etc/openvpn", f"OPENVPN_DIR={folder}")
+        return subprocess.run(["sh", "-c", script], capture_output=True, text=True).stdout.splitlines()
+
+    out = run(bin_dir, etc)
+    assert out == [
         "== server",
         v2.read_text().splitlines()[2],
         v2.read_text().splitlines()[3],
         "== other",
         "Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since",
         "bob,198.51.100.7:40000,5,6,2026-11-21 08:00:00",
-    ]  # no routing table, no stats; the disabled server not at all
+        "== again.conf",
+        "== own.conf",
+        *v3.read_text().splitlines(),
+    ]  # no routing table, no stats; the disabled server and the client config not at all
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    (empty / "uci").write_text("#!/bin/sh\nexit 1\n")
+    (empty / "uci").chmod(0o755)
+    assert run(empty, tmp_path / "nothing") == ["!no-servers"]
+    out = "\n".join(out)
     from kastellan.vpn.openvpn import parse_status
 
     found = {c.name: c for c in parse_status(out)}
     assert found["alice"].since == "2026-11-21T07:33:20+00:00" and found["alice"].rx == 1000
     assert found["alice"].address == "203.0.113.5:51000"
     assert found["bob"].since == "2026-11-21T08:00:00+00:00" and found["bob"].tx == 6
+    assert found["carol"].address == "[2001:db8::1]:5000"

@@ -11,8 +11,8 @@ the payload is encrypted for the browser. It holds a title, a line and the devic
 
 from __future__ import annotations
 
+import asyncio
 import base64
-import ipaddress
 import json
 import logging
 import os
@@ -32,6 +32,18 @@ log = logging.getLogger(__name__)
 
 SUBJECT = "https://andiwand.github.io"  # who sends (VAPID `sub`): the software's site, no person
 TTL = 24 * 3600  # a phone that is off gets it within a day, or not at all
+PER_USER = 10  # browsers per person; a new one beyond that replaces the oldest
+POST_LIMIT = 15  # seconds for one browser's push
+RETRY_EVERY = 60  # a failed push is tried again after 1, 2, 4 ... 64 minutes, for a day
+MAX_PENDING = 1000
+# Permanent answers from a push service: the subscription is gone or not ours (e.g. made for an
+# older VAPID key). Anything else (429, 5xx, no answer) is tried again later.
+# Gone for good: only what the push service says of the subscription itself. 400/401/403 can be
+# the hub's own fault (a clock far off makes its signature invalid): retried, never dropped.
+GONE = {404, 410}
+# The browsers' push services. Only they are posted to: a subscription is data from a signed-in
+# person, and a name of their choosing could lead the hub's POSTs to a service at home.
+SERVICES = ("fcm.googleapis.com", ".push.services.mozilla.com", ".push.apple.com", ".notify.windows.com")
 
 
 def _b64(data: bytes) -> str:
@@ -43,16 +55,12 @@ def _unb64(text: str) -> bytes:
 
 
 def valid_endpoint(endpoint: str) -> bool:
-    """A push service's address: https, by name (never an address at home: the hub would POST
-    wherever a subscription points)."""
+    """A known push service's address, over https on its usual port."""
     url = urlsplit(endpoint)
-    if url.scheme != "https" or not url.hostname or len(endpoint) > 1000:
+    host = url.hostname or ""
+    if url.scheme != "https" or url.port not in (None, 443) or len(endpoint) > 1000:
         return False
-    try:
-        ipaddress.ip_address(url.hostname)
-        return False
-    except ValueError:
-        return "." in url.hostname and not url.hostname.endswith((".lan", ".local", ".home.arpa"))
+    return any(host == s or (s.startswith(".") and host.endswith(s)) for s in SERVICES)
 
 
 class Push:
@@ -61,6 +69,8 @@ class Push:
         self.path = self.folder / "subscriptions.json"
         self._lock = threading.Lock()
         self._vapid: Vapid02 | None = None
+        # (endpoint, payload, first try, last try, tries): failed pushes, per browser.
+        self._pending: list[tuple[str, dict[str, Any], float, float, int]] = []
         try:
             self.subscriptions: list[dict[str, Any]] = json.loads(self.path.read_text())
         except (OSError, ValueError):
@@ -98,11 +108,14 @@ class Push:
 
     def add(self, user: str, endpoint: str, p256dh: str, auth: str, label: str) -> None:
         if not valid_endpoint(endpoint):
-            raise ValueError("not a push service's address")
+            raise ValueError("not a push service Kastellan knows (Chrome, Firefox, Safari, Edge)")
         if len(_unb64(p256dh)) != 65 or len(_unb64(auth)) != 16:
             raise ValueError("not a browser's push keys")
         with self._lock:
             self.subscriptions = [s for s in self.subscriptions if s["endpoint"] != endpoint]
+            mine = [s for s in self.subscriptions if s["user"] == user]
+            for old in sorted(mine, key=lambda s: s.get("created", 0))[: max(0, len(mine) - PER_USER + 1)]:
+                self.subscriptions.remove(old)
             self.subscriptions.append(
                 {
                     "user": user,
@@ -127,28 +140,71 @@ class Push:
     def of(self, user: str) -> list[dict[str, Any]]:
         return [s for s in self.subscriptions if s["user"] == user]
 
-    async def send(self, client: httpx.AsyncClient, user: str, payload: dict[str, Any]) -> bool:
-        """To every browser of `user` (`*`: everyone's). False when one could not be reached now
-        (to try again later); a browser that left (404, 410) is dropped."""
+    async def send(
+        self, client: httpx.AsyncClient, user: str, payload: dict[str, Any], retry: bool = True
+    ) -> bool:
+        """To every browser of `user` (`*`: everyone's), at once. True when all took it; a browser
+        that couldn't be reached is tried again later on its own (`retry`, by `retry_due`), so
+        the others don't get it twice. A browser that is gone for good is dropped."""
         targets = list(self.subscriptions) if user == "*" else self.of(user)
-        ok, gone = True, []
-        for s in targets:
-            try:
-                r = await client.post(
-                    s["endpoint"], content=self._encrypt(s, payload), headers=self._headers(s)
-                )
-                if r.status_code in (404, 410):
-                    gone.append(s["endpoint"])
-                else:
-                    r.raise_for_status()
-            except Exception as e:  # never raised into the hub; the endpoint names the browser
-                log.warning("push to %s failed: %s", urlsplit(s["endpoint"]).hostname, type(e).__name__)
-                ok = False
-        if gone:
-            with self._lock:
-                self.subscriptions = [s for s in self.subscriptions if s["endpoint"] not in gone]
-                self._save()
-        return ok
+        results = await asyncio.gather(*(self._post(client, s, payload) for s in targets))
+        if retry:
+            now = time.time()
+            for s, ok in zip(targets, results, strict=True):
+                if not ok:
+                    self._pending.append((s["endpoint"], payload, now, now, 1))
+            del self._pending[:-MAX_PENDING]
+        return all(results)
+
+    async def retry_due(self, client: httpx.AsyncClient) -> None:
+        """Try the failed pushes that are due again (after 1, 2, 4 ... minutes, for a day)."""
+        now, due, later = time.time(), [], []
+        known = {s["endpoint"]: s for s in self.subscriptions}
+        for endpoint, payload, first, last, tries in self._pending:
+            if endpoint not in known or now - first > TTL:
+                continue  # dropped meanwhile, or too old to matter
+            if now - last >= RETRY_EVERY * 2 ** min(tries - 1, 6):
+                due.append((endpoint, payload, first, tries))
+            else:
+                later.append((endpoint, payload, first, last, tries))
+        self._pending = later
+        try:
+            results = await asyncio.gather(*(self._post(client, known[e], p) for e, p, _, _ in due))
+        except asyncio.CancelledError:  # the hub's time limit: they stay due, nothing is lost
+            self._pending += [(e, p, first, last, tries) for e, p, first, tries in due for last in [0.0]]
+            raise
+        for (endpoint, payload, first, tries), ok in zip(due, results, strict=True):
+            if not ok:
+                self._pending.append((endpoint, payload, first, now, tries + 1))
+
+    async def _post(self, client: httpx.AsyncClient, s: dict[str, Any], payload: dict[str, Any]) -> bool:
+        """One browser's push; never raises. False: try again later (not when it is gone)."""
+        host = urlsplit(s["endpoint"]).hostname
+        if not valid_endpoint(s["endpoint"]):  # stored before only push services were allowed
+            self._drop(s["endpoint"])
+            return True
+        try:
+            r = await asyncio.wait_for(
+                client.post(s["endpoint"], content=self._encrypt(s, payload), headers=self._headers(s)),
+                POST_LIMIT,
+            )
+        except Exception as e:  # the endpoint names the browser: only its service is logged
+            log.warning("push to %s failed: %s", host, type(e).__name__)
+            return False
+        if r.status_code in GONE:
+            log.info("push to %s: %s, the browser's subscription is dropped", host, r.status_code)
+            self._drop(s["endpoint"])
+            return True
+        if r.status_code in (400, 401, 403):
+            log.warning("push to %s refused: HTTP %s (is the hub's clock right?)", host, r.status_code)
+        elif not r.is_success:
+            log.warning("push to %s failed: HTTP %s", host, r.status_code)
+        return r.is_success
+
+    def _drop(self, endpoint: str) -> None:
+        with self._lock:
+            self.subscriptions = [s for s in self.subscriptions if s["endpoint"] != endpoint]
+            self._save()
 
     def _encrypt(self, s: dict[str, Any], payload: dict[str, Any]) -> bytes:
         return http_ece.encrypt(

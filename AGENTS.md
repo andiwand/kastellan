@@ -78,9 +78,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     the router poll (`hub._read_openvpn`); `openvpn.Seen` keeps the last time per client in
     `<data>/vpn/openvpn-seen.json` (status files list only who is connected now).
   - VPN key rotation (`vpn/rotation.py`, restricted mode): the scripts' `add-key OLD NEW` copies
-    the line bound to themselves with the new key, `remove-key OLD` drops one (never the last);
-    so the key only ever hands on its own rights. Same stages as the hub key's; `Keys` methods
-    take `of="vpn"`. Tested against a fake sshd that enforces `command=`.
+    the line bound to themselves with the new key (options by field, exactly), `keep-key NEW`
+    leaves only NEW bound to them (a key added with a leaked one goes too); the same text in both
+    scripts (a test checks). A host that can't be reached holds the end and the old key until it
+    works (it gets the new key from the old one) or is forgotten (audited, warned). Same stages as
+    the hub key's; `Keys` methods take `of="vpn"`. Tested against a fake sshd that enforces
+    `command=`.
   - Keys go onto devices only through `access.authorize()`: written as the target user (su), never
     by root into a home that user controls (a symlink there would aim root's write anywhere);
     dropbear (`/etc/openwrt_release`) gets plain lines, OpenSSH `from=` (and `restrict`).
@@ -104,7 +107,14 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     other users' files read and changed *as them* via `su`), removing a key, and rotating the
     hub key (`Rotator`: next key added + verified with `connect(only=...)` everywhere, then
     `Keys.promote_next`, then the old key removed; state in `<data>/ssh/rotation.json`;
-    `Keys.connect` offers current, next and old keys meanwhile).
+    `Keys.connect` offers current, next and old keys meanwhile). `sshkeys.kastellan_keys`: its
+    own keys, never removed by hand.
+  - `sshsync.py` (+ routes in `groups_api.py`, `GroupSsh.svelte`): a group's authorized_keys or
+    known_hosts, fetch → edit → push. A column per device and user (`@login`: its ssh: login;
+    others via su, as sshkeys); rows by entry (key type+data; known host by hosts+type). Push per
+    column: refused if its version (hash) changed, only the chosen entries removed / missing lines
+    appended (every other line kept, bytes too), written as that user next to the file and moved,
+    read back, audited per column (`ssh.sync`, fingerprints only). Kastellan's keys are refused.
   - `networks.py`: which networks a device is in (by address: `networks:` cidrs, else its private
     /24; public addresses are the internet; `network:` names them, also several; the hub's
     default gateway is also on the internet), and its `public_ways` (checks by a public name or
@@ -123,6 +133,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog. `install_script` is
     declarative (abilities not chosen are removed). Tests run the real scripts against a fake
     Docker API (tests/test_actor.py). Root scripts take nothing from the environment.
+  - Removing them: `collector.uninstall_script` / `actor.uninstall_script` (user, scripts, sudo
+    rules; logs stay), run like a setup (`/collect/uninstall`, `/act/uninstall`), then
+    `setup_run.remove_device_key`. A setup's unknown host key is trusted from its dialog
+    (`/ssh/trust` takes a `port` for devices without `ssh:`).
   - Script versions: the collector's report (`script`) and `act-dispatch abilities`
     (`versions:`) carry a hash of each installed file; `collector.digest` is what the hub's own
     would hash to. Older ones show as `outdated_scripts` (Updates, the device page). Renewing is
@@ -168,9 +182,13 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     in routes that change things, and `require_signin` in anything that hands out access to a
     device (terminal, remote desktop): it refuses while sign-in is off.
   - `webproxy.py`: `WebProxy`, ASGI outside the Guard: `<id>.<web.domain>` forwards (HTTP,
-    streaming, WebSockets) to the device's `web:` or first http check, for signed-in admins only;
-    the session cookie (Domain=web.domain when signed in there) and X-Kastellan are taken out,
-    a device's Set-Cookie loses its Domain, Locations to the device come back to its name.
+    streaming, WebSockets) to the device's `web:` or first http check, for signed-in admins only.
+    The hub's cookie stays host-only: `GET /api/devices/{id}/web` mints a one-time ticket, the
+    device name's `/.kastellan/enter` trades it for its own cookie (`Access`: hub session +
+    device), re-checked per request and every 15 s on open streams. Requests from another page
+    (Sec-Fetch-Site same-site/cross-site, a foreign Origin; WebSockets need their own Origin) are
+    refused. Kastellan's cookies and X-Kastellan never reach the device; a device's Set-Cookie
+    loses its Domain; Location/Origin/Referer are rewritten only on an exact origin match.
   - `ssh.py`: the hub's SSH key (`<data>/ssh/hub_ed25519`) and pinned host keys
     (`<data>/ssh/known_hosts`); never trust on first use by itself: `UnknownHost` until an admin
     trusts the fingerprint, `ChangedHost` until someone forgets the old key. No ssh-agent, no
