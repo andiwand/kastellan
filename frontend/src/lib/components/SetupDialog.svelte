@@ -1,10 +1,10 @@
 <script lang="ts">
+	import { modal } from '#lib/modal.js';
 	import CodeBlock from '#lib/components/CodeBlock.svelte';
 	import { untrack } from 'svelte';
 	import { streamSetup, type SetupOutcome } from '#lib/api.js';
 	import X from '@lucide/svelte/icons/x';
 	import Check from '@lucide/svelte/icons/check';
-	import Copy from '@lucide/svelte/icons/copy';
 
 	/** Setting something up on a device with your own login, step by step: the login and how to
 	 * get root, then the output as it runs, then done (or why not). The password is used for this
@@ -48,22 +48,10 @@
 	let log = $state<string[]>([]);
 	let outcome = $state<SetupOutcome | null>(null);
 	let error = $state<string | null>(null);
-	let copied = $state(false);
 	let manual = $state(untrack(() => !canRun));
 	let dialog: HTMLDialogElement | undefined = $state();
 	let logBox: HTMLPreElement | undefined = $state();
 
-	$effect(() => {
-		dialog?.showModal();
-	});
-	$effect(() => {
-		const root = document.documentElement;
-		const before = root.style.overflow;
-		root.style.overflow = 'hidden';
-		return () => {
-			root.style.overflow = before;
-		};
-	});
 	$effect(() => {
 		void log.length;
 		if (logBox) logBox.scrollTop = logBox.scrollHeight;
@@ -113,6 +101,7 @@
 </script>
 
 <dialog
+	use:modal
 	bind:this={dialog}
 	{onclose}
 	class="m-auto max-h-[calc(100dvh-2rem)] w-[min(40rem,calc(100vw-2rem))] rounded-2xl border border-line bg-surface p-0 text-text shadow-pop backdrop:bg-black/40"

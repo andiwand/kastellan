@@ -3,6 +3,7 @@ import subprocess
 
 if len(sys.argv) != 1:
     fail("wrong arguments", 2)
+lock = one_at_a_time()  # not in the middle of an upgrade or a container swap
 r = subprocess.run(
     ["/sbin/shutdown", "-r", "+1", "Kastellan: reboot asked for (cancel with: shutdown -c)"],
     capture_output=True,

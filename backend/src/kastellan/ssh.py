@@ -23,6 +23,11 @@ import asyncssh
 
 log = logging.getLogger(__name__)
 
+# asyncssh asks for the local user's name on every connection, even with a login given. A
+# container running as a uid without a passwd entry has none: Python 3.13 raises OSError there,
+# which asyncssh doesn't expect, and every login failed ("No username set in the environment").
+os.environ.setdefault("LOGNAME", "kastellan")
+
 CONNECT_TIMEOUT = 10
 
 

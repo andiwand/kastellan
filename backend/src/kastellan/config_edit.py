@@ -93,7 +93,7 @@ def write(path: Path, backups: Path, old: str, new: str) -> None:
 
 # Keys whose values are secrets, and credentials inside URLs: masked in the audit log, which is
 # kept for good. Masked on the parsed YAML (any style: block, flow, multi-line), then diffed.
-SECRET_KEY = re.compile(r"^(password|token|secret|smtp|ntfy|webhook|\w*_key|\w*api_key)$", re.IGNORECASE)
+SECRET_KEY = re.compile(r"^(password|token|secret|smtp|ntfy|webhook|\w*_key)$", re.IGNORECASE)
 URL_LOGIN = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/@\s]*@", re.IGNORECASE)
 
 
@@ -285,8 +285,7 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
         raise ValueError("config.yaml isn't a mapping")
     devices = doc.get("devices")
     if devices is None:
-        _place_top(doc, "devices", CommentedMap())
-        devices = doc["devices"]
+        devices = doc["devices"] = CommentedMap()
     if not isinstance(devices, CommentedMap):
         raise ValueError("devices: isn't a mapping")
     if not ID.match(id):
@@ -383,10 +382,6 @@ def set_device_key(text: str, id: str, key: str, value: Any) -> str:
     return _keep_gaps(text, out.getvalue())
 
 
-def _place_top(doc: CommentedMap, key: str, value: Any) -> None:
-    doc[key] = value
-
-
 def _keep_gaps(old: str, new: str) -> str:
     """A blank line before a top-level key (`users:`) stays: ruamel files it under the last
     device, so a device added at the end would take it along."""
@@ -466,7 +461,7 @@ def set_top(text: str, key: str, value: Any) -> str:
             if tail and isinstance(doc[key], CommentedMap | CommentedSeq):
                 _put_tail(doc[key], tail)
     elif not empty:
-        _place_top(doc, key, _commented(value))
+        doc[key] = _commented(value)
     out = io.StringIO()
     y.dump(doc, out)
     return _keep_gaps(text, out.getvalue())
@@ -481,3 +476,42 @@ def _put_scalar_tail(doc: CommentedMap, key: str, rest: str) -> None:
     old = slots[2]
     own = old.value.partition("\n")[0] if old is not None else ""
     slots[2] = CommentToken(own + "\n" + rest, CommentMark(0), None)
+
+
+def _device_lines(lines: list[str], id: str) -> tuple[int, int, int]:
+    """Where device `id` is written: its key's line, the end of its block (before any blank
+    lines and the next thing's header comment), and the indent of its contents."""
+    doc = YAML().load("\n".join(lines))
+    devices = doc.get("devices") if isinstance(doc, CommentedMap) else None
+    if not isinstance(devices, CommentedMap) or id not in devices:
+        raise KeyError(id)
+    start, col = devices.lc.key(id)
+    if lines[start].split(":", 1)[1].split("#", 1)[0].strip():
+        raise ValueError("the device is written on one line; change it in config.yaml")
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > col):
+        end += 1
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    body = [ln for ln in lines[start + 1 : end] if ln.strip() and not ln.lstrip().startswith("#")]
+    indent = min((len(ln) - len(ln.lstrip()) for ln in body), default=col + 2)
+    return start, end, indent
+
+
+def device_text(text: str, id: str) -> str:
+    """A device's part of config.yaml as written (comments and all), without its id line."""
+    lines = text.splitlines()
+    start, end, indent = _device_lines(lines, id)
+    cut = " " * indent  # a comment less indented than the contents is moved in to them
+    return "".join(
+        (ln[indent:] if ln.startswith(cut) else ln.lstrip()) + "\n" for ln in lines[start + 1 : end]
+    )
+
+
+def set_device_text(text: str, id: str, block: str) -> str:
+    """config.yaml with a device's part replaced by `block` (as `device_text` gives it); every
+    other line stays exactly as it was."""
+    lines = text.splitlines()
+    start, end, indent = _device_lines(lines, id)
+    new = [" " * indent + ln if ln.strip() else "" for ln in block.expandtabs(2).rstrip().splitlines()]
+    return "\n".join([*lines[: start + 1], *new, *lines[end:]]) + "\n"

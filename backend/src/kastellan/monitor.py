@@ -55,6 +55,7 @@ class DeviceStatus:
     router: dict[str, Any] | None = None  # an OpenWrt device's state (openwrt/client.py)
     router_checked: datetime | None = None
     router_error: str | None = None
+    actor_outdated: list[str] | None = None  # the actor's scripts older than the hub's (host/actor.py)
 
     @property
     def state(self) -> State:
@@ -71,10 +72,6 @@ Runner = Callable[[str, Device, Check], Awaitable[checks.Result]]
 
 async def run_check(id: str, device: Device, check: Check) -> checks.Result:
     return await checks.run(device.host, check)
-
-
-def key_changed(old: dict[tuple[str, str], str], key: tuple[str, str], target: str) -> bool:
-    return key in old and old[key] != target
 
 
 def target_of(device: Device, check: Check) -> str:
@@ -138,11 +135,15 @@ class Monitor:
             (id, c.name): target_of(device, c) for id, device in config.devices.items() for c in device.checks
         }
         self._urls = {(id, c.name): c.target for id, device in config.devices.items() for c in device.checks}
-        for (id, name), target in self._targets.items():
-            st = self.status.get(id)
-            c = st.checks.get(name) if st else None
-            if c and key_changed(old, (id, name), target):
-                c.cert = c.address = None  # about what it pointed at before
+        for key, target in self._targets.items():
+            if key not in old or old[key] == target:
+                continue
+            # A reused check name: what it said before was about something else, and its software
+            # must not read as an update of the new one's.
+            self._software_seen.pop(key, None)
+            st = self.status.get(key[0])
+            if c := st.checks.get(key[1]) if st else None:
+                c.cert = c.address = c.software = c.software_since = None
         for id, device in config.devices.items():
             status = self.status.setdefault(id, DeviceStatus())
             moved = self._hosts.get(id, device.host) != device.host
@@ -152,7 +153,9 @@ class Monitor:
                 status.router = status.router_checked = status.router_error = None
             if (device.docker is None and device.collect is None) or moved:
                 status.containers = status.containers_checked = status.containers_error = None
-            if device.driver is None or self._hosts.get(id, device.host) != device.host:
+            if device.act is None or moved:
+                status.actor_outdated = None
+            if device.driver is None or moved:
                 status.info = status.info_checked = None
             self._hosts[id] = device.host
             names = {c.name for c in device.checks}

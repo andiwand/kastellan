@@ -18,21 +18,32 @@ ENV = {  # fixed: nothing from outside steers what root runs
 KEEP = ["-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"]
 
 
-def apt_get(*args, timeout=900):
-    """apt-get, never killed halfway (that can leave dpkg broken): past `timeout` the answer is
-    that it still runs, and it goes on by itself."""
-    process = subprocess.Popen([apt, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=ENV)
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        fail(f"apt-get {args[-1]} still runs after {timeout // 60} minutes; it goes on by itself (see the host's apt logs)")
-    r = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
-    if r.returncode != 0:
-        text = (r.stderr or r.stdout).strip()
+LOG = "/var/log/kastellan-upgrade.log"  # root's: apt's and dpkg's words, also past a timeout
+
+
+def run(command, what, timeout):
+    """A command never killed halfway (that can leave dpkg broken): past `timeout` the answer is
+    that it still runs, and it goes on by itself. Its output goes to LOG, not a pipe: a pipe
+    nobody reads any more would kill it (SIGPIPE) at its next line."""
+    with open(LOG, "a+") as log:
+        start = log.seek(0, os.SEEK_END)
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=ENV)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            fail(f"{what} still runs after {timeout // 60} minutes; it goes on by itself (see {LOG})")
+        log.seek(start)
+        text = log.read()
+    if process.returncode != 0:
         if "Could not get lock" in text or "is held by process" in text:
             fail("apt is busy (another update runs, e.g. unattended-upgrades): try again later")
-        fail(text.splitlines()[-1][:300] if text else f"apt-get {args[0]} failed")
-    return r.stdout
+        lines = text.strip().splitlines()
+        fail(lines[-1][:300] if lines else f"{what} failed")
+    return text
+
+
+def apt_get(*args, timeout):
+    return run([apt, *args], f"apt-get {args[-1]}", timeout)
 
 
 def newer_kernel():
@@ -50,8 +61,7 @@ def newer_kernel():
 dpkg = shutil.which("dpkg", path="/usr/bin:/bin")
 if dpkg:
     # An earlier run that was interrupted (a power cut) left packages half set up: finish them.
-    subprocess.run([dpkg, "--configure", "-a", "--force-confdef", "--force-confold"],
-                   capture_output=True, env=ENV, timeout=1200)
+    run([dpkg, "--configure", "-a", "--force-confdef", "--force-confold"], "dpkg --configure", 1200)
 apt_get("update", timeout=300)
 out = apt_get("-y", "--with-new-pkgs", *KEEP, "upgrade", timeout=2400)
 names = sorted({m.group(1) for m in re.finditer(r"^(?:Setting up|Unpacking) ([^\s:]+)", out, re.M)})

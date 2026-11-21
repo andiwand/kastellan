@@ -6,9 +6,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -22,9 +22,10 @@ from .config import Check, Device
 from .config_api import router as config_router
 from .desktop_api import router as desktop_router
 from .groups_api import router as groups_router
+from .host import collector
 from .host_api import router as host_router
 from .hub import Hub
-from .monitor import CheckStatus
+from .monitor import CheckStatus, DeviceStatus
 from .networks import INTERNET, Network, network_of, networks_of, public_ways
 from .networks import Hub as NetHub
 from .openwrt_api import router as openwrt_router
@@ -35,6 +36,24 @@ from .tls import public_name
 from .vpn_api import router as vpn_router
 
 WEB = Path(__file__).parent / "web"
+
+# How far back; NaN and infinity are refused (timedelta can't take them).
+Hours = Annotated[float, Query(allow_inf_nan=False)]
+
+
+def version_event(e: dict[str, Any]) -> dict[str, Any]:
+    """A software change from versions.log, as an event among the ups and downs."""
+    return {"kind": "version", **{k: e[k] for k in ("time", "device", "check", "from", "to")}}
+
+
+def outdated_scripts(device: Device, status: DeviceStatus | None) -> list[str]:
+    """Kastellan's scripts on the host that are older than this hub's: set up again to renew."""
+    out = []
+    if status and device.collect is not None and collector.outdated(status.host):
+        out.append("collector")
+    if status and status.actor_outdated:
+        out.append("actor")
+    return out
 
 
 def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
@@ -186,6 +205,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "host_report": status.host if status else None,
                     "host_checked": status.host_checked if status else None,
                     "host_error": status.host_error if status else None,
+                    "outdated_scripts": [] if hub.demo else outdated_scripts(device, status),
                     "exposed": device.exposed,
                     **where(device, status),
                     "checks": [
@@ -197,14 +217,14 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         return out
 
     @app.get("/api/devices/{id}/history")
-    def history(id: str, hours: float = 24) -> list[dict[str, Any]]:
+    def history(id: str, hours: Hours = 24) -> list[dict[str, Any]]:
         if id not in hub.config.devices:
             raise HTTPException(404, "no such device")
         since = datetime.now(UTC) - timedelta(hours=min(hours, 24 * 90))
         return [vars(row) for row in hub.history.read(since, device=id)]
 
     @app.get("/api/series")
-    def series(hours: float = 24, buckets: int = 48, device: str | None = None) -> dict[str, Any]:
+    def series(hours: Hours = 24, buckets: int = 48, device: str | None = None) -> dict[str, Any]:
         """Uptime and mean latency in `buckets` equal slices of the last `hours`, per device and check."""
         hours = min(max(hours, 0.25), 24 * 90)
         buckets = min(max(buckets, 1), 500)
@@ -214,7 +234,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         return {"start": start, "step_seconds": step.total_seconds(), "devices": data}
 
     @app.get("/api/activity")
-    def activity(hours: float = 24, limit: int = 60) -> list[dict[str, Any]]:
+    def activity(hours: Hours = 24, limit: int = 60) -> list[dict[str, Any]]:
         """The day as a person would tell it (stats.activity): outages and how long, short drops
         counted, many devices at once as one, when devices that may be off were on; and software
         updates."""
@@ -224,38 +244,17 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         on = {id: bool(d.always_on) for id, d in hub.config.devices.items()}
         short = timedelta(seconds=hub.config.alarms.down_after)
         events = stats.activity(rows, on, now, short, gap=short)
-        events += [
-            {
-                "kind": "version",
-                "time": e["time"],
-                "device": e["device"],
-                "check": e["check"],
-                "from": e["from"],
-                "to": e["to"],
-                "end": e["time"],
-            }
-            for e in hub.versions.changes(since, None)
-        ]
+        events += [version_event(e) | {"end": e["time"]} for e in hub.versions.changes(since, None)]
         events.sort(key=lambda e: e.get("end") or e.get("last") or now, reverse=True)
         return events[:limit]
 
     @app.get("/api/changes")
-    def changes(hours: float = 24, device: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    def changes(hours: Hours = 24, device: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         """When checks went up or down, and when a service's software changed."""
         since = datetime.now(UTC) - timedelta(hours=min(hours, 24 * 90))
         # Ups and downs, and software updates ("OpenSSH 9.8 → 9.9"), newest first.
         events = stats.changes(hub.history.read(since, device=device))
-        events += [
-            {
-                "kind": "version",
-                "time": e["time"],
-                "device": e["device"],
-                "check": e["check"],
-                "from": e["from"],
-                "to": e["to"],
-            }
-            for e in hub.versions.changes(since, device)
-        ]
+        events += [version_event(e) for e in hub.versions.changes(since, device)]
         events.sort(key=lambda e: e["time"], reverse=True)
         return events[:limit]
 

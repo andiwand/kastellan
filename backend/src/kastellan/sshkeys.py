@@ -294,10 +294,6 @@ class Rotation:
 
 def login_of(device: Device) -> str:
     """The login a rotation step was done for: user@host:port."""
-    return _login(device)
-
-
-def _login(device: Device) -> str:
     t = target_of(device)
     return f"{t.user}@{t.host}:{t.port}"
 
@@ -321,7 +317,7 @@ class Rotator:
 
     async def _add(self, id: str, device: Device, key: asyncssh.SSHKey) -> DeviceStep:
         """Put the next key on a device (as setup does), then log in with only that key."""
-        step = DeviceStep(target=_login(device))
+        step = DeviceStep(target=login_of(device))
         try:
             target = target_of(device)
             public = key.export_public_key().decode().strip()
@@ -384,7 +380,7 @@ class Rotator:
             rot.devices = {
                 id: s
                 for id, s in rot.devices.items()
-                if id in devices and devices[id].ssh and s.target == _login(devices[id])
+                if id in devices and devices[id].ssh and s.target == login_of(devices[id])
             }
             todo = {
                 id: d for id, d in devices.items() if d.ssh and not rot.devices.get(id, DeviceStep()).added
@@ -414,7 +410,7 @@ class Rotator:
                 ready = {
                     id
                     for id, s in rot.devices.items()
-                    if s.added and id in devices and devices[id].ssh and s.target == _login(devices[id])
+                    if s.added and id in devices and devices[id].ssh and s.target == login_of(devices[id])
                 }
                 missing = [id for id, d in devices.items() if d.ssh and id not in ready]
                 if missing and not anyway:
@@ -425,7 +421,7 @@ class Rotator:
             old = self.keys.side_key("old")
             # Only devices still with this login; one that left (or changed its login) is noted.
             for id, s in list(rot.devices.items()):
-                if id not in devices or not devices[id].ssh or s.target != _login(devices[id]):
+                if id not in devices or not devices[id].ssh or s.target != login_of(devices[id]):
                     rot.devices[id] = DeviceStep(
                         added=s.added,
                         removed=True,

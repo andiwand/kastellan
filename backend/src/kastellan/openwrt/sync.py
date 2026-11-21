@@ -102,13 +102,12 @@ async def change_network(
     members: dict[str, ow.Ubus],
     ssid: str,
     values: dict[str, str],
-    mesh: bool = False,
     say=None,
 ) -> dict[str, str]:
-    """Set name/password/encryption on every member's network called `ssid` (or the mesh with
-    that id), one device after the other, each applied with its rollback. The outcome per device."""
-    allowed = {"ssid", "key", "encryption"} if not mesh else {"mesh_id", "key", "encryption"}
-    clean = {k: v for k, v in values.items() if k in allowed and v}
+    """Set name/password/encryption on every member's access point network called `ssid`, one
+    device after the other, each applied with its rollback. The outcome per device. (Not the
+    mesh: changed device by device it would cut members off; that is set_mesh.)"""
+    clean = {k: v for k, v in values.items() if k in ("ssid", "key", "encryption") and v}
     if not clean:
         raise ValueError("nothing to change")
     outcome: dict[str, str] = {}
@@ -116,11 +115,7 @@ async def change_network(
         try:
             current = (await ubus.call("uci", "get", {"config": "wireless"})).get("values", {})
             sections = [
-                n
-                for n, s in _ifaces(current)
-                if (s.get("mode") == "mesh" and s.get("mesh_id") == ssid)
-                or (not mesh and s.get("mode", "ap") == "ap" and s.get("ssid") == ssid)
-                if (s.get("mode") == "mesh") == mesh
+                n for n, s in _ifaces(current) if s.get("mode", "ap") == "ap" and s.get("ssid") == ssid
             ]
             if not sections:
                 outcome[id] = "doesn't have it"
@@ -253,12 +248,15 @@ async def set_mesh(
                 )
         # Staged on every member first, applied only when all are.
         staged: dict[str, set[str]] = {}
+        before: dict[str, dict[str, bool]] = {}
+        at = ""
         try:
             for id, p in plan.items():
-                ubus, s = members[id], p["session"]
+                at, ubus, s = id, members[id], p["session"]
                 sections = set(p["set"])
                 for n in p["set"]:
-                    values = {"mesh_id": mesh_id, "key": key, "encryption": "sae"}
+                    # On again if it was switched off: a disabled section never gets an interface.
+                    values = {"mesh_id": mesh_id, "key": key, "encryption": "sae", "disabled": "0"}
                     await ubus.call(
                         "uci", "set", {"config": "wireless", "section": n, "values": values}, session=s
                     )
@@ -290,6 +288,7 @@ async def set_mesh(
                             {"config": "wireless", "section": r, "values": {"channel": channel}},
                             session=s,
                         )
+                before[id] = await ow._radios_up(ubus, s)
                 staged[id] = sections
         except BaseException as e:
             for id in plan:
@@ -300,25 +299,24 @@ async def set_mesh(
             if not isinstance(e, Exception):
                 raise
             return {
-                id: f"failed: {str(e)[:160] or type(e).__name__}" if id not in staged else "not changed"
+                id: f"failed: {str(e)[:160] or type(e).__name__}" if id == at else "not changed"
                 for id in members
             }
-        before = {}
-        for id in staged:
-            before[id] = await ow._radios_up(members[id], plan[id]["session"])
         note(f"applying on {', '.join(sorted(staged))} at once")
-        await asyncio.gather(
+        applied = await asyncio.gather(
             *(
                 members[id].call(
                     "uci", "apply", {"rollback": True, "timeout": 120}, session=plan[id]["session"]
                 )
                 for id in staged
-            )
+            ),
+            return_exceptions=True,
         )
+        refused = {id: e for id, e in zip(staged, applied, strict=True) if isinstance(e, BaseException)}
         good: set[str] = set()
         loop = asyncio.get_running_loop()
         until = loop.time() + deadline
-        while loop.time() < until and good != set(staged):
+        while not refused and loop.time() < until and good != set(staged):
             await asyncio.sleep(wait)
             for id in set(staged) - good:
                 with contextlib.suppress(Exception):
@@ -330,13 +328,25 @@ async def set_mesh(
                 await members[id].call("uci", "confirm", {}, session=plan[id]["session"])
                 outcome[id] = f"added on {plan[id]['add']}" if plan[id]["add"] else "set"
         else:
-            missing = sorted(set(staged) - good)
-            for id in good:  # the others undo it by themselves when the rollback time is up
-                with contextlib.suppress(Exception):
-                    await members[id].call("uci", "rollback", {}, session=plan[id]["session"])
+            # All or none. Those that applied are rolled back (else they would by themselves when
+            # the rollback time is up); one that refused still has it staged: reverted.
             for id in staged:
+                with contextlib.suppress(Exception):
+                    if id in refused:
+                        await members[id].call(
+                            "uci", "revert", {"config": "wireless"}, session=plan[id]["session"]
+                        )
+                    else:
+                        await members[id].call("uci", "rollback", {}, session=plan[id]["session"])
+            missing = ", ".join(sorted(set(staged) - good))
+            for id in staged:
+                e = refused.get(id)
                 outcome[id] = (
-                    f"failed: undone on all ({', '.join(missing)} didn't come back with the mesh up)"
+                    f"failed: {str(e)[:160] or type(e).__name__}"
+                    if e
+                    else f"failed: undone on all ({missing} didn't come back with the mesh up)"
+                    if not refused
+                    else "failed: undone on all (another member refused it)"
                 )
     for id in members:
         outcome.setdefault(id, "not changed")

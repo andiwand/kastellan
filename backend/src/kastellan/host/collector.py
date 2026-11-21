@@ -15,6 +15,7 @@ So whoever holds the hub gets this report from the host, and nothing else.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shlex
 from importlib.resources import files
@@ -46,6 +47,16 @@ MAX_OUTPUT = 2 * 1024 * 1024
 
 def script() -> str:
     return (files("kastellan.host") / "scripts" / "kastellan-collect").read_text()
+
+
+def digest(text: str) -> str:
+    """How a script installed from `text` (through a heredoc) reports itself: a hash of the file."""
+    return hashlib.sha256((text.rstrip("\n") + "\n").encode()).hexdigest()[:16]
+
+
+def outdated(report: dict[str, Any] | None) -> bool:
+    """Whether the collector that sent this report is older than this hub's."""
+    return report is not None and report.get("script") != digest(script())
 
 
 def install_script(public_key: str, hub_ip: str | None, user: str = USER) -> str:

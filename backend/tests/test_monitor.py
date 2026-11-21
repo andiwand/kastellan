@@ -127,6 +127,16 @@ async def test_software_changes_are_logged(tmp_path: Path) -> None:
     other.restore_software(versions.latest(), moved)
     assert other.status["sv1"].checks["tcp:22"].software is None
 
+    # A check name reused for another service: its software is no update of the old one's.
+    reused = Config.model_validate(
+        {"devices": {"sv1": {"host": "x", "checks": [{"tcp": 2222, "name": "tcp:22"}]}}}
+    )
+    monitor.prepare(reused)
+    assert monitor.status["sv1"].checks["tcp:22"].software is None
+    see(Software("Dropbear", "2024.86"))
+    see(Software("Dropbear", "2024.86"))
+    assert len(versions.changes(datetime(2000, 1, 1, tzinfo=UTC))) == 1  # only 9.8 → 9.9
+
 
 def test_version_log_compaction_and_bad_lines(tmp_path: Path) -> None:
     from datetime import UTC, datetime, timedelta

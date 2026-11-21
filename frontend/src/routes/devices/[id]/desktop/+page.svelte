@@ -23,6 +23,7 @@
 	let client: Guacamole.Client | null = null;
 	let keyboard: Guacamole.Keyboard | null = null;
 	let observer: ResizeObserver | null = null;
+	let destroyed = false; // left while connect() waited: it must not connect after all
 
 	$effect(() => {
 		if (device?.desktop?.user && !username) username = device.desktop.user;
@@ -46,6 +47,7 @@
 		}
 
 		const { default: G } = await import('guacamole-common-js');
+		if (destroyed) return;
 		const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
 		const tunnel = new G.WebSocketTunnel(
 			`${scheme}://${location.host}/api/devices/${encodeURIComponent(id)}/desktop`
@@ -127,7 +129,10 @@
 		frame?.requestFullscreen?.();
 	}
 
-	onDestroy(disconnect);
+	onDestroy(() => {
+		destroyed = true;
+		disconnect();
+	});
 </script>
 
 <svelte:head><title>Desktop · {device?.name ?? id} · Kastellan</title></svelte:head>

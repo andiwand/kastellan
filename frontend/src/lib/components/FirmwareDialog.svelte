@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { modal } from '#lib/modal.js';
 	import { streamSetup, type RouterReport, type SetupOutcome } from '#lib/api.js';
 	import { untrack } from 'svelte';
 	import X from '@lucide/svelte/icons/x';
@@ -25,18 +26,6 @@
 	let log = $state<string[]>([]);
 	let error = $state<string | null>(null);
 	let dialog: HTMLDialogElement | undefined = $state();
-
-	$effect(() => {
-		dialog?.showModal();
-	});
-	$effect(() => {
-		const root = document.documentElement;
-		const before = root.style.overflow;
-		root.style.overflow = 'hidden';
-		return () => {
-			root.style.overflow = before;
-		};
-	});
 
 	// Fixed when the dialog opens: the report changes while it runs.
 	const target = untrack(() => advice.next_step ?? '');
@@ -66,6 +55,7 @@
 </script>
 
 <dialog
+	use:modal
 	bind:this={dialog}
 	{onclose}
 	class="m-auto max-h-[calc(100dvh-2rem)] w-[min(40rem,calc(100vw-2rem))] rounded-2xl border border-line bg-surface p-0 text-text shadow-pop backdrop:bg-black/40"

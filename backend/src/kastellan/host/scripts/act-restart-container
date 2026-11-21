@@ -1,5 +1,6 @@
 # Restart one container (on the host's list), found by its exact name, restarted by its id.
 name = one_name()
+lock = one_at_a_time()
 try:
     found = exact(name)
     if found is None:

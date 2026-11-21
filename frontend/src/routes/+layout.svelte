@@ -6,11 +6,12 @@
 	import { needsAttention } from '#lib/status.js';
 	import Logo from '#lib/components/Logo.svelte';
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
-	import List from '@lucide/svelte/icons/list';
+	import MonitorSmartphone from '@lucide/svelte/icons/monitor-smartphone';
 	import Layers from '@lucide/svelte/icons/layers';
+	import AppWindow from '@lucide/svelte/icons/app-window';
+	import KeyRound from '@lucide/svelte/icons/key-round';
 	import FileCog from '@lucide/svelte/icons/file-cog';
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
-	import Boxes from '@lucide/svelte/icons/boxes';
 	import CircleArrowUp from '@lucide/svelte/icons/circle-arrow-up';
 	import { updatesOf } from '#lib/updates.js';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
@@ -24,25 +25,22 @@
 
 	const nav = [
 		{ href: '/', label: 'Overview', icon: LayoutDashboard },
-		{ href: '/devices', label: 'Devices', icon: List },
-		{ href: '/groups', label: 'Groups', icon: Boxes },
-		{ href: '/services', label: 'Services', icon: Layers },
+		{ href: '/devices', label: 'Devices', icon: MonitorSmartphone },
+		{ href: '/groups', label: 'Groups', icon: Layers },
+		{ href: '/services', label: 'Services', icon: AppWindow },
+		{ href: '/vpn', label: 'VPN', icon: KeyRound },
 		{ href: '/updates', label: 'Updates', icon: CircleArrowUp },
 		{ href: '/access', label: 'Access', icon: ShieldCheck },
 		{ href: '/config', label: 'Config', icon: FileCog }
-	] as { href: string; label: string; short?: string; icon: typeof List }[];
+	] as { href: string; label: string; short?: string; icon: typeof Layers }[];
 	// Config, access and groups are for admins (password hashes, keys, Wi-Fi settings).
 	const shownNav = $derived(
 		nav.filter(
 			(i) => !['/config', '/access', '/groups'].includes(i.href) || store.me?.role === 'admin'
 		)
 	);
-	// The VPN is reached from Services (its clients are a service's).
 	const active = (href: string) =>
-		href === '/'
-			? page.url.pathname === '/'
-			: page.url.pathname.startsWith(href) ||
-				(href === '/services' && page.url.pathname.startsWith('/vpn'));
+		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
 	const attention = $derived((store.devices ?? []).filter(needsAttention).length);
 	const waiting = $derived(updatesOf(store.devices ?? []).length);
 	const connected = $derived(!store.error && store.updated != null);

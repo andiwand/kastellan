@@ -58,7 +58,7 @@ def decode(instruction: str) -> list[str]:
             raise ProtocolError("no length")
         length = _length(instruction[i:dot])
         start, end = dot + 1, dot + 1 + length
-        if end >= len(instruction) or length < 0:
+        if end >= len(instruction):
             raise ProtocolError("truncated")
         elements.append(instruction[start:end])
         if instruction[end] == ";":

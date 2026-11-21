@@ -3,7 +3,6 @@
 	import { api, type Setup } from '#lib/api.js';
 	import Check from '@lucide/svelte/icons/check';
 	import X from '@lucide/svelte/icons/x';
-	import Copy from '@lucide/svelte/icons/copy';
 
 	/** Setting up OpenVPN on the hosts: what works now, the commands, and installing them. */
 	let { canInstall }: { canInstall: boolean } = $props();
@@ -14,7 +13,6 @@
 	let shown = $state<Record<string, boolean>>({});
 	let confirm = $state<string | null>(null);
 	let output = $state<Record<string, string>>({});
-	let copied = $state<string | null>(null);
 
 	async function check() {
 		loading = true;
@@ -39,12 +37,6 @@
 		} finally {
 			loading = false;
 		}
-	}
-
-	async function copy(role: string, text: string) {
-		await navigator.clipboard.writeText(text);
-		copied = role;
-		setTimeout(() => (copied = null), 1500);
 	}
 
 	const roleName = { pki: 'PKI host (easy-rsa)', server: 'OpenVPN server' };

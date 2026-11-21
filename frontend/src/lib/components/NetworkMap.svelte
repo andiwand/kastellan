@@ -30,10 +30,6 @@
 
 	const UNKNOWN: NetworkRef = { id: '?', name: 'Not resolved', cidr: null, local: true };
 
-	interface Zone {
-		net: NetworkRef;
-		inside: Device[]; // only in this network
-	}
 	interface Boundary {
 		above: string;
 		below: string;

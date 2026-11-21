@@ -6,23 +6,14 @@ import { store } from '#lib/state.svelte.js';
 class SettingsState {
 	data = $state<Settings | null>(null);
 	error = $state<string | null>(null);
-	loading = false;
 
 	async load() {
-		this.loading = true;
 		try {
 			this.data = await api.settings();
 			this.error = null;
 		} catch (e) {
 			this.error = (e as Error).message;
-		} finally {
-			this.loading = false;
 		}
-	}
-
-	/** Load fresh when a page that edits them opens (the file may have changed elsewhere). */
-	use() {
-		if (!this.loading && store.editBlocked === null) this.load();
 	}
 
 	/** Save one part; then the settings and the app's view are read again. */

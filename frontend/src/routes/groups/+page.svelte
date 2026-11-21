@@ -8,7 +8,7 @@
 	import { settings, copy } from '#lib/settings.svelte.js';
 	import { statusOf } from '#lib/status.js';
 	import Plus from '@lucide/svelte/icons/plus';
-	import { onMount } from 'svelte';
+	import { untrack } from 'svelte';
 
 	/** Groups of devices (`groups:` in config.yaml), any kind. For their OpenWrt members: Wi-Fi
 	 * networks lined up by name, the mesh, root's password, each changed on all at once. The
@@ -34,8 +34,13 @@
 		}
 	}
 
-	onMount(() => {
-		if (canChange) settings.use();
+	// Fresh once editing is allowed: on a reload that is known only after the hub answered.
+	let asked = false;
+	$effect(() => {
+		if (!asked && store.editBlocked === null) {
+			asked = true;
+			untrack(() => settings.load());
+		}
 	});
 	let surveys = $state<Record<string, GroupSurvey | { error: string }>>({});
 	let error = $state<string | null>(null);

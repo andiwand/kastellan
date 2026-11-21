@@ -68,7 +68,9 @@ def auto_update_reason(
     if not container.get("update") or container.get("unchecked"):
         return None
     current, target = str(container.get("tag") or ""), str(container.get("update_to") or "")
+    # A newer build of the same tag is the same version: it holds no fix newer than that.
     same_tag = target == "newer build"
+    new = current if same_tag else target
     if not same_tag:
         a, b = version_key(current), version_key(target)
         if not a or not b or a[0] != b[0] or b <= a:
@@ -78,6 +80,6 @@ def auto_update_reason(
         for f in findings
         if f.get("confidence") == "exact"
         and (urgent(f) or f.get("severity") == "high")
-        and (same_tag or not f.get("fixed_in") or version_key(str(f["fixed_in"])) <= version_key(target))
+        and (not f.get("fixed_in") or version_key(str(f["fixed_in"])) <= version_key(new))
     ]
     return f"{', '.join(reasons[:3])} on an internet-facing device" if reasons else None

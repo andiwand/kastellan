@@ -188,6 +188,7 @@ def host():
             [sys.executable, "-I", str(script), *args], capture_output=True, text=True, timeout=60
         )
 
+    run.folder = folder  # type: ignore[attr-defined]
     yield fake, run
     server.shutdown()
     sock.unlink(missing_ok=True)
@@ -279,6 +280,20 @@ def test_the_dispatcher_accepts_only_known_forms(tmp_path: Path) -> None:
     assert listing.stdout.splitlines()[0] == "reboot update-container"
 
 
+def test_older_scripts_are_told(tmp_path: Path) -> None:
+    """The dispatcher hashes the scripts as installed (a heredoc: one newline at the end)."""
+    base = tmp_path / "act"
+    base.mkdir()
+    (base / "dispatch").write_text(actor._script("act-dispatch").rstrip("\n") + "\n")
+    (base / "reboot").write_text(actor.ability_script("reboot").rstrip("\n") + "\n")
+    (base / "update-container").write_text("an older one\n")
+    out = dispatch(tmp_path, "abilities", ()).stdout
+    abilities, outdated = actor.parse_abilities(out)
+    assert set(abilities) == {"reboot", "update-container"} and outdated == ["update-container"]
+    # A host set up before the scripts said which they are: all of them are older.
+    assert actor.parse_abilities("reboot\n")[1] == ["dispatch", "reboot"]
+
+
 def test_the_install_script() -> None:
     script = actor.install_script({"update-container", "reboot"}, ["norn", "grundriss"], KEY, "192.168.15.50")
     assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
@@ -368,6 +383,7 @@ def test_installing_system_updates(tmp_path: Path) -> None:
     code = actor.ability_script("upgrade-packages")
     code = code.replace('path="/usr/bin:/bin"', f"path={str(bin_dir)!r}")
     code = code.replace('LOCK = "/run/kastellan-act.lock"', f"LOCK = {str(tmp_path / 'lock')!r}")
+    code = code.replace('"/var/log/kastellan-upgrade.log"', repr(str(tmp_path / "upgrade.log")))
     script = tmp_path / "upgrade-packages"
     script.write_text(code)
     r = subprocess.run([sys.executable, "-I", str(script)], capture_output=True, text=True, timeout=60)
@@ -387,3 +403,13 @@ def test_installing_system_updates(tmp_path: Path) -> None:
     )
     r = subprocess.run([sys.executable, "-I", str(script)], capture_output=True, text=True, timeout=60)
     assert r.returncode == 1 and "apt is busy" in r.stderr
+
+
+def test_one_action_at_a_time(host) -> None:
+    import fcntl
+
+    _, run = host
+    with open(run.folder / "lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)  # an upgrade runs
+        r = run("restart-container", "app")
+    assert r.returncode == 1 and "another action runs" in r.stderr

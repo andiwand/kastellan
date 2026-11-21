@@ -72,7 +72,6 @@ DISTROS = (
     "OpenBSD",
     "Amazon",
 )
-_DISTROS = DISTROS
 
 
 def from_greeting(text: str) -> Software | None:
@@ -97,7 +96,7 @@ def from_greeting(text: str) -> Software | None:
             version = m.group(1) if m.groups() else None
             # Only a distribution named in brackets: the hostname in a greeting can contain one.
             notes = " ".join(re.findall(r"\(([^)]*)\)", line))
-            extra = next((d for d in _DISTROS if d.lower() in notes.lower()), None)
+            extra = next((d for d in DISTROS if d.lower() in notes.lower()), None)
             return Software(name, version, extra)
     if line.startswith("220"):
         return Software("FTP" if "ftp" in line.lower() else "SMTP" if "smtp" in line.lower() else "Server")

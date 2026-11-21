@@ -22,10 +22,6 @@ if TYPE_CHECKING:
     from .hub import Hub
 
 
-class Install(Login):
-    pass
-
-
 def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api/devices")
 
@@ -58,7 +54,7 @@ def router(hub: Hub) -> APIRouter:
         }
 
     @api.post("/{id}/collect/install")
-    async def collect_install(id: str, body: Install, request: Request) -> StreamingResponse:
+    async def collect_install(id: str, body: Login, request: Request) -> StreamingResponse:
         """Log in once with the typed password, install the collector as root (streaming its
         output), and add `collect:` to the device in config.yaml."""
         w = require_signin(request)

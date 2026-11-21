@@ -27,9 +27,8 @@ import ipaddress
 import socket
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
 
-from .config import Check, Config, Device
+from .config import Config, Device
 from .tls import public_name
 
 INTERNET = "internet"
@@ -152,7 +151,7 @@ def public_ways(device: Device, on_internet: bool, statuses: dict[str, Any]) -> 
     for check in device.checks:
         if check.type == "ping":
             continue  # not a service: no way in
-        target = _target_host(device, check)
+        target = check.hostname or device.host
         if check.exposed:
             pass  # marked: a port forward or a proxy leads to it
         elif target == device.host:
@@ -169,12 +168,6 @@ def public_ways(device: Device, on_internet: bool, statuses: dict[str, Any]) -> 
             }
         )
     return out
-
-
-def _target_host(device: Device, check: Check) -> str:
-    if check.type == "http" and isinstance(check.target, str):
-        return urlsplit(check.target).hostname or ""
-    return device.host
 
 
 def default_gateway() -> str | None:

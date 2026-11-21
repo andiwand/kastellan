@@ -209,12 +209,16 @@ class FakeRpcd:
             self.applied = True
             if self.break_on_apply:
                 self.radio_up = False
+        if (obj, method) == ("uci", "revert"):
+            self.staged = {}
         if (obj, method) == ("uci", "rollback"):
             self.rolled_back, self.staged, self.applied = True, {}, False
         if (obj, method) == ("network.wireless", "status") and self.applied:
+            merged = {n: {**self.wireless.get(n, {}), **v} for n, v in self.staged.items()}
             ifaces = {
-                **{n: v for n, v in self.wireless.items() if v.get(".type") == "wifi-iface"},
-                **self.staged,
+                n: v
+                for n, v in {**self.wireless, **merged}.items()
+                if v.get(".type") == "wifi-iface" and v.get("disabled") != "1"  # off: no interface
             }
             radio = {"up": self.radio_up, "interfaces": [{"section": n, "ifname": f"if-{n}"} for n in ifaces]}
             return httpx.Response(200, json={"result": [0, {"radio0": radio}]})
@@ -414,6 +418,38 @@ async def test_a_radio_that_doesnt_come_up_is_rolled_back(tmp_path: Path) -> Non
     assert not any(m == "confirm" for _, m, _ in rpcd.calls)
 
 
+async def test_a_change_nobody_could_check_is_rolled_back(tmp_path: Path) -> None:
+    rpcd = FakeRpcd(["kastellan-wifi"])
+    u = ubus(tmp_path, rpcd)
+    real = u.call
+
+    async def call(obj, method, *args, **kwargs):
+        if (obj, method) == ("network.wireless", "status") and rpcd.applied:
+            raise httpx.ReadTimeout("restarting")
+        return await real(obj, method, *args, **kwargs)
+
+    u.call = call  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="didn't answer"):
+        await ow.change_wifi(u, {"radio0": {"channel": "165"}}, confirm_after=0)
+    assert rpcd.rolled_back and not any(m == "confirm" for _, m, _ in rpcd.calls)
+
+
+async def test_a_refused_apply_leaves_nothing_staged(tmp_path: Path) -> None:
+    rpcd = FakeRpcd(["kastellan-wifi"])
+    u = ubus(tmp_path, rpcd)
+    real = u.call
+
+    async def call(obj, method, *args, **kwargs):
+        if (obj, method) == ("uci", "apply"):
+            raise RuntimeError("a rollback is pending")
+        return await real(obj, method, *args, **kwargs)
+
+    u.call = call  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await ow.change_wifi(u, {"radio0": {"channel": "165"}}, confirm_after=0)
+    assert rpcd.staged == {}
+
+
 async def test_a_damaged_upload_is_removed(tmp_path: Path) -> None:
     rpcd = FakeRpcd(["kastellan-firmware"])
     image = b"\x01" * 1000
@@ -548,6 +584,8 @@ async def test_a_group_lined_up_and_changed(tmp_path: Path, monkeypatch: pytest.
         == "backhaul"
     )
     devices["wifi2"].break_on_apply, devices["wifi2"].radio_up = False, True
+    # A mesh switched off on one member is switched on again with the rest.
+    next(s for s in devices["wifi2"].wireless.values() if s.get("mode") == "mesh")["disabled"] = "1"
     out = await sync.set_mesh(members, "backhaul2", "meshpass2", {}, wait=0)
     assert out["wifi1"] == out["wifi2"] == "set"
 

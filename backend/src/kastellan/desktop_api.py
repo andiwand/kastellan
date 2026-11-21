@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from pydantic import BaseModel, Field
 
 from . import guac
+from .auth import SESSION_COOKIE
 from .auth_api import Who, client_address, require_signin, same_origin, session_token, session_who
 from .terminals import token_key
 
@@ -124,12 +125,12 @@ def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api")
 
     @api.post("/devices/{id}/desktop/ticket")
-    def ticket(id: str, body: Credentials, request: Request) -> dict[str, str]:
+    async def ticket(id: str, body: Credentials, request: Request) -> dict[str, str]:
         w = require_signin(request)
         device = hub.config.devices.get(id)
         if device is None or device.desktop is None:
             raise HTTPException(404, "no such device, or it has no desktop: in config.yaml")
-        session = token_key(request.cookies.get("kastellan_session"))
+        session = token_key(request.cookies.get(SESSION_COOKIE))
         return {"ticket": hub.tickets.add(Ticket(w.user or "", session, id, body))}
 
     @api.websocket("/devices/{id}/desktop")

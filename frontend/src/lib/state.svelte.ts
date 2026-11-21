@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import {
 	api,
 	SignedOut,
@@ -97,8 +98,11 @@ class Store {
 	/** Start polling while at least one page uses the store; returns the stop function. */
 	use() {
 		if (this.#users++ === 0) {
-			this.refresh();
-			this.refreshHistory();
+			// Called from an effect: reading `me` there would make every refresh restart polling.
+			untrack(() => {
+				this.refresh();
+				this.refreshHistory();
+			});
 			this.#timers = [
 				setInterval(() => this.refresh(), 5000),
 				setInterval(() => this.refreshHistory(), 30000),

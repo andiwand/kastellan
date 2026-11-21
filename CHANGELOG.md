@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- A device is edited on its own page (Edit tab), and its part of config.yaml as text (a second
+  tab), e.g. to drop `docker: wud:`; the rest of the file stays exactly as it was.
+- The VPN is back in the main menu; Devices, Groups and Services have clearer icons.
+- Kastellan's scripts on hosts (collector, actor) say which version they are; older ones show on
+  Updates and the device page, to be renewed by setting them up again.
+- The setup cards on a device page sit side by side on wide screens, with smaller text.
+- Fixed: every SSH login failed in a container whose user has no name ("No username set in the
+  environment").
+- Fixed (audit): the app's polling restarted itself on every refresh (many requests a second);
+  the actor setup asked the host again and again; a reconnected terminal showed "session
+  ended"; Groups couldn't save after a reload; a down service on a laptop that is on showed as
+  offline; stale vulnerability caches lost their "exploited" marks; official Docker images from
+  the collector were never looked up; a rebuild of the same tag counted as fixing a CVE; alarms
+  never got milder; signing in as yourself reset the brake on guessing another password; apt
+  could be killed by a closed pipe; a reboot could interrupt an upgrade; uci changes could leak
+  into the next one; and more (see the commit).
+
 ## 0.4.0 (2026-11-21)
 
 Settings, groups and the VPN set up from forms instead of YAML; everything waiting to be updated

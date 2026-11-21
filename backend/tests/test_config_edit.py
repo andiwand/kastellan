@@ -188,6 +188,21 @@ def test_device_forms(hub_client) -> None:
     del f["id"]
     bad = {**f, "checks": [{"type": "tcp", "target": "x"}]}
     assert c.put("/api/devices/printer", json=bad, headers=H).status_code == 400
+    y = c.get("/api/devices/printer/yaml").json()
+    assert y["text"].startswith("name: Office printer\n")
+    text = y["text"] + "docker:\n  wud: http://192.168.1.9:3000\n"
+    assert (
+        c.put(
+            "/api/devices/printer/yaml", json={"text": text, "version": y["version"]}, headers=H
+        ).status_code
+        == 200
+    )
+    assert "wud: http://192.168.1.9:3000" in config.read_text()
+    again = {"text": "host: [", "version": y["version"]}
+    assert c.put("/api/devices/printer/yaml", json=again, headers=H).status_code == 409  # stale
+    y = c.get("/api/devices/printer/yaml").json()
+    bad = {"text": "host: 192.168.1.9\nkind: toaster\n", "version": y["version"]}
+    assert c.put("/api/devices/printer/yaml", json=bad, headers=H).status_code == 400
     assert c.delete("/api/devices/printer", headers=H).status_code == 200
     assert "printer" not in config.read_text()
     assert c.delete("/api/devices/printer", headers=H).status_code == 404
@@ -527,3 +542,59 @@ def test_a_kept_secret_goes_back_only_to_its_own_channel(hub_client) -> None:
         c.put("/api/settings/users", json={"value": {"users": ["x"]}, "version": v}, headers=H).status_code
         == 400
     )
+
+
+def test_the_vpn_form_cant_aim_at_kastellans_own_secrets(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    for name in ("group-fingerprints", "openwrt-router", "openwrt-other"):
+        config.write_text(
+            TEXT + f"vpn:\n  wireguard:\n    wg_easy: http://sv1:51821\n    password_secret: {name}\n"
+        )
+        with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
+            signin(c)
+            assert c.put(f"/api/secrets/{name}", json={"value": "x"}, headers=H).status_code == 403
+    assert not (tmp_path / "secrets").exists()
+
+
+def test_a_new_recipient_keeps_the_mail_password(hub_client) -> None:
+    c, config, _ = hub_client
+    signin(c)
+    v = c.get("/api/settings").json()["version"]
+    chans = [{"email": "me@example.org", "smtp": "smtps://me:MAIL_SECRET@mail.example.org"}]
+    v = c.put("/api/settings/notify", json={"value": {"notify": chans}, "version": v}, headers=H).json()[
+        "version"
+    ]
+    shown = c.get("/api/settings").json()["sections"]["notify"]["notify"]
+    shown[0]["email"] = "you@example.org"
+    r = c.put("/api/settings/notify", json={"value": {"notify": shown}, "version": v}, headers=H)
+    assert r.status_code == 200, r.text
+    assert "MAIL_SECRET" in config.read_text() and "you@example.org" in config.read_text()
+
+
+def test_a_device_as_text() -> None:
+    text = """devices:
+  # Routers
+  router:
+    host: 192.168.1.1 # the gateway
+    # its web page
+    checks:
+      - ping
+
+  # --- Servers ---
+  nas:
+    host: nas.lan
+    docker:
+      wud: http://nas.lan:3000
+users:
+  a: {role: admin}
+"""
+    assert config_edit.device_text(text, "router") == (
+        "host: 192.168.1.1 # the gateway\n# its web page\nchecks:\n  - ping\n"
+    )
+    assert config_edit.set_device_text(text, "nas", config_edit.device_text(text, "nas")) == text
+    changed = config_edit.set_device_text(text, "nas", "host: nas.lan\n")
+    assert changed == text.replace("    docker:\n      wud: http://nas.lan:3000\n", "")
+    changed = config_edit.set_device_text(text, "router", "host: 192.168.1.2\n")
+    assert "\n\n  # --- Servers ---\n  nas:" in changed and "192.168.1.2" in changed
+    with pytest.raises(KeyError):
+        config_edit.device_text(text, "nope")

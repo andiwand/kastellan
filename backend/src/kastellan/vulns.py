@@ -28,7 +28,6 @@ import logging
 import re
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -87,7 +86,6 @@ CPES: dict[str, str | tuple[str, ...]] = {
     "postfix": "postfix:postfix",
     "vsftpd": ("vsftpd_project:vsftpd", "beasts:vsftpd"),
     "proftpd": "proftpd:proftpd",
-    "fritz!os": "avm:fritz\\!os",
 }
 
 # Container image → (ecosystem, package) for OSV, or a CPE vendor:product for NVD; the tag is
@@ -137,15 +135,20 @@ def from_software(name: str, version: str | None, extra: str | None = None) -> P
 EXACT_TAG = re.compile(r"^v?(\d+\.\d+\.\d+)(?:-[a-z][\w.]*)?$")  # 1.27.3, v2.14.1, 1.27.3-alpine
 
 
+def _image(image: str) -> tuple[str, str] | None:
+    """Docker Hub's official images come as "nginx" or "library/nginx"."""
+    return IMAGES.get(image) or IMAGES.get(f"library/{image}")
+
+
 def image_known(image: str) -> bool:
-    return (IMAGES.get(image) or IMAGES.get(image.removeprefix("library/"))) is not None
+    return _image(image) is not None
 
 
 def from_image(image: str, tag: str) -> Product | None:
     """A container image with an exact version tag (x.y.z, maybe with a suffix like -alpine), if a
     source knows the product. Moving tags (7.4, 16, latest) are not looked up: a range like
     "before 7.4.6" would match 7.4 although it runs the newest 7.4.x."""
-    known = IMAGES.get(image) or IMAGES.get(image.removeprefix("library/"))
+    known = _image(image)
     m = EXACT_TAG.match(tag)
     if known is None or not m:
         return None
@@ -241,7 +244,8 @@ def parse_osv(data: dict[str, Any], version: str = "") -> list[Finding]:
             str(event["fixed"])[:40]
             for affected in v.get("affected") or []
             for r in (affected or {}).get("ranges") or []
-            for event in (r or {}).get("events") or []
+            if (r or {}).get("type") != "GIT"  # fixed in a commit, not a version
+            for event in r.get("events") or []
             if isinstance(event, dict) and event.get("fixed")
         ]
         above = sorted(
@@ -347,10 +351,13 @@ class Sources:
                 if product.cpe
                 else self._osv(client, product.osv)
             )
-            if findings is None:
-                return [Finding(**f) for f in cached["findings"]] if cached else None
-            self._cache[key] = {"fetched": time.time(), "findings": [asdict(f) for f in findings]}
-            self._dirty = True
+            if findings is not None:
+                self._cache[key] = {"fetched": time.time(), "findings": [asdict(f) for f in findings]}
+                self._dirty = True
+            elif cached:  # a day old or more, but better than nothing; still marked below
+                findings = [Finding(**f) for f in cached["findings"]]
+            else:
+                return None
         for f in findings:
             f.exploited = f.id in self._kev or any(a in self._kev for a in f.aliases)
             if product.distro and f.source == "nvd":
@@ -409,12 +416,3 @@ class Sources:
         except (httpx.HTTPError, ValueError, TimeoutError) as e:
             self.errors["osv"] = f"OSV: {e or type(e).__name__}"
             return None
-
-
-def worst(findings: list[Finding]) -> str:
-    order = ["unknown", "low", "medium", "high", "critical"]
-    return max((f.severity for f in findings), key=order.index, default="unknown")
-
-
-def checked_at() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")

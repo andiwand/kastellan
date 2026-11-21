@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { modal } from '#lib/modal.js';
 	import { settings, copy } from '#lib/settings.svelte.js';
 	import { store } from '#lib/state.svelte.js';
 	import KindIcon from './KindIcon.svelte';
@@ -21,16 +22,7 @@
 	let idTouched = false;
 
 	$effect(() => {
-		dialog?.showModal();
 		first?.focus(); // the name, not the close button
-	});
-	$effect(() => {
-		const root = document.documentElement;
-		const before = root.style.overflow;
-		root.style.overflow = 'hidden';
-		return () => {
-			root.style.overflow = before;
-		};
 	});
 	$effect.pre(() => {
 		if (existing && !gid) {
@@ -81,6 +73,7 @@
 </script>
 
 <dialog
+	use:modal
 	bind:this={dialog}
 	{onclose}
 	class="m-auto max-h-[calc(100dvh-2rem)] w-[min(38rem,calc(100vw-2rem))] rounded-2xl border border-line bg-surface p-0 text-text shadow-pop backdrop:bg-black/40"

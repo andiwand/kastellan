@@ -83,7 +83,10 @@ case $command in
       ./easyrsa --batch revoke "$name" >/dev/null 2>&1 || fail "revoke failed"
     else
       # Revoked before (maybe the CRL didn't reach the server then): only renew the CRL.
-      grep -q "^R.*/CN=$name\(/\|\$\)" pki/index.txt || fail "no $name"
+      # The name as a fixed string (a "." in it is no wildcard): the DN ends with /CN=<name> or has it
+      # before the next part.
+      awk -F'\t' -v dn="/CN=$name" '$1 == "R" && (substr($6, length($6) - length(dn) + 1) == dn || index($6, dn "/")) { found = 1 }
+        END { exit !found }' pki/index.txt || fail "no $name"
     fi
     ./easyrsa --batch gen-crl >/dev/null 2>&1 || fail "gen-crl failed"
     echo "revoked $name"

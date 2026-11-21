@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api, type ActSetup } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import SetupDialog from './SetupDialog.svelte';
@@ -47,16 +48,18 @@
 		}
 	}
 
-	// The commands follow the choice.
+	// A new choice: the commands for it (read only the choice here, not what loading sets).
 	$effect(() => {
 		void chosen.length;
 		void targets.length;
-		if (opened && setup) load();
+		untrack(() => {
+			if (opened && setup) load();
+		});
 	});
 </script>
 
 <details
-	class="card mt-4 p-4"
+	class="card p-4"
 	ontoggle={(e) => {
 		if ((e.currentTarget as HTMLDetailsElement).open && !opened) {
 			opened = true;
@@ -87,14 +90,14 @@
 
 		<fieldset class="mt-3 flex flex-col gap-2">
 			{#each Object.entries(setup.abilities) as [ability, description] (ability)}
-				<label class="choice text-sm">
+				<label class="choice text-xs">
 					<input type="checkbox" value={ability} bind:group={chosen} />
 					<span>{description}</span>
 				</label>
 			{/each}
 		</fieldset>
 		{#if containerAbilities}
-			<fieldset class="mt-4 flex flex-col gap-2 text-sm">
+			<fieldset class="mt-4 flex flex-col gap-2 text-xs">
 				<legend class="mb-2 text-xs font-medium text-muted">On which containers</legend>
 				<label class="choice">
 					<input type="radio" bind:group={all} value={false} /> Only these

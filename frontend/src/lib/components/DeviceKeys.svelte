@@ -43,7 +43,7 @@
 </script>
 
 <details
-	class="card mt-4 p-4"
+	class="card p-4"
 	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !data && load()}
 >
 	<summary class="cursor-pointer text-sm font-semibold">SSH keys on this device</summary>

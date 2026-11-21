@@ -2,7 +2,7 @@ import type { Device } from '#lib/api.js';
 
 /** Everything with an update waiting, across the network, from what the devices report:
  * containers (registries), system packages (the collector), reboots after updates, OpenWrt
- * firmware and packages. */
+ * firmware and packages, and Kastellan's own scripts on hosts (set up again to renew them). */
 export type Update =
 	| { kind: 'container'; device: Device; name: string; from: string; to: string }
 	| { kind: 'packages'; device: Device; count: number; security: number }
@@ -14,7 +14,8 @@ export type Update =
 			to: string;
 			supported: boolean;
 	  }
-	| { kind: 'router-packages'; device: Device; names: string[] };
+	| { kind: 'router-packages'; device: Device; names: string[] }
+	| { kind: 'scripts'; device: Device; names: string[] };
 
 export function updatesOf(devices: Device[]): Update[] {
 	const out: Update[] = [];
@@ -44,6 +45,8 @@ export function updatesOf(devices: Device[]): Update[] {
 			});
 		const pk = d.router?.packages;
 		if (pk?.length) out.push({ kind: 'router-packages', device: d, names: pk });
+		if (d.outdated_scripts?.length)
+			out.push({ kind: 'scripts', device: d, names: d.outdated_scripts });
 	}
 	// What matters most first: no more fixes, security updates, internet-facing devices.
 	const weight = (u: Update) =>

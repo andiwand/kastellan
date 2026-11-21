@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Literal
 
 import asyncssh
@@ -128,6 +128,21 @@ MARK = "KASTELLAN-ROOT-NOW"
 _running: set[asyncio.Task[None]] = set()  # setups under way: they finish even if the page goes
 
 
+def _hub_task(run: Coroutine[Any, Any, None], queue: asyncio.Queue[bytes | None]) -> StreamingResponse:
+    """Runs `run` as the hub's task and streams what it puts in `queue` until None."""
+    task = asyncio.get_running_loop().create_task(run)
+    _running.add(task)
+    task.add_done_callback(_running.discard)
+
+    async def follow() -> AsyncIterator[bytes]:
+        while (chunk := await queue.get()) is not None:
+            yield chunk
+
+    return StreamingResponse(
+        follow(), media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-store"}
+    )
+
+
 def stream(
     conn: asyncssh.SSHClientConnection,
     script: str,
@@ -189,17 +204,7 @@ def stream(
         queue.put_nowait(f"{DONE} {json.dumps(outcome)}\n".encode())
         queue.put_nowait(None)
 
-    task = asyncio.get_running_loop().create_task(run())
-    _running.add(task)
-    task.add_done_callback(_running.discard)
-
-    async def follow() -> AsyncIterator[bytes]:
-        while (chunk := await queue.get()) is not None:
-            yield chunk
-
-    return StreamingResponse(
-        follow(), media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-store"}
-    )
+    return _hub_task(run(), queue)
 
 
 def add_device_key(
@@ -267,14 +272,4 @@ def stream_work(
         queue.put_nowait(f"{DONE} {json.dumps(outcome)}\n".encode())
         queue.put_nowait(None)
 
-    task = asyncio.get_running_loop().create_task(run())
-    _running.add(task)
-    task.add_done_callback(_running.discard)
-
-    async def follow() -> AsyncIterator[bytes]:
-        while (chunk := await queue.get()) is not None:
-            yield chunk
-
-    return StreamingResponse(
-        follow(), media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-store"}
-    )
+    return _hub_task(run(), queue)

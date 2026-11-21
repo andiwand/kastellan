@@ -215,31 +215,21 @@ def router(hub: Hub) -> APIRouter:
             "role": w.role if w else None,
         }
 
-    # Each check costs ~32 MB and ~50 ms; anyone may ask, so only a few run at a time, and one
-    # address waits for its previous attempt (parallel guesses can't slip past the brake).
+    # Each check costs ~32 MB and ~50 ms; anyone may ask, so only a few run at a time. Parallel
+    # guesses can't slip past the brake: it is asked and counted with no await in between.
     hashing = asyncio.Semaphore(4)
-    per_address: dict[str, asyncio.Lock] = {}
 
     @api.post("/auth/login")
     async def login(body: SignIn, request: Request, response: Response) -> dict[str, Any]:
         address = client_address(request.scope)
         if not hub.config.users:
             raise HTTPException(400, "sign-in is off: there are no users in config.yaml")
-        lock = per_address.setdefault(address, asyncio.Lock())
-        try:
-            async with lock:
-                return await attempt(body, address, request, response)
-        finally:
-            if not lock.locked() and per_address.get(address) is lock:
-                del per_address[address]
-
-    async def attempt(body: SignIn, address: str, request: Request, response: Response) -> dict[str, Any]:
         if wait := brake.blocked(address):
             if brake.first_block(address):
                 hub.audit.record("signin.blocked", body.user, address)
             raise HTTPException(429, f"too many attempts; try again in {int(wait) + 1} s")
         # Counted before checking, so the attempt counts however it ends.
-        brake.failed(address)
+        counted = brake.failed(address)
         user = hub.config.users.get(body.user)
         async with hashing:
             # A dummy hash for unknown names, so the time taken tells nothing.
@@ -249,7 +239,7 @@ def router(hub: Hub) -> APIRouter:
         if not (ok and user):
             hub.audit.record("signin.failed", body.user, address)
             raise HTTPException(401, "wrong user or password")
-        brake.succeeded(address)
+        brake.succeeded(address, counted)
         token = hub.sessions.create(body.user, password_tag(user.password))
         response.set_cookie(
             SESSION_COOKIE,
@@ -264,8 +254,8 @@ def router(hub: Hub) -> APIRouter:
         return {"user": body.user, "role": user.role}
 
     @api.post("/auth/logout")
-    def logout(request: Request, response: Response, everywhere: bool = False) -> dict[str, bool]:
-        w = request.scope.get("state", {}).get("who")
+    async def logout(request: Request, response: Response, everywhere: bool = False) -> dict[str, bool]:
+        w = who(request)
         token = request.cookies.get(SESSION_COOKIE)
         if everywhere and w and w.user:
             hub.sessions.end_user(w.user)

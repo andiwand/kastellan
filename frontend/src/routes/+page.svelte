@@ -46,7 +46,7 @@
 	// Container updates over all Docker hosts, and what can't be checked.
 	const updates = $derived(
 		devices.flatMap((d) =>
-			(d.containers ?? []).filter((c) => c.update).map((c) => ({ device: d, c }))
+			(d.containers ?? []).filter((c) => c.update && !c.unchecked).map((c) => ({ device: d, c }))
 		)
 	);
 	const unchecked = $derived(

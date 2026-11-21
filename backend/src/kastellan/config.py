@@ -112,13 +112,20 @@ class Check(BaseModel):
         return self
 
     @property
+    def hostname(self) -> str | None:
+        """The host an http check's URL names (None for ping and tcp: they go to the device)."""
+        if self.type is CheckType.HTTP and isinstance(self.target, str):
+            return urlsplit(self.target).hostname or ""
+        return None
+
+    @property
     def watch_cert(self) -> bool:
         """Whether this check's certificate can raise an alarm."""
         if not (isinstance(self.target, str) and self.target.startswith("https://")):
             return False
         if self.tls is not None:
             return self.tls
-        return self.verify or public_name(urlsplit(self.target).hostname or "")
+        return self.verify or public_name(self.hostname or "")
 
 
 class SshAccess(BaseModel):
@@ -192,21 +199,23 @@ class Device(BaseModel):
     def faces_internet(self, where: str | None = None) -> bool:
         """Whether this (or, with `where`, what a finding was in: "service <check>", "firmware",
         "container <name>") can be reached from the internet: the device as a whole is exposed,
-        or the service is (ticked, or addressed by a public name: the same ways in the network
-        view shows); the firmware and containers whenever any service of the device is."""
+        or the service is (ticked, or addressed by a public name or address: the ways in the
+        network view shows); the firmware and containers whenever any service of the device is.
+        The device's own address counts when it is a public IPv4 one (a global IPv6 address may
+        be at home; networks.public_ways decides that from where the hub is)."""
         if self.exposed:
             return True
+        from .networks import is_public  # networks.py imports this module
+
+        own = is_public(self.host) and ":" not in self.host
 
         def reachable(check: Check) -> bool:
             if check.exposed:
                 return True
-            if check.type == "http" and isinstance(check.target, str):
-                from urllib.parse import urlsplit
-
-                from .tls import public_name
-
-                return public_name(urlsplit(check.target).hostname or "")
-            return False
+            if check.type is CheckType.PING:
+                return False
+            target = check.hostname or self.host
+            return public_name(target) or (own if target == self.host else is_public(target))
 
         if where and where.startswith("service "):
             name = where.removeprefix("service ")

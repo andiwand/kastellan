@@ -212,7 +212,7 @@
 			reset={() => (notify = JSON.parse(base.notify))}
 			save={() => save('notify', { notify: notify.map(clean) })}
 		>
-			{#each notify as channel, i (i)}
+			{#each notify as channel, i (channel)}
 				{@const kind = kindOf(channel)}
 				<fieldset class="flex flex-col gap-3 rounded-xl border border-line p-4">
 					<div class="flex items-end gap-3">

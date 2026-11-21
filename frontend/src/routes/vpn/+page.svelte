@@ -7,7 +7,6 @@
 	import QrCode from '@lucide/svelte/icons/qr-code';
 	import Plus from '@lucide/svelte/icons/plus';
 	import X from '@lucide/svelte/icons/x';
-	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import VpnSetup from '#lib/components/VpnSetup.svelte';
 	import VpnSettings from '#lib/components/VpnSettings.svelte';
 
@@ -66,10 +65,7 @@
 
 <svelte:head><title>VPN · Kastellan</title></svelte:head>
 
-<a href="/services" class="inline-flex items-center gap-1.5 text-sm text-muted hover:text-text">
-	<ArrowLeft class="size-4" /> Services
-</a>
-<div class="mt-3 flex flex-wrap items-baseline justify-between gap-3">
+<div class="flex flex-wrap items-baseline justify-between gap-3">
 	<h1 class="text-2xl font-semibold tracking-tight">VPN</h1>
 	{#if vpn && (vpn.wireguard || vpn.openvpn) && canManage && store.editBlocked === null}
 		<a href="#settings" class="btn btn-sm" onclick={() => (settingsOpen = true)}>Settings</a>

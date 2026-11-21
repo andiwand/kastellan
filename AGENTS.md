@@ -77,7 +77,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     replace) after `hub.check` (the load rules, including "sign-in never turns itself off"),
     then `hub.save_config` reloads at once. Device forms edit the YAML in place (ruamel
     round-trip): only `FORM_FIELDS` change, defaults aren't written, unchanged checks keep their
-    comments. Only signed-in admins (`require_signin`), never in demo mode; nobody saves away
+    comments. A device as text (`/api/devices/{id}/yaml`, `config_edit.device_text` and
+    `set_device_text`) replaces only its lines; every other line stays byte for byte. Only signed-in admins (`require_signin`), never in demo mode; nobody saves away
     their own admin role; a version hash refuses saving over a change made meanwhile; the audit
     log gets the diff with password hashes masked.
   - `sshkeys.py` + `sshkeys_api.py`: authorized_keys on devices (listed over the `ssh:` login;
@@ -103,6 +104,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog. `install_script` is
     declarative (abilities not chosen are removed). Tests run the real scripts against a fake
     Docker API (tests/test_actor.py). Root scripts take nothing from the environment.
+  - Script versions: the collector's report (`script`) and `act-dispatch abilities`
+    (`versions:`) carry a hash of each installed file; `collector.digest` is what the hub's own
+    would hash to. Older ones show as `outdated_scripts` (Updates, the device page). Renewing is
+    setting up again with a login: the hub's keys may run these scripts, never replace them.
   - `openwrt/` + `openwrt_api.py`: OpenWrt devices through ubus over HTTPS (as LuCI). `setup.py`
     makes an rpcd login `kastellan` (md5crypt hash; the password is the secret
     `openwrt-<id>`) and `/usr/share/rpcd/acl.d/kastellan.json` with one group per ability;
@@ -167,7 +172,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     30 s, while a page uses it.
   - `src/lib/status.ts`: what a state means to a person. `statusOf` maps a device to
     up / degraded / down / offline / waiting: a down device that isn't `always_on` is
-    **offline**, not an alarm, and doesn't count as needing attention.
+    **offline**, not an alarm, and doesn't count as needing attention. `checkStatusOf` does the
+    same for one check (a service down on a laptop that is on is down); use it, don't re-derive.
+  - Dialogs: `use:modal` (`src/lib/modal.ts`) opens a `<dialog>` and locks the page's scroll.
   - Components: `UptimeStrip` (one bar per bucket, hover tooltip), `LatencyChart` (line + area,
     crosshair), `StatusBadge`/`StatusDot` (color always with a word), `KindIcon`, `Logo`.
   - `NetworkMap`: the devices by network (networks.py): a zone per network, devices in two on the
@@ -178,7 +185,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `UptimeStrip` merges neighbouring buckets (`mergeBuckets`) so a bar keeps ~5 px; it never
     overflows a narrow column.
   - Routes: `/` overview, `/services` (every tcp/http check on every device), `/devices` (list, or networks with `?view=graph`; search and filters
-    apply to both, the networks view fades non-matches), `/access`, `/config`, `/devices/[id]`.
+    apply to both, the networks view fades non-matches), `/groups`, `/updates`, `/vpn`,
+    `/access`, `/config`, `/devices/[id]` (tabs: status, `?tab=edit` the form, `?tab=file` its
+    part of config.yaml; `Tabs` component). Adding a device is an inline form on `/devices`.
 - `website/`: the project website, plain HTML/CSS/JS, published by `.github/workflows/pages.yml`.
   Screenshots in `website/img/` come from demo mode, in light and dark (`<picture>`).
 

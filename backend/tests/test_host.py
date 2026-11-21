@@ -12,6 +12,7 @@ from kastellan import config_edit, docker
 from kastellan.alarms import Severity, evaluate, host_problems
 from kastellan.config import AlarmSettings, Config
 from kastellan.host import collector
+from kastellan.host.report import normalize
 from kastellan.monitor import CheckStatus, DeviceStatus
 from kastellan.registry import Registries, newer_tag, parse
 
@@ -37,6 +38,17 @@ def test_the_collector_runs_and_never_fails_whole() -> None:
     r = subprocess.run([sys.executable, "-I", "-c", collector.script()], capture_output=True, text=True)
     data = json.loads(r.stdout)
     assert data["version"] == 1 and isinstance(data["errors"], dict)
+
+
+def test_the_collector_says_which_it_is(tmp_path: Path) -> None:
+    """Installed through a heredoc (one newline at the end), it reports what the hub expects."""
+    path = tmp_path / "collect"
+    path.write_text(collector.script().rstrip("\n") + "\n")
+    data = json.loads(subprocess.run([sys.executable, "-I", path], capture_output=True, text=True).stdout)
+    assert not collector.outdated(normalize(data))
+    assert collector.outdated(normalize(data | {"script": "older"}))
+    assert collector.outdated(normalize({}))  # from before collectors said it
+    assert not collector.outdated(None)  # no report: nothing to say
 
 
 REPORT = {

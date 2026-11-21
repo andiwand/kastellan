@@ -8,7 +8,6 @@
 	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 	import ShieldAlert from '@lucide/svelte/icons/shield-alert';
 	import KeyRound from '@lucide/svelte/icons/key-round';
-	import Copy from '@lucide/svelte/icons/copy';
 	import '@xterm/xterm/css/xterm.css';
 	import type { Terminal } from '@xterm/xterm';
 
@@ -28,7 +27,6 @@
 	let problem = $state<Problem | null>(null);
 	let connected = $state(false);
 	let busy = $state(false);
-	let copied = $state(false);
 
 	let term: Terminal | null = null;
 	let socket: WebSocket | null = null;
@@ -126,7 +124,11 @@
 	function close() {
 		observer?.disconnect();
 		observer = null;
-		socket?.close();
+		if (socket) {
+			// The old socket's late close must not report over the next session.
+			socket.onopen = socket.onmessage = socket.onclose = null;
+			socket.close();
+		}
 		socket = null;
 		term?.dispose();
 		term = null;
@@ -156,12 +158,6 @@
 		}
 	}
 
-	async function copy(text: string) {
-		await navigator.clipboard.writeText(text);
-		copied = true;
-		setTimeout(() => (copied = false), 1500);
-	}
-
 	// Open once the device is known and the page has its element.
 	let started = false;
 	$effect(() => {
@@ -170,7 +166,10 @@
 			open();
 		}
 	});
-	onDestroy(close);
+	onDestroy(() => {
+		generation++; // an open() still loading xterm must not connect after the page is gone
+		close();
+	});
 </script>
 
 <svelte:head><title>Terminal · {device?.name ?? id} · Kastellan</title></svelte:head>

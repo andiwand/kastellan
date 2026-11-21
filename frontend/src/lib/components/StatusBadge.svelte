@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { statusColor, statusLabel, type Status } from '#lib/status.js';
 
-	let { status, label }: { status: Status; label?: string } = $props();
+	let { status }: { status: Status } = $props();
 	const color = $derived(statusColor[status]);
 </script>
 
@@ -15,5 +15,5 @@
 		style:background={color.fill}
 		style:color={color.fill}
 	></span>
-	{label ?? statusLabel[status]}
+	{statusLabel[status]}
 </span>

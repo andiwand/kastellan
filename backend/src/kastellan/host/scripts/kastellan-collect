@@ -6,6 +6,7 @@
 # It takes no input and no arguments, runs no shell, and writes only its SMART cache (in /run,
 # root's): disk health is read every 20 minutes, and never wakes a sleeping disk. Docker is read
 # through its API (lists only: never a container's environment, which may hold passwords).
+import hashlib
 import json
 import os
 import re
@@ -15,6 +16,12 @@ import sys
 import time
 
 OUT = {"version": 1, "time": int(time.time()), "errors": {}}
+# Which collector this is, so the hub can tell an older one (a hash of this file, as installed).
+try:
+    with open(__file__, "rb") as f:
+        OUT["script"] = hashlib.sha256(f.read()).hexdigest()[:16]
+except (NameError, OSError):
+    pass
 
 
 def section(name):
@@ -242,7 +249,6 @@ def updates():
         newest = max(kernels, key=key) if kernels else None
         if newest and newest != os.uname().release:
             out["reboot"] = True
-            out["kernel"] = newest
     except (OSError, ValueError, TypeError):
         pass
     try:
@@ -305,8 +311,6 @@ def docker():
             "digests": digests[image_id],
             "state": c.get("State", ""),
             "status": c.get("Status", ""),
-            "created": c.get("Created"),
-            "compose": (c.get("Labels") or {}).get("com.docker.compose.project"),
         })
     return out
 

@@ -217,3 +217,11 @@ def test_acknowledge_alarm_with_slashes(client: TestClient) -> None:
     signin(client, "ada", "admin password")
     r = client.post(f"/api/alarms/{key}/ack", json={"note": "looking"}, headers=H)
     assert r.status_code == 200 and r.json()["acknowledged_by"] == "ada"
+
+
+def test_signing_in_elsewhere_doesnt_wipe_the_guesses(client: TestClient) -> None:
+    for _ in range(4):
+        assert signin(client, "ada", "nope") == 401
+    assert signin(client, "obi", "observer password") == 200  # a login of one's own
+    assert signin(client, "ada", "nope") == 401
+    assert signin(client, "ada", "admin password") == 429  # still five guesses at ada

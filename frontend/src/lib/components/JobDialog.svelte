@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { modal } from '#lib/modal.js';
 	import type { Snippet } from 'svelte';
 	import { streamSetup } from '#lib/api.js';
 	import X from '@lucide/svelte/icons/x';
@@ -30,18 +31,6 @@
 	let dialog: HTMLDialogElement | undefined = $state();
 	const ready = $derived(body() !== null);
 
-	$effect(() => {
-		dialog?.showModal();
-	});
-	$effect(() => {
-		const root = document.documentElement;
-		const before = root.style.overflow;
-		root.style.overflow = 'hidden';
-		return () => {
-			root.style.overflow = before;
-		};
-	});
-
 	async function start(e: SubmitEvent) {
 		e.preventDefault();
 		const payload = body();
@@ -63,6 +52,7 @@
 </script>
 
 <dialog
+	use:modal
 	bind:this={dialog}
 	{onclose}
 	class="m-auto max-h-[calc(100dvh-2rem)] w-[min(40rem,calc(100vw-2rem))] rounded-2xl border border-line bg-surface p-0 text-text shadow-pop backdrop:bg-black/40"

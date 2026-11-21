@@ -533,33 +533,6 @@ async def change_wifi(
         await apply_with_rollback(ubus, s, confirm_after)
 
 
-async def add_wifi_iface(ubus: Ubus, values: dict[str, Any], confirm_after: float | None = None) -> str:
-    """A new wifi-iface section (a mesh, say), checked, applied with a rollback. Its name."""
-    allowed = {"device", "mode", "network", "mesh_fwding", *IFACE_FIELDS}
-    clean: dict[str, str] = {}
-    for k, v in values.items():
-        if k not in allowed:
-            raise ValueError(f"{k}: not something Kastellan sets")
-        if k in IFACE_FIELDS:
-            clean[k] = check_value(k, v)
-        elif not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", str(v)):
-            raise ValueError(f"{k}: not a value it can have")
-        else:
-            clean[k] = str(v)
-    async with ubus.changing:
-        s = await ubus.session_id(min_left=200)
-        try:
-            added = await ubus.call(
-                "uci", "add", {"config": "wireless", "type": "wifi-iface", "values": clean}, session=s
-            )
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await ubus.call("uci", "revert", {"config": "wireless"}, session=s)
-            raise
-        await apply_with_rollback(ubus, s, confirm_after)
-        return str(added.get("section", ""))
-
-
 async def _radios_up(ubus: Ubus, session: str) -> dict[str, bool]:
     status = await ubus.call("network.wireless", "status", session=session)
     return {
@@ -574,9 +547,14 @@ async def apply_with_rollback(ubus: Ubus, session: str, confirm_after: float | N
     confirmed, and Kastellan confirms only if it still answers and every radio that is meant to
     be on came up; otherwise it rolls back at once."""
     wait = CONFIRM_AFTER if confirm_after is None else confirm_after
-    before = await _radios_up(ubus, session)
-    await ubus.call("uci", "apply", {"rollback": True, "timeout": 90}, session=session)
-    broken: list[str] = []
+    try:
+        before = await _radios_up(ubus, session)
+        await ubus.call("uci", "apply", {"rollback": True, "timeout": 90}, session=session)
+    except BaseException:  # nothing applied: the staged changes mustn't ride along with the next one
+        with contextlib.suppress(Exception):
+            await ubus.call("uci", "revert", {"config": "wireless"}, session=session)
+        raise
+    broken: list[str] | None = None  # None: not one status read answered, so nothing is known
     for _ in range(6):  # the radios restart: up to about half a minute
         await asyncio.sleep(wait)
         try:
@@ -586,10 +564,11 @@ async def apply_with_rollback(ubus: Ubus, session: str, confirm_after: float | N
         broken = [n for n, up in now.items() if not up and before.get(n, True)]
         if not broken:
             break
-    if broken:
+    if broken is None or broken:
         with contextlib.suppress(Exception):
             await ubus.call("uci", "rollback", {}, session=session)
-        raise ValueError(f"{', '.join(broken)} didn't come up with the change; it was undone")
+        why = ", ".join(broken) + " didn't come up" if broken else "it didn't answer"
+        raise ValueError(f"{why} with the change; it was undone")
     await ubus.call("uci", "confirm", {}, session=session)
 
 

@@ -43,7 +43,7 @@
 </script>
 
 <details
-	class="card mt-8 p-4"
+	class="card p-4"
 	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !setup && load()}
 >
 	<summary class="cursor-pointer text-sm font-semibold">Collector: how the host is doing</summary>

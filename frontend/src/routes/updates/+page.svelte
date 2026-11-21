@@ -59,7 +59,8 @@
 		packages: 'Install',
 		reboot: 'Reboot',
 		firmware: 'Update firmware',
-		'router-packages': ''
+		'router-packages': '',
+		scripts: ''
 	};
 	// Whether Kastellan may do it on that device at all (the host decides in the end).
 	const possible = (u: Update) =>
@@ -135,6 +136,9 @@
 						{#if !u.supported}<span class="text-xs" style:color="var(--warning-text)">
 								· gets no more security fixes
 							</span>{/if}
+					{:else if u.kind === 'scripts'}
+						Kastellan's {u.names.join(' and ')} there
+						<span class="text-xs text-muted">· older than this Kastellan</span>
 					{:else}
 						{u.names.length} OpenWrt {u.names.length === 1 ? 'package' : 'packages'}
 						<span class="text-xs text-muted">· come with the next firmware</span>
@@ -183,6 +187,14 @@
 							</button>
 						{/if}
 					</div>
+				{:else if u.kind === 'scripts'}
+					<a
+						class="text-xs text-muted hover:text-text"
+						href="/devices/{u.device.id}#setup"
+						title="Kastellan's keys may only run these scripts, not replace them: renewing takes a login on the host"
+					>
+						set up again there
+					</a>
 				{/if}
 			</li>
 		{/each}

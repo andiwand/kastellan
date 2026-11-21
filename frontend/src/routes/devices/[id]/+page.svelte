@@ -2,11 +2,10 @@
 	import { page } from '$app/state';
 	import { api, type Change, type Series } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { statusOf, uptimeOf } from '#lib/status.js';
-	import { ago, dayClock, ms, percent, stateFor } from '#lib/format.js';
+	import { statusOf } from '#lib/status.js';
+	import { ago, dayClock } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
-	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
 	import LatencyChart from '#lib/components/LatencyChart.svelte';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import ExternalLink from '@lucide/svelte/icons/external-link';
@@ -22,20 +21,30 @@
 	import VulnsList from '#lib/components/VulnsList.svelte';
 	import AccessSetup from '#lib/components/AccessSetup.svelte';
 	import DeviceEditor from '#lib/components/DeviceEditor.svelte';
+	import ConfigFile from '#lib/components/ConfigFile.svelte';
+	import Tabs from '#lib/components/Tabs.svelte';
+	import { goto } from '$app/navigation';
 	import DeviceKeys from '#lib/components/DeviceKeys.svelte';
 	import CollectorSetup from '#lib/components/CollectorSetup.svelte';
 	import ActorSetup from '#lib/components/ActorSetup.svelte';
 	import HostHealth from '#lib/components/HostHealth.svelte';
 	import RouterCard from '#lib/components/RouterCard.svelte';
 	import OpenWrtSetup from '#lib/components/OpenWrtSetup.svelte';
-	import Pencil from '@lucide/svelte/icons/pencil';
 
 	const id = $derived(page.params.id ?? '');
 	const device = $derived(store.byId.get(id));
 	const status = $derived(device ? statusOf(device) : 'waiting');
 	const parent = $derived(device?.parent ? store.byId.get(device.parent) : undefined);
 	const children = $derived((store.devices ?? []).filter((d) => d.parent === id));
-	let editing = $state(false);
+	// Admins can change it here: its form, or its part of config.yaml as text.
+	const canEdit = $derived(store.me?.role === 'admin' && store.editBlocked === null);
+	const tab = $derived.by(() => {
+		const t = page.url.searchParams.get('tab');
+		return canEdit && (t === 'edit' || t === 'file') ? t : 'status';
+	});
+	function show(t: 'status' | 'edit' | 'file') {
+		goto(t === 'status' ? '?' : `?tab=${t}`, { replaceState: true });
+	}
 	/** One action through the host's actor; what happened, in words. */
 	async function actOn(ability: 'update-container' | 'restart-container', name: string) {
 		const r = await api.act(id, ability, name);
@@ -194,16 +203,6 @@
 					<MonitorPlay class="size-4 text-muted" /> Desktop
 				</a>
 			{/if}
-			{#if store.me?.role === 'admin'}
-				<button
-					onclick={() => (editing = true)}
-					disabled={store.editBlocked !== null}
-					title={store.editBlocked ?? 'Change its name, address and services'}
-					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong disabled:opacity-50"
-				>
-					<Pencil class="size-4 text-muted" /> Edit
-				</button>
-			{/if}
 			{#if webUi}
 				<a
 					href={webUi}
@@ -217,207 +216,237 @@
 		</div>
 	</header>
 
-	<!-- Range -->
-	<div class="mt-8 flex items-center justify-between">
-		<h2 class="text-sm font-semibold">Services</h2>
-		<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-			{#each ranges as r (r.label)}
-				<button
-					onclick={() => (range = r)}
-					class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range === r
-						? 'bg-surface-3 text-text'
-						: 'text-muted hover:text-text'}"
-				>
-					{r.label}
-				</button>
-			{/each}
+	{#if canEdit}
+		<div class="mt-6">
+			<Tabs
+				tabs={[
+					{ id: 'status', label: 'Status' },
+					{ id: 'edit', label: 'Edit' },
+					{ id: 'file', label: 'config.yaml', mono: true }
+				]}
+				current={tab}
+				onselect={show}
+			/>
 		</div>
-	</div>
-
-	{#if loadError}
-		<p class="mt-3 text-sm" style:color="var(--critical-text)">
-			Cannot load the history: {loadError}. Showing what was loaded before.
-		</p>
 	{/if}
 
-	<div class="mt-3">
-		<ServicesTable
-			rows={device.checks.map((check) => ({ device: device!, check }))}
-			buckets={(_, name) => checkSeries[name] ?? []}
-			start={series?.start ?? null}
-			step={series?.step_seconds ?? 0}
-			rangeLabel={range.label}
-		/>
-	</div>
+	{#if tab === 'edit'}
+		<div class="mt-6"><DeviceEditor id={device.id} onclose={() => show('status')} /></div>
+	{:else if tab === 'file'}
+		<div class="mt-6"><ConfigFile device={device.id} /></div>
+	{:else}
+		<!-- Range -->
+		<div class="mt-8 flex items-center justify-between">
+			<h2 class="text-sm font-semibold">Services</h2>
+			<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
+				{#each ranges as r (r.label)}
+					<button
+						onclick={() => (range = r)}
+						class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range === r
+							? 'bg-surface-3 text-text'
+							: 'text-muted hover:text-text'}"
+					>
+						{r.label}
+					</button>
+				{/each}
+			</div>
+		</div>
 
-	{#if device.router}
-		<RouterCard
-			device={device.id}
-			report={device.router}
-			checked={device.router_checked ?? null}
-			error={device.router_error ?? null}
-			canChange={store.me?.role === 'admin' && !!store.me.user}
-		/>
-	{:else if device.openwrt && device.router_error}
-		<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
-			Kastellan can't read this OpenWrt device: {device.router_error}
-		</p>
-	{/if}
-
-	{#if device.host_report}
-		<HostHealth
-			report={device.host_report}
-			checked={device.host_checked ?? null}
-			error={device.host_error ?? null}
-			reboot={device.act && store.me?.role === 'admin' && store.me.user
-				? async () => {
-						await api.act(id, 'reboot');
-						return 'Rebooting in a minute (cancel on the host: shutdown -c).';
-					}
-				: null}
-			upgrade={device.act && store.me?.role === 'admin' && store.me.user
-				? async () => {
-						const r = await api.act(id, 'upgrade-packages');
-						const n = r.upgraded ?? 0;
-						return `${n} ${n === 1 ? 'package' : 'packages'} updated${r.reboot ? '; it wants a reboot now' : ''}.`;
-					}
-				: null}
-		/>
-	{:else if device.collect && device.host_error}
-		<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
-			The collector doesn't answer: {device.host_error}
-		</p>
-	{/if}
-
-	{#if store.me?.role === 'admin'}
-		<!-- Keyed: going from one device's page to another's starts these afresh. -->
-		{#key device.id}
-			{#if device.openwrt || ['router', 'access-point', 'switch'].includes(device.kind)}
-				<OpenWrtSetup
-					device={device.id}
-					canInstall={!!store.me.user}
-					services={(device.router?.services ?? []).map((s) => s.name)}
-					allowedServices={device.router?.services_allowed ?? []}
-				/>
-			{/if}
-			{#if !device.openwrt}
-				<CollectorSetup device={device.id} canInstall={!!store.me.user} />
-				<ActorSetup
-					device={device.id}
-					containers={(device.containers ?? []).map((c) => c.name)}
-					canInstall={!!store.me.user}
-				/>
-			{/if}
-			<AccessSetup device={device.id} canSetUp={!!store.me.user} />
-			{#if device.ssh}
-				<DeviceKeys device={device.id} canChange={!!store.me.user} />
-			{/if}
-		{/key}
-	{/if}
-
-	{#if device.vulns}
-		<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
-		<VulnsList vulns={device.vulns} exposed={device.exposed} />
-	{/if}
-
-	{#if device.containers || device.containers_error}
-		<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">
-			<h2 class="text-sm font-semibold">
-				Containers
-				{#if device.containers}<span class="tabular ml-1 font-normal text-faint">
-						{device.containers.length}
-					</span>{/if}
-			</h2>
-			<p class="text-xs text-muted">
-				{#if device.containers_error}
-					<span style:color="var(--warning-text)">{device.containers_error}</span>
-					{#if device.containers_checked}
-						· last read {ago(device.containers_checked, store.now)}
-					{/if}
-				{:else}
-					from {device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
-						device.containers_checked,
-						store.now
-					)}
-				{/if}
+		{#if loadError}
+			<p class="mt-3 text-sm" style:color="var(--critical-text)">
+				Cannot load the history: {loadError}. Showing what was loaded before.
 			</p>
-		</div>
-		{#if device.containers}<ContainersTable
-				containers={device.containers}
-				stale={!!device.containers_error}
-				act={device.act && store.me?.role === 'admin' && store.me.user ? actOn : null}
-			/>{/if}
-	{/if}
+		{/if}
 
-	<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">
-		<section>
-			<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-				<h2 class="text-sm font-semibold">Response time</h2>
-				{#if device.checks.length > 1}
-					<div class="flex flex-wrap gap-1">
-						{#each device.checks as check (check.name)}
-							<button
-								onclick={() => (chosen = check.name)}
-								class="h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors {latencyCheck ===
-								check.name
-									? 'border-accent bg-accent-soft text-accent'
-									: 'border-line text-muted hover:text-text'}"
+		<div class="mt-3">
+			<ServicesTable
+				rows={device.checks.map((check) => ({ device: device!, check }))}
+				buckets={(_, name) => checkSeries[name] ?? []}
+				start={series?.start ?? null}
+				step={series?.step_seconds ?? 0}
+				rangeLabel={range.label}
+			/>
+		</div>
+
+		{#if device.router}
+			<RouterCard
+				device={device.id}
+				report={device.router}
+				checked={device.router_checked ?? null}
+				error={device.router_error ?? null}
+				canChange={store.me?.role === 'admin' && !!store.me.user}
+			/>
+		{:else if device.openwrt && device.router_error}
+			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
+				Kastellan can't read this OpenWrt device: {device.router_error}
+			</p>
+		{/if}
+
+		{#if device.host_report}
+			<HostHealth
+				report={device.host_report}
+				checked={device.host_checked ?? null}
+				error={device.host_error ?? null}
+				reboot={device.act && store.me?.role === 'admin' && store.me.user
+					? async () => {
+							await api.act(id, 'reboot');
+							return 'Rebooting in a minute (cancel on the host: shutdown -c).';
+						}
+					: null}
+				upgrade={device.act && store.me?.role === 'admin' && store.me.user
+					? async () => {
+							const r = await api.act(id, 'upgrade-packages');
+							const n = r.upgraded ?? 0;
+							return `${n} ${n === 1 ? 'package' : 'packages'} updated${r.reboot ? '; it wants a reboot now' : ''}.`;
+						}
+					: null}
+			/>
+		{:else if device.collect && device.host_error}
+			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
+				The collector doesn't answer: {device.host_error}
+			</p>
+		{/if}
+
+		{#if store.me?.role === 'admin'}
+			<h2 id="setup" class="mt-8 mb-3 text-sm font-semibold">Set up</h2>
+			{#if device.outdated_scripts.length}
+				<p class="mb-3 text-sm" style:color="var(--warning-text)">
+					Kastellan's {device.outdated_scripts.join(' and ')} on this host {device.outdated_scripts
+						.length === 1
+						? 'is'
+						: 'are'} older than this Kastellan: set {device.outdated_scripts.length === 1
+						? 'it'
+						: 'them'} up again below to renew. Kastellan can't do it by itself: its keys there may only
+					run these scripts, never replace them.
+				</p>
+			{/if}
+			<!-- Keyed: going from one device's page to another's starts these afresh. -->
+			<div class="grid items-start gap-4 xl:grid-cols-2">
+				{#key device.id}
+					{#if device.openwrt || ['router', 'access-point', 'switch'].includes(device.kind)}
+						<OpenWrtSetup
+							device={device.id}
+							canInstall={!!store.me.user}
+							services={(device.router?.services ?? []).map((s) => s.name)}
+							allowedServices={device.router?.services_allowed ?? []}
+						/>
+					{/if}
+					{#if !device.openwrt}
+						<CollectorSetup device={device.id} canInstall={!!store.me.user} />
+						<ActorSetup
+							device={device.id}
+							containers={(device.containers ?? []).map((c) => c.name)}
+							canInstall={!!store.me.user}
+						/>
+					{/if}
+					<AccessSetup device={device.id} canSetUp={!!store.me.user} />
+					{#if device.ssh}
+						<DeviceKeys device={device.id} canChange={!!store.me.user} />
+					{/if}
+				{/key}
+			</div>
+		{/if}
+
+		{#if device.vulns}
+			<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
+			<VulnsList vulns={device.vulns} exposed={device.exposed} />
+		{/if}
+
+		{#if device.containers || device.containers_error}
+			<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">
+				<h2 class="text-sm font-semibold">
+					Containers
+					{#if device.containers}<span class="tabular ml-1 font-normal text-faint">
+							{device.containers.length}
+						</span>{/if}
+				</h2>
+				<p class="text-xs text-muted">
+					{#if device.containers_error}
+						<span style:color="var(--warning-text)">{device.containers_error}</span>
+						{#if device.containers_checked}
+							· last read {ago(device.containers_checked, store.now)}
+						{/if}
+					{:else}
+						from {device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
+							device.containers_checked,
+							store.now
+						)}
+					{/if}
+				</p>
+			</div>
+			{#if device.containers}<ContainersTable
+					containers={device.containers}
+					stale={!!device.containers_error}
+					act={device.act && store.me?.role === 'admin' && store.me.user ? actOn : null}
+				/>{/if}
+		{/if}
+
+		<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">
+			<section>
+				<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+					<h2 class="text-sm font-semibold">Response time</h2>
+					{#if device.checks.length > 1}
+						<div class="flex flex-wrap gap-1">
+							{#each device.checks as check (check.name)}
+								<button
+									onclick={() => (chosen = check.name)}
+									class="h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors {latencyCheck ===
+									check.name
+										? 'border-accent bg-accent-soft text-accent'
+										: 'border-line text-muted hover:text-text'}"
+								>
+									{check.name}
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
+				<div class="card px-2 pt-4 pb-1">
+					{#if series && latencyCheck && checkSeries[latencyCheck]}
+						<LatencyChart
+							buckets={checkSeries[latencyCheck]}
+							start={series.start}
+							step={series.step_seconds}
+							height={220}
+						/>
+					{:else}
+						<div class="h-[220px] animate-pulse rounded-lg bg-surface-2"></div>
+					{/if}
+				</div>
+			</section>
+
+			<section>
+				<h2 class="mb-3 text-sm font-semibold">Activity</h2>
+				<div class="card p-2">
+					{#if changes.length === 0}
+						<p class="px-3 py-6 text-center text-sm text-muted">
+							No changes in the last {range.label}.
+						</p>
+					{:else}
+						<ol class="max-h-[22rem] overflow-y-auto">
+							{#each changes as change (`${change.kind}/${change.time}/${change.check}`)}
+								<li><ActivityItem {change} {device} /></li>
+							{/each}
+						</ol>
+					{/if}
+				</div>
+
+				{#if children.length}
+					<h2 class="mt-8 mb-3 text-sm font-semibold">Connected through it</h2>
+					<div class="card divide-y divide-line">
+						{#each children as child (child.id)}
+							<a
+								href="/devices/{child.id}"
+								class="flex items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-surface-2/70"
 							>
-								{check.name}
-							</button>
+								<KindIcon kind={child.kind} class="size-4 text-muted" />
+								<span class="flex-1 truncate">{child.name}</span>
+								<StatusBadge status={statusOf(child)} />
+							</a>
 						{/each}
 					</div>
 				{/if}
-			</div>
-			<div class="card px-2 pt-4 pb-1">
-				{#if series && latencyCheck && checkSeries[latencyCheck]}
-					<LatencyChart
-						buckets={checkSeries[latencyCheck]}
-						start={series.start}
-						step={series.step_seconds}
-						height={220}
-					/>
-				{:else}
-					<div class="h-[220px] animate-pulse rounded-lg bg-surface-2"></div>
-				{/if}
-			</div>
-		</section>
-
-		<section>
-			<h2 class="mb-3 text-sm font-semibold">Activity</h2>
-			<div class="card p-2">
-				{#if changes.length === 0}
-					<p class="px-3 py-6 text-center text-sm text-muted">
-						No changes in the last {range.label}.
-					</p>
-				{:else}
-					<ol class="max-h-[22rem] overflow-y-auto">
-						{#each changes as change (`${change.kind}/${change.time}/${change.check}`)}
-							<li><ActivityItem {change} {device} /></li>
-						{/each}
-					</ol>
-				{/if}
-			</div>
-
-			{#if children.length}
-				<h2 class="mt-8 mb-3 text-sm font-semibold">Connected through it</h2>
-				<div class="card divide-y divide-line">
-					{#each children as child (child.id)}
-						<a
-							href="/devices/{child.id}"
-							class="flex items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-surface-2/70"
-						>
-							<KindIcon kind={child.kind} class="size-4 text-muted" />
-							<span class="flex-1 truncate">{child.name}</span>
-							<StatusBadge status={statusOf(child)} />
-						</a>
-					{/each}
-				</div>
-			{/if}
-		</section>
-	</div>
-{/if}
-
-{#if editing && device}
-	<DeviceEditor id={device.id} onclose={() => (editing = false)} />
+			</section>
+		</div>
+	{/if}
 {/if}

@@ -80,9 +80,6 @@ class SectionBody(BaseModel):
     version: str  # from GET /api/settings: saving over a change made since is refused
 
 
-HIDDEN = "__keep__"
-
-
 def _hide_password(url: str) -> str:
     """smtps://user:secret@host → smtps://user:__keep__@host (the page never gets it)."""
     from urllib.parse import urlsplit, urlunsplit
@@ -91,7 +88,7 @@ def _hide_password(url: str) -> str:
     if parts.password is None:
         return url
     host = parts.netloc.rsplit("@", 1)[1]
-    return urlunsplit(parts._replace(netloc=f"{parts.username or ''}:{HIDDEN}@{host}"))
+    return urlunsplit(parts._replace(netloc=f"{parts.username or ''}:{KEEP}@{host}"))
 
 
 def _restore_password(url: str, old: str) -> str:
@@ -280,15 +277,17 @@ def router(hub: Hub) -> APIRouter:
                     ch["webhook"] = was.webhook if same and was else None
                     if not ch["webhook"]:
                         raise HTTPException(400, "a webhook channel needs its URL again")
-                target = ch.get(kind) if kind else None
-                same = same and str(getattr(was, kind)) == str(target)
                 if ch.get("token") == KEEP:
-                    if not same:
+                    # An ntfy or Gotify token belongs to its server; a Telegram bot's to the bot,
+                    # whichever chat it writes to.
+                    target = ch.get(kind) if kind else None
+                    if not (same and (kind == "telegram" or str(getattr(was, kind)) == str(target))):
                         raise HTTPException(
                             400, f"the {kind or 'channel'} channel's address changed: enter its token again"
                         )
                     ch["token"] = was.token
-                if isinstance(ch.get("smtp"), str) and HIDDEN in ch["smtp"]:
+                if isinstance(ch.get("smtp"), str) and KEEP in ch["smtp"]:
+                    # The recipient may change; _restore_password checks the server and user.
                     if not (same and was.smtp):
                         raise HTTPException(400, "the mail server changed: enter its password again")
                     ch["smtp"] = _restore_password(ch["smtp"], was.smtp)
@@ -391,8 +390,12 @@ def router(hub: Hub) -> APIRouter:
         """A secret (a password Kastellan uses, e.g. wg-easy's), written only: never shown."""
         w = guard(request)
         wg = hub.config.vpn.wireguard
-        if name not in {"wg-easy", *((wg.password_secret,) if wg else ())}:
-            # Only the ones the forms set; the others (OpenWrt logins, ...) are Kastellan's own.
+        # Kastellan's own: OpenWrt logins and the group fingerprints' key. The VPN form names the
+        # wg-easy secret, so that name alone must not let a form overwrite one of these.
+        own = {"group-fingerprints", *(hub.openwrt_secret(id) for id in hub.config.devices)}
+        if name not in {"wg-easy", *((wg.password_secret,) if wg else ())} or (
+            name in own or name.startswith("openwrt-")
+        ):
             raise HTTPException(403, "that secret isn't set from here")
         try:
             hub.secrets.set(name, body.value)
@@ -412,6 +415,38 @@ def router(hub: Hub) -> APIRouter:
     @api.delete("/devices/{id}")
     async def delete_device(id: str, request: Request, version: str | None = None) -> dict[str, Any]:
         return edit(request, id, None, False, "device.delete", version)
+
+    @api.get("/devices/{id}/yaml")
+    def get_device_yaml(id: str, request: Request, response: Response) -> dict[str, Any]:
+        """The device's part of config.yaml as written, for editing it as text."""
+        guard(request)
+        response.headers["Cache-Control"] = "no-store"
+        text = current()
+        try:
+            block = config_edit.device_text(text, id)
+        except YAMLError as e:
+            raise HTTPException(409, f"config.yaml can't be read: {yaml_problem(e)}") from e
+        except KeyError as e:
+            raise HTTPException(404, "no such device in config.yaml") from e
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        return {"id": id, "text": block, "version": config_edit.version_of(text)}
+
+    @api.put("/devices/{id}/yaml")
+    async def put_device_yaml(id: str, body: FileBody, request: Request) -> dict[str, Any]:
+        w = guard(request)
+        old = current()
+        if body.version != config_edit.version_of(old):
+            raise HTTPException(409, "config.yaml changed since you opened it; reload, then change it again")
+        try:
+            new = config_edit.set_device_text(old, id, body.text)
+        except YAMLError as e:
+            raise HTTPException(400, f"config.yaml can't be read: {yaml_problem(e)}") from e
+        except KeyError as e:
+            raise HTTPException(404, "no such device in config.yaml") from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"id": id, "version": save(request, w, old, new, "device.change", device=id)}
 
     @api.get("/devices/{id}/form")
     def device_form(id: str, request: Request) -> dict[str, Any]:

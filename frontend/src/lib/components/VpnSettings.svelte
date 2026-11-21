@@ -3,7 +3,7 @@
 	import { settings, copy } from '#lib/settings.svelte.js';
 	import { store } from '#lib/state.svelte.js';
 	import SettingsCard from './SettingsCard.svelte';
-	import { onMount } from 'svelte';
+	import { untrack } from 'svelte';
 
 	/** Where the VPN's clients are managed: WireGuard through wg-easy, OpenVPN through an
 	 * easy-rsa PKI on a host (and the server that gets the revocation list). Saved into
@@ -51,7 +51,14 @@
 		base = json();
 	}
 
-	onMount(() => settings.use());
+	// Fresh once editing is allowed: on a reload that is known only after the hub answered.
+	let asked = false;
+	$effect(() => {
+		if (!asked && store.editBlocked === null) {
+			asked = true;
+			untrack(() => settings.load());
+		}
+	});
 	let shown = '';
 	$effect(() => {
 		const d = settings.data;

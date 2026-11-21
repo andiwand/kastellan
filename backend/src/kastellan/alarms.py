@@ -31,7 +31,7 @@ import json
 import logging
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -498,13 +498,10 @@ class Alarms:
                         {"time": now.isoformat(timespec="seconds"), "what": "escalated", **asdict(alarm)}
                     )
                     changed = True
-                if alarm.gone_since or alarm.title != p.title or alarm.hidden != p.hidden:
-                    alarm.title, alarm.hidden, alarm.detail, alarm.gone_since = (
-                        p.title,
-                        p.hidden,
-                        p.detail,
-                        None,
-                    )
+                # Milder now (a disk cleaned up below critical), or new words: kept without a message.
+                fresh = (p.severity.value, p.title, p.hidden, p.detail, None)
+                if (alarm.severity, alarm.title, alarm.hidden, alarm.detail, alarm.gone_since) != fresh:
+                    alarm.severity, alarm.title, alarm.hidden, alarm.detail, alarm.gone_since = fresh
                     changed = True
         for key, alarm in list(self.open.items()):
             if key in current:
@@ -600,7 +597,3 @@ class Alarms:
         else:
             self.muted[device] = until
         self.save()
-
-
-def stamp(now: datetime | None = None) -> datetime:
-    return now or datetime.now(UTC)

@@ -21,6 +21,7 @@ const device = (id: string, parent: string | null = null): Device => ({
 	network_assumed: false,
 	public_ways: [],
 	containers_error: null,
+	outdated_scripts: [],
 	vulns: null,
 	exposed: false,
 	state: 'unknown',

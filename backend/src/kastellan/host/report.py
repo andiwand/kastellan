@@ -10,7 +10,6 @@ from typing import Any
 
 MAX_ITEMS = 64  # filesystems, disks, sensors, services, RAID arrays
 MAX_CONTAINERS = 300
-SECTIONS = ("system", "filesystems", "raid", "smart", "temperatures", "services", "updates", "docker")
 
 
 def _num(value: Any, low: float = 0, high: float = 1e18) -> float | None:
@@ -41,7 +40,7 @@ def _dict(value: Any) -> dict[str, Any]:
 def normalize(raw: Any) -> dict[str, Any]:
     """The report the hub keeps; never raises."""
     r = _dict(raw)
-    out: dict[str, Any] = {"version": 1}
+    out: dict[str, Any] = {"version": 1, "script": _text(r.get("script"), 64)}
     errors = {
         str(k)[:40]: _text(v) or ""
         for k, v in list(_dict(r.get("errors")).items())[:20]

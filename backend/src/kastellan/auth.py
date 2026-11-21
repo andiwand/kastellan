@@ -106,6 +106,8 @@ class Sessions:
         token = secrets.token_urlsafe(32)
         now = time.time()
         with self._lock:
+            # Sessions whose cookie never came back (a cleared browser) are dropped here.
+            self._sessions = {k: s for k, s in self._sessions.items() if now - s.used <= SESSION_IDLE}
             self._sessions[self._key(token)] = Session(user, now, now, tag)
             self._save()
         return token
@@ -165,7 +167,8 @@ class Sessions:
 class Brake:
     """Slows down password guessing: after `limit` attempts from one address within `window`
     seconds, that address must wait until the window has passed. Attempts are counted before the
-    password is checked (see auth_api), and a success clears the count."""
+    password is checked (see auth_api); a success takes back only its own attempt, so signing in
+    to one account doesn't wipe the guesses at another."""
 
     def __init__(self, limit: int = 5, window: float = 300) -> None:
         self.limit, self.window = limit, window
@@ -197,14 +200,18 @@ class Brake:
         self._noted[address] = now
         return True
 
-    def failed(self, address: str, now: float | None = None) -> None:
+    def failed(self, address: str, now: float | None = None) -> float:
+        """Counts an attempt; returns its time, for `succeeded`."""
         now = time.time() if now is None else now
         self._failures.setdefault(address, []).append(now)
         if len(self._failures) > 10_000:  # many addresses: forget the ones done waiting
             for a in list(self._failures):
                 self._recent(a, now)
             self._noted = {a: t for a, t in self._noted.items() if now - t < self.window}
+        return now
 
-    def succeeded(self, address: str) -> None:
-        self._failures.pop(address, None)
-        self._noted.pop(address, None)
+    def succeeded(self, address: str, attempt: float) -> None:
+        """The attempt counted at `attempt` was right: it no longer counts."""
+        times = self._failures.get(address, [])
+        if attempt in times:
+            times.remove(attempt)

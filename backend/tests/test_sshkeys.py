@@ -239,3 +239,25 @@ async def test_a_changed_login_starts_over(host) -> None:
     moved = device.model_copy(update={"ssh": device.ssh.model_copy(update={"port": 1})})
     with pytest.raises(ValueError, match="box"):
         await rotator.finish({"box": moved})  # the key went to the old login, not this one
+
+
+def test_the_collector_and_actor_keys_are_kastellans(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from kastellan.api import create_app
+    from kastellan.auth import hash_password
+    from kastellan.settings import Settings
+
+    h = {"X-Kastellan": "1"}
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  box:\n    host: 127.0.0.1\n    ssh:\n      user: me\n"
+        f"users:\n  ada:\n    role: admin\n    password: {hash_password('admin pw')}\n"
+    )
+    keys = Keys(tmp_path / "ssh")
+    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
+        c.post("/api/auth/login", json={"user": "ada", "password": "admin pw"}, headers=h)
+        for which in ("collect", "act"):
+            body = {"user": "me", "file": "/x", "fingerprint": keys.hub_key(which).get_fingerprint()}
+            r = c.post("/api/devices/box/keys/remove", json=body, headers=h)
+            assert r.status_code == 400 and "Kastellan's own" in r.json()["detail"]

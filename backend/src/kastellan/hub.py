@@ -216,7 +216,9 @@ class Hub:
                 config = config_mod.load(path)
         except ValidationError as e:
             raise ConfigProblem(_describe(e)) from e
-        except (OSError, ValueError, YAMLError) as e:
+        except YAMLError as e:
+            raise ConfigProblem(yaml_problem(e)) from e
+        except (OSError, ValueError) as e:
             raise ConfigProblem(_first_line(str(e))) from e
         if not config.users and self._signin_was_on():
             raise ConfigProblem(
@@ -349,6 +351,8 @@ class Hub:
                         await self._poll_docker(id, device.docker.wud)
                     if device.driver is not None:
                         await self._poll_driver(id, device)
+                    if device.act is not None and not self.demo:
+                        await self._poll_actor(id)
                 except Exception:
                     log.exception("asking %s failed", id)
 
@@ -497,6 +501,16 @@ class Hub:
         if info.firmware:
             self._note_firmware(id, info.firmware, now)
 
+    async def _poll_actor(self, id: str) -> None:
+        """Which of the actor's scripts on the host are older than the hub's (for Updates)."""
+        status, device = self.monitor.status.get(id), self.config.devices.get(id)
+        if status is None or device is None:
+            return
+        try:
+            status.actor_outdated = (await actor.ask(self.keys, device))[1]
+        except Exception as e:  # it doesn't answer now: what it said last stays
+            log.info("%s: asking the actor failed: %s", id, _brief(e))
+
     async def _poll_docker(self, id: str, wud: str) -> None:
         status = self.monitor.status.get(id)
         if status is None:
@@ -508,7 +522,8 @@ class Hub:
             containers = await docker.read_wud(wud)
         except Exception as e:
             # Keep what we knew; the app shows since when it's old.
-            status.containers_error = f"cannot read WUD: {e or type(e).__name__}"
+            reason = e or type(e).__name__
+            status.containers_error = f"cannot read WUD at {wud} (docker: in config.yaml): {reason}"
             log.info("%s: %s", id, status.containers_error)
             return
         self._set_containers(id, status, containers)

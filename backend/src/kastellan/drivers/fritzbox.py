@@ -50,7 +50,8 @@ class FritzBox(Driver):
     name = "fritzbox"
 
     async def info(self) -> DeviceInfo | None:
-        url = f"http://{self.host}:{PORT}/tr64desc.xml"
+        host = f"[{self.host}]" if ":" in self.host else self.host  # IPv6
+        url = f"http://{host}:{PORT}/tr64desc.xml"
         try:
             async with (
                 asyncio.timeout(15),
@@ -64,6 +65,6 @@ class FritzBox(Driver):
                     if len(body) > 512 * 1024:  # the real file is ~15 kB
                         raise ValueError("description too large")
             return parse_description(body.decode("utf-8", errors="replace"))
-        except (httpx.HTTPError, ET.ParseError, ValueError, TimeoutError) as e:
+        except (httpx.HTTPError, httpx.InvalidURL, ET.ParseError, ValueError, TimeoutError) as e:
             log.info("%s: no TR-064 description (%s)", self.host, e)
             return None

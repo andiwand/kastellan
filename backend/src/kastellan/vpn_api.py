@@ -297,11 +297,12 @@ def router(hub: Hub) -> APIRouter:
     @api.get("/openvpn/setup")
     async def setup(request: Request) -> dict[str, Any]:
         require_admin(request)
+        found_roles = roles()  # 404 without openvpn:
         ovpn = hub.config.vpn.openvpn
-        assert ovpn is not None or roles()
+        assert ovpn is not None
         key = hub.keys.public_key("vpn")
         hosts = []
-        for role, id, user in roles():
+        for role, id, user in found_roles:
             device = hub.config.devices[id]
             found = await checks(role, id, user)
             hosts.append(
@@ -314,10 +315,10 @@ def router(hub: Hub) -> APIRouter:
                     "login": device.ssh.user if device.ssh else None,
                     "checks": found,
                     "can_install": any(c.get("can_install") for c in found),
-                    "script": install_script(role, ovpn, key, await hub_ip_for(device)) if ovpn else "",
+                    "script": install_script(role, ovpn, key, await hub_ip_for(device)),
                 }
             )
-        return {"mode": ovpn.mode if ovpn else None, "vpn_key": key, "hosts": hosts}
+        return {"mode": ovpn.mode, "vpn_key": key, "hosts": hosts}
 
     @api.post("/openvpn/setup/{role}/install")
     async def install(role: str, request: Request) -> dict[str, Any]:

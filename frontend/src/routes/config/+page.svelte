@@ -5,6 +5,7 @@
 	import { settings } from '#lib/settings.svelte.js';
 	import SettingsForms from '#lib/components/SettingsForms.svelte';
 	import ConfigFile from '#lib/components/ConfigFile.svelte';
+	import Tabs from '#lib/components/Tabs.svelte';
 
 	/** The settings: as forms, or config.yaml itself (second tab). */
 	const tab = $derived(page.url.searchParams.get('tab') === 'file' ? 'file' : 'settings');
@@ -27,22 +28,15 @@
 		The config can't be changed from here: {store.editBlocked}.
 	</div>
 {:else}
-	<div
-		class="mt-5 inline-flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card"
-		role="tablist"
-	>
-		{#each [['settings', 'Settings'], ['file', 'config.yaml']] as [id, label] (id)}
-			<button
-				role="tab"
-				aria-selected={tab === id}
-				class="h-8 rounded-lg px-3.5 text-sm font-medium {tab === id
-					? 'bg-surface-3 text-text'
-					: 'text-muted hover:text-text'} {id === 'file' ? 'font-mono text-[13px]' : ''}"
-				onclick={() => show(id as 'settings' | 'file')}
-			>
-				{label}
-			</button>
-		{/each}
+	<div class="mt-5">
+		<Tabs
+			tabs={[
+				{ id: 'settings', label: 'Settings' },
+				{ id: 'file', label: 'config.yaml', mono: true }
+			]}
+			current={tab}
+			onselect={show}
+		/>
 	</div>
 
 	{#if tab === 'settings'}

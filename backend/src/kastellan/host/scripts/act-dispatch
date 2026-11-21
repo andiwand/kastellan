@@ -4,6 +4,7 @@
 # with its own sudo rule, installed only if chosen. This reads the requested action from
 # SSH_ORIGINAL_COMMAND, accepts exactly the known forms, and starts the ability through sudo
 # with the checked argument (never a shell). The ability checks it again.
+import hashlib
 import os
 import re
 import sys
@@ -30,6 +31,15 @@ if words == ["abilities"]:
             print(f"{ability}: {' '.join(allowed)}")
         except OSError:
             pass
+    # Which scripts these are, so the hub can tell older ones (a hash of each file).
+    hashes = []
+    for name in ["dispatch", *installed]:
+        try:
+            with open(os.path.join(BASE, name), "rb") as f:
+                hashes.append(f"{name}={hashlib.sha256(f.read()).hexdigest()[:16]}")
+        except OSError:
+            pass
+    print("versions: " + " ".join(hashes))
     sys.exit(0)
 
 if not words or words[0] not in FORMS:

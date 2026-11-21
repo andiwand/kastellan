@@ -1,8 +1,7 @@
 <script lang="ts">
 	import type { Bucket, CheckStatus, Device } from '#lib/api.js';
-	import type { Status } from '#lib/status.js';
 	import { ms, percent, stateFor } from '#lib/format.js';
-	import { uptimeOf } from '#lib/status.js';
+	import { checkStatusOf, uptimeOf } from '#lib/status.js';
 	import { store } from '#lib/state.svelte.js';
 	import StatusBadge from './StatusBadge.svelte';
 	import UptimeStrip from './UptimeStrip.svelte';
@@ -27,8 +26,6 @@
 		showDevice?: boolean;
 	} = $props();
 
-	const statusOf = (device: Device, check: CheckStatus): Status =>
-		check.up == null ? 'waiting' : check.up ? 'up' : device.always_on ? 'down' : 'offline';
 	const target = (check: CheckStatus) =>
 		check.type === 'ping'
 			? 'ping'
@@ -48,7 +45,7 @@
 	</div>
 	<ul class="divide-y divide-line">
 		{#each rows as { device, check } (`${device.id}/${check.name}`)}
-			{@const status = statusOf(device, check)}
+			{@const status = checkStatusOf(device, check)}
 			{@const b = buckets(device.id, check.name)}
 			<li
 				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-5 py-3.5 {cols}"

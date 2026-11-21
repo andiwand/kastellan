@@ -139,3 +139,14 @@ def test_a_public_name_counts_and_auto_update_needs_the_whole_device() -> None:
     one = device(auto_update=True, act={}, checks=[{"tcp": 443, "exposed": True}])
     c = {"update": True, "tag": "1.0.0", "update_to": "1.0.1"}
     assert auto_update_reason(one, c, [CRITICAL]) is None
+
+
+def test_a_public_address_counts_like_the_network_view() -> None:
+    from kastellan.networks import public_ways
+
+    vps = device(host="203.0.113.10", checks=[{"tcp": 22, "name": "ssh"}, {"http": "https://203.0.113.10"}])
+    assert [w["check"] for w in public_ways(vps, True, {})] == ["ssh", "http:https://203.0.113.10"]
+    assert vps.faces_internet("service ssh") and vps.faces_internet("service http:https://203.0.113.10")
+    assert assess(vps, CRITICAL, "service ssh").alarm is Severity.CRITICAL
+    # A global IPv6 address may well be at home: not by itself a way in.
+    assert not device(host="2001:db8::5", checks=[{"tcp": 22}]).faces_internet()

@@ -27,7 +27,7 @@ import asyncssh
 from ..access import authorize
 from ..config import Device
 from ..ssh import Keys, Target
-from .collector import PYTHON_CHECK
+from .collector import PYTHON_CHECK, digest
 
 USER = "kastellan-act"
 BASE = "/usr/local/lib/kastellan/act"
@@ -158,20 +158,34 @@ async def _run(keys: Keys, device: Device, words: list[str], timeout: float) -> 
     return r.exit_status or 0, str(r.stdout or "")[:65536], str(r.stderr or "")[:4096]
 
 
-async def abilities(keys: Keys, device: Device) -> dict[str, list[str]]:
-    """What the host lets Kastellan do: ability -> the containers it may act on ([] for none or
-    for reboot)."""
+async def ask(keys: Keys, device: Device) -> tuple[dict[str, list[str]], list[str]]:
+    """What the host lets Kastellan do (ability -> the containers it may act on, [] for none or
+    for reboot), and which of its scripts are older than this hub's ("dispatch" or abilities;
+    a host set up before scripts reported themselves has all of them older)."""
     code, out, err = await _run(keys, device, ["abilities"], 30)
     if code != 0:
         raise RuntimeError(err.strip().splitlines()[-1] if err.strip() else f"exit {code}")
+    return parse_abilities(out)
+
+
+def parse_abilities(out: str) -> tuple[dict[str, list[str]], list[str]]:
+    """The dispatcher's `abilities` answer, as `ask` returns it."""
     lines = out.splitlines()
     names = [a for a in (lines[0].split() if lines else []) if a in ABILITIES]
     result: dict[str, list[str]] = {a: [] for a in names}
+    seen: dict[str, str] = {}
     for line in lines[1:]:
         ability, _, rest = line.partition(":")
         if ability in result:
             result[ability] = [c for c in rest.split() if c == "*" or NAME.fullmatch(c)]
-    return result
+        elif ability == "versions":
+            seen = dict(w.split("=", 1) for w in rest.split() if "=" in w)
+    expected = {"dispatch": digest(_script("act-dispatch"))} | {a: digest(ability_script(a)) for a in names}
+    return result, [n for n, h in expected.items() if seen.get(n) != h]
+
+
+async def abilities(keys: Keys, device: Device) -> dict[str, list[str]]:
+    return (await ask(keys, device))[0]
 
 
 async def act(keys: Keys, device: Device, ability: str, container: str | None = None) -> dict[str, Any]:
@@ -183,8 +197,10 @@ async def act(keys: Keys, device: Device, ability: str, container: str | None = 
         if not container or not NAME.fullmatch(container):
             raise ValueError("a container name is letters, digits, _ . -")
         words.append(container)
-    # Longer than the script on the host allows itself, so the hub hears how it ended.
-    limits = {"update-container": 1500, "upgrade-packages": 3000, "restart-container": 180, "reboot": 60}
+    # Longer than the script on the host allows itself, so the hub hears how it ended:
+    # update-container: pull 900 + stop 90 + settling 600 + Docker calls; upgrade-packages:
+    # dpkg 1200 + update 300 + upgrade 2400.
+    limits = {"update-container": 2100, "upgrade-packages": 4200, "restart-container": 180, "reboot": 60}
     code, out, err = await _run(keys, device, words, limits[ability])
     if code != 0:
         raise RuntimeError(err.strip().splitlines()[-1][:300] if err.strip() else f"exit {code}")

@@ -3,7 +3,6 @@
 	import { api, type Access } from '#lib/api.js';
 	import Check from '@lucide/svelte/icons/check';
 	import X from '@lucide/svelte/icons/x';
-	import Copy from '@lucide/svelte/icons/copy';
 	import { store } from '#lib/state.svelte.js';
 	import SetupDialog from './SetupDialog.svelte';
 
@@ -14,7 +13,6 @@
 	let access = $state<Access | null>(null);
 	let error = $state<string | null>(null);
 	let way = $state<'existing' | 'dedicated'>('existing');
-	let copied = $state(false);
 	let understood = $state(false);
 	let setting = $state(false);
 
@@ -27,18 +25,12 @@
 		}
 	}
 
-	async function copy(text: string) {
-		await navigator.clipboard.writeText(text);
-		copied = true;
-		setTimeout(() => (copied = false), 1500);
-	}
-
 	const button =
 		'inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs font-medium hover:border-line-strong disabled:opacity-50';
 </script>
 
 <details
-	class="card mt-4 p-4"
+	class="card p-4"
 	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !access && load()}
 >
 	<summary class="cursor-pointer text-sm font-semibold">SSH access for Kastellan</summary>

@@ -1,4 +1,4 @@
-import type { Bucket, Device } from './api';
+import type { Bucket, CheckStatus, Device } from './api';
 
 /** What a device's state means to a person: a laptop that is off is offline, not down. */
 export type Status = 'up' | 'degraded' | 'down' | 'offline' | 'waiting';
@@ -31,6 +31,14 @@ export function statusOf(device: Device): Status {
 		default:
 			return 'waiting';
 	}
+}
+
+/** One check's status: down only matters while its device is on (or should be); a laptop that
+ * is off has its services offline, but a service down on a laptop that is on is down. */
+export function checkStatusOf(device: Device, check: CheckStatus): Status {
+	if (check.up == null) return 'waiting';
+	if (check.up) return 'up';
+	return statusOf(device) === 'offline' ? 'offline' : 'down';
 }
 
 /** Whether someone should look at it: a degraded device, or a down one that should be on. */

@@ -64,9 +64,7 @@ def router(hub: Hub) -> APIRouter:
     def password_for(id: str) -> str:
         """Kastellan's password on the device: made once, kept as a secret, reused by a new
         setup (so a setup that isn't run yet never locks the working one out)."""
-        name = (
-            hub.config.devices[id].openwrt.password_secret if hub.config.devices[id].openwrt else None
-        ) or (f"openwrt-{id}")
+        name = hub.openwrt_secret(id)
         try:
             return hub.secrets.get(name)
         except KeyError:

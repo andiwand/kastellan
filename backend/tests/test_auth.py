@@ -46,7 +46,7 @@ def test_brake() -> None:
     assert brake.blocked("other", now=3) == 0
     assert brake.blocked("ip", now=61) == 0
     brake.failed("ip", now=62)
-    brake.succeeded("ip")
+    brake.succeeded("ip", 62)
     assert brake.blocked("ip", now=63) == 0
 
 
@@ -60,3 +60,16 @@ def test_audit(tmp_path: Path) -> None:
     assert [e["action"] for e in entries] == ["terminal.open", "signin"]
     assert entries[0]["device"] == "sv1"
     assert (tmp_path / "audit.log").stat().st_mode & 0o077 == 0
+
+
+def test_abandoned_sessions_are_dropped(tmp_path: Path) -> None:
+    import json
+    import time
+
+    sessions = Sessions(tmp_path / "sessions.json")
+    sessions.create("ada")
+    for s in sessions._sessions.values():
+        s.used = time.time() - SESSION_IDLE - 1  # its cookie never came back
+    kept = sessions.create("ada")
+    assert len(json.loads((tmp_path / "sessions.json").read_text())) == 1
+    assert sessions.user(kept) == "ada"

@@ -73,8 +73,10 @@ async def _ping(host: str, check: Check) -> Result:
     try:
         # Unprivileged ICMP: works on macOS, and on Linux where net.ipv4.ping_group_range allows
         # it (Docker sets that for a container's own network, not with host networking).
-        # Three packets; any reply means up.
-        reply = await async_ping(host, count=3, interval=0.3, timeout=check.timeout, privileged=False)
+        # Three packets; any reply means up. They go one after another, each waiting its share
+        # of the check's time, so all three are sent before the overall limit.
+        wait = max(0.1, (check.timeout - 2 * 0.3) / 3)
+        reply = await async_ping(host, count=3, interval=0.3, timeout=wait, privileged=False)
     except SocketPermissionError as e:
         ping_refused = str(e) or "the operating system does not allow this program to ping"
         return Result(False, detail="the hub may not ping (see README)")
@@ -123,14 +125,15 @@ async def _http(check: Check) -> Result:
     address: str | None = None
     async with httpx.AsyncClient(verify=check.verify, timeout=check.timeout) as client:
         try:
-            response = await client.get(check.target)
-            latency = round((time.perf_counter() - start) * 1000, 2)
-            stream = response.extensions.get("network_stream")
-            with contextlib.suppress(Exception):
-                address = str(stream.get_extra_info("server_addr")[0])
-            status = response.status_code
-            up = status == check.expect if check.expect is not None else status < 500
-            result = Result(up, latency, f"HTTP {status}", _software(response) if up else None)
+            # Streamed: a camera's endless MJPEG or a large file must not be read whole.
+            async with client.stream("GET", check.target) as response:
+                latency = round((time.perf_counter() - start) * 1000, 2)
+                stream = response.extensions.get("network_stream")
+                with contextlib.suppress(Exception):
+                    address = str(stream.get_extra_info("server_addr")[0])
+                status = response.status_code
+                up = status == check.expect if check.expect is not None else status < 500
+                result = Result(up, latency, f"HTTP {status}", await _software(response) if up else None)
         except httpx.HTTPError as e:
             result = Result(False, detail=f"{type(e).__name__}: {e}".rstrip(": "))
     if _is_address(host):
@@ -166,15 +169,20 @@ async def _resolve(host: str, port: int) -> str | None:
     return str(infos[0][4][0]) if infos else None
 
 
-def _software(response: httpx.Response) -> Software | None:
+async def _software(response: httpx.Response) -> Software | None:
     """What the page says it is. Only from answers that work (an error page names the proxy in
-    front, not the service), decoding at most 20 kB, and never failing the check over it."""
+    front, not the service), reading at most 20 kB, and never failing the check over it."""
     if not (200 <= response.status_code < 300 or response.status_code == 401):
         return None
     try:
         body = ""
         if "html" in response.headers.get("content-type", ""):
-            body = response.content[:20000].decode(response.encoding or "utf-8", errors="replace")
+            head = bytearray()
+            async for chunk in response.aiter_bytes():
+                head += chunk
+                if len(head) >= 20000:
+                    break
+            body = bytes(head[:20000]).decode(response.encoding or "utf-8", errors="replace")
         return from_http(dict(response.headers), body)
     except Exception:  # a wrong charset name, or anything else odd about the page
         return None

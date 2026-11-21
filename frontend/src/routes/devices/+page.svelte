@@ -1,6 +1,13 @@
 <script lang="ts">
 	import { store } from '#lib/state.svelte.js';
-	import { deviceBuckets, statusOf, uptimeOf, type Status } from '#lib/status.js';
+	import {
+		checkStatusOf,
+		deviceBuckets,
+		statusColor,
+		statusOf,
+		uptimeOf,
+		type Status
+	} from '#lib/status.js';
 	import { ms, percent } from '#lib/format.js';
 	import { tree } from '#lib/tree.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
@@ -83,7 +90,7 @@
 			what can be reached from the internet.
 		</p>
 	</div>
-	{#if store.me?.role === 'admin'}
+	{#if store.me?.role === 'admin' && !adding}
 		<button
 			onclick={() => (adding = true)}
 			disabled={store.editBlocked !== null}
@@ -96,6 +103,7 @@
 </div>
 
 {#if adding}
+	<h2 class="mt-6 mb-3 text-sm font-semibold">Add a device</h2>
 	<DeviceEditor onclose={() => (adding = false)} />
 {/if}
 
@@ -213,13 +221,7 @@
 								>
 									<span
 										class="size-1.5 rounded-full"
-										style:background={check.up == null
-											? 'var(--offline)'
-											: check.up
-												? 'var(--good)'
-												: device.always_on
-													? 'var(--critical)'
-													: 'var(--offline)'}
+										style:background={statusColor[checkStatusOf(device, check)].fill}
 									></span>
 									{check.name}
 								</span>

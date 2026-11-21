@@ -45,6 +45,8 @@ export interface Device {
 	containers: Container[] | null;
 	containers_checked: string | null;
 	containers_error: string | null;
+	/** Kastellan's scripts on the host older than this hub's ("collector", "actor"). */
+	outdated_scripts: string[];
 	vulns: Vulns | null;
 	exposed: boolean;
 	address: string | null; // its host, resolved
@@ -564,15 +566,6 @@ function get<T>(path: string, params: Record<string, string | number | undefined
 	return call<T>('GET', `${path}${query.size ? `?${query}` : ''}`);
 }
 
-/** How a setup gets root on the device (setup_run.py). */
-export interface SetupLogin {
-	login: string;
-	password: string;
-	port: number;
-	elevate: 'sudo' | 'su' | 'none';
-	root_password?: string | null;
-}
-
 export interface SetupOutcome {
 	ok: boolean;
 	error?: string;
@@ -653,6 +646,10 @@ export const api = {
 	saveConfig: (text: string, version: string) =>
 		call<{ version: string }>('PUT', '/config', { text, version }),
 	deviceForm: (id: string) => get<DeviceForm>(`/devices/${encodeURIComponent(id)}/form`),
+	deviceYaml: (id: string) =>
+		get<{ text: string; version: string }>(`/devices/${encodeURIComponent(id)}/yaml`),
+	saveDeviceYaml: (id: string, text: string, version: string) =>
+		call<{ version: string }>('PUT', `/devices/${encodeURIComponent(id)}/yaml`, { text, version }),
 	addDevice: (form: DeviceForm & { id: string }) => call<{ id: string }>('POST', '/devices', form),
 	changeDevice: (id: string, form: DeviceForm) =>
 		call<{ id: string }>('PUT', `/devices/${encodeURIComponent(id)}`, form),

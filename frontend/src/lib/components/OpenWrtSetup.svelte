@@ -51,7 +51,7 @@
 </script>
 
 <details
-	class="card mt-8 p-4"
+	class="card p-4"
 	ontoggle={(e) => {
 		if ((e.currentTarget as HTMLDetailsElement).open && !opened) {
 			opened = true;
@@ -81,7 +81,7 @@
 		</p>
 		<fieldset class="mt-3 space-y-1.5">
 			{#each Object.entries(setup.abilities) as [ability, description] (ability)}
-				<label class="choice text-sm">
+				<label class="choice text-xs">
 					<input type="checkbox" value={ability} bind:group={chosen} />
 					<span>{description}</span>
 				</label>

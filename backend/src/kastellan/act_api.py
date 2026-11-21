@@ -57,7 +57,7 @@ def router(hub: Hub) -> APIRouter:
             return HTTPException(504, "timed out: check the host")
         return HTTPException(502, str(e)[:300] or type(e).__name__)
 
-    def script_for(device: Any, choice: Choice, hub_ip: str | None) -> str:
+    def script_for(choice: Choice, hub_ip: str | None) -> str:
         try:
             return actor.install_script(
                 set(choice.abilities), choice.containers, hub.keys.public_key("act"), hub_ip
@@ -85,7 +85,7 @@ def router(hub: Hub) -> APIRouter:
             "error": error,
             "abilities": actor.ABILITIES,
             "port": port,
-            "script": script_for(device, body, hub_ip),
+            "script": script_for(body, hub_ip),
         }
 
     @api.post("/{id}/act/install")
@@ -97,7 +97,7 @@ def router(hub: Hub) -> APIRouter:
         if not USER.match(body.login):
             raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
         hub_ip = await asyncio.to_thread(hub_address, device.host, body.port)
-        script = script_for(device, body, hub_ip)
+        script = script_for(body, hub_ip)
         audit = partial(
             hub.audit.record,
             "act.install",

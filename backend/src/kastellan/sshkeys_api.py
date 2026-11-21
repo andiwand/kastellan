@@ -47,9 +47,10 @@ def router(hub: Hub) -> APIRouter:
             key = hub.keys.side_key(which)
             if key is not None:
                 out[key.get_fingerprint()] = name
-        vpn = hub.keys.folder / "vpn_ed25519"
-        if vpn.exists():
-            out[hub.keys.hub_key("vpn").get_fingerprint()] = "Kastellan VPN"
+        named = {"vpn": "Kastellan VPN", "collect": "Kastellan collector", "act": "Kastellan actor"}
+        for which, name in named.items():
+            if (hub.keys.folder / hub.keys.NAMES[which]).exists():
+                out[hub.keys.hub_key(which).get_fingerprint()] = name
         return out
 
     def device_of(id: str):
