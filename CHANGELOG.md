@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.9.0 (2026-11-21)
+
+Maintenance windows, alarm reminders, disk forecasts, backup reports, container rollback and
+logs, and release notices.
+
+### Upgrading
+
+- To use rollback, container logs and service journals, set up the **actor** again on each host
+  (device Setup, or Renew on Updates) and tick the new abilities. Only updates made after that
+  keep a previous image to go back to.
+- Renew outdated collectors so they report each container's previous image.
+
 ### Added
 
 - Maintenance windows for devices, groups or sites: once, weekly, or started from a page.
