@@ -1,7 +1,5 @@
 # Changelog
 
-## Unreleased
-
 ## 0.8.0 (2026-11-21)
 
 UPS and VM management, multiple VPNs, update queues, and security fixes.
@@ -48,6 +46,14 @@ UPS and VM management, multiple VPNs, update queues, and security fixes.
   Setup replaces stale key bindings, and forms preserve hidden options and reject stale saves.
 - Update streams survive quiet periods, apt output tolerates invalid bytes, and reboot refuses
   active package operations. Response charts fit phone screens and handle zero latency.
+- UPS and VM links: a short time on battery no longer takes over devices that were already
+  down (only what went down in the outage folds into the UPS's alarm); a muted UPS folds
+  nothing; apcupsd's "SHUTTING DOWN" and NUT's FSD/OFF count as low battery; a host with
+  apcupsd installed but NUT in use reads NUT; a UPS's badge is the worse of its reading and its
+  own checks; a UPS may have its own address without a "read by" host; a device without an
+  address can't be set up over SSH (that would reach the hub's own machine); the host reading a
+  UPS can't be deleted from under it; an old host report says nothing about its VMs; NUT gets
+  on-battery times from the hub; a UPS without an address shows no empty response-time panel.
 - README and website shortened, security claims corrected, examples validated and demo
   screenshots refreshed.
 

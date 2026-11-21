@@ -14,22 +14,56 @@ STATES = ("no_contact", "low_battery", "on_battery", "replace_battery", "online"
 MAX_AGE = timedelta(minutes=15)
 
 
-def reading(config: Config, status: dict[str, DeviceStatus], id: str) -> dict[str, Any] | None:
+def reading(
+    config: Config,
+    status: dict[str, DeviceStatus],
+    id: str,
+    switched: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """The UPS `id` as its host's report has it (with `checked`: when that host was read), or None
     before the host has reported. A missing UPS in a report means no contact. With NUT,
-    `ups.name` picks which; else the host's first."""
+    `ups.name` picks which; else the host's first one it has contact with. `switched`: the
+    hub's memory of when each UPS switched (NUT tells no times; apcupsd does), kept up to date."""
     link = config.devices[id].ups
     st = status.get(link.via) if link else None
-    found = (st.host or {}).get("ups") if st else None
     if not link or not st or st.host is None:
         return None
-    found = found or []
-    chosen = (
-        next((u for u in found if u.get("name") == link.name), None) if link.name else next(iter(found), None)
-    )
+    found = st.host.get("ups") or []
+    if link.name:
+        chosen = next((u for u in found if u.get("name") == link.name), None)
+    else:
+        reached = [u for u in found if "no_contact" not in (u.get("flags") or [])]
+        chosen = next(iter(reached or found), None)
     if chosen is None:
         chosen = {"name": link.name, "flags": ["no_contact"]}
-    return {**chosen, "checked": st.host_checked}
+    r = {**chosen, "checked": st.host_checked}
+    return _with_times(switched, id, r) if switched is not None else r
+
+
+def _on_battery(flags: list[str]) -> bool:
+    return bool({"on_battery", "low_battery"} & set(flags))
+
+
+def _with_times(switched: dict[str, dict[str, Any]], id: str, r: dict[str, Any]) -> dict[str, Any]:
+    """The switch times NUT doesn't tell, from when the hub saw them. Known only while it runs;
+    after a restart, the first reading stands in ("at least since")."""
+    checked = r.get("checked")
+    if checked is None or "no_contact" in r["flags"]:
+        return r
+    battery = _on_battery(r["flags"])
+    seen = switched.get(id)
+    if seen is None or seen["battery"] != battery:
+        seen = switched[id] = {
+            "battery": battery,
+            "at": checked,
+            "on_at": checked if battery else (seen or {}).get("on_at"),
+        }
+    fmt = "%Y-%m-%d %H:%M:%S %z"
+    if seen["on_at"] and not r.get("on_battery_since"):
+        r["on_battery_since"] = seen["on_at"].strftime(fmt)
+    if not battery and seen["on_at"] and not r.get("off_battery_since"):
+        r["off_battery_since"] = seen["at"].strftime(fmt)
+    return r
 
 
 def current_state(reading: dict[str, Any] | None, now: datetime) -> str:

@@ -136,7 +136,8 @@
 				.filter(Boolean),
 			// A UPS read through its host has no address: nothing of its own to check.
 			checks: hostless ? [] : form.checks.map(named),
-			ups: form.kind === 'ups' ? form.ups : null
+			// Not read by a host (a UPS with its own address, a network card): no ups: link.
+			ups: form.kind === 'ups' && form.ups?.via ? form.ups : null
 		};
 		try {
 			if (id) await api.changeDevice(id, body);
@@ -320,13 +321,15 @@
 				<div class="grid items-start gap-3 sm:grid-cols-2">
 					<label class={label}>
 						Read by
-						<select class={input} bind:value={form.ups.via} required>
-							<option value="" disabled>the host it's plugged into</option>
+						<select class={input} bind:value={form.ups.via} required={hostless}>
+							<option value="" disabled={hostless}>(none: it has its own address)</option>
 							{#each hosts.filter((h) => h.kind !== 'ups') as h (h.id)}
 								<option value={h.id}>{h.name}</option>
 							{/each}
 						</select>
-						<span class="font-normal text-faint">Its collector reads apcupsd or NUT there.</span>
+						<span class="font-normal text-faint">
+							The host it's plugged into: its collector reads apcupsd or NUT there.
+						</span>
 					</label>
 					<label class={label}>
 						Its NUT name

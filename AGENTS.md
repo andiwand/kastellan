@@ -54,7 +54,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `unchecked` says why an update can't be known (unsupported registry, a non-semver tag whose
     digest WUD doesn't watch); never show those as "up to date". Each container's running
     image (`image:tag (id)`) goes to versions.log as `container <name>`.
-  - `alarms.py`: `evaluate()` (pure) turns status into problems: critical for an always-on device
+  - `alarms.py`: `evaluate()` (pure, but for `switched`: the hub's memory of when each UPS
+    switched, which NUT doesn't tell) turns status into problems: critical for an always-on device
     down `down_after` seconds, warning for a down service; a down device folds in the devices
     behind it. `Alarms` keeps open ones in `<data>/alarms.json`, logs to `<data>/alarms.log`,
     sends info events once. `notify.py`: ntfy, webhooks, Gotify, Telegram, e-mail and web push,

@@ -2,6 +2,7 @@
 
 import errno
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -713,6 +714,7 @@ def test_a_device_on_a_virtual_machine(hub_client) -> None:
     assert c.get("/api/devices/router/form").json()["runs_on"] == {"host": "nas", "vm": "router-vm"}
     hub = c.app.state.hub
     hub.monitor.status["nas"].host = {"vms": [{"name": "router-vm", "state": "running"}]}
+    hub.monitor.status["nas"].host_checked = datetime.now(UTC)  # read just now
     devices = {d["id"]: d for d in c.get("/api/devices").json()}
     assert devices["router"]["runs_on"] == {"host": "nas", "vm": "router-vm", "state": "running"}
     assert devices["nas"]["vms"][0]["device"] == "router"

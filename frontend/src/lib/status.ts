@@ -20,14 +20,14 @@ export const statusColor: Record<Status, { fill: string; text: string }> = {
 	waiting: { fill: 'var(--offline)', text: 'var(--muted)' }
 };
 
-/** A UPS's state as a status: on battery or a battery to replace is degraded, low battery down,
- * no contact (or nothing read yet) waiting. */
+/** A UPS's state as a status: on battery, a battery to replace or no contact (an alarm says so)
+ * is degraded, low battery down; nothing read yet is waiting. */
 export const upsStatus: Record<string, Status> = {
 	online: 'up',
 	on_battery: 'degraded',
 	replace_battery: 'degraded',
 	low_battery: 'down',
-	no_contact: 'waiting',
+	no_contact: 'degraded',
 	unknown: 'waiting'
 };
 export const upsLabel: Record<string, string> = {
@@ -41,8 +41,21 @@ export const upsLabel: Record<string, string> = {
 };
 
 export function statusOf(device: Device): Status {
-	if (device.kind === 'ups' && (device.ups || device.checks.length === 0))
-		return upsStatus[device.ups?.state ?? 'unknown'] ?? 'waiting';
+	if (device.kind !== 'ups') return checkedStatus(device);
+	// A UPS: what its host reads of it and its own checks (a network card), the worse of the two.
+	const read = device.ups ? (upsStatus[device.ups.state] ?? 'waiting') : 'waiting';
+	const checked = device.checks.length ? checkedStatus(device) : 'waiting';
+	const rank: Partial<Record<Status, number>> = {
+		waiting: 0,
+		up: 1,
+		offline: 2,
+		degraded: 3,
+		down: 4
+	};
+	return (rank[read] ?? 0) >= (rank[checked] ?? 0) ? read : checked;
+}
+
+function checkedStatus(device: Device): Status {
 	switch (device.state) {
 		case 'up':
 			return 'up';

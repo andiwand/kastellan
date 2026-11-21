@@ -10,6 +10,15 @@ it('uses reachability checks for a network UPS without a collector reading', () 
 	expect(statusOf({ ...device, ups: { state: 'on_battery' } as Device['ups'] })).toBe('degraded');
 });
 
+it('shows a UPS by the worse of its reading and its own checks', () => {
+	const ups = (state: string) => ({ state }) as Device['ups'];
+	const device = { kind: 'ups', state: 'down', always_on: true, checks: [{}] } as Device;
+	expect(statusOf({ ...device, ups: ups('online') })).toBe('down'); // its network card is down
+	expect(statusOf({ ...device, state: 'up', ups: ups('no_contact') })).toBe('degraded');
+	expect(statusOf({ ...device, state: 'up', ups: ups('low_battery') })).toBe('down');
+	expect(statusOf({ ...device, checks: [], ups: ups('online') })).toBe('up'); // read only
+});
+
 describe('deviceBuckets', () => {
 	it('agrees with the badge: one failing check of two is degraded, not down', () => {
 		const [b] = deviceBuckets({

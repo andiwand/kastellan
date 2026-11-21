@@ -187,6 +187,7 @@ def test_a_virtual_machine_folds_into_its_host_and_says_why_it_is_down() -> None
     st["router"].checks["ping"].up = True
     st["sv1"].checks["ping"] = CheckStatus(up=True, since=NOW - timedelta(minutes=10), checked=NOW)
     st["sv1"].host = {"vms": [{"name": "haos", "state": "shut off"}]}
+    st["sv1"].host_checked = NOW  # read just now: it says what is so now
     found = evaluate(config, st, NOW, {}, STARTED)
     assert [p.key for p in found] == ["down:ha"]
     assert found[0].detail == "its virtual machine on sv1 is shut off"

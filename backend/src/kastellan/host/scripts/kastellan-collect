@@ -387,6 +387,7 @@ UPS_FLAGS = {
     "LOWBATT": "low_battery", "LB": "low_battery",
     "REPLACEBATT": "replace_battery", "RB": "replace_battery",
     "COMMLOST": "no_contact",
+    "OFF": "on_battery",  # NUT: its output is off (mains gone, or shut down)
 }
 
 
@@ -397,12 +398,19 @@ def number(text):
 
 
 def ups_flags(status):
+    text = (status or "").upper()
+    words = text.split()
     flags = []
-    for word in (status or "").upper().split():
+    # Shutting down for a low battery: apcupsd says so in place of its usual words, NUT says FSD.
+    if "SHUTTING DOWN" in text:
+        flags += ["on_battery", "low_battery"]
+    if "FSD" in words:
+        flags += ["low_battery"] + (["on_battery"] if "OL" not in words else [])
+    for word in words:
         flag = UPS_FLAGS.get(word)
         if flag and flag not in flags:
             flags.append(flag)
-    return flags or ["unknown"]
+    return list(dict.fromkeys(flags)) or ["unknown"]
 
 
 def parse_apcaccess(text):
@@ -502,6 +510,9 @@ def ups():
                 out.append(parse_upsc(name, data))
             else:
                 out.append({"source": "nut", "name": name, "status": "", "flags": ["no_contact"]})
+    # apcupsd installed but not running while NUT answers: the UPS is NUT's, not one out of reach.
+    if any(u["source"] == "nut" and "no_contact" not in u["flags"] for u in out):
+        out = [u for u in out if not (u["source"] == "apcupsd" and u["flags"] == ["no_contact"])]
     return out or None
 
 

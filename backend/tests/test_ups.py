@@ -106,7 +106,7 @@ def test_a_hung_ups_does_not_discard_earlier_readings(tmp_path: Path) -> None:
         tmp_path,
         f"print({APCACCESS!r})",
         "import time\nprint('cyber') if sys.argv[1:] == ['-l'] else time.sleep(10)",
-        budget=0.3,
+        budget=1.5,  # room for the healthy one to start on a busy machine; the hung one takes 10 s
     )
     assert data["ups"][0]["charge"] == 18
     assert data["ups"][1]["flags"] == ["no_contact"]
@@ -268,6 +268,13 @@ def test_the_api_and_the_power_links(tmp_path: Path) -> None:
         d = {x["id"]: x for x in c.get("/api/devices").json()}
         assert d["ups1"]["ups"]["state"] == "on_battery" and d["ups1"]["ups"]["charge"] == 70.0
         assert d["ups1"]["powers"] == ["sv1"] and d["ups1"]["host"] == ""
+        for route in ("access", "collect", "act/script"):  # "" would be the hub's own machine
+            r = (
+                c.get(f"/api/devices/ups1/{route}")
+                if route != "act/script"
+                else c.post(f"/api/devices/ups1/{route}", json={"abilities": [], "containers": []}, headers=h)
+            )
+            assert r.status_code == 400, route
         assert d["sv1"]["powered_by"] == {"ups": "ups1", "state": "on_battery"}
         assert d["sv1"]["reads_ups"] == [{"device": "ups1", "state": "on_battery"}]
         version = c.get("/api/config").json()["version"]
@@ -284,3 +291,113 @@ def test_the_api_and_the_power_links(tmp_path: Path) -> None:
             "/api/devices/nas/powered", json={"devices": [], "version": r.json()["version"]}, headers=h
         )
         assert not_ups.status_code == 404
+
+
+def test_nut_gets_its_switch_times_from_the_hub() -> None:
+    """NUT tells no time of the last switch: the hub notes when it saw one (its own memory)."""
+    switched: dict = {}
+    t0 = datetime(2026, 11, 21, 10, 0, tzinfo=UTC)
+    mains = {"name": "nut1", "flags": ["online"], "checked": t0}
+    assert "on_battery_since" not in ups._with_times(switched, "nut-ups", dict(mains))
+    battery = {"name": "nut1", "flags": ["on_battery"], "checked": t0 + timedelta(minutes=1)}
+    r = ups._with_times(switched, "nut-ups", dict(battery))
+    assert ups.since(r["on_battery_since"]) == t0 + timedelta(minutes=1)
+    later = ups._with_times(switched, "nut-ups", {**battery, "checked": t0 + timedelta(minutes=3)})
+    assert ups.since(later["on_battery_since"]) == t0 + timedelta(minutes=1)  # still the switch
+    back = ups._with_times(switched, "nut-ups", {**mains, "checked": t0 + timedelta(minutes=5)})
+    assert ups.since(back["off_battery_since"]) == t0 + timedelta(minutes=5)
+    assert ups.since(back["on_battery_since"]) == t0 + timedelta(minutes=1)  # when the outage began
+    shutting = {"name": "nut1", "flags": ["on_battery", "low_battery"], "checked": t0 + timedelta(minutes=6)}
+    assert "off_battery_since" not in ups._with_times(switched, "nut-ups", dict(shutting))  # not mains
+    told = {**battery, "on_battery_since": "2026-11-21 09:00:00 +0000"}  # apcupsd says it itself
+    assert ups._with_times(switched, "apc-ups", told)["on_battery_since"] == "2026-11-21 09:00:00 +0000"
+    assert "on_battery_since" not in (ups.reading(config(), {}, "ups1") or {})  # no memory: none
+
+
+def stamp(t: datetime) -> str:
+    return t.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+
+
+def test_a_short_blip_does_not_take_over_older_down_alarms() -> None:
+    """The NAS has been down a day (its alarm acknowledged): a minute on battery is no reason to
+    fold it into the UPS's alarm, nor, after mains is back, to send it again as new."""
+    c = config()
+    st = status(
+        c, {"flags": ["on_battery"], "on_battery_since": stamp(NOW - timedelta(minutes=1))}, down=("nas",)
+    )
+    st["nas"].checks["ping"].since = NOW - timedelta(days=1)
+    found = evaluate(c, st, NOW, {}, STARTED)
+    assert {p.key for p in found} == {"ups:ups1:battery", "down:nas"}
+    assert next(p for p in found if p.key == "ups:ups1:battery").hidden == []
+    back = {
+        "flags": ["online"],
+        "on_battery_since": stamp(NOW - timedelta(minutes=3)),
+        "off_battery_since": stamp(NOW - timedelta(minutes=2)),
+    }
+    st = status(c, back, down=("nas",))
+    st["nas"].checks["ping"].since = NOW - timedelta(days=1)
+    assert [p.key for p in evaluate(c, st, NOW, {}, STARTED)] == ["down:nas"]
+    # Down after the switch: in the outage, so in the UPS's alarm.
+    st = status(
+        c, {"flags": ["on_battery"], "on_battery_since": stamp(NOW - timedelta(minutes=20))}, down=("nas",)
+    )
+    assert [p.key for p in evaluate(c, st, NOW, {}, STARTED)] == ["ups:ups1:battery"]
+
+
+def test_a_muted_ups_folds_nothing() -> None:
+    c = config()
+    st = status(c, {"flags": ["on_battery"]}, down=("nas",))
+    found = evaluate(c, st, NOW, {"ups1": NOW + timedelta(hours=1)}, STARTED)
+    assert [p.key for p in found] == ["down:nas"]
+
+
+def test_shutting_down_counts_as_low_battery(tmp_path: Path) -> None:
+    apc = APCACCESS.replace("STATUS   : ONBATT LOWBATT", "STATUS   : SHUTTING DOWN")
+    nut = "print('cyber') if sys.argv[1:] == ['-l'] else print('ups.status: FSD OB LB')"
+    data = collect(tmp_path, f"print({apc!r})", nut)
+    assert data["ups"][0]["flags"] == ["on_battery", "low_battery"]
+    assert set(data["ups"][1]["flags"]) == {"on_battery", "low_battery"}
+    off = "print('cyber') if sys.argv[1:] == ['-l'] else print('ups.status: OFF')"
+    assert collect(tmp_path, None, off)["ups"][0]["flags"] == ["on_battery"]
+
+
+def test_nut_answers_while_apcupsd_is_not_running(tmp_path: Path) -> None:
+    gone = "print('Error contacting host localhost port 3551'); sys.exit(1)"
+    nut = "print('cyber') if sys.argv[1:] == ['-l'] else print(" + repr(UPSC) + ")"
+    data = collect(tmp_path, gone, nut)
+    assert [u["source"] for u in data["ups"]] == ["nut"]  # no apcupsd stub without contact
+    c = config()
+    st = status(c, {"flags": ["no_contact"]})
+    st["sv1"].host = {"ups": [{"source": "x", "flags": ["no_contact"]}, {"name": "b", "flags": ["online"]}]}
+    assert ups.reading(c, st, "ups1")["flags"] == ["online"]  # no name: the one it reaches
+
+
+def test_an_old_host_report_says_nothing_about_its_vm() -> None:
+    c = config(guest={"host": "g", "runs_on": {"host": "sv1", "vm": "guest"}})
+    st = status(c, {"flags": ["online"]}, down=("guest",))
+    st["sv1"].host["vms"] = [{"name": "guest", "state": "shut off"}]
+    found = evaluate(c, st, NOW, {}, STARTED)
+    assert next(p for p in found if p.key == "down:guest").detail == "its virtual machine on sv1 is shut off"
+    st["sv1"].host_checked = NOW - timedelta(hours=2)  # the collector stopped answering long ago
+    found = evaluate(c, st, NOW, {}, STARTED)
+    assert next(p for p in found if p.key == "down:guest").detail == ""
+
+
+def test_the_host_reading_a_ups_is_not_deleted_from_under_it() -> None:
+    from kastellan import config_edit
+
+    text = "devices:\n  sv1:\n    host: s\n  ups1:\n    kind: ups\n    name: Rack UPS\n    ups: {via: sv1}\n"
+    with pytest.raises(ValueError, match="sv1 reads the UPS Rack UPS: change its 'read by' first"):
+        config_edit.edit_device(text, "sv1", None)
+
+
+def test_nothing_reaches_out_from_a_device_without_an_address() -> None:
+    for key, value in (
+        ("ssh", {"user": "root"}),
+        ("collect", {}),
+        ("act", {}),
+        ("web", "http://x"),
+        ("driver", "fritzbox"),
+    ):
+        with pytest.raises(ValueError, match="need a host"):
+            config(x={"kind": "ups", "ups": {"via": "sv1"}, key: value})

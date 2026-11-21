@@ -48,7 +48,9 @@
 	const tab = $derived.by((): Tab => {
 		const t = page.url.searchParams.get('tab');
 		if (!admin) return 'status';
-		if (t === 'setup') return 'setup';
+		// Setup opens doors on the device: one without an address of its own (a UPS read through
+		// its host) has none.
+		if (t === 'setup' && device?.host) return 'setup';
 		return t === 'config' || t === 'edit' || t === 'file' ? 'config' : 'status';
 	});
 	const view = $derived(
@@ -276,7 +278,7 @@
 			<Tabs
 				tabs={[
 					{ id: 'status', label: 'Status' },
-					{ id: 'setup', label: 'Setup' },
+					...(device.host ? [{ id: 'setup' as const, label: 'Setup' }] : []),
 					{ id: 'config', label: 'Config' }
 				]}
 				current={tab}
@@ -490,39 +492,44 @@
 			<VulnsList vulns={device.vulns} exposed={device.exposed} />
 		{/if}
 
-		<div class="mt-8 grid min-w-0 grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1fr)_20rem]">
-			<section class="min-w-0">
-				<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-					<h2 class="text-sm font-semibold">Response time</h2>
-					{#if device.checks.length > 1}
-						<div class="flex flex-wrap gap-1">
-							{#each device.checks as check (check.name)}
-								<button
-									onclick={() => (chosen = check.name)}
-									class="h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors {latencyCheck ===
-									check.name
-										? 'border-accent bg-accent-soft text-accent'
-										: 'border-line text-muted hover:text-text'}"
-								>
-									{check.name}
-								</button>
-							{/each}
-						</div>
-					{/if}
-				</div>
-				<div class="card px-2 pt-4 pb-1">
-					{#if series && latencyCheck && checkSeries[latencyCheck]}
-						<LatencyChart
-							buckets={checkSeries[latencyCheck]}
-							start={series.start}
-							step={series.step_seconds}
-							height={220}
-						/>
-					{:else}
-						<div class="h-[220px] animate-pulse rounded-lg bg-surface-2"></div>
-					{/if}
-				</div>
-			</section>
+		<!-- Nothing checked (a UPS read through its host): no response time, only its activity. -->
+		<div
+			class="mt-8 grid min-w-0 grid-cols-1 gap-8 {device.checks.length
+				? 'xl:grid-cols-[minmax(0,1fr)_20rem]'
+				: ''}"
+		>
+			{#if device.checks.length}<section class="min-w-0">
+					<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+						<h2 class="text-sm font-semibold">Response time</h2>
+						{#if device.checks.length > 1}
+							<div class="flex flex-wrap gap-1">
+								{#each device.checks as check (check.name)}
+									<button
+										onclick={() => (chosen = check.name)}
+										class="h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors {latencyCheck ===
+										check.name
+											? 'border-accent bg-accent-soft text-accent'
+											: 'border-line text-muted hover:text-text'}"
+									>
+										{check.name}
+									</button>
+								{/each}
+							</div>
+						{/if}
+					</div>
+					<div class="card px-2 pt-4 pb-1">
+						{#if series && latencyCheck && checkSeries[latencyCheck]}
+							<LatencyChart
+								buckets={checkSeries[latencyCheck]}
+								start={series.start}
+								step={series.step_seconds}
+								height={220}
+							/>
+						{:else}
+							<div class="h-[220px] animate-pulse rounded-lg bg-surface-2"></div>
+						{/if}
+					</div>
+				</section>{/if}
 
 			<section>
 				<h2 class="mb-3 text-sm font-semibold">Activity</h2>

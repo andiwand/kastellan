@@ -55,6 +55,8 @@ def router(hub: Hub) -> APIRouter:
         device = hub.config.devices.get(id)
         if device is None:
             raise HTTPException(404, "no such device")
+        if not device.host:  # "" would be this machine: the hub's own
+            raise HTTPException(400, f"{id} has no address of its own (a UPS read through its host)")
         if configured and hub.demo:
             raise HTTPException(409, "demo mode shows a made-up network; nothing is changed")
         if configured and device.openwrt is None:

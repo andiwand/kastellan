@@ -130,6 +130,8 @@ class Hub:
         self.monitor = Monitor(self.history, runner, self.versions)
         self._mtime: float | None = None
         self._tasks: list[asyncio.Task[None]] = []
+        # When each UPS switched to and from battery, as seen here (NUT tells no times): ups.py.
+        self.ups_switched: dict[str, dict[str, Any]] = {}
         self._loaded = False  # a config has been loaded since the start
         self.locked: str | None = None  # why the API refuses everything (fail closed), or None
         self.signin_required = settings.data / "signin-required"
@@ -752,7 +754,13 @@ class Hub:
                 now = datetime.now(UTC)
                 unjudged: set[str] = set()
                 problems = evaluate(
-                    self.config, self.monitor.status, now, self.alarms.muted, self.started, unjudged
+                    self.config,
+                    self.monitor.status,
+                    now,
+                    self.alarms.muted,
+                    self.started,
+                    unjudged,
+                    self.ups_switched,
                 )
                 problems += self._vuln_problems()
                 problems += self.alarms.carry(self._vuln_keys_unknown())

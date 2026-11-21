@@ -343,6 +343,11 @@ class Device(BaseModel):
             if "checks" in self.model_fields_set and self.checks:
                 raise ValueError("checks: need a host (a UPS without one is read through ups.via)")
             self.checks = []
+            # Everything that logs in to or talks to the device needs its address (else "" would
+            # mean this machine: the hub's own).
+            needing = ("ssh", "desktop", "collect", "act", "openwrt", "driver", "docker", "web")
+            if given := [k for k in needing if getattr(self, k) is not None]:
+                raise ValueError(f"{', '.join(given)}: need a host (this device has no address)")
         names = [c.name for c in self.checks]
         if len(names) != len(set(names)):
             raise ValueError("two checks have the same name; give one a `name`")

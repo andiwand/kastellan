@@ -233,7 +233,14 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         if device.runs_on is None:
             return None
         host = device.runs_on.host
-        vm = next((v for v in vms_of(host) or [] if v.get("name") == device.runs_on.vm), None)
+        st = hub.monitor.status.get(host)
+        checked = st.host_checked if st else None
+        # An old report (or one from before the hub started) says nothing about now.
+        fresh = (
+            checked is not None and checked >= hub.started and datetime.now(UTC) - checked <= upsmod.MAX_AGE
+        )
+        vms = vms_of(host) if fresh else None
+        vm = next((v for v in vms or [] if v.get("name") == device.runs_on.vm), None)
         return {"host": host, "vm": device.runs_on.vm, "state": (vm or {}).get("state") or ""}
 
     def ups_view(id: str, device: Device) -> dict[str, Any]:
@@ -243,15 +250,15 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         now = datetime.now(UTC)
         out: dict[str, Any] = {"powered_by": None, "ups": None, "powers": [], "reads_ups": []}
         if device.kind is Kind.UPS:
-            r = upsmod.reading(hub.config, status, id)
+            r = upsmod.reading(hub.config, status, id, hub.ups_switched)
             out["ups"] = {**r, "state": upsmod.current_state(r, now)} if r else None
             out["powers"] = upsmod.powered(hub.config, id)
         if device.powered_by:
-            r = upsmod.reading(hub.config, status, device.powered_by)
+            r = upsmod.reading(hub.config, status, device.powered_by, hub.ups_switched)
             out["powered_by"] = {"ups": device.powered_by, "state": upsmod.current_state(r, now)}
         for uid, u in hub.config.devices.items():
             if u.ups and u.ups.via == id:
-                r = upsmod.reading(hub.config, status, uid)
+                r = upsmod.reading(hub.config, status, uid, hub.ups_switched)
                 out["reads_ups"].append({"device": uid, "state": upsmod.current_state(r, now)})
         return out
 

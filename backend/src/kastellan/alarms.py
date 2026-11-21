@@ -85,11 +85,14 @@ def evaluate(
     muted: dict[str, datetime],
     started: datetime,
     unjudged: set[str] | None = None,
+    switched: dict[str, dict[str, Any]] | None = None,
 ) -> list[Problem]:
     """The problems now (critical and warning). `unjudged` gets the keys of UPS and certificate
     problems that can't be judged now (the certificate can't be seen: the service or device is
     down, or behind one that is, or no fresh result): their open alarms stay as they are
-    (Alarms.carry), as an alarm about a certificate ends when a good one is seen."""
+    (Alarms.carry), as an alarm about a certificate ends when a good one is seen. `switched`: the
+    hub's memory of when each UPS switched to and from battery (ups.reading keeps it; NUT tells
+    no times): the only state this reads and updates besides its arguments."""
     after = timedelta(seconds=config.alarms.down_after)
     interval = config.check_interval
 
@@ -137,10 +140,14 @@ def evaluate(
         return out
 
     def vm_state(id: str) -> tuple[str, str] | None:
-        """A virtual machine's host and its state there, as the host's collector reports it."""
+        """A virtual machine's host and its state there, as the host's collector reports it now
+        (an old report, or one from before the hub started, says nothing about now)."""
         runs = config.devices[id].runs_on
         st = status.get(runs.host) if runs else None
-        report = st.host if st else None
+        fresh = (
+            st and st.host_checked and st.host_checked >= started and now - st.host_checked <= upsmod.MAX_AGE
+        )
+        report = st.host if st and fresh else None
         vm = next((v for v in (report or {}).get("vms") or [] if v.get("name") == runs.vm), None)
         return (runs.host, str(vm.get("state") or "")) if runs and vm else None
 
@@ -172,7 +179,7 @@ def evaluate(
     # went down in the outage may still be coming up). What they power folds into their alarm.
     readings: dict[str, dict[str, Any]] = {}
     for id, device in config.devices.items():
-        r = upsmod.reading(config, status, id) if device.kind is Kind.UPS else None
+        r = upsmod.reading(config, status, id, switched) if device.kind is Kind.UPS else None
         if r and r.get("checked") and r["checked"] >= started and now - r["checked"] <= upsmod.MAX_AGE:
             readings[id] = r  # only from a fresh report
         if device.ups and unjudged is not None and not is_muted(id):
@@ -181,20 +188,26 @@ def evaluate(
             elif {"no_contact", "unknown"} & set(r["flags"]):
                 unjudged.update(f"ups:{id}:{kind}" for kind in ("battery", "replace"))
 
-    def power_trouble(id: str) -> bool:
+    def power_trouble(id: str, down_since: datetime) -> bool:
+        """The UPS is on battery, or back on mains within minutes, and the device went down in
+        that outage (not before it: an alarm already open stays its own). A muted UPS folds
+        nothing: its devices alarm as usual."""
         r = readings.get(id)
-        if r is None or "no_contact" in r["flags"]:
+        if r is None or "no_contact" in r["flags"] or is_muted(id):
             return False
         back = upsmod.since(r.get("off_battery_since"))
-        return bool({"on_battery", "low_battery"} & set(r["flags"])) or (
+        trouble = bool({"on_battery", "low_battery"} & set(r["flags"])) or (
             back is not None and timedelta(0) <= now - back < timedelta(minutes=10)
         )
+        start = upsmod.since(r.get("on_battery_since"))
+        # The host's clock and the hub's may differ a little.
+        return trouble and (start is None or down_since >= start - timedelta(minutes=2))
 
-    def troubled_ups(id: str) -> str | None:
+    def troubled_ups(id: str, down_since: datetime) -> str | None:
         """The UPS (up its powered_by chain) whose power trouble a device is down in."""
         seen, at = {id}, config.devices[id].powered_by
         while at and at not in seen and at in config.devices:
-            if power_trouble(at):
+            if power_trouble(at, down_since):
                 return at
             seen.add(at)
             at = config.devices[at].powered_by
@@ -205,12 +218,12 @@ def evaluate(
     on_battery: dict[str, list[str]] = {}  # a UPS in trouble -> the devices down with it
     for id in down:
         top = top_down_ancestor(id)
-        if u := troubled_ups(top or id):
+        if u := troubled_ups(top or id, down[top or id]):
             on_battery.setdefault(u, []).append(id)
         elif top:
             hidden.setdefault(top, []).append(id)
     for id, since in down.items():
-        if top_down_ancestor(id) or troubled_ups(id) or is_muted(id) or parent_settling(id):
+        if top_down_ancestor(id) or troubled_ups(id, since) or is_muted(id) or parent_settling(id):
             continue
         label = config.label(id)
         behind = sorted(hidden.get(id, []))

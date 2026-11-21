@@ -317,6 +317,12 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
     if fields is None:
         if id not in devices:
             raise KeyError(id)
+        # A UPS read through this device would have nowhere to be read from (and no address).
+        for uid, other in devices.items():
+            link = other.get("ups") if isinstance(other, dict) else None
+            if isinstance(link, dict) and link.get("via") == id:
+                name = other.get("name") or uid
+                raise ValueError(f"{id} reads the UPS {name}: change its 'read by' first")
         ids = list(devices)
         before = ids[ids.index(id) - 1] if ids.index(id) > 0 else None
         rest = _take_tail(devices[id])  # the next device's header, or what precedes users:

@@ -51,6 +51,8 @@ async def connect(
     """Log in with the typed password; HTTP errors for the page (and audited)."""
     if hub.demo:  # its hosts are made up: a real machine at that address must never be touched
         raise HTTPException(409, "demo mode shows a made-up network; nothing is set up there")
+    if not host:  # "" would be this machine: the hub's own
+        raise HTTPException(400, "this device has no address of its own")
     try:
         return await hub.keys.connect(Target(host, body.port, body.login), password=body.password)
     except (UnknownHost, ChangedHost) as e:
