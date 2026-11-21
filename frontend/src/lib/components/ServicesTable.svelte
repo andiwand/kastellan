@@ -96,7 +96,11 @@
 				<p class="col-span-2 -mt-1 truncate text-xs text-muted lg:hidden">
 					{check.software ?? ''}
 				</p>
-				<span class="tabular hidden text-right text-sm lg:block" title={check.detail || ''}>
+				<!-- Cut short to its column (an error can be long); all of it on hover. -->
+				<span
+					class="tabular hidden min-w-0 truncate text-right text-sm lg:block"
+					title={check.detail || ''}
+				>
 					{check.up ? ms(check.latency_ms) : check.detail || '–'}
 				</span>
 				<span class="tabular hidden text-sm text-muted lg:block">

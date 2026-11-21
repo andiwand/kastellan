@@ -51,6 +51,37 @@ Published images may lag behind `main`; see the changelog's Unreleased section.
 - [ ] Stronger isolation for proxied device pages (separate origins and request guards exist;
       the names still share a browser site).
 - [ ] HTTP checks with expected response text.
+- [ ] Central logs: a first-party **Logs** page (its own sidebar entry) with every device's and
+      container's lines interleaved by time, filtered by device, group, source (unit,
+      container, program), level and time range, with text search and live follow; a line links
+      to its device and sits next to that device's events. Ways in, chosen per device:
+  - Fetched by the hub over channels it already authenticates and encrypts (the default):
+    Linux hosts through the collector key (`journalctl` and container logs since a cursor,
+    read-only), OpenWrt through its HTTPS API (`log read`, a new read-only rpcd ability;
+    pinned certificate, Kastellan's own login).
+  - VPN servers as a source of their own: the OpenVPN server's log (connections,
+    authentication failures, revoked certificates refused) through the same collector or
+    OpenWrt fetch, and for WireGuard (which logs next to nothing) lines made by Kastellan from
+    the peer handshakes it reads: who connected, from where, when a peer went quiet.
+  - SSH logins as a source of their own: sshd (journal) and Dropbear (OpenWrt), parsed into
+    who, from where, how (key, password) and whether it worked.
+  - Received on a syslog port (UDP/TCP 514), for devices that can only send: off by default,
+    an explicit opt-in with the risk stated (unencrypted, unauthenticated: anyone on the LAN
+    can read or forge lines), accepted only from known device addresses and tagged as
+    unverified. Syslog over TLS (RFC 5425, port 6514) where the device supports it, or plain
+    syslog only through a Kastellan VPN tunnel, as safer variants.
+  - Stored in a capped, time-indexed store with a retention limit; who read what in the audit
+    log. Later: alarms on matching lines.
+- [ ] Access page, built on central logs: every login attempt into the network and its
+      devices in one place — VPN connections, SSH, Kastellan's own sign-ins, router web logins
+      and, where the router logs them, connections through forwarded ports. Each attempt as
+      who, from which address, into what, how, and whether it worked; outside addresses kept
+      apart from the LAN's. Correlated: attempts grouped by source address across devices
+      (one address trying SSH on three hosts is one story), a success after failures from the
+      same address highlighted, a login from an address never seen before for that user
+      marked, a VPN connection followed by logins inside the network shown as one path.
+      Alarms for the sharp cases (success after many failures, a new outside address for an
+      admin login); nothing sent outside the hub to look addresses up unless turned on.
 
 ## Proposed priorities
 

@@ -23,13 +23,14 @@
 </script>
 
 {#if store.me?.role === 'admin'}
+	<!-- Inline (not flex): its baseline is its text's, so it sits level with the words around it. -->
 	<button
-		class="inline-flex items-center gap-1 text-xs text-muted hover:text-text disabled:opacity-60"
+		class="inline text-xs text-muted hover:text-text disabled:opacity-60"
 		onclick={read}
 		disabled={busy}
 		title={error ?? 'Read the host now'}
 	>
-		<RefreshCw class="size-3 {busy ? 'animate-spin' : ''}" />
+		<RefreshCw class="mr-0.5 inline size-3 align-[-0.125em] {busy ? 'animate-spin' : ''}" />
 		{busy ? 'reading…' : error ? "couldn't read" : 'read again'}
 	</button>
 {/if}

@@ -269,7 +269,8 @@
 								Acknowledge
 							</button>
 						{/if}
-						<span class="tabular text-xs text-faint">
+						<!-- A fixed width, so what stands before it lines up from row to row. -->
+						<span class="tabular ml-auto w-20 shrink-0 text-right text-xs text-faint">
 							{ago(alarm.since ?? alarm.opened, store.now)}
 						</span>
 					</li>
