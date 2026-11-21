@@ -65,7 +65,7 @@ is_client_cert() {
 # other type). The new file is checked before it replaces the old one (BusyBox-safe).
 keys_file() {
   if [ -n "${AUTHORIZED_KEYS:-}" ]; then echo "$AUTHORIZED_KEYS"
-  elif [ "$(id -u)" = 0 ] && [ -f /etc/openwrt_release ]; then echo /etc/dropbear/authorized_keys
+  elif [ "$(id -u)" = 0 ] && [ -f /etc/openwrt_release ] && ! pidof sshd >/dev/null 2>&1; then echo /etc/dropbear/authorized_keys
   else echo "$(awk -F: -v u="$(id -un)" '$1 == u { print $6 }' /etc/passwd)/.ssh/authorized_keys"
   fi
 }

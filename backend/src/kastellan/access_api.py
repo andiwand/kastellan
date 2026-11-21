@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import Field
 
 from . import setup_run
-from .access import USER, hub_address, setup_script
+from .access import USER, hub_address, setup_script, ssh_greeting
 from .auth_api import client_address, require_admin, require_signin
 from .setup_run import Login, reason
 from .ssh import ChangedHost, Target, UnknownHost
@@ -48,12 +48,20 @@ def router(hub: Hub) -> APIRouter:
         return device
 
     @api.get("/{id}/access")
-    async def access(id: str, request: Request) -> dict[str, Any]:
+    async def access(id: str, request: Request, login: str | None = None) -> dict[str, Any]:
+        """What works, and the commands; `login`: the existing account to show them for."""
         require_admin(request)
+        if login is not None and not USER.fullmatch(login):
+            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32, not starting with -)")
         device = device_of(id)
         port = ssh_port(device) or 22
-        user = device.ssh.user if device.ssh else "kastellan"
+        # OpenWrt has one login, root, and no sudo: Kastellan's key goes to root there. Known by
+        # its API being set up, or by dropbear answering (OpenWrt's own SSH server); asked while
+        # the host key is checked, and only when it decides something.
+        ask = device.openwrt is None
+        greeting = asyncio.create_task(ssh_greeting(device.host, port)) if ask else None
         hub_ip = await asyncio.to_thread(hub_address, device.host, port)
+        user = device.ssh.user if device.ssh else "root"  # checks log in only with ssh: set
         key = hub.keys.public_key()
         checks: list[dict[str, Any]] = []
         # The host key, for the card to trust (an unknown one) or forget (a changed one) right there.
@@ -96,8 +104,14 @@ def router(hub: Hub) -> APIRouter:
             note("Host key trusted", False, "it changed since it was trusted: see below")
         except Exception as e:
             note("Host key trusted", False, f"can't reach {device.host}: {reason(e)}")
+        heard = await greeting if greeting else ""
+        openwrt = device.openwrt is not None or "dropbear" in heard.lower()
+        if not device.ssh:
+            user = "root" if openwrt else "kastellan"
+        shown = login or user  # whose account the commands are for (the checks stay with config's)
         return {
-            "user": user,
+            "user": shown,
+            "openwrt": openwrt,
             "port": port,
             "hub_ip": hub_ip,
             "key": key,
@@ -105,7 +119,7 @@ def router(hub: Hub) -> APIRouter:
             "host_key": host_key,
             "scripts": {
                 # One login for everything: Kastellan's key for an existing user.
-                "existing": script_or_none(user, key, hub_ip, create=False, sudo=False),
+                "existing": script_or_none(shown, key, hub_ip, create=False, sudo=False),
                 # A user of its own, with sudo for installs (run as root).
                 "dedicated": setup_script("kastellan", key, hub_ip, create=True, sudo=True),
             },

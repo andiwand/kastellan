@@ -39,9 +39,12 @@ USER = "kastellan-act"
 BASE = "/usr/local/lib/kastellan/act"
 ABILITIES = {
     "update-container": "Update containers (pull the image, recreate it with the same settings)",
+    "rollback-container": "Go back to a container's previous image (kept by an update)",
     "restart-container": "Restart containers",
     "start-container": "Start stopped containers",
     "stop-container": "Stop containers",
+    "container-logs": "Read containers' logs (the last lines)",
+    "unit-logs": "Read services' logs (the last lines of a systemd unit's journal)",
     "vm-start": "Start virtual machines (libvirt)",
     "vm-shutdown": "Shut virtual machines down (as the power button would)",
     "vm-reboot": "Restart virtual machines",
@@ -49,7 +52,18 @@ ABILITIES = {
     "upgrade-packages": "Install system updates (apt: keeps your config files, removes nothing)",
     "reboot": "Reboot the host (in a minute, so it can still be cancelled there)",
 }
-CONTAINER_ABILITIES = ("update-container", "restart-container", "start-container", "stop-container")
+CONTAINER_ABILITIES = (
+    "update-container",
+    "rollback-container",
+    "restart-container",
+    "start-container",
+    "stop-container",
+    "container-logs",
+)
+UNIT_ABILITIES = ("unit-logs",)
+READING = ("container-logs", "unit-logs")  # change nothing
+UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
+REPLACING = ("update-container", "rollback-container")  # with act-containers (the swap)
 VM_ABILITIES = ("vm-start", "vm-shutdown", "vm-reboot", "vm-force-off")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # always with fullmatch
 
@@ -59,7 +73,8 @@ def _script(name: str) -> str:
 
 
 def ability_script(ability: str) -> str:
-    return _script("act-common").rstrip("\n") + "\n\n" + _script(f"act-{ability}")
+    parts = ["act-common", *(["act-containers"] if ability in REPLACING else []), f"act-{ability}"]
+    return "\n\n".join(_script(p).rstrip("\n") for p in parts) + "\n"
 
 
 def install_script(
@@ -69,6 +84,7 @@ def install_script(
     hub_ip: str | None,
     user: str = USER,
     vms: list[str] | None = None,
+    allowed: dict[str, list[str]] | None = None,
 ) -> str:
     """Shell commands, run as root, that give Kastellan exactly the chosen abilities on a host
     (removing any others): for the container abilities on `containers`, for the VM abilities on
@@ -82,6 +98,23 @@ def install_script(
         raise ValueError("container names are letters, digits, _ . - (or * for all)")
     if any(v != "*" and not VM_NAME.fullmatch(v) for v in vms):
         raise ValueError("VM names are letters, digits, _ . + - (or * for all)")
+    if allowed is not None:
+        if set(allowed) != chosen:
+            raise ValueError("allowed must name exactly the chosen abilities")
+        for ability, targets in allowed.items():
+            pattern = (
+                NAME
+                if ability in CONTAINER_ABILITIES
+                else VM_NAME
+                if ability in VM_ABILITIES
+                else UNIT
+                if ability in UNIT_ABILITIES
+                else None
+            )
+            if len(targets) > 200 or any(
+                pattern is None or (t != "*" and not pattern.fullmatch(t)) for t in targets
+            ):
+                raise ValueError(f"invalid targets for {ability}")
     sudoers = f"/etc/sudoers.d/{user}"
     lines = [
         "set -eu",
@@ -110,9 +143,18 @@ def install_script(
         if ability in chosen:
             put(script, ability_script(ability), "644")
             # Container and VM abilities take one argument (checked by the script); reboot none.
+            # Unit logs: any unit's (reading only; the ability itself is the choice).
             listed = (
-                containers if ability in CONTAINER_ABILITIES else vms if ability in VM_ABILITIES else None
+                containers
+                if ability in CONTAINER_ABILITIES
+                else vms
+                if ability in VM_ABILITIES
+                else ["*"]
+                if ability in UNIT_ABILITIES
+                else None
             )
+            if listed is not None and allowed is not None:
+                listed = allowed[ability]
             args = " *" if listed is not None else ' ""'
             rules.append(f"{user} ALL=(root) NOPASSWD: $py -I -S {script}{args}")
             if listed is not None:
@@ -219,7 +261,7 @@ def parse_abilities(out: str) -> tuple[dict[str, list[str]], list[str]]:
     for line in lines[1:]:
         ability, _, rest = line.partition(":")
         if ability in result:
-            pattern = VM_NAME if ability in VM_ABILITIES else NAME
+            pattern = VM_NAME if ability in VM_ABILITIES else UNIT if ability in UNIT_ABILITIES else NAME
             result[ability] = [c for c in rest.split() if c == "*" or pattern.fullmatch(c)]
         elif ability == "versions":
             seen = dict(w.split("=", 1) for w in rest.split() if "=" in w)
@@ -237,10 +279,13 @@ STEP = "KASTELLAN-STEP "  # an ability's line on how far it got (act-common's st
 # dpkg 1200 + update 300 + upgrade 2400; vm-shutdown: ACPI 60 + waiting 180.
 LIMITS = {
     "update-container": 2100,
+    "rollback-container": 1200,
     "upgrade-packages": 4200,
     "restart-container": 180,
     "start-container": 180,
     "stop-container": 180,
+    "container-logs": 60,
+    "unit-logs": 60,
     "vm-start": 180,
     "vm-shutdown": 300,
     "vm-reboot": 180,
@@ -269,6 +314,10 @@ async def act(
     elif ability in VM_ABILITIES:
         if not name or not VM_NAME.fullmatch(name):
             raise ValueError("a VM name is letters, digits, _ . + -")
+        words.append(name)
+    elif ability in UNIT_ABILITIES:
+        if not name or not UNIT.fullmatch(name):
+            raise ValueError("a unit name ends in .service, .timer, .socket, ...")
         words.append(name)
     elif name is not None:
         raise ValueError(f"{ability} takes no target")

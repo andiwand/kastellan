@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Maintenance windows for devices, groups or sites: once, weekly, or started from a page.
+  Problems remain visible; notifications wait until maintenance ends.
+- Optional reminders for unacknowledged alarms (Settings → Alarms).
+- Disk-full forecasts from hourly usage, with warnings below 14 days by default.
+- Container rollback through the actor’s new `rollback-container` ability. Updates retain the
+  previous image; stored data and database migrations are not rolled back.
+- Container logs and service journals through new read-only actor abilities. Audit logs
+  record who read what, never the content.
+- Backup job reports (Settings → Backups): token-authenticated `/ok` and `/fail` calls;
+  missing successes and failures raise alarms.
+- Daily Kastellan release checks, shown on Updates and notified once. Disable with
+  `check_releases: false`; no inventory or credentials are sent to GitHub.
+- Collector/actor renewal from Updates, preserving each ability’s permissions.
+- “Read again” for host health, containers and VMs.
+
+### Changed
+
+- Device Setup uses cards and dialogs; VPN setup choices are clearer buttons.
+- OpenWrt reboot and firmware actions moved to the device header; Wi-Fi settings to Setup.
+- Container rows show their latest action and refresh immediately after changes.
+- Registry lookups in progress say “checking…” instead of “can't check”.
+
+### Fixed
+
+- OpenWrt with OpenSSH uses its authorized_keys path, including VPN key rotation.
+  Access instructions distinguish OpenSSH’s source-address restriction from Dropbear.
+- Rollback runs through SSH; replacement checks inherited image health checks.
+- Script renewal refuses when existing permissions cannot be read. Log permissions include
+  container targets; log output stays bounded.
+- Backup reports preserve report order, reject oversized bodies and fail on storage errors.
+  Removed or reassigned jobs lose their tokens; token responses cannot be cached.
+- Maintenance holds existing alarms and notification retries; one-off times retain their timezone.
+- Nested setup dialogs restore page scrolling correctly. Runtime SSH keys stay out of Git and
+  Docker build contexts.
+
 ## 0.8.0 (2026-11-21)
 
 UPS and VM management, multiple VPNs, update queues, and security fixes.

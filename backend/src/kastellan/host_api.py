@@ -33,6 +33,29 @@ def router(hub: Hub) -> APIRouter:
             raise HTTPException(400, f"{id} has no address of its own (a UPS read through its host)")
         return device
 
+    last_asked: dict[str, float] = {}
+
+    @api.post("/{id}/collect/now")
+    async def collect_now(id: str, request: Request) -> dict[str, Any]:
+        """Read the host's collector now, not at the next minute (a page's "read again")."""
+        require_admin(request)
+        device = device_of(id)
+        if device.collect is None:
+            raise HTTPException(409, "no collector set up there")
+        now = asyncio.get_running_loop().time()
+        if now - last_asked.get(id, -1e9) < 10:
+            raise HTTPException(429, "just read; try again in a few seconds")
+        last_asked[id] = now
+        try:
+            async with asyncio.timeout(60):
+                await hub.collect_host(id, device)
+        except TimeoutError as e:
+            raise HTTPException(504, "the collector took too long") from e
+        status = hub.monitor.status.get(id)
+        if status and status.host_error:
+            raise HTTPException(502, f"the collector: {status.host_error}")
+        return {"checked": status.host_checked if status else None}
+
     @api.get("/{id}/collect")
     async def collect_setup(id: str, request: Request) -> dict[str, Any]:
         require_admin(request)

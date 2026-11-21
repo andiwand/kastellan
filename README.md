@@ -22,15 +22,16 @@ Self-hosted checks, alerts and device administration, with permissions you choos
 > and [PLAN.md](PLAN.md).
 
 - **Monitor:** ping, TCP, HTTP and DNS; uptime, latency, software versions and certificates.
-- **Find problems:** dependency-aware alarms, UPS power status, host health and vulnerability
+- **Find problems:** dependency-aware alarms, UPS power status, disk forecasts, backup reports and vulnerability
   lookups (NVD, OSV, CISA KEV). Notifications through ntfy, Gotify, Telegram, e-mail, webhooks
-  and browser push.
+  and browser push, with maintenance windows and optional reminders.
 - **Manage:** Docker containers, libvirt VMs, apt updates, OpenWrt Wi-Fi and firmware;
-  SSH terminals, RDP/VNC desktops and device web pages.
+  container rollback and logs, SSH terminals, RDP/VNC desktops and device web pages.
 - **Control access:** WireGuard via wg-easy, OpenVPN via easy-rsa, SSH key rotation and group
   synchronization, encrypted key rings.
 - **Keep it local:** one Docker image, YAML configuration and file-based history. No vendor
   account or telemetry. Checks and integrations contact devices and external services as configured.
+  Daily GitHub release checks can be disabled with `check_releases: false`.
 
 ## Quick start
 

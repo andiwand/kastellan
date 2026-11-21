@@ -4,7 +4,7 @@
 
 	/** Where a queued update or restart stands (runner.svelte.ts), the same everywhere: a line,
 	 * and on request its log (each step the host reported, with times) and the answer. */
-	let { job }: { job: JobState | undefined } = $props();
+	let { job, dismiss }: { job: JobState | undefined; dismiss?: () => void } = $props();
 	let open = $state(false);
 
 	const seconds = (ms: number) =>
@@ -37,6 +37,9 @@
 		<button class="ml-1 text-faint underline hover:text-text" onclick={() => (open = !open)}>
 			{open ? 'Hide details' : 'Details'}
 		</button>
+		{#if dismiss && (job.state === 'done' || job.state === 'failed')}
+			<button class="ml-1 text-faint underline hover:text-text" onclick={dismiss}>Dismiss</button>
+		{/if}
 	</span>
 	{#if open}
 		<div class="mt-1 rounded-lg bg-surface-2 p-2 font-mono text-[11px] leading-relaxed">

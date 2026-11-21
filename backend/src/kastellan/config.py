@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from datetime import datetime
 from enum import StrEnum
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
@@ -388,9 +389,13 @@ class AlarmSettings(BaseModel):
     disk_warning: int = Field(default=85, ge=50, le=99)
     disk_critical: int = Field(default=95, ge=50, le=100)
     disk_temperature: int = Field(default=55, ge=30, le=90)  # °C a disk may get (SMART)
+    # A filesystem full within this many days at the rate it fills: warning (0: never).
+    disk_days: int = Field(default=14, ge=0, le=365)
     # A UPS on battery: critical below this charge (percent) or runtime left (minutes).
     ups_charge_critical: int = Field(default=30, ge=5, le=95)
     ups_runtime_critical: int = Field(default=5, ge=1, le=120)
+    # An alarm nobody acknowledged is sent again this often (hours); 0: never.
+    remind_hours: int = Field(default=0, ge=0, le=24 * 7)
 
 
 class NotifyChannel(BaseModel):
@@ -603,6 +608,80 @@ class VaultSettings(BaseModel):
         return self
 
 
+class BackupCheck(BaseModel):
+    """A backup that tells the hub when it ran (backups.py): its job calls
+    `POST /api/backups/<id>/ok` (or `/fail`) with its token; no word within `within_hours` (or a
+    failure since the last success) is an alarm on `device`.
+
+        backups:
+          nas-restic:
+            name: NAS to B2
+            device: nas
+            within_hours: 26
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="", max_length=100)
+    device: str
+    within_hours: float = Field(default=26, gt=0, le=24 * 62)
+
+
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+class MaintenanceWindow(BaseModel):
+    """Planned work (maintenance.py): the problems of these devices show, marked, and are sent
+    only if still there when it ends. Once (`start`, `end`) or weekly (`days`, `at`, `minutes`),
+    in the hub's local time.
+
+        maintenance:
+          - name: Patch night
+            groups: [servers]
+            days: [sun]
+            at: "03:00"
+            minutes: 90
+          - devices: [nas]
+            start: 2026-11-28 20:00
+            end: 2026-11-28 23:00
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="", max_length=100)
+    devices: list[str] = Field(default_factory=list)
+    groups: list[str] = Field(default_factory=list)
+    sites: list[str] = Field(default_factory=list)
+    start: datetime | None = None
+    end: datetime | None = None
+    days: list[Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]] = Field(default_factory=list)
+    at: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    minutes: int | None = Field(default=None, ge=1, le=60 * 24 * 7)
+
+    @model_validator(mode="after")
+    def _one_form(self) -> Self:
+        once = self.start is not None or self.end is not None
+        weekly = bool(self.days) or self.at is not None or self.minutes is not None
+        if once == weekly:
+            raise ValueError("maintenance: either start and end, or days, at and minutes")
+        if once:
+            if self.start is None or self.end is None:
+                raise ValueError("maintenance: start and end, both")
+            self.start, self.end = _aware(self.start), _aware(self.end)
+            if self.end <= self.start:
+                raise ValueError("maintenance: an end after its start")
+        if weekly and not (self.days and self.at and self.minutes):
+            raise ValueError("maintenance: days, at and minutes, all three")
+        if not (self.devices or self.groups or self.sites):
+            raise ValueError("maintenance: which devices, groups or sites")
+        return self
+
+
+def _aware(t: datetime) -> datetime:
+    """A time without a zone is the hub's local time."""
+    return t if t.tzinfo else t.astimezone()
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -618,12 +697,16 @@ class Config(BaseModel):
     # A URL Kastellan calls every minute (a dead man's switch, e.g. healthchecks.io): when the
     # calls stop, that service tells you the hub (or its host, or the internet line) is gone.
     heartbeat: str | None = Field(default=None, pattern=r"^https://[^\s]+$")
+    # Ask GitHub once a day whether a newer Kastellan is out (releases.py).
+    check_releases: bool = True
     networks: dict[str, NetworkSettings] = Field(default_factory=dict)
     groups: dict[str, GroupSettings] = Field(default_factory=dict)
     # Names for the sites devices are at (`site:` of a device), e.g. hetzner: Hetzner Cloud.
     sites: dict[str, str] = Field(default_factory=dict)
     web: WebSettings | None = None  # device web pages through the hub, on their own names
     vault: VaultSettings = Field(default_factory=VaultSettings)  # key rings: how they open
+    maintenance: list[MaintenanceWindow] = Field(default_factory=list)  # planned work
+    backups: dict[str, BackupCheck] = Field(default_factory=dict)  # backups that report in
 
     def site_of(self, id: str) -> str:
         return self.devices[id].site or HOME
@@ -653,6 +736,29 @@ class Config(BaseModel):
             if len(set(group.devices)) != len(group.devices):
                 raise ValueError(f"groups.{gid}: a device is listed twice")
             group.name = group.name or gid
+        return self
+
+    @model_validator(mode="after")
+    def _backups(self) -> Self:
+        for bid, b in self.backups.items():
+            if not ID.fullmatch(bid) or len(bid) > 64:
+                raise ValueError(f"backups: {bid!r}: ids are lowercase letters, digits, - and _")
+            if b.device not in self.devices:
+                raise ValueError(f"backups.{bid}.device: no {b.device!r}")
+            b.name = b.name or bid
+        return self
+
+    @model_validator(mode="after")
+    def _maintenance(self) -> Self:
+        for i, w in enumerate(self.maintenance):
+            for kind, ids, known in (
+                ("devices", w.devices, self.devices),
+                ("groups", w.groups, self.groups),
+                ("sites", w.sites, {HOME, *self.sites, *(d.site for d in self.devices.values())}),
+            ):
+                for x in ids:
+                    if x not in known:
+                        raise ValueError(f"maintenance[{i}].{kind}: no {x!r}")
         return self
 
     @model_validator(mode="after")

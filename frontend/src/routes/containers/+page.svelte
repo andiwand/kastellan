@@ -4,6 +4,7 @@
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import type { Container, Device } from '#lib/api.js';
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
+	import ReadAgain from '#lib/components/ReadAgain.svelte';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import Search from '@lucide/svelte/icons/search';
 
@@ -138,6 +139,9 @@
 						store.now
 					)}
 				{/if}
+				{#if h.device.collect && h.device.host_report?.docker}· <ReadAgain
+						device={h.device.id}
+					/>{/if}
 			</p>
 		</div>
 		<ContainersTable

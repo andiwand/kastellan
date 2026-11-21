@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SetupCard from './SetupCard.svelte';
 	import CodeBlock from '#lib/components/CodeBlock.svelte';
 	import { api, type Access } from '#lib/api.js';
 	import Check from '@lucide/svelte/icons/check';
@@ -17,6 +18,7 @@
 	let setting = $state(false);
 	let trusting = $state(false);
 	let keyError = $state<string | null>(null);
+	let login = $state(''); // the existing account the commands are for (typed; else the default)
 
 	// The host key, right here: an unknown one trusted after comparing, a changed one forgotten
 	// on purpose (never trusted in one click).
@@ -38,7 +40,9 @@
 	async function load() {
 		error = null;
 		try {
-			access = await api.access(device);
+			access = await api.access(device, login.trim() || undefined);
+			login = access.user;
+			if (access.openwrt) way = 'existing';
 		} catch (e) {
 			error = (e as Error).message;
 		}
@@ -46,13 +50,15 @@
 
 	const button =
 		'inline-flex h-8 items-center gap-1.5 rounded-lg border border-line px-2.5 text-xs font-medium hover:border-line-strong disabled:opacity-50';
+	const dev = $derived(store.byId.get(device)); // how it stands (config.yaml, reports)
 </script>
 
-<details
-	class="card p-4"
-	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !access && load()}
+<SetupCard
+	title="SSH access for Kastellan"
+	about="Kastellan's own login over SSH: its terminal, its SSH key checks and syncing."
+	stage={dev?.ssh ? 'set' : 'available'}
+	onopen={() => !access && load()}
 >
-	<summary class="cursor-pointer text-sm font-semibold">SSH access for Kastellan</summary>
 	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 	{#if !access && !error}<p class="mt-2 text-xs text-muted">Checking…</p>{/if}
 	{#if access}
@@ -95,32 +101,61 @@
 			</div>
 		{/if}
 
-		<div
-			class="mt-4 inline-flex max-w-full gap-1 rounded-xl border border-line bg-surface p-1 text-sm"
-			role="tablist"
-		>
-			{#each [['existing', `One login: ${access.user}`], ['dedicated', 'A user of its own: kastellan']] as [id, label] (id)}
-				<button
-					role="tab"
-					aria-selected={way === id}
-					onclick={() => (way = id as typeof way)}
-					class="h-8 rounded-lg px-3 text-xs font-medium whitespace-nowrap {way === id
-						? 'bg-surface-3 text-text'
-						: 'text-muted hover:text-text'}"
-				>
-					{label}
-				</button>
-			{/each}
-		</div>
-		<p class="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
+		{#if access.openwrt}
+			<p class="mt-4 max-w-3xl text-xs leading-relaxed text-muted">
+				OpenWrt normally uses <b>root</b>. Run these commands as root.
+				{#if access.hub_ip}OpenSSH restricts the key to the hub’s address ({access.hub_ip});
+					Dropbear does not.{/if}
+			</p>
+		{:else}
+			<div
+				class="mt-4 inline-flex max-w-full gap-1 overflow-x-auto rounded-xl border border-line bg-surface p-1 text-sm"
+				role="tablist"
+			>
+				{#each [['existing', 'Use an existing login'], ['dedicated', 'Create a login for Kastellan']] as [id, label] (id)}
+					<button
+						role="tab"
+						aria-selected={way === id}
+						onclick={() => (way = id as typeof way)}
+						class="h-8 rounded-lg px-3 text-xs font-medium whitespace-nowrap {way === id
+							? 'bg-surface-3 text-text'
+							: 'text-muted hover:text-text'}"
+					>
+						{label}
+					</button>
+				{/each}
+			</div>
+			<p class="mt-2 max-w-3xl text-xs leading-relaxed text-muted">
+				{#if way === 'existing'}
+					Kastellan's key goes onto an account that already exists, and Kastellan logs in as it.
+					Nothing is created and no sudo is added. Run this as that user.
+				{:else}
+					Creates the account <b>kastellan</b> with sudo without a password (so it can install what you
+					ask it to, every time audited), and logs in as that. Run this as root.
+				{/if}
+				{#if access.hub_ip}OpenSSH restricts the key to the hub’s address ({access.hub_ip});
+					Dropbear does not.{/if}
+			</p>
 			{#if way === 'existing'}
-				Kastellan uses your existing account <b>{access.user}</b> for everything. Run this as {access.user}.
-			{:else}
-				Kastellan gets an account of its own, with sudo without a password (so it can install what
-				you ask it to, every time audited). Run this as root.
+				<form
+					class="mt-2 flex flex-wrap items-end gap-2"
+					onsubmit={(e) => {
+						e.preventDefault();
+						load();
+					}}
+				>
+					<label class="field text-xs">
+						Login <input
+							class="input w-40"
+							bind:value={login}
+							autocomplete="off"
+							spellcheck="false"
+							onblur={() => login.trim() && login.trim() !== access?.user && load()}
+						/>
+					</label>
+				</form>
 			{/if}
-			{#if access.hub_ip}The key only works from the hub's address ({access.hub_ip}).{/if}
-		</p>
+		{/if}
 		<CodeBlock text={access.scripts[way] ?? ''} class="mt-2" />
 
 		{#if way === 'dedicated'}
@@ -139,7 +174,7 @@
 			</button>
 		</div>
 	{/if}
-</details>
+</SetupCard>
 
 {#if setting && access}
 	<SetupDialog

@@ -2,6 +2,7 @@
 	import { store } from '#lib/state.svelte.js';
 	import { ago } from '#lib/format.js';
 	import VmsTable from '#lib/components/VmsTable.svelte';
+	import ReadAgain from '#lib/components/ReadAgain.svelte';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 
 	/** Every virtual machine on every host (libvirt/KVM, through the host's collector), grouped
@@ -40,7 +41,7 @@
 				<span class="hover:underline">{d.name}</span>
 			</a>
 			{#if d.host_checked}<p class="text-xs text-muted">
-					from its collector, {ago(d.host_checked, store.now)}
+					from its collector, {ago(d.host_checked, store.now)} · <ReadAgain device={d.id} />
 				</p>{/if}
 		</div>
 		<VmsTable device={d.id} vms={d.vms ?? []} canAct={!!d.act && admin} />

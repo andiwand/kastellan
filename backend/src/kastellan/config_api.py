@@ -88,7 +88,7 @@ KEEP = "__keep__"  # in a form: "leave this secret as it is" (it is never sent t
 
 # The forms on the Config page, Groups and VPN: each a part of config.yaml, by top-level keys.
 SECTIONS: dict[str, tuple[str, ...]] = {
-    "general": ("check_interval", "retention_days", "heartbeat"),
+    "general": ("check_interval", "retention_days", "heartbeat", "check_releases"),
     "alarms": ("alarms",),
     "notify": ("notify",),
     "vulns": ("vulns",),
@@ -96,6 +96,8 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "groups": ("groups",),
     "sites": ("sites",),
     "users": ("users",),
+    "maintenance": ("maintenance",),
+    "backups": ("backups",),
 }
 
 
@@ -357,8 +359,10 @@ def router(hub: Hub) -> APIRouter:
         """Defaults left out, so config.yaml says only what differs."""
         from .config import (
             AlarmSettings,
+            BackupCheck,
             Config,
             GroupSettings,
+            MaintenanceWindow,
             NetworkSettings,
             NotifyChannel,
             VulnSettings,
@@ -389,6 +393,17 @@ def router(hub: Hub) -> APIRouter:
                     if g.get("name") == k:
                         del g["name"]
                 return {"groups": out or None}
+            if section == "backups":
+                backups = {}
+                for k, v in (value.get("backups") or {}).items():
+                    b = dump(BackupCheck, v)
+                    if b.get("name") == k:  # a name like the id says nothing more
+                        del b["name"]
+                    backups[k] = b
+                return {"backups": backups or None}
+            if section == "maintenance":
+                windows = [dump(MaintenanceWindow, w) for w in value.get("maintenance") or []]
+                return {"maintenance": windows or None}
             if section == "sites":  # a site without a name needs no line: its id stands in
                 return {"sites": {k: str(v) for k, v in (value.get("sites") or {}).items() if v} or None}
         except ValueError as e:  # pydantic's ValidationError is one

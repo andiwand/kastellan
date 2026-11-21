@@ -61,6 +61,7 @@ class FakeDocker:
         }
         self.new_image_runs = new_image_runs
         self.created: dict | None = None
+        self.created_id = ""  # the container made last (the "new" one)
 
     def find(self, key: str) -> dict | None:
         """As Docker: the full id, then the exact name, then a unique id prefix."""
@@ -97,13 +98,17 @@ class FakeDocker:
             )
         if method == "GET" and p.startswith("/images/") and p.endswith("/json"):
             ref = p[len("/images/") : -len("/json")]
-            return (
-                (200, {"Id": self.images[ref]}) if ref in self.images else (404, {"message": "no such image"})
-            )
+            if ref not in self.images:
+                return 404, {"message": "no such image"}
+            return 200, {"Id": self.images[ref], **self.image_info.get(self.images[ref], {})}
+        if method == "POST" and p.startswith("/images/") and p.endswith("/tag"):
+            self.images[f"{q['repo']}:{q['tag']}"] = p[len("/images/") : -len("/tag")]
+            return 201, None
         if method == "POST" and p == "/containers/create":
             spec = json.loads(body)
             self.created = spec
-            cid = "d" * 64
+            cid = next(x * 64 for x in "d0123456789" if x * 64 not in self.containers)
+            self.created_id = cid
             self.containers[cid] = {
                 "Id": cid,
                 "Name": "/" + q["name"],
@@ -115,6 +120,11 @@ class FakeDocker:
                 "State": {"Running": False, "Status": "created"},
             }
             return 201, {"Id": cid}
+        if method == "GET" and p.endswith("/logs"):
+            frame = lambda stream, text: bytes([stream, 0, 0, 0]) + len(text).to_bytes(4, "big") + text  # noqa: E731
+            return 200, frame(1, b"2026-11-21T10:00:00Z hello\n") + frame(
+                2, b"2026-11-21T10:00:01Z \x1b[31merror\x1b[0m: oops\n"
+            )
         if method == "GET" and p == "/containers/json":
             return 200, [{"Id": c["Id"]} for c in self.containers.values()]
         if method == "POST" and p.startswith("/networks/") and p.endswith("/connect"):
@@ -125,7 +135,7 @@ class FakeDocker:
             if c is None:
                 return 404, {"message": "no such container"}
             action = parts[3] if len(parts) > 3 else ""
-            if method == "GET" and action == "json" and c["Id"] == "d" * 64 and self.crash_loop:
+            if method == "GET" and action == "json" and c["Id"] == self.created_id and self.crash_loop:
                 c["RestartCount"] = c.get("RestartCount", 0) + 1  # it keeps restarting
                 return 200, c
             if method == "GET" and action == "json":
@@ -137,7 +147,7 @@ class FakeDocker:
                 c["Name"] = "/" + q["name"]
                 return 204, None
             if action in ("start", "restart"):
-                works = c["Id"] != "d" * 64 or self.new_image_runs
+                works = c["Id"] != self.created_id or self.new_image_runs
                 c["State"] = {
                     "Running": works,
                     "Status": "running" if works else "exited",
@@ -164,7 +174,7 @@ def host():
         def _do(self):
             n = int(self.headers.get("content-length") or 0)
             status, data = fake.handle(self.command, self.path, self.rfile.read(n) if n else b"")
-            raw = json.dumps(data).encode() if data is not None else b""
+            raw = data if isinstance(data, bytes) else json.dumps(data).encode() if data is not None else b""
             self.send_response(status)
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
@@ -232,7 +242,9 @@ def test_update_recreates_with_the_same_settings(host) -> None:
         "starting the new container",
         "waiting until it runs steadily (up to 30 s)",
         "removing the old container",
+        "keeping the previous image for going back",
     ]
+    assert fake.images["kastellan-previous:app"] == "sha256:" + "a" * 64
     spec = fake.created
     assert spec["Image"] == "me/app:1" and "Hostname" not in spec  # Docker's default hostname goes
     # The old image's defaults go (the new image brings its own); the container's own stay.
@@ -251,6 +263,40 @@ def test_a_failing_new_container_brings_the_old_one_back(host) -> None:
     assert steps(r)[-1].endswith("putting the old container back")
     old = fake.find("app")
     assert old["Id"] == "c" * 64 and old["State"]["Running"] and "d" * 64 not in fake.containers
+
+
+def test_going_back_to_the_previous_image_and_forth(host) -> None:
+    fake, run = host
+    a, b = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    assert run("rollback-container", "app").stdout == ""  # nothing kept yet
+    assert run("update-container", "app").returncode == 0
+    r = run("rollback-container", "app")
+    assert r.returncode == 0, r.stderr
+    result = json.loads(r.stdout)
+    assert result["rolled_back"] and (result["from"], result["to"]) == ("b" * 12, "a" * 12)
+    assert fake.find("app")["Image"] == a and fake.images["me/app:1"] == a  # its name, here
+    assert fake.images["kastellan-previous:app"] == b  # undo: back again
+    assert fake.find("app")["Config"]["Image"] == "me/app:1"  # still updates by its name
+    r = run("rollback-container", "app")
+    assert r.returncode == 0 and fake.find("app")["Image"] == b
+
+    # A kept image of another repository is never used; one already running isn't news.
+    fake.image_info[a]["RepoDigests"] = ["evil/app@sha256:" + "1" * 64]
+    r = run("rollback-container", "app")
+    assert r.returncode == 1 and "isn't me/app:1's" in r.stderr
+    fake.images["kastellan-previous:app"] = b
+    assert "already runs" in run("rollback-container", "app").stderr
+
+
+def test_a_failing_rollback_points_the_name_back(host) -> None:
+    fake, run = host
+    assert run("update-container", "app").returncode == 0
+    fake.new_image_runs = False
+    current = fake.find("app")
+    fake.containers = {"e" * 64: {**current, "Id": "e" * 64}}  # the updated one, as if from before
+    r = run("rollback-container", "app")
+    assert r.returncode == 1 and "the old container runs again" in r.stderr
+    assert fake.images["me/app:1"] == "sha256:" + "b" * 64  # the name points where it did
 
 
 def test_nothing_newer_changes_nothing(host) -> None:
@@ -600,6 +646,9 @@ async def test_steps_come_as_they_go(tmp_path: Path) -> None:
                 process.stderr.write(f"KASTELLAN-STEP {text}\n")
             process.stdout.write('{"container": "app", "restarted": true}\n')
             process.exit(0)
+        elif command == "rollback-container app":
+            process.stdout.write('{"rolled_back": true}\n')
+            process.exit(0)
         elif command == "reboot":  # an older script: no steps
             process.stdout.write('{"reboot": "in 1 minute"}\n')
             process.exit(0)
@@ -628,6 +677,7 @@ async def test_steps_come_as_they_go(tmp_path: Path) -> None:
         assert result == {"container": "app", "restarted": True}
         assert seen == ["restarting app", "checking it runs"]
         assert await actor.act(keys, device, "reboot") == {"reboot": "in 1 minute"}
+        assert await actor.act(keys, device, "rollback-container", "app") == {"rolled_back": True}
         with pytest.raises(RuntimeError, match=r"^app: pull: manifest unknown$"):
             await actor.act(keys, device, "update-container", "app", on_step=seen.append)
         assert seen[-1] == "pulling me/app:1"
@@ -985,3 +1035,149 @@ def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: p
     acts = {a["action"]: a for a in audit if a.get("action", "").startswith("act.")}
     assert acts["act.vm-start"]["vm"] == "win11" and "container" not in acts["act.vm-start"]
     assert acts["act.restart-container"]["container"] == "app"
+
+
+def test_reading_a_containers_log(host) -> None:
+    fake, run = host
+    r = run("container-logs", "app", allow="app\n")
+    assert r.returncode == 0, r.stderr
+    result = json.loads(r.stdout)
+    assert result["lines"] == ["2026-11-21T10:00:00Z hello", "2026-11-21T10:00:01Z error: oops"]
+    assert result["running"] is True
+    assert not any(c.startswith(("POST", "DELETE")) for c in fake.calls)  # reads only
+    assert run("container-logs", "other", allow="app\n").returncode == 3  # not on the list
+
+
+def test_reading_a_units_journal(host, tmp_path: Path) -> None:
+    _, run = host
+    journal = tmp_path / "journalctl"
+    journal.write_text(
+        f"#!{sys.executable}\nimport sys\nprint('args', *sys.argv[1:])\nprint('\\x1b[1mbold\\x1b[0m line')\n"
+    )
+    journal.chmod(0o755)
+    folder = run.folder  # type: ignore[attr-defined]
+    code = actor.ability_script("unit-logs").replace(
+        '"/usr/bin/journalctl", "/bin/journalctl"', f"{str(journal)!r},"
+    )
+    code = code.replace("/etc/kastellan/act/", f"{folder}/allow/")
+    (folder / "allow" / "unit-logs.allow").write_text("*\n")
+    script = folder / "unit-logs"
+    script.write_text(code)
+
+    def logs(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-I", str(script), *args], capture_output=True, text=True, timeout=30
+        )
+
+    r = logs("nginx.service")
+    assert r.returncode == 0, r.stderr
+    lines = json.loads(r.stdout)["lines"]
+    assert lines == ["args --no-pager --quiet -o short-iso -n 300 -u nginx.service", "bold line"]
+    for bad in ("nginx", "-u.service", "a b.service", "x;y.service"):
+        assert logs(bad).returncode == 2, bad
+
+
+async def test_log_lines_stay_out_of_the_audit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from kastellan.api import create_app
+    from kastellan.auth import hash_password
+    from kastellan.settings import Settings
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  nas:\n    host: 127.0.0.1\n    act: {user: kastellan-act}\n"
+        f"users:\n  ada:\n    role: admin\n    password: {hash_password('admin password')}\n"
+    )
+
+    async def fake_act(keys, device, ability, name=None, on_step=None):
+        assert (ability, name) == ("unit-logs", "nginx.service")
+        return {"unit": name, "lines": ["SECRET=hunter2"], "state": "failed"}
+
+    monkeypatch.setattr(actor, "act", fake_act)
+    h = {"X-Kastellan": "1"}
+    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
+        c.post("/api/auth/login", json={"user": "ada", "password": "admin password"}, headers=h)
+        r = c.post("/api/devices/nas/act/unit-logs", json={"unit": "nginx.service"}, headers=h)
+        assert r.status_code == 200 and r.json()["lines"] == ["SECRET=hunter2"]
+        bad = c.post("/api/devices/nas/act/unit-logs", json={"container": "nginx.service"}, headers=h)
+        assert bad.status_code == 400
+    audit = (tmp_path / "audit.log").read_text()
+    assert "act.unit-logs" in audit and "hunter2" not in audit
+
+
+def test_renewal_preserves_each_abilitys_targets() -> None:
+    allowed = {
+        "start-container": ["app"],
+        "stop-container": ["other"],
+        "container-logs": ["log"],
+        "unit-logs": ["nginx.service"],
+        "vm-start": ["vm+1"],
+        "reboot": [],
+    }
+    script = actor.install_script(set(allowed), ["*"], KEY, None, vms=["*"], allowed=allowed)
+    assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
+    for ability, names in allowed.items():
+        if names:
+            assert f"printf '%s\\n' {names[0]} > /etc/kastellan/act/{ability}.allow.new" in script
+    for bad in ({"start-container": ["app;id"]}, {"reboot": ["app"]}, {"unit-logs": ["../shadow"]}):
+        with pytest.raises(ValueError):
+            actor.install_script(set(bad), [], KEY, None, allowed=bad)
+    with pytest.raises(ValueError):
+        actor.install_script({"start-container"}, [], KEY, None, allowed={})
+
+
+def test_inherited_healthcheck_is_respected(host) -> None:
+    fake, run = host
+    health = {"Test": ["CMD", "check"]}
+    fake.image_info["sha256:" + "a" * 64]["Config"]["Healthcheck"] = health
+    fake.image_info["sha256:" + "b" * 64]["Config"]["Healthcheck"] = health
+    fake.find("app")["Config"]["Healthcheck"] = health
+    original = fake.handle
+
+    def handle(method, path, body):
+        status, result = original(method, path, body)
+        if (
+            method == "GET"
+            and path.endswith("/json")
+            and isinstance(result, dict)
+            and result.get("Id") == fake.created_id
+        ):
+            result["Config"] = {**result["Config"], "Healthcheck": health}  # inherited by Docker
+            result["State"]["Health"] = {"Status": "unhealthy"}
+        return status, result
+
+    fake.handle = handle
+    r = run("update-container", "app")
+    assert r.returncode == 1 and "unhealthy" in r.stderr
+    assert fake.find("app")["Image"] == "sha256:" + "a" * 64
+    assert "Healthcheck" not in fake.created  # omitted because it matches the image default
+
+
+def test_log_json_stays_bounded_for_unicode_and_escapes(host) -> None:
+    fake, run = host
+    original = fake.handle
+    fake.find("app")["Config"]["Tty"] = True
+
+    def handle(method, path, body):
+        if "/logs?" in path:
+            return 200, ((('é漢"\\' * 100) + "\n") * 300).encode()
+        return original(method, path, body)
+
+    fake.handle = handle
+    r = run("container-logs", "app")
+    assert r.returncode == 0 and len(r.stdout.encode()) < 65536
+    assert json.loads(r.stdout)["lines"]
+
+
+def test_log_contents_never_reach_host_syslog(monkeypatch, capsys) -> None:
+    import syslog
+
+    seen = []
+    monkeypatch.setattr(syslog, "syslog", lambda level, text: seen.append(text))
+    namespace = {}
+    exec(actor._script("act-common"), namespace)
+    with pytest.raises(SystemExit):
+        namespace["done"]({"unit": "nginx.service", "lines": ["secret=hunter2"]})
+    assert "hunter2" in capsys.readouterr().out
+    assert "hunter2" not in str(seen) and "nginx.service" in str(seen)

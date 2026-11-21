@@ -2,6 +2,7 @@
 
 # Local run data (config.yaml, history)
 /data/
+/backend/data/
 
 # Python
 __pycache__/

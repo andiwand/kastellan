@@ -1,0 +1,40 @@
+# Go back to the image a container ran before its last update (kept by update-container as
+# kastellan-previous:<name>): its reference (e.g. nginx:latest) is pointed at that image here,
+# and the container recreated from its own settings, the same swap as an update (the current one
+# comes back if the old image doesn't run steadily). The image it leaves is kept the same way, so
+# going back can be undone. The next update pulls the newest again.
+import signal
+
+name = one_name()
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+lock = one_at_a_time()
+
+old = exact(name)
+if old is None:
+    fail(f"no container called {name}")
+ref = old["Config"]["Image"]
+step(f"checking {name} ({ref})")
+if "@" in ref or ref.startswith("sha256:"):
+    fail("pinned to a digest: there is no going back by name")
+replaceable(old, name)
+try:
+    previous = docker("GET", f"/images/{quote(PREVIOUS)}:{quote(name)}/json")
+except Exception:
+    fail("no previous image kept for it (only updates made by Kastellan keep one)")
+current = old["Image"]
+if previous["Id"] == current:
+    fail("it already runs the previous image")
+# Only an image of the same repository (from its registry), never something else tagged so.
+if not from_registry(previous, ref):
+    fail(f"the kept image isn't {ref}'s from its registry; not used")
+mine = docker("GET", f"/images/{current}/json")
+step(f"pointing {ref} at the previous image ({previous['Id'][7:19]})")
+tag(previous["Id"], ref)
+body, others = spec(old, mine.get("Config") or {})
+swap(old, name, body, others, undo=lambda: tag(current, ref))
+step("keeping the image it ran until now, to undo this")
+try:
+    tag(current, f"{PREVIOUS}:{name}")
+except Exception as e:
+    step(f"couldn't keep it: {e}")
+done({"container": name, "image": ref, "rolled_back": True, "from": current[7:19], "to": previous["Id"][7:19]})

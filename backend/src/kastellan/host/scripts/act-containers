@@ -1,0 +1,194 @@
+# Shared by the container abilities that replace a container (update-container,
+# rollback-container): its settings for a new one, and the swap, which puts the old one back
+# when the new one doesn't run steadily.
+
+PREVIOUS = "kastellan-previous"  # the image a container ran before an update: <PREVIOUS>:<name>
+
+
+def repo_of(ref):
+    """registry/path of an image reference, as Docker reads it (docker.io/library/... for short)."""
+    ref = ref.split("@", 1)[0]
+    last = ref.rsplit("/", 1)[-1]
+    if ":" in last:
+        ref = ref.rsplit(":", 1)[0]
+    first = ref.split("/", 1)[0]
+    if "/" in ref and ("." in first or ":" in first or first == "localhost"):
+        registry, path = ref.split("/", 1)
+    else:
+        registry, path = "docker.io", ref if "/" in ref else f"library/{ref}"
+    return f"{'docker.io' if registry in ('index.docker.io', 'registry-1.docker.io') else registry}/{path}"
+
+
+def without_image_defaults(config, image_config):
+    """The container's own settings: what equals the old image's defaults is left out, so the
+    new image's defaults (a new PATH, version labels, entrypoint) apply."""
+    out = dict(config)
+    for key in ("Cmd", "Entrypoint", "WorkingDir", "User", "Healthcheck", "ExposedPorts", "Volumes", "StopSignal"):
+        if key in out and out[key] == image_config.get(key):
+            out.pop(key)
+    image_env = set(image_config.get("Env") or [])
+    out["Env"] = [e for e in out.get("Env") or [] if e not in image_env]
+    image_labels = image_config.get("Labels") or {}
+    out["Labels"] = {k: v for k, v in (out.get("Labels") or {}).items() if image_labels.get(k) != v}
+    return out
+
+
+def spec(old, image_config):
+    """The new container's settings: the old one's own, with the new image."""
+    config = without_image_defaults(old["Config"], image_config)
+    config["Image"] = old["Config"]["Image"]
+    # A container-wide MAC address (deprecated since API 1.44, refused by create from 1.52) is
+    # set on its network instead; before 1.44 only the container-wide one counts.
+    api_version()
+    mac = config.pop("MacAddress", None) if _api[0] >= (1, 44) else None
+    if config.get("Hostname") == old["Id"][:12]:
+        config.pop("Hostname")  # Docker's default (the old id): let it pick the new one
+    host = dict(old["HostConfig"])
+    by_target = {m.get("Destination"): m for m in old.get("Mounts") or []}
+    # Anonymous volumes (declared by the image, or as a mount without a source): the new
+    # container must use the same ones, or their data would stay behind, unused.
+    mounts = []
+    for m in host.get("Mounts") or []:
+        m = dict(m)
+        if m.get("Type") == "volume" and not m.get("Source") and by_target.get(m.get("Target"), {}).get("Name"):
+            m["Source"] = by_target[m["Target"]]["Name"]
+        mounts.append(m)
+    if mounts:
+        host["Mounts"] = mounts
+    named = {b.split(":")[1] for b in host.get("Binds") or [] if b.count(":") >= 1}
+    named |= {m.get("Target") for m in mounts}
+    extra = [
+        f"{m['Name']}:{m['Destination']}" + ("" if m.get("RW", True) else ":ro")
+        for m in old.get("Mounts") or []
+        if m.get("Type") == "volume" and m.get("Name") and m.get("Destination") not in named
+    ]
+    if extra:
+        host["Binds"] = list(host.get("Binds") or []) + extra
+    mode = host.get("NetworkMode", "")
+    networks = old.get("NetworkSettings", {}).get("Networks") or {}
+    endpoints = {}
+    if mode not in ("host", "none") and not mode.startswith("container:"):
+        for net, ep in networks.items():
+            endpoints[net] = {
+                "IPAMConfig": ep.get("IPAMConfig"),
+                "Links": ep.get("Links"),
+                "Aliases": [a for a in ep.get("Aliases") or [] if a != old["Id"][:12]],
+                "MacAddress": ep.get("MacAddress") if (ep.get("IPAMConfig") or {}).get("IPv4Address") else None,
+            }
+    # The container is created in its NetworkMode's network; the others are connected after.
+    primary = mode if mode in endpoints else next(iter(endpoints), None)
+    if mac and primary and not endpoints[primary].get("MacAddress"):
+        endpoints[primary]["MacAddress"] = mac
+    first = {primary: endpoints[primary]} if primary else {}
+    others = {k: v for k, v in endpoints.items() if k != primary}
+    return {**config, "HostConfig": host, "NetworkingConfig": {"EndpointsConfig": first}}, others
+
+
+def has_healthcheck(config):
+    test = (config.get("Healthcheck") or {}).get("Test") or []
+    return bool(test) and test[0] != "NONE"
+
+
+def runs_steadily(cid, healthcheck):
+    """None if the new container runs (healthy, with a health check) and keeps running for a
+    while (a crash loop under a restart policy looks running at first); else why not."""
+    deadline = time.time() + (600 if healthcheck else 30)
+    first, steady_since = None, None
+    while time.time() < deadline:
+        state = docker("GET", f"/containers/{cid}/json")
+        s = state["State"]
+        mark = (state.get("RestartCount"), s.get("StartedAt"))
+        if first is None:
+            first = mark
+        if mark != first:
+            return "it restarted (it crashes)"
+        if not s.get("Running") or s.get("Restarting"):
+            if s.get("Status") in ("exited", "dead"):
+                return f"it stopped (exit {s.get('ExitCode')})"
+            steady_since = None
+        elif healthcheck:
+            health = (s.get("Health") or {}).get("Status")
+            if health == "unhealthy":
+                return "it is unhealthy"
+            if health == "healthy":
+                return None
+        else:
+            steady_since = steady_since or time.time()
+            if time.time() - steady_since >= 15:
+                return None
+        time.sleep(2)
+    return "it didn't come up in time"
+
+
+def replaceable(old, name):
+    """Refuses (fail) what can't be swapped safely."""
+    if old["HostConfig"].get("AutoRemove"):
+        fail("started with --rm: stopping it would remove it; not replaced")
+    for c in docker("GET", "/containers/json?all=1") or []:
+        if c.get("Id") == old["Id"]:
+            continue
+        other = docker("GET", f"/containers/{c['Id']}/json")
+        uses = other.get("HostConfig") or {}
+        if uses.get("NetworkMode", "") in (f"container:{old['Id']}", f"container:{name}") or any(
+            v.split(":")[0] in (old["Id"], name) for v in uses.get("VolumesFrom") or []
+        ):
+            fail(
+                f"{other['Name'].lstrip('/')} shares its network or volumes (network_mode or "
+                "volumes_from): replacing it would cut that one off; update both with compose"
+            )
+    for leftover in (f"{name}-kastellan-new", f"{name}-kastellan-old"):
+        if exact(leftover):
+            fail(f"{leftover} is still there from an interrupted update; check it and remove it first")
+
+
+def from_registry(image, ref):
+    """The image came from ref's registry (not built here)."""
+    return any(d.split("@", 1)[0] and repo_of(d) == repo_of(ref) for d in image.get("RepoDigests") or [])
+
+
+def swap(old, name, body, others, undo=lambda: None):
+    """A new container with `body` in place of `old`; if it doesn't run steadily, `undo()` and the
+    old one runs again (fail). The old one is removed once the new one works."""
+    was_running = bool(old["State"].get("Running"))
+    temp, keep = f"{name}-kastellan-new", f"{name}-kastellan-old"
+    new_id = None
+    try:
+        step("creating the new container")
+        new_id = docker("POST", f"/containers/create?name={quote(temp)}", body)["Id"]
+        for net, ep in others.items():
+            docker("POST", f"/networks/{quote(net)}/connect", {"Container": new_id, "EndpointConfig": ep})
+        step("stopping the old container")
+        docker("POST", f"/containers/{old['Id']}/stop?t=30", timeout=90)
+        docker("POST", f"/containers/{old['Id']}/rename?name={quote(keep)}")
+        docker("POST", f"/containers/{new_id}/rename?name={quote(name)}")
+        if was_running:
+            step("starting the new container")
+            docker("POST", f"/containers/{new_id}/start")
+            healthcheck = has_healthcheck(docker("GET", f"/containers/{new_id}/json")["Config"])
+            step(f"waiting until it runs steadily (up to {600 if healthcheck else 30} s)")
+            problem = runs_steadily(new_id, healthcheck)
+            if problem:
+                raise RuntimeError(f"the new container didn't work: {problem}")
+    except Exception as e:
+        # Back to how it was: the new one goes, the old one gets its name and runs again.
+        step(f"{e}: putting the old container back")
+        try:
+            if new_id:
+                docker("DELETE", f"/containers/{new_id}?force=1", ok=(204, 404))
+            undo()
+            current = docker("GET", f"/containers/{old['Id']}/json")
+            if current["Name"].lstrip("/") != name:
+                docker("POST", f"/containers/{old['Id']}/rename?name={quote(name)}")
+            if was_running:
+                docker("POST", f"/containers/{old['Id']}/start")
+        except Exception as e2:
+            fail(f"{e}; and putting the old one back failed: {e2} (it is called {keep})")
+        fail(f"{e}; the old container runs again")
+    step("removing the old container")
+    docker("DELETE", f"/containers/{old['Id']}", ok=(204, 404))
+
+
+def tag(image_id, ref):
+    """Give an image a name (repo:tag), here only."""
+    repo, t = ref.rsplit(":", 1) if ":" in ref.rsplit("/", 1)[-1] else (ref, "latest")
+    docker("POST", f"/images/{image_id}/tag?repo={quote(repo, safe='')}&tag={quote(t, safe='')}", ok=(200, 201))

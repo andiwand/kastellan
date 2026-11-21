@@ -200,7 +200,19 @@
 						: link === 'down'
 							? 'Hub not reachable'
 							: 'Connecting to the hub'}
-					<span class="tabular ml-auto text-faint">v{store.health?.version ?? '–'}</span>
+					{#if store.health?.newer}
+						<a
+							class="tabular ml-auto font-medium text-accent hover:underline"
+							href={store.health.newer.url}
+							target="_blank"
+							rel="noopener noreferrer"
+							title="Kastellan {store.health.newer.version} is out: what changed"
+						>
+							v{store.health.version} → {store.health.newer.version}
+						</a>
+					{:else}
+						<span class="tabular ml-auto text-faint">v{store.health?.version ?? '–'}</span>
+					{/if}
 				</div>
 			</div>
 		</aside>

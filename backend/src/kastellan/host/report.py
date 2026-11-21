@@ -175,6 +175,8 @@ def normalize(raw: Any) -> dict[str, Any]:
                         "digests": [x for x in (_text(v, 300) for v in _list(c.get("digests"), 10)) if x],
                         "state": _text(c.get("state"), 40) or "",
                         "status": _text(c.get("status"), 100) or "",
+                        # The image kept from before its last update (short id), to go back to.
+                        "previous": _text(c.get("previous"), 12),
                     }
                 )
             out["docker"] = containers

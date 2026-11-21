@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -155,13 +156,19 @@
 	<div class="grid gap-3 sm:grid-cols-2">
 		{#each Object.entries(KINDS) as [kind, k] (kind)}
 			<button
-				class="card flex flex-col items-start gap-1 p-4 text-left transition-colors hover:border-line-strong"
+				class="card group flex flex-col items-start gap-1 p-4 text-left transition-all hover:-translate-y-px hover:border-line-strong hover:shadow-pop"
 				onclick={() => (adding = kind as Vpn['kind'])}
 			>
 				<span class="text-sm font-semibold">
 					{k.name} <span class="font-normal text-faint">· {k.via}</span>
 				</span>
 				<span class="text-xs leading-relaxed text-muted">{k.about}</span>
+				<span
+					class="mt-2 inline-flex items-center gap-1 text-xs font-medium text-accent group-hover:underline"
+				>
+					Set up {k.name}
+					<ChevronRight class="size-3.5" />
+				</span>
 			</button>
 		{/each}
 	</div>

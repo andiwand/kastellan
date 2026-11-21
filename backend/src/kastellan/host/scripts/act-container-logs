@@ -1,0 +1,33 @@
+# The last lines of one container's log (on the host's list), as `docker logs --tail` shows
+# them, with times. Reads only: no lock, nothing changes. Escape sequences and control
+# characters go; the answer stays under MAX_BYTES (the newest lines).
+name = one_name()
+TAIL, MAX_LINE, MAX_BYTES = 300, 500, 48_000
+ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
+
+found = exact(name)
+if found is None:
+    fail(f"no container called {name}")
+conn = _Unix(30)
+conn.request("GET", f"{api_version()}/containers/{found['Id']}/logs?stdout=1&stderr=1&timestamps=1&tail={TAIL}")
+r = conn.getresponse()
+raw = r.read(8_000_000)
+conn.close()
+if r.status != 200:
+    fail(f"docker logs: {r.status}")
+if not found["Config"].get("Tty"):
+    # Without a terminal Docker sends frames: 1 byte stream, 3 zero, 4 bytes length, the data.
+    out, i = bytearray(), 0
+    while i + 8 <= len(raw):
+        size = int.from_bytes(raw[i + 4 : i + 8], "big")
+        out += raw[i + 8 : i + 8 + size]
+        i += 8 + size
+    raw = bytes(out)
+lines = [ESCAPES.sub("", ln)[:MAX_LINE] for ln in raw.decode(errors="replace").splitlines()]
+kept, size = [], 0
+for ln in reversed(lines[-TAIL:]):
+    size += len(json.dumps(ln, ensure_ascii=False).encode()) + 2
+    if size > MAX_BYTES:
+        break
+    kept.append(ln)
+done({"container": name, "lines": kept[::-1], "running": bool(found["State"].get("Running"))})

@@ -13,6 +13,8 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import Tabs from '#lib/components/Tabs.svelte';
+	import MaintenanceButton from '#lib/components/MaintenanceButton.svelte';
+	import Wrench from '@lucide/svelte/icons/wrench';
 
 	/** Groups of devices (`groups:` in config.yaml), any kind. For their OpenWrt members: Wi-Fi
 	 * networks lined up by name, the mesh, root's password, each changed on all at once; for
@@ -175,6 +177,9 @@
 			<h2 class="text-base font-semibold">
 				{g.name} <span class="ml-1 text-xs font-normal text-faint">{g.devices.length}</span>
 			</h2>
+			{#if !setup && store.me?.role === 'admin'}
+				<MaintenanceButton kind="groups" id={g.id} devices={g.devices} />
+			{/if}
 			{#if setup && canChange && store.editBlocked === null}
 				<div class="flex items-center gap-2">
 					{#if deleting === g.id}
@@ -210,6 +215,9 @@
 						{#if d}<StatusDot status={statusOf(d)} size="size-2" />{/if}
 						<KindIcon kind={d?.kind ?? 'other'} class="size-4 shrink-0 text-muted" />
 						<span class="truncate">{name(id)}</span>
+						{#if store.alarms?.maintenance?.[id]}
+							<Wrench class="size-3.5 shrink-0 text-faint" aria-label="in maintenance" />
+						{/if}
 					</a>
 				</li>
 			{/each}

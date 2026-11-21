@@ -5,7 +5,11 @@ import { store } from '#lib/state.svelte.js';
  * Shared by the Updates, Containers and Virtual machines pages and a device's own lists, so all
  * show the same state, also when moving between pages while it runs. */
 export type Job =
-	| { device: string; kind: 'container' | 'restart' | 'start' | 'stop'; name: string }
+	| {
+			device: string;
+			kind: 'container' | 'rollback' | 'restart' | 'start' | 'stop';
+			name: string;
+	  }
 	| {
 			device: string;
 			kind: 'vm-start' | 'vm-shutdown' | 'vm-reboot' | 'vm-force-off';
@@ -34,6 +38,7 @@ export const jobKey = (j: Job) => `${j.device}:${j.kind}${'name' in j ? `:${j.na
 
 const ABILITY: Record<Job['kind'], string> = {
 	container: 'update-container',
+	rollback: 'rollback-container',
 	restart: 'restart-container',
 	start: 'start-container',
 	stop: 'stop-container',
@@ -47,6 +52,7 @@ const ABILITY: Record<Job['kind'], string> = {
 
 const VERB: Record<Job['kind'], string> = {
 	container: 'update',
+	rollback: 'go back to the previous image of',
 	restart: 'restart',
 	start: 'start',
 	stop: 'stop',
@@ -67,6 +73,7 @@ function labelOf(j: Job): string {
 function sentence(j: Job, r: ActResult): string {
 	if (j.kind === 'container')
 		return r.updated ? `Updated (${r.from} → ${r.to}).` : `Nothing to do: ${r.why ?? 'newest'}.`;
+	if (j.kind === 'rollback') return `Back to the previous image (${r.from} → ${r.to}).`;
 	if (j.kind === 'restart') return 'Restarted.';
 	if (j.kind === 'start') return 'Started.';
 	if (j.kind === 'stop') return 'Stopped.';
@@ -80,6 +87,8 @@ function sentence(j: Job, r: ActResult): string {
 	}
 	return 'Rebooting in a minute (cancel on the host: shutdown -c).';
 }
+
+const SHOWN_DONE = 60_000; // how long a row says what was done
 
 // A host's reboot goes last on it: after the packages, containers and VMs queued with it.
 const rank = (j: Job) => (j.kind === 'reboot' ? 1 : 0);
@@ -174,6 +183,26 @@ class Runner {
 
 	state(j: Job): JobState | undefined {
 		return this.states[jobKey(j)];
+	}
+
+	/** Of a thing's jobs (a container's update, restart, start, stop), the latest: what its row
+	 * shows. A job done a while ago isn't news any more; one that failed stays until dismissed. */
+	latest(jobs: Job[], now = Date.now()): { job: Job; state: JobState } | undefined {
+		const found = jobs
+			.map((job) => ({ job, state: this.states[jobKey(job)] }))
+			.filter((x): x is { job: Job; state: JobState } => x.state !== undefined)
+			.sort((a, b) => b.state.queued - a.state.queued)[0];
+		if (found?.state.state === 'done' && now - (found.state.ended ?? now) > SHOWN_DONE) return;
+		return found;
+	}
+
+	/** A finished job off its row (its log goes too). */
+	dismiss(j: Job) {
+		const k = jobKey(j);
+		if (['done', 'failed'].includes(this.states[k]?.state ?? '')) {
+			delete this.states[k];
+			this.batch = this.batch.filter((x) => x !== k);
+		}
 	}
 
 	/** Where the current (or last) batch stands. */

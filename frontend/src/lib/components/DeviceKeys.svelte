@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SetupCard from './SetupCard.svelte';
 	import { api, type AuthorizedKey } from '#lib/api.js';
 	import KeyRound from '@lucide/svelte/icons/key-round';
 	import Trash from '@lucide/svelte/icons/trash-2';
@@ -42,11 +43,13 @@
 		'inline-flex h-7 items-center gap-1 rounded-md border border-line px-2 text-xs font-medium hover:border-line-strong disabled:opacity-50';
 </script>
 
-<details
-	class="card p-4"
-	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !data && load()}
+<SetupCard
+	title="SSH keys on this device"
+	about="Who may log in here with a key: each account's authorized_keys, to look at and prune."
+	stage="set"
+	note="through Kastellan's login"
+	onopen={() => !data && load()}
 >
-	<summary class="cursor-pointer text-sm font-semibold">SSH keys on this device</summary>
 	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 	{#if !data && !error}<p class="mt-2 text-xs text-muted">Reading…</p>{/if}
 	{#if data}
@@ -109,4 +112,4 @@
 			<button class={button} onclick={load} disabled={busy}>Read again</button>
 		</div>
 	{/if}
-</details>
+</SetupCard>

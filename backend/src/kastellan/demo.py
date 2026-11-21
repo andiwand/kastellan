@@ -26,6 +26,13 @@ CONFIG = {
     "check_interval": 15,
     "sites": {"hetzner": "Hetzner Cloud"},
     "groups": {"aps": {"name": "Access points", "devices": ["repeater-living", "repeater-attic"]}},
+    "backups": {
+        "nas-b2": {"name": "Photos to B2 (restic)", "device": "nas"},
+        "homeserver-borg": {"name": "Home server (borg)", "device": "homeserver", "within_hours": 30},
+    },
+    "maintenance": [
+        {"name": "Patch night", "groups": ["aps"], "days": ["sun"], "at": "03:00", "minutes": 60}
+    ],
     "devices": {
         "fritzbox": {
             "name": "FRITZ!Box 7590",
@@ -207,7 +214,7 @@ INFO = {
 }
 
 
-def _c(name, image, tag, update_to=None, unchecked=None, state="running"):
+def _c(name, image, tag, update_to=None, unchecked=None, state="running", previous=None):
     return {
         "key": name,
         "wud_id": name,
@@ -221,6 +228,7 @@ def _c(name, image, tag, update_to=None, unchecked=None, state="running"):
         "update_digest": "",
         "unchecked": unchecked,
         "registry": "hub",
+        "previous": previous,
     }
 
 
@@ -229,7 +237,7 @@ CONTAINERS = {
     "nas": [
         _c("jellyfin", "jellyfin/jellyfin", "10.10.7", update_to="10.11.0"),
         _c("immich-server", "immich-app/immich-server", "v1.135.3"),
-        _c("paperless", "paperless-ngx/paperless-ngx", "2.14"),
+        _c("paperless", "paperless-ngx/paperless-ngx", "2.14", previous="8d41e07c5a92"),
         _c("sonarr", "linuxserver/sonarr", "latest", unchecked="Unsupported Registry unknown"),
         _c("calibre-web", "linuxserver/calibre-web", "0.6.24", state="exited"),
     ],
@@ -257,6 +265,9 @@ def config() -> Config:
 
 
 # What the home server's collector reports (host/collector.py), made up.
+# Days until full at the rate each fills (disks.py), as the hub would have learned them.
+FORECASTS = {"homeserver": {"/srv/media": 23.5}}
+
 HOST = {
     "homeserver": {
         "version": 1,

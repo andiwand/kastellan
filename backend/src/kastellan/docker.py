@@ -45,6 +45,7 @@ class Container:
     update_digest: str  # the newer image's digest (short), to tell one rebuild from the next
     unchecked: str | None  # why WUD can't tell (or hasn't yet), or None
     registry: str | None
+    previous: str | None = None  # the image kept from before its last update (actor), short id
 
     @property
     def running_version(self) -> str | None:
@@ -154,6 +155,7 @@ async def from_collector(items: list[Any], registries: Any) -> list[Container]:
                 update_digest=update.digest,
                 unchecked=update.unchecked,
                 registry=(ref.registry.replace("registry-1.docker.io", "docker.io") if ref else None),
+                previous=_text(item.get("previous"), 12) or None,
             )
         )
     return sorted(out, key=lambda c: c.key.lower())

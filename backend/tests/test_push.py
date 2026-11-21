@@ -202,3 +202,20 @@ def test_each_person_their_own_browsers(tmp_path: Path) -> None:
         }
     audit = (tmp_path / "audit.log").read_text()
     assert "push.subscribe" in audit and "push.unsubscribe" in audit
+
+
+async def test_maintenance_drops_pending_browser_notifications(tmp_path: Path) -> None:
+    import time
+
+    push = Push(tmp_path)
+    push.add("ada", ENDPOINT, *browser()[1:], "Firefox")
+    push._pending = [(ENDPOINT, {"url": "/devices/nas", "title": "down"}, time.time(), 0.0, 1)]
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        return httpx.Response(201)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        await push.retry_due(client, blocked_urls={"/devices/nas"})
+    assert seen == [] and push._pending == []

@@ -1,5 +1,10 @@
 <script lang="ts">
-	import { KEEP, type NotifyChannelForm, type Settings } from '#lib/api.js';
+	import {
+		KEEP,
+		type MaintenanceWindowForm,
+		type NotifyChannelForm,
+		type Settings
+	} from '#lib/api.js';
 	import { settings, copy } from '#lib/settings.svelte.js';
 	import { store } from '#lib/state.svelte.js';
 	import SettingsCard from './SettingsCard.svelte';
@@ -26,6 +31,59 @@
 	let users = $state<
 		{ name: string; role: 'admin' | 'observer'; password: string; old: boolean }[]
 	>([]);
+
+	// Planned maintenance: weekly or once; times as the inputs want them (local, no zone).
+	type Window = {
+		name: string;
+		devices: string[];
+		groups: string[];
+		sites: string[];
+		weekly: boolean;
+		days: string[];
+		at: string;
+		minutes: number;
+		start: string;
+		end: string;
+	};
+	let windows = $state<Window[]>([]);
+	const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+	const pad = (n: number) => String(n).padStart(2, '0');
+	function localInput(iso: string | null | undefined): string {
+		if (!iso) return '';
+		const d = new Date(iso);
+		return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	}
+	const toWindow = (w: MaintenanceWindowForm): Window => ({
+		name: w.name ?? '',
+		devices: w.devices ?? [],
+		groups: w.groups ?? [],
+		sites: w.sites ?? [],
+		weekly: !w.start,
+		days: w.days ?? [],
+		at: w.at ?? '03:00',
+		minutes: w.minutes ?? 60,
+		start: localInput(w.start),
+		end: localInput(w.end)
+	});
+	const fromWindow = (w: Window): MaintenanceWindowForm => ({
+		name: w.name || undefined,
+		devices: w.devices,
+		groups: w.groups,
+		sites: w.sites,
+		...(w.weekly
+			? { days: DAYS.filter((d) => w.days.includes(d)), at: w.at, minutes: w.minutes }
+			: { start: new Date(w.start).toISOString(), end: new Date(w.end).toISOString() })
+	});
+	const windowOk = (w: Window) =>
+		(w.devices.length || w.groups.length || w.sites.length) > 0 &&
+		(w.weekly ? w.days.length > 0 && !!w.at && w.minutes > 0 : !!w.start && w.end > w.start);
+	const toggle = (list: string[], x: string) => {
+		const i = list.indexOf(x);
+		if (i < 0) list.push(x);
+		else list.splice(i, 1);
+	};
+
+	let backups = $state<{ id: string; name: string; device: string; within_hours: number }[]>([]);
 
 	// What was loaded, to tell what changed (as JSON).
 	let base = $state<Record<string, string>>({});
@@ -62,6 +120,19 @@
 		if (clean('sites', sites)) {
 			sites = Object.entries(s.sites.sites ?? {}).map(([id, name]) => ({ id, name }));
 			next.sites = json(sites);
+		}
+		if (clean('maintenance', windows)) {
+			windows = (s.maintenance.maintenance ?? []).map(toWindow);
+			next.maintenance = json(windows);
+		}
+		if (clean('backups', backups)) {
+			backups = Object.entries(s.backups.backups ?? {}).map(([id, b]) => ({
+				id,
+				name: b.name && b.name !== id ? b.name : '',
+				device: b.device,
+				within_hours: b.within_hours ?? 26
+			}));
+			next.backups = json(backups);
 		}
 		if (clean('users', users)) {
 			users = Object.entries(s.users.users ?? {}).map(([name, u]) => ({
@@ -173,14 +244,29 @@
 					bind:value={general.heartbeat}
 				/>
 			</label>
+			<label class="choice text-sm">
+				<input
+					type="checkbox"
+					checked={general.check_releases ?? true}
+					onchange={(e) => (general.check_releases = e.currentTarget.checked)}
+				/>
+				Tell me when a newer Kastellan is out (asks GitHub once a day; sends nothing about this hub)
+			</label>
 		</SettingsCard>
 
 		<SettingsCard
 			title="Alarms"
-			description="When a problem becomes an alarm."
+			description="When a problem becomes an alarm. An alarm nobody acknowledged can be sent again now and then, until someone does."
 			dirty={json(alarms) !== base.alarms}
 			reset={() => (alarms = JSON.parse(base.alarms))}
-			save={() => save('alarms', { alarms })}
+			save={() =>
+				save('alarms', {
+					alarms: {
+						...alarms,
+						remind_hours: alarms.remind_hours || 0,
+						disk_days: alarms.disk_days ?? 14
+					}
+				})}
 		>
 			<div class="grid gap-4 sm:grid-cols-2">
 				<label class="field">
@@ -207,6 +293,21 @@
 						min="30"
 						max="90"
 						bind:value={alarms.disk_temperature}
+					/>
+				</label>
+				<label class="field">
+					A disk full within (days, at its rate; 0: never)
+					<input class="input" type="number" min="0" max="365" bind:value={alarms.disk_days} />
+				</label>
+				<label class="field">
+					Say an alarm again after (hours; 0: never)
+					<input
+						class="input"
+						type="number"
+						min="0"
+						max="168"
+						bind:value={alarms.remind_hours}
+						placeholder="0"
 					/>
 				</label>
 			</div>
@@ -424,6 +525,195 @@
 			<div>
 				<button type="button" class="btn btn-sm" onclick={() => sites.push({ id: '', name: '' })}>
 					<Plus class="size-3.5" /> Add a site
+				</button>
+			</div>
+		</SettingsCard>
+
+		<SettingsCard
+			title="Maintenance"
+			description="Hold notifications during planned work. Weekly times use the hub’s timezone; one-off times use yours. Problems still present are sent when maintenance ends."
+			dirty={json(windows) !== base.maintenance}
+			canSave={windows.every(windowOk)}
+			reset={() => (windows = JSON.parse(base.maintenance))}
+			save={() => save('maintenance', { maintenance: windows.map(fromWindow) })}
+		>
+			{#each windows as w, i (i)}
+				{@const groupIds = Object.keys(settings.data?.sections.groups.groups ?? {})}
+				{@const siteIds = [
+					...new Set([
+						'home',
+						...Object.keys(settings.data?.sections.sites.sites ?? {}),
+						...(store.devices ?? []).map((d) => d.site)
+					])
+				]}
+				<fieldset class="flex flex-col gap-3 rounded-xl border border-line p-3">
+					<div class="flex items-end gap-3">
+						<label class="field flex-1">
+							Name
+							<input class="input" bind:value={w.name} placeholder="Patch night" />
+						</label>
+						<button
+							type="button"
+							class="btn btn-sm mb-0.5 px-2"
+							aria-label="Remove this window"
+							onclick={() => windows.splice(i, 1)}
+						>
+							<Trash2 class="size-4 text-muted" />
+						</button>
+					</div>
+					<div class="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+						<label class="choice">
+							<input type="radio" bind:group={w.weekly} value={true} /> Every week
+						</label>
+						<label class="choice">
+							<input type="radio" bind:group={w.weekly} value={false} /> Once
+						</label>
+					</div>
+					{#if w.weekly}
+						<div class="flex flex-wrap gap-1.5">
+							{#each DAYS as d (d)}
+								<button
+									type="button"
+									class="btn btn-sm capitalize {w.days.includes(d) ? 'btn-primary' : ''}"
+									aria-pressed={w.days.includes(d)}
+									onclick={() => toggle(w.days, d)}
+								>
+									{d}
+								</button>
+							{/each}
+						</div>
+						<div class="grid gap-3 sm:grid-cols-2">
+							<label class="field">At <input class="input" type="time" bind:value={w.at} /></label>
+							<label class="field">
+								For (minutes)
+								<input class="input" type="number" min="1" max="10080" bind:value={w.minutes} />
+							</label>
+						</div>
+					{:else}
+						<div class="grid gap-3 sm:grid-cols-2">
+							<label class="field">
+								From <input class="input" type="datetime-local" bind:value={w.start} />
+							</label>
+							<label class="field">
+								Until <input class="input" type="datetime-local" bind:value={w.end} />
+							</label>
+						</div>
+					{/if}
+					<div class="flex flex-col gap-2 text-xs text-muted">
+						{#if groupIds.length}
+							<div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+								Groups:
+								{#each groupIds as g (g)}
+									<label class="choice text-text">
+										<input
+											type="checkbox"
+											checked={w.groups.includes(g)}
+											onchange={() => toggle(w.groups, g)}
+										/>
+										{settings.data?.sections.groups.groups[g]?.name || g}
+									</label>
+								{/each}
+							</div>
+						{/if}
+						{#if siteIds.length > 1}
+							<div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+								Sites:
+								{#each siteIds as site (site)}
+									<label class="choice text-text">
+										<input
+											type="checkbox"
+											checked={w.sites.includes(site)}
+											onchange={() => toggle(w.sites, site)}
+										/>
+										{settings.data?.sections.sites.sites[site] || site}
+									</label>
+								{/each}
+							</div>
+						{/if}
+						<label class="field">
+							Devices
+							<select class="input h-24" multiple bind:value={w.devices}>
+								{#each store.devices ?? [] as d (d.id)}
+									<option value={d.id}>{d.name}</option>
+								{/each}
+							</select>
+						</label>
+					</div>
+				</fieldset>
+			{/each}
+			<div>
+				<button
+					type="button"
+					class="btn btn-sm"
+					onclick={() => windows.push(toWindow({ days: ['sun'] }))}
+				>
+					<Plus class="size-3.5" /> Add a window
+				</button>
+			</div>
+		</SettingsCard>
+
+		<SettingsCard
+			title="Backups"
+			description="Backups that report in: their job calls Kastellan when done (the command is on the device's page, with a token for it). No success within the hours given, or a failure since the last one, is an alarm."
+			dirty={json(backups) !== base.backups}
+			canSave={backups.every((b) => nameOk(b.id) && b.device && b.within_hours > 0) &&
+				unique(backups.map((b) => b.id))}
+			reset={() => (backups = JSON.parse(base.backups))}
+			save={() =>
+				save('backups', {
+					backups: Object.fromEntries(
+						backups.map((b) => [
+							b.id,
+							{ name: b.name || undefined, device: b.device, within_hours: b.within_hours }
+						])
+					)
+				})}
+		>
+			{#each backups as b, i (i)}
+				<div class="grid grid-cols-2 items-end gap-3 sm:grid-cols-[1fr_1.5fr_1fr_7rem_auto]">
+					<label class="field">
+						<span class={i ? 'sm:sr-only' : ''}>Id</span>
+						<input class="input font-mono" bind:value={b.id} placeholder="nas-b2" />
+					</label>
+					<label class="field">
+						<span class={i ? 'sm:sr-only' : ''}>Name</span>
+						<input class="input" bind:value={b.name} placeholder="NAS to B2" />
+					</label>
+					<label class="field">
+						<span class={i ? 'sm:sr-only' : ''}>Device</span>
+						<select class="input" bind:value={b.device}>
+							{#each store.devices ?? [] as d (d.id)}
+								<option value={d.id}>{d.name}</option>
+							{/each}
+						</select>
+					</label>
+					<label class="field">
+						<span class={i ? 'sm:sr-only' : ''}>Within (h)</span>
+						<input class="input" type="number" min="1" bind:value={b.within_hours} />
+					</label>
+					<button
+						type="button"
+						class="btn btn-sm mb-0.5 px-2"
+						aria-label="Remove this backup"
+						onclick={() => backups.splice(i, 1)}
+					>
+						<Trash2 class="size-4 text-muted" />
+					</button>
+				</div>
+			{/each}
+			<div>
+				<button
+					type="button"
+					class="btn btn-sm"
+					onclick={() =>
+						backups.push({
+							id: '',
+							name: '',
+							device: store.devices?.[0]?.id ?? '',
+							within_hours: 26
+						})}
+				>
+					<Plus class="size-3.5" /> Add a backup
 				</button>
 			</div>
 		</SettingsCard>

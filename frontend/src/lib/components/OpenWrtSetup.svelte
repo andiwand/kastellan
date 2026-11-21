@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SetupCard from './SetupCard.svelte';
 	import { untrack } from 'svelte';
 	import { api, type OpenWrtSetup } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
@@ -48,18 +49,20 @@
 			if (opened && setup) load();
 		});
 	});
+	const dev = $derived(store.byId.get(device)); // how it stands (config.yaml, reports)
 </script>
 
-<details
-	class="card p-4"
-	ontoggle={(e) => {
-		if ((e.currentTarget as HTMLDetailsElement).open && !opened) {
+<SetupCard
+	title="OpenWrt login"
+	about="Kastellan's own login on the router: its state, Wi-Fi, services and firmware, ability by ability."
+	stage={dev?.openwrt ? 'set' : 'available'}
+	onopen={() => {
+		if (!opened) {
 			opened = true;
 			load(true);
 		}
 	}}
 >
-	<summary class="cursor-pointer text-sm font-semibold">OpenWrt: Kastellan's login here</summary>
 	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 	{#if !setup && !error}<p class="mt-2 text-xs text-muted">Loading…</p>{/if}
 	{#if setup}
@@ -119,7 +122,7 @@
 			</button>
 		</div>
 	{/if}
-</details>
+</SetupCard>
 
 {#if installing && setup}
 	<SetupDialog

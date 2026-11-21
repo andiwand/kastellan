@@ -5,6 +5,7 @@ actions themselves. Changing anything: signed-in admins, every action audited.""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ class Choice(BaseModel):
     abilities: list[str] = Field(default_factory=list, max_length=20)
     containers: list[str] = Field(default_factory=list, max_length=200)  # ["*"] for all
     vms: list[str] = Field(default_factory=list, max_length=200)  # ["*"] for all
+    allowed: dict[str, list[str]] | None = Field(default=None, max_length=20)
 
 
 class Install(Choice, Login):
@@ -38,6 +40,7 @@ class Install(Choice, Login):
 class Action(BaseModel):
     container: str | None = Field(default=None, max_length=128)
     vm: str | None = Field(default=None, max_length=128)
+    unit: str | None = Field(default=None, max_length=210)
 
 
 def router(hub: Hub) -> APIRouter:
@@ -65,7 +68,12 @@ def router(hub: Hub) -> APIRouter:
     def script_for(choice: Choice, hub_ip: str | None) -> str:
         try:
             return actor.install_script(
-                set(choice.abilities), choice.containers, hub.keys.public_key("act"), hub_ip, vms=choice.vms
+                set(choice.abilities),
+                choice.containers,
+                hub.keys.public_key("act"),
+                hub_ip,
+                vms=choice.vms,
+                allowed=choice.allowed,
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
@@ -114,6 +122,8 @@ def router(hub: Hub) -> APIRouter:
             elevate=body.elevate,
             abilities=sorted(body.abilities),
             containers=body.containers,
+            vms=body.vms,
+            allowed=body.allowed,
         )
         conn = await setup_run.connect(hub, device.host, body, audit)
 
@@ -162,11 +172,17 @@ def router(hub: Hub) -> APIRouter:
         # The ability says what it acts on: a VM's name for the VM abilities, a container's for
         # the container ones, nothing else. The other field set is refused, not ignored, so the
         # audit line always names what was acted on.
-        field = "vm" if ability in actor.VM_ABILITIES else "container"
-        other = body.container if field == "vm" else body.vm
-        if other is not None:
+        field = (
+            "vm"
+            if ability in actor.VM_ABILITIES
+            else "unit"
+            if ability in actor.UNIT_ABILITIES
+            else "container"
+        )
+        given = {k: v for k, v in body.model_dump().items() if v is not None}
+        if set(given) - {field}:
             raise HTTPException(400, f"{ability} takes a {field}, nothing else")
-        target = body.vm if field == "vm" else body.container
+        target = given.get(field)
         audit = partial(
             hub.audit.record,
             f"act.{ability}",
@@ -176,6 +192,16 @@ def router(hub: Hub) -> APIRouter:
             **({field: target} if target is not None else {}),
         )
         return device, target, audit
+
+    def brief(result: dict[str, Any]) -> dict[str, Any]:
+        """For the audit: what was done, never what was read (log lines)."""
+        return {k: v for k, v in result.items() if k != "lines"}
+
+    async def look_again(id: str, device) -> None:
+        """The host as it is now (a container stopped, a VM started), before the page asks."""
+        with contextlib.suppress(Exception):
+            async with asyncio.timeout(30):
+                await hub.collect_host(id, device)
 
     @api.post("/{id}/act/{ability}/stream")
     async def act_streamed(id: str, ability: str, body: Action, request: Request) -> StreamingResponse:
@@ -193,7 +219,7 @@ def router(hub: Hub) -> APIRouter:
             try:
                 result = await actor.act(hub.keys, device, ability, target, on_step=said)
                 outcome: dict[str, Any] = {"ok": True, "result": result}
-                audit(outcome="done", result=result)
+                audit(outcome="done", result=brief(result))
             except BaseException as e:  # also when the hub stops: the audit still says so
                 if not isinstance(e, Exception):
                     audit(outcome=f"interrupted: {type(e).__name__}")
@@ -201,6 +227,9 @@ def router(hub: Hub) -> APIRouter:
                     raise
                 outcome = {"ok": False, "error": failed(e).detail}
                 audit(outcome=f"failed: {str(e)[:200] or type(e).__name__}")
+            if ability not in actor.READING:
+                said("reading the host again")
+                await look_again(id, device)
             queue.put_nowait(f"{setup_run.DONE} {json.dumps(outcome)}\n".encode())
             queue.put_nowait(None)
 
@@ -212,10 +241,16 @@ def router(hub: Hub) -> APIRouter:
         device, target, audit = action(id, ability, body, request)
         try:
             result = await actor.act(hub.keys, device, ability, target)
+            audit(outcome="done", result=brief(result))
+        except asyncio.CancelledError:
+            audit(outcome="interrupted: CancelledError")
+            raise
         except Exception as e:
             audit(outcome=f"failed: {str(e)[:200] or type(e).__name__}")
             raise failed(e) from e
-        audit(outcome="done", result=result)
+        finally:
+            if ability not in actor.READING:
+                await look_again(id, device)
         return result
 
     return api

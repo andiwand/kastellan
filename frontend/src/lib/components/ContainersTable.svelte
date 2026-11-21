@@ -2,6 +2,8 @@
 	import type { Container } from '#lib/api.js';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import JobStatus from './JobStatus.svelte';
+	import LogsDialog from './LogsDialog.svelte';
+	import { store } from '#lib/state.svelte.js';
 	import { containerActions, type ContainerAction } from '#lib/actions.js';
 	import ArrowUpCircle from '@lucide/svelte/icons/circle-arrow-up';
 	import CircleHelp from '@lucide/svelte/icons/circle-help';
@@ -18,6 +20,7 @@
 	}: { device: string; containers: Container[]; stale?: boolean; canAct?: boolean } = $props();
 
 	let asking = $state<string | null>(null); // a job's key (or "all"): asked once before it runs
+	let logsOf = $state<string | null>(null); // the container whose log is open
 
 	const update = (c: Container): Job => ({ device, kind: 'container', name: c.name });
 	const restart = (c: Container): Job => ({ device, kind: 'restart', name: c.name });
@@ -31,6 +34,12 @@
 				ask: `Update ${c.name}? It is recreated with the new image (the old one comes back if that fails).`,
 				title: 'Pull its image again and recreate it with the same settings'
 			},
+			rollback: {
+				job: { device, kind: 'rollback', name: c.name },
+				label: 'Go back',
+				ask: `Go back to the image ${c.name} ran before its last update (${c.previous})? Stored data stays as it is; database migrations may need a separate restore.`,
+				title: 'Recreate it with the image it ran before its last update'
+			},
 			start: {
 				job: { device, kind: 'start', name: c.name },
 				label: 'Start',
@@ -43,8 +52,20 @@
 				ask: `Stop ${c.name}? It stays stopped until started again (or until the host restarts, if it is set to restart).`
 			}
 		};
-		return containerActions(c.state, updatable.includes(c)).map((a) => all[a]);
+		return containerActions(c.state, updatable.includes(c), !!c.previous).map((a) => all[a]);
 	}
+	// What its row says: the latest of its jobs (runner.latest).
+	const lastOf = (c: Container) =>
+		runner.latest(
+			[
+				update(c),
+				{ device, kind: 'rollback', name: c.name },
+				restart(c),
+				{ device, kind: 'start', name: c.name },
+				{ device, kind: 'stop', name: c.name }
+			],
+			store.now
+		);
 	const keyOf = (j: Job) => `${j.kind}:${'name' in j ? j.name : ''}`;
 	const busy = (j: Job) => ['queued', 'running'].includes(runner.state(j)?.state ?? '');
 	// The actor pulls the tag a container runs again: a newer build, not a new tag.
@@ -108,9 +129,15 @@
 					{#if c.update}
 						<ArrowUpCircle class="size-3.5 shrink-0 text-accent" />
 						<span class="font-medium text-accent">{c.update_to ?? 'newer image'}</span>
+					{:else if c.unchecked === 'not checked yet'}
+						<span class="text-muted" title="Its registry is being asked; it shows in a minute">
+							checking…
+						</span>
 					{:else if c.unchecked}
 						<CircleHelp class="size-3.5 shrink-0 text-faint" />
-						<span class="truncate text-muted" title={c.unchecked}>can't check: {c.unchecked}</span>
+						<span class="min-w-0 text-muted" title="Why its update can't be checked">
+							{c.unchecked}
+						</span>
 					{:else if stale}
 						<span class="text-muted">was up to date</span>
 					{:else}
@@ -132,6 +159,13 @@
 									{a.label}
 								</button>
 							{/each}
+							<button
+								class="btn btn-sm text-muted"
+								onclick={() => (logsOf = c.name)}
+								title="The last lines of its log"
+							>
+								Logs
+							</button>
 						</span>
 					{/if}
 				</span>
@@ -144,12 +178,16 @@
 						</p>
 					{/if}
 				{/each}
-				{#each [update(c), restart(c), { device, kind: 'start', name: c.name } as Job, { device, kind: 'stop', name: c.name } as Job] as j (keyOf(j))}
-					{#if runner.state(j)}<div class="col-span-full">
-							<JobStatus job={runner.state(j)} />
-						</div>{/if}
-				{/each}
+				{#if lastOf(c)}
+					{@const last = lastOf(c)!}
+					<div class="col-span-full">
+						<JobStatus job={last.state} dismiss={() => runner.dismiss(last.job)} />
+					</div>{/if}
 			</li>
 		{/each}
 	</ul>
 </div>
+
+{#if logsOf}
+	<LogsDialog {device} what={{ container: logsOf }} onclose={() => (logsOf = null)} />
+{/if}

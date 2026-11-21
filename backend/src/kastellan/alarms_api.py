@@ -1,4 +1,4 @@
-"""Alarms over HTTP: the open ones, acknowledging, muting a device, a test notification."""
+"""Alarms over HTTP: the open ones, acknowledging, muting a device, maintenance, a test notification."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import notify
+from . import maintenance, notify
 from .alarms import Message, Severity
 from .auth_api import client_address, require_admin
 
@@ -26,6 +26,11 @@ class Mute(BaseModel):
     minutes: int = Field(ge=0, le=60 * 24 * 30)  # 0 unmutes
 
 
+class Maintenance(BaseModel):
+    minutes: int = Field(ge=0, le=60 * 24 * 7)  # 0 ends it
+    reason: str = Field(default="", max_length=200)
+
+
 def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api")
 
@@ -35,10 +40,15 @@ def router(hub: Hub) -> APIRouter:
         return {
             "open": [asdict(a) for a in hub.alarms.open.values()],
             "muted": {k: v for k, v in hub.alarms.muted.items() if v > now},
+            "maintenance": {
+                k: asdict(a) for k, a in maintenance.active(hub.config, now, hub.alarms.maintenance).items()
+            },
+            "windows": maintenance.upcoming(hub.config, now),
             "channels": len(hub.config.notify),
             "limits": {
                 "disk_warning": hub.config.alarms.disk_warning,
                 "disk_critical": hub.config.alarms.disk_critical,
+                "disk_days": hub.config.alarms.disk_days,
             },
             # The dead man's switch: on (a URL is set), when it was last reached, and why not.
             "heartbeat": {
@@ -68,6 +78,34 @@ def router(hub: Hub) -> APIRouter:
             "device.mute", w.user, client_address(request.scope), device=id, minutes=body.minutes
         )
         return {"device": id, "muted_until": until}
+
+    def start_maintenance(request: Request, devices: list[str], body: Maintenance, **what: str) -> dict:
+        w = require_admin(request)
+        until = datetime.now(UTC) + timedelta(minutes=body.minutes) if body.minutes else None
+        for id in devices:
+            hub.alarms.start_maintenance(id, until, body.reason.strip(), w.user)
+        hub.audit.record(
+            "device.maintenance" if until else "device.maintenance.end",
+            w.user,
+            client_address(request.scope),
+            minutes=body.minutes,
+            reason=body.reason,
+            **what,
+        )
+        return {"devices": devices, "until": until}
+
+    @api.post("/devices/{id}/maintenance")
+    async def device_maintenance(id: str, body: Maintenance, request: Request) -> dict[str, Any]:
+        if id not in hub.config.devices:
+            raise HTTPException(404, "no such device")
+        return start_maintenance(request, [id], body, device=id)
+
+    @api.post("/groups/{id}/maintenance")
+    async def group_maintenance(id: str, body: Maintenance, request: Request) -> dict[str, Any]:
+        group = hub.config.groups.get(id)
+        if group is None:
+            raise HTTPException(404, "no such group")
+        return start_maintenance(request, list(group.devices), body, group=id)
 
     last_test = [0.0]
 

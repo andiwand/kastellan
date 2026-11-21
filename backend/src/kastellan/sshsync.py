@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 import asyncssh
 
-from .access import USER
+from .access import DROPBEAR, USER
 from .config import Device
 from .ssh import Keys
 from .sshkeys import KEY_TYPE, MAX_OUTPUT, _privileged, parse_line, target_of
@@ -32,9 +32,13 @@ from .sshkeys import KEY_TYPE, MAX_OUTPUT, _privileged, parse_line, target_of
 File = Literal["authorized_keys", "known_hosts"]
 FILES = ("authorized_keys", "known_hosts")
 
-# $0: the file's name. The file of the user it runs as (OpenWrt's root: dropbear's for keys).
-_WHERE = r"""me=$(id -un)
-if [ "$0" = authorized_keys ] && [ "$me" = root ] && [ -f /etc/openwrt_release ]; then
+# $0: the file's name. The file of the user it runs as (OpenWrt's root with dropbear: dropbear's
+# for keys).
+_WHERE = (
+    r"""me=$(id -un)
+if [ "$0" = authorized_keys ] && [ "$me" = root ] && """
+    + DROPBEAR
+    + r"""; then
   f=/etc/dropbear/authorized_keys
 else
   home=$(getent passwd "$me" 2>/dev/null | cut -d: -f6)
@@ -43,6 +47,7 @@ else
   f="$home/.ssh/$0"
 fi
 """
+)
 
 # Prints the path and whether it exists, then the file.
 _READ = (

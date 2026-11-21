@@ -9,20 +9,26 @@ Two ways, as the admin prefers:
 `authorize()` is the one place keys are added (here and for the VPN scripts):
 - the key is written *as the target user* (su), never by root into a home the user controls,
   where a symlink could point root's write at /etc/shadow;
-- OpenWrt (dropbear): root's keys are in /etc/dropbear; dropbear doesn't know `from=` or
-  `restrict`, so its line is the plain form;
-- elsewhere (OpenSSH): the line carries `from="<the hub's address>"`, so a copy of the key is no
-  use from anywhere else.
+- OpenWrt with dropbear (its default; `DROPBEAR`): root's keys are in /etc/dropbear; dropbear
+  doesn't know `from=` or `restrict`, so its line is the plain form;
+- OpenSSH (elsewhere, and OpenWrt with openssh-server running instead): the line carries
+  `from="<the hub's address>"`, so a copy of the key is no use from anywhere else.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import re
 import shlex
 import socket
 
 # What config.yaml allows for a login (SshAccess.user), never starting with "-".
 USER = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$")
+
+# True in sh on an OpenWrt device whose SSH server is dropbear (its default). One with
+# openssh-server running instead reads ~/.ssh/authorized_keys, also root's, and knows `from=`.
+DROPBEAR = "[ -f /etc/openwrt_release ] && ! pidof sshd >/dev/null 2>&1"
 
 # Run as the target user: $0 is the authorized_keys file, $1 the line.
 _ADD = (
@@ -54,6 +60,19 @@ def hub_address(host: str, port: int = 22) -> str | None:
         return None
 
 
+async def ssh_greeting(host: str, port: int = 22, wait: float = 3.0) -> str:
+    """The line an SSH server greets with (SSH-2.0-dropbear_2022.83), or "" (no login)."""
+    with contextlib.suppress(OSError, TimeoutError, ValueError):
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), wait)
+        try:
+            return (await asyncio.wait_for(reader.readline(), wait)).decode("ascii", "replace").strip()
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+    return ""
+
+
 def check_user(user: str) -> str:
     if not USER.fullmatch(user):
         raise ValueError("user names are letters, digits, . _ - (up to 32, not starting with -)")
@@ -77,12 +96,9 @@ def authorize(
     return [
         f"user={q(check_user(user))}",
         f"script={q(script)}; keydata={q(data)}; dedupe={dedupe or chr(39) * 2}",
-        "if [ -f /etc/openwrt_release ]; then line="
-        + q(dropbear_line)
-        + "; else line="
-        + q(openssh_line)
-        + "; fi",
-        'if [ -f /etc/openwrt_release ] && [ "$user" = root ]; then',
+        f"if {DROPBEAR}; then dropbear=1; else dropbear=; fi",
+        'if [ -n "$dropbear" ]; then line=' + q(dropbear_line) + "; else line=" + q(openssh_line) + "; fi",
+        'if [ -n "$dropbear" ] && [ "$user" = root ]; then',
         "  keys=/etc/dropbear/authorized_keys",
         '  [ -z "$dedupe" ] || sh -c "$dedupe" "$keys" "$line" "$script" "$keydata"',
         '  grep -qxF "$line" "$keys" 2>/dev/null || printf \'%s\\n\' "$line" >> "$keys"',

@@ -18,6 +18,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import re
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING, Any
@@ -38,6 +39,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 PUBLIC = {"/api/health", "/api/auth/login", "/api/auth/me", "/api/auth/logout"}
+# A backup job reporting in (backups_api): its own token instead of a session; no cookie, so no
+# CSRF header either.
+REPORT_PATH = re.compile(r"/api/backups/[a-z0-9_-]{1,64}/(ok|fail)")
 READS = {"GET", "HEAD"}
 # What a signed-in observer may change: only their own browsers' push subscriptions (push_api).
 OWN = {"/api/push/subscribe", "/api/push/unsubscribe", "/api/push/test"}
@@ -160,6 +164,10 @@ class Guard:
             await _deny(scope, send, 403, "WebSockets only from this hub's own page")
             return
 
+        if scope["type"] == "http" and method == "POST" and REPORT_PATH.fullmatch(scope["path"]):
+            scope.setdefault("state", {})["who"] = None
+            await self.app(scope, receive, send)
+            return
         if scope["type"] == "http" and method not in READS and headers.get(CSRF_HEADER) != "1":
             await _deny(scope, send, 403, "missing the X-Kastellan header")
             return

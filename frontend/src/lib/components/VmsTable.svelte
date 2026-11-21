@@ -16,6 +16,11 @@
 	let asking = $state<string | null>(null); // a job's key: asked once before it runs
 
 	const job = (vm: Vm, kind: Kind): Job => ({ device, kind, name: vm.name });
+	const lastOf = (vm: Vm) =>
+		runner.latest(
+			KINDS.map((kind) => job(vm, kind)),
+			store.now
+		);
 	const keyOf = (j: Job) => `${j.kind}:${'name' in j ? j.name : ''}`;
 	const busy = (j: Job) => ['queued', 'running'].includes(runner.state(j)?.state ?? '');
 	const KINDS: Kind[] = ['vm-start', 'vm-shutdown', 'vm-reboot', 'vm-force-off'];
@@ -124,11 +129,11 @@
 						</p>
 					{/if}
 				{/each}
-				{#each KINDS as kind (kind)}
-					{#if runner.state(job(vm, kind))}<div class="col-span-full">
-							<JobStatus job={runner.state(job(vm, kind))} />
-						</div>{/if}
-				{/each}
+				{#if lastOf(vm)}
+					{@const last = lastOf(vm)!}
+					<div class="col-span-full">
+						<JobStatus job={last.state} dismiss={() => runner.dismiss(last.job)} />
+					</div>{/if}
 			</li>
 		{/each}
 	</ul>

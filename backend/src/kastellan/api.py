@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -12,13 +13,14 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, checks, stats
+from . import __version__, checks, releases, stats
 from . import ups as upsmod
 from .access_api import router as access_router
 from .act_api import router as act_router
 from .alarms_api import router as alarms_router
 from .auth_api import Guard
 from .auth_api import router as auth_router
+from .backups_api import router as backups_router
 from .config import Check, Device, Kind
 from .config_api import router as config_router
 from .desktop_api import router as desktop_router
@@ -114,6 +116,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(terminal_router(hub))
     app.include_router(desktop_router(hub))
     app.include_router(alarms_router(hub))
+    app.include_router(backups_router(hub))
     app.include_router(push_router(hub))
     app.include_router(vpn_router(hub))
     app.include_router(access_router(hub))
@@ -149,6 +152,10 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             "vault": hub.vault.state,  # absent | locked | partly | unlocked | damaged (vault.py)
             # Locked rings Kastellan uses by itself: what needs their secrets waits.
             "vault_waiting": vault_waiting(),
+            # A newer Kastellan, if one is out (releases.py): {version, url}, or None.
+            "newer": asdict(r)
+            if (r := releases.newer(hub.latest_release if hub.config.check_releases else None, __version__))
+            else None,
         }
 
     def check_view(check: Check, status: CheckStatus | None) -> dict[str, Any]:
@@ -297,6 +304,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "router_checked": status.router_checked if status else None,
                     "router_error": status.router_error if status else None,
                     "host_report": status.host if status else None,
+                    "host_forecast": status.host_forecast if status else None,
                     # libvirt's VMs on the host, from its collector (None: it can't tell)
                     "vms": vms_of(id),
                     "runs_on": runs_on(device),

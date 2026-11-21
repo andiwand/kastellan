@@ -1,0 +1,51 @@
+# The last lines of one systemd unit's journal (on the host's list), as `journalctl -u <unit>
+# -n 300` shows them. Reads only: no lock, nothing changes. The unit's state comes along.
+import subprocess
+import selectors
+
+UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
+name = one_name(UNIT)
+TAIL, MAX_LINE, MAX_BYTES = 300, 500, 48_000
+ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
+JOURNALCTL = next((p for p in ("/usr/bin/journalctl", "/bin/journalctl") if os.path.exists(p)), None)
+SYSTEMCTL = next((p for p in ("/usr/bin/systemctl", "/bin/systemctl") if os.path.exists(p)), None)
+if JOURNALCTL is None:
+    fail("no journalctl on this host")
+
+
+def run(*argv):
+    with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                          stdin=subprocess.DEVNULL,
+                          env={"PATH": "/usr/bin:/bin", "SYSTEMD_COLORS": "0"}) as p:
+        data, deadline = bytearray(), time.monotonic() + 30
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(p.stdout, selectors.EVENT_READ)
+                while True:
+                    left = deadline - time.monotonic()
+                    if left <= 0 or not selector.select(left):
+                        fail("log reader timed out")
+                    chunk = os.read(p.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(data) > 8_000_000:
+                        fail("log output exceeds 8 MB; narrow the journal on the host")
+            return p.wait(timeout=max(0.01, deadline - time.monotonic())), data.decode(errors="replace")
+        finally:
+            if p.poll() is None:
+                p.kill()
+
+
+code, text = run(JOURNALCTL, "--no-pager", "--quiet", "-o", "short-iso", "-n", str(TAIL), "-u", name)
+if code != 0:
+    fail(f"journalctl: exit {code}")
+state = run(SYSTEMCTL, "is-active", name)[1].strip() if SYSTEMCTL else ""
+lines = [ESCAPES.sub("", ln)[:MAX_LINE] for ln in text.splitlines()]
+kept, size = [], 0
+for ln in reversed(lines[-TAIL:]):
+    size += len(json.dumps(ln, ensure_ascii=False).encode()) + 2
+    if size > MAX_BYTES:
+        break
+    kept.append(ln)
+done({"unit": name, "lines": kept[::-1], "state": state[:40]})

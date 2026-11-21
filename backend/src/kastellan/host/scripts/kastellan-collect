@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import time
+from urllib.parse import quote
 
 OUT = {"version": 1, "time": int(time.time()), "errors": {}}
 # Which collector this is, so the hub can tell an older one (a hash of this file, as installed).
@@ -297,6 +298,16 @@ def docker():
     if not os.path.exists("/var/run/docker.sock"):
         return None
     out, digests = [], {}
+    # The images the actor kept from before an update (kastellan-previous:<container>).
+    previous = {}
+    try:
+        flt = quote(json.dumps({"reference": ["kastellan-previous"]}))
+        for image in docker_get(f"/images/json?filters={flt}") or []:
+            for t in image.get("RepoTags") or []:
+                if t.startswith("kastellan-previous:"):
+                    previous[t.split(":", 1)[1]] = image.get("Id", "")
+    except Exception:
+        pass
     for c in docker_get("/containers/json?all=1"):
         image_id = c.get("ImageID", "")
         if image_id not in digests:
@@ -304,8 +315,11 @@ def docker():
                 digests[image_id] = docker_get(f"/images/{image_id}/json").get("RepoDigests") or []
             except Exception:
                 digests[image_id] = []
+        name = (c.get("Names") or ["?"])[0].lstrip("/")
+        before = previous.get(name)
         out.append({
-            "name": (c.get("Names") or ["?"])[0].lstrip("/"),
+            "name": name,
+            "previous": before[7:19] if before and before != image_id else None,
             "image": c.get("Image", ""),
             "image_id": image_id,
             "digests": digests[image_id],

@@ -2,11 +2,10 @@
 	import { api, type RouterReport } from '#lib/api.js';
 	import { ago, duration } from '#lib/format.js';
 	import { store } from '#lib/state.svelte.js';
-	import WifiDialog from './WifiDialog.svelte';
-	import FirmwareDialog from './FirmwareDialog.svelte';
 
 	/** An OpenWrt device through its own API: system, Wi-Fi and who is connected, package
-	 * updates, firmware advice; reboot, Wi-Fi settings and firmware where the device allows. */
+	 * updates, firmware advice; services where the device allows. Reboot and Update firmware sit at the
+	 * top of the page, Wi-Fi settings under Setup. */
 	let {
 		device,
 		report,
@@ -21,10 +20,7 @@
 		canChange: boolean;
 	} = $props();
 
-	let confirmReboot = $state(false);
 	let note = $state<{ ok: boolean; text: string } | null>(null);
-	let wifiOpen = $state(false);
-	let firmwareOpen = $state(false);
 
 	const release = $derived(report.board.release);
 	const fw = $derived(report.firmware);
@@ -60,19 +56,6 @@
 		const first = line.split(' ')[0];
 		return line.includes(' - ') ? first : first.replace(/-\d[^-]*-r\d+$/, '');
 	}
-
-	async function reboot() {
-		confirmReboot = false;
-		try {
-			await api.openwrtReboot(device);
-			note = { ok: true, text: 'Rebooting; it is back in a minute or two.' };
-		} catch (e) {
-			note = { ok: false, text: (e as Error).message };
-		}
-	}
-
-	const button =
-		'inline-flex h-8 items-center rounded-lg border border-line px-3 text-xs font-medium hover:border-line-strong disabled:opacity-50';
 </script>
 
 <section class="card mt-8 p-5">
@@ -119,11 +102,6 @@
 					next step {fw.next_step}
 				</span>
 				<span class="text-xs text-muted">(supported: {fw.stable} and {fw.oldstable})</span>
-				{#if canChange}
-					<button class="{button} ml-2" onclick={() => (firmwareOpen = true)}>
-						Update firmware
-					</button>
-				{/if}
 			{:else}
 				<span style:color="var(--good-text)">On the newest release.</span>
 			{/if}
@@ -214,22 +192,6 @@
 							.map(packageName)
 							.join(', ')}${report.packages.length > 5 ? ', …' : ''}`}
 		</p>
-		{#if canChange}
-			<span class="ml-auto flex gap-2">
-				<button class={button} onclick={() => (wifiOpen = true)}>Wi-Fi settings</button>
-				{#if confirmReboot}
-					<span class="text-xs">
-						Reboot it?
-						<button class="underline" style:color="var(--critical-text)" onclick={reboot}>
-							Yes
-						</button>
-						<button class="ml-1 underline" onclick={() => (confirmReboot = false)}>No</button>
-					</span>
-				{:else}
-					<button class={button} onclick={() => (confirmReboot = true)}>Reboot</button>
-				{/if}
-			</span>
-		{/if}
 	</div>
 	{#if note}
 		<p class="mt-2 text-xs" style:color={note.ok ? 'var(--good-text)' : 'var(--critical-text)'}>
@@ -237,15 +199,3 @@
 		</p>
 	{/if}
 </section>
-
-{#if wifiOpen}
-	<WifiDialog {device} onclose={() => (wifiOpen = false)} />
-{/if}
-{#if firmwareOpen && fw}
-	<FirmwareDialog
-		{device}
-		advice={fw}
-		model={report.board.model}
-		onclose={() => (firmwareOpen = false)}
-	/>
-{/if}

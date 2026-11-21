@@ -4,6 +4,8 @@
 	import { store } from '#lib/state.svelte.js';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import JobStatus from './JobStatus.svelte';
+	import LogsDialog from './LogsDialog.svelte';
+	import ReadAgain from './ReadAgain.svelte';
 
 	/** How a host is doing, from its collector: system, disks and their space, RAID, disk
 	 * health, temperatures, failed services, updates. Coloured only where something is wrong. */
@@ -11,12 +13,14 @@
 		report,
 		checked,
 		error,
+		forecast = {},
 		device = '',
 		canAct = false
 	}: {
 		report: HostReport;
 		checked: string | null;
 		error: string | null;
+		forecast?: Record<string, number>; // days until full at the rate it fills
 		device?: string;
 		canAct?: boolean; // system updates and a reboot through the actor (the Updates page's queue)
 	} = $props();
@@ -25,6 +29,7 @@
 	const reboot = $derived<Job>({ device, kind: 'reboot' });
 	const busy = (j: Job) => ['queued', 'running'].includes(runner.state(j)?.state ?? '');
 	let asking = $state<'packages' | 'reboot' | null>(null);
+	let logsOf = $state<string | null>(null); // the unit whose journal is open
 
 	// The same limits the alarms use (config.yaml's alarms:).
 	const WARN = $derived(store.alarms?.limits?.disk_warning ?? 85);
@@ -55,6 +60,7 @@
 		<p class="text-xs text-muted">
 			{#if error}<span style:color="var(--warning-text)">collector: {error}</span> ·
 			{/if}from the collector{checked ? `, ${ago(checked, store.now)}` : ''}
+			{#if device}· <ReadAgain {device} />{/if}
 		</p>
 	</div>
 
@@ -92,6 +98,17 @@
 					</span>
 					<span class="tabular text-xs text-muted">
 						{p.toFixed(0)}% · {bytes(fs.available)} free
+						{#if forecast[fs.mount] != null}
+							{@const days = forecast[fs.mount]}
+							<span
+								style:color={days < (store.alarms?.limits?.disk_days ?? 14)
+									? 'var(--warning-text)'
+									: ''}
+								title="At the rate it filled over the last days"
+							>
+								· full {days < 1 ? 'within a day' : `in ~${Math.round(days)} d`}
+							</span>
+						{/if}
 					</span>
 				</li>
 			{/each}
@@ -181,7 +198,17 @@
 			<span class="text-xs text-muted">Services</span><br />
 			{#if failed.length}
 				<span style:color="var(--warning-text)">{failed.length} failed:</span>
-				<span class="font-mono text-xs">{failed.join(', ')}</span>
+				{#each failed as unit, i (unit)}
+					{#if canAct}<button
+							class="font-mono text-xs underline decoration-dotted hover:text-text"
+							title="Its log"
+							onclick={() => (logsOf = unit)}
+						>
+							{unit}
+						</button>{:else}<span class="font-mono text-xs">{unit}</span>{/if}{i < failed.length - 1
+						? ', '
+						: ''}
+				{/each}
 			{:else}
 				<span style:color="var(--good-text)">none failed</span>
 			{/if}
@@ -244,3 +271,7 @@
 		</p>
 	{/if}
 </section>
+
+{#if logsOf}
+	<LogsDialog {device} what={{ unit: logsOf }} onclose={() => (logsOf = null)} />
+{/if}

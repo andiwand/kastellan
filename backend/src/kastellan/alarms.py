@@ -289,7 +289,7 @@ def evaluate(
             )
             continue
         try:
-            problems += host_problems(id, name, st.host or {}, limits)
+            problems += host_problems(id, name, st.host or {}, limits, st.host_forecast)
         except Exception:  # one host's odd report never stops the alarms of all the others
             log.exception("%s: judging its report failed", id)
 
@@ -450,9 +450,11 @@ def evaluate(
     return problems
 
 
-def host_problems(id: str, name: str, report: dict[str, Any], limits: Any) -> list[Problem]:
-    """Problems in one collector report: full disks, RAID, disk health, heat, failed services,
-    VMs that should run but don't."""
+def host_problems(
+    id: str, name: str, report: dict[str, Any], limits: Any, forecast: dict[str, float] | None = None
+) -> list[Problem]:
+    """Problems in one collector report: full disks (or full soon, by `forecast`: days left per
+    mount, disks.py), RAID, disk health, heat, failed services, VMs that should run but don't."""
     out: list[Problem] = []
 
     def add(key: str, severity: Severity, what: str, title: str, detail: str = "") -> None:
@@ -488,6 +490,15 @@ def host_problems(id: str, name: str, report: dict[str, Any], limits: Any) -> li
             add(f"disk:{mount}", Severity.CRITICAL, mount, f"{mount} is {percent:.0f}% full", free)
         elif percent >= limits.disk_warning:
             add(f"disk:{mount}", Severity.WARNING, mount, f"{mount} is {percent:.0f}% full", free)
+        elif (days := (forecast or {}).get(mount)) is not None and days < limits.disk_days:
+            soon = "within a day" if days < 1 else f"in about {days:.0f} days"
+            add(
+                f"disk:{mount}",
+                Severity.WARNING,
+                mount,
+                f"{mount} will be full {soon}",
+                f"{percent:.0f}% full, {free}",
+            )
 
     for array in report.get("raid") or []:
         if not isinstance(array, dict):
@@ -565,6 +576,18 @@ class Alarm:
     acknowledged_at: str | None = None
     name: str = ""  # for "... is back up"
     gone_since: str | None = None  # when its problem was last missing (resolves after a while)
+    held: bool = False  # opened during maintenance: not sent (yet)
+    reminded: str | None = None  # when it was last said again (Alarms.update's `remind`)
+
+
+def _body(p: Problem, after_maintenance: bool = False) -> str:
+    body = p.detail or (f"Unreachable behind it: {', '.join(p.hidden)}" if p.hidden else "")
+    return f"{body}{' · ' if body else ''}still so after maintenance" if after_maintenance else body
+
+
+def _hours(d: timedelta) -> str:
+    h = round(d.total_seconds() / 3600)
+    return f"{h // 24} d {h % 24} h" if h >= 48 else f"{h} h"
 
 
 @dataclass
@@ -584,6 +607,8 @@ class Alarms:
         self.log_path = folder / "alarms.log"
         self.open: dict[str, Alarm] = {}
         self.muted: dict[str, datetime] = {}
+        # Maintenance started from the app: device → {until, reason, by} (maintenance.py).
+        self.maintenance: dict[str, dict[str, Any]] = {}
         self.seen_events: dict[str, str] = {}  # info events already sent: key → when
         self._load()
 
@@ -592,6 +617,7 @@ class Alarms:
             data = json.loads(self.path.read_text())
             self.open = {k: Alarm(**v) for k, v in data.get("open", {}).items()}
             self.muted = {k: datetime.fromisoformat(v) for k, v in data.get("muted", {}).items()}
+            self.maintenance = data.get("maintenance", {})
             seen = data.get("seen_events", {})
             self.seen_events = seen if isinstance(seen, dict) else {k: "" for k in seen}
         except (OSError, ValueError, TypeError) as e:
@@ -602,6 +628,7 @@ class Alarms:
         data = {
             "open": {k: asdict(a) for k, a in self.open.items()},
             "muted": {k: v.isoformat() for k, v in self.muted.items()},
+            "maintenance": self.maintenance,
             "seen_events": self.seen_events,
         }
         try:
@@ -619,12 +646,23 @@ class Alarms:
         except OSError as e:
             log.warning("cannot write the alarm log: %s", e)
 
-    def update(self, problems: list[Problem], now: datetime, quiet: set[str] | None = None) -> list[Message]:
+    def update(
+        self,
+        problems: list[Problem],
+        now: datetime,
+        quiet: set[str] | None = None,
+        held: set[str] | None = None,
+        remind: timedelta | None = None,
+    ) -> list[Message]:
         """Open new alarms, update changed ones, resolve those whose problem has been gone for
         RESOLVE_AFTER seconds. `quiet`: devices whose alarms resolve without a message (muted,
-        removed). Returns what to send."""
+        removed). `held`: devices in maintenance: their alarms open without a message, which is
+        sent when the maintenance ends with the problem still there (one that ends before is
+        never heard of). `remind`: an alarm nobody acknowledged is said again this often (not
+        info, not while held or muted). Returns what to send."""
         messages: list[Message] = []
         quiet = quiet or set()
+        held = held or set()
         changed = False
         current = {p.key: p for p in problems}
         folded = {f"down:{h}" for p in problems for h in p.hidden}
@@ -641,14 +679,27 @@ class Alarms:
                     p.since.isoformat(timespec="seconds") if p.since else None,
                     p.hidden,
                     name=p.name,
+                    held=p.device in held,
                 )
                 self.open[key] = alarm
                 self._log({"time": alarm.opened, "what": "opened", **asdict(alarm)})
-                body = p.detail or (f"Unreachable behind it: {', '.join(p.hidden)}" if p.hidden else "")
-                messages.append(Message(p.severity, p.title, body, p.device))
+                if not alarm.held:
+                    messages.append(Message(p.severity, p.title, _body(p), p.device))
                 changed = True
             else:
-                if p.severity.rank > Severity(alarm.severity).rank:
+                if p.device in held and not alarm.held:
+                    alarm.held = True
+                    changed = True
+                if alarm.held and p.device not in held:
+                    # The maintenance is over and it is still wrong: now it is news.
+                    alarm.held = False
+                    alarm.reminded = now.isoformat(timespec="seconds")  # reminders count from now
+                    messages.append(Message(p.severity, p.title, _body(p, after_maintenance=True), p.device))
+                    self._log(
+                        {"time": now.isoformat(timespec="seconds"), "what": "released", **asdict(alarm)}
+                    )
+                    changed = True
+                elif p.severity.rank > Severity(alarm.severity).rank and not alarm.held:
                     # Worse than when it opened (a CVE became known as exploited): say so again.
                     alarm.severity = p.severity.value
                     messages.append(Message(p.severity, p.title, p.detail, p.device))
@@ -661,10 +712,17 @@ class Alarms:
                 if (alarm.severity, alarm.title, alarm.hidden, alarm.detail, alarm.gone_since) != fresh:
                     alarm.severity, alarm.title, alarm.hidden, alarm.detail, alarm.gone_since = fresh
                     changed = True
+                if remind and self._due(alarm, now, remind) and p.device not in quiet | held:
+                    alarm.reminded = now.isoformat(timespec="seconds")
+                    hours = _hours(now - datetime.fromisoformat(alarm.since or alarm.opened))
+                    body = f"for {hours}, not acknowledged" + (f" · {p.detail}" if p.detail else "")
+                    messages.append(Message(p.severity, f"Still: {p.title}", body, p.device))
+                    self._log({"time": alarm.reminded, "what": "reminded", **asdict(alarm)})
+                    changed = True
         for key, alarm in list(self.open.items()):
             if key in current:
                 continue
-            silent = key in folded or alarm.device in quiet
+            silent = key in folded or alarm.device in quiet | held or alarm.held
             if not silent:
                 if alarm.gone_since is None:
                     alarm.gone_since = now.isoformat(timespec="seconds")
@@ -699,6 +757,30 @@ class Alarms:
         if changed:
             self.save()
         return messages
+
+    @staticmethod
+    def _due(alarm: Alarm, now: datetime, every: timedelta) -> bool:
+        if alarm.held or alarm.acknowledged_by or alarm.severity == Severity.INFO.value:
+            return False
+        last = datetime.fromisoformat(alarm.reminded or alarm.opened)
+        return now - last >= every
+
+    def start_maintenance(self, device: str, until: datetime | None, reason: str, by: str | None) -> None:
+        """Maintenance from the app (until None: ended)."""
+        if until is None:
+            self.maintenance.pop(device, None)
+        else:
+            self.maintenance[device] = {"until": until.isoformat(), "reason": reason, "by": by}
+        self.save()
+
+    def ended_maintenance(self, now: datetime) -> list[str]:
+        """Devices whose maintenance from the app ran out: forgotten, and named for the audit."""
+        gone = [d for d, m in self.maintenance.items() if datetime.fromisoformat(m["until"]) <= now]
+        if gone:
+            for d in gone:
+                del self.maintenance[d]
+            self.save()
+        return gone
 
     def carry(self, keys: set[str]) -> list[Problem]:
         """Open alarms to keep as they are, because what decides them isn't known right now (a

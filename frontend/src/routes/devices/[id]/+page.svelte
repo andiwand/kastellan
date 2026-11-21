@@ -14,6 +14,8 @@
 	import MonitorPlay from '@lucide/svelte/icons/monitor-play';
 	import Bell from '@lucide/svelte/icons/bell';
 	import BellOff from '@lucide/svelte/icons/bell-off';
+	import Wrench from '@lucide/svelte/icons/wrench';
+	import MaintenanceButton from '#lib/components/MaintenanceButton.svelte';
 	import Copy from '@lucide/svelte/icons/copy';
 	import Check from '@lucide/svelte/icons/check';
 	import ActivityItem from '#lib/components/ActivityItem.svelte';
@@ -32,8 +34,15 @@
 	import CollectorSetup from '#lib/components/CollectorSetup.svelte';
 	import ActorSetup from '#lib/components/ActorSetup.svelte';
 	import HostHealth from '#lib/components/HostHealth.svelte';
+	import BackupsCard from '#lib/components/BackupsCard.svelte';
+	import ReadAgain from '#lib/components/ReadAgain.svelte';
 	import RouterCard from '#lib/components/RouterCard.svelte';
 	import OpenWrtSetup from '#lib/components/OpenWrtSetup.svelte';
+	import RouterReboot from '#lib/components/RouterReboot.svelte';
+	import SetupCard from '#lib/components/SetupCard.svelte';
+	import WifiDialog from '#lib/components/WifiDialog.svelte';
+	import FirmwareDialog from '#lib/components/FirmwareDialog.svelte';
+	import CircleFadingArrowUp from '@lucide/svelte/icons/circle-fading-arrow-up';
 
 	const id = $derived(page.params.id ?? '');
 	const device = $derived(store.byId.get(id));
@@ -83,6 +92,8 @@
 	let changes = $state<Change[]>([]);
 	let chosen = $state<string | null>(null);
 	let copied = $state(false);
+	let wifiOpen = $state(false);
+	let firmwareOpen = $state(false);
 
 	let loadError = $state<string | null>(null);
 	let latest = 0;
@@ -154,6 +165,16 @@
 				<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
 					<h1 class="text-2xl font-semibold tracking-tight">{device.name}</h1>
 					<StatusBadge {status} />
+					{#if store.alarms?.maintenance?.[device.id]}
+						{@const m = store.alarms.maintenance[device.id]}
+						<span
+							class="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted"
+							title="Problems show but are sent only if still there when it ends"
+						>
+							<Wrench class="size-3.5" />
+							{m.reason} · until {dayClock(m.until)}
+						</span>
+					{/if}
 				</div>
 				<div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
 					{#if device.host}
@@ -229,6 +250,7 @@
 			</div>
 		</div>
 		<div class="flex shrink-0 flex-wrap gap-2 self-start">
+			<!-- Getting to it, acting on it, then its alarms. -->
 			{#if device.ssh_port && store.me?.role === 'admin' && store.me.user}
 				<a
 					href="/devices/{device.id}/terminal"
@@ -236,21 +258,6 @@
 				>
 					<SquareTerminal class="size-4 text-muted" /> Terminal
 				</a>
-			{/if}
-			{#if store.me?.role === 'admin'}
-				{@const mutedUntil = store.alarms?.muted[device.id]}
-				<button
-					onclick={async () => {
-						await api.mute(device.id, mutedUntil ? 0 : 60);
-						store.refreshHistory();
-					}}
-					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
-					title={mutedUntil ? `No alarms until ${dayClock(mutedUntil)}` : 'No alarms for an hour'}
-				>
-					{#if mutedUntil}<BellOff class="size-4 text-muted" /> Muted{:else}<Bell
-							class="size-4 text-muted"
-						/> Mute 1 h{/if}
-				</button>
 			{/if}
 			{#if device.desktop && store.me?.role === 'admin' && store.me.user}
 				<a
@@ -269,6 +276,42 @@
 				>
 					Open web interface <ExternalLink class="size-3.5 text-muted" />
 				</a>
+			{/if}
+			{#if device.openwrt && device.router && store.me?.role === 'admin' && store.me.user}
+				<RouterReboot device={device.id} />
+				{#if device.router.firmware?.next_step}
+					<button
+						class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
+						title="To OpenWrt {device.router.firmware.next_step}"
+						onclick={() => (firmwareOpen = true)}
+					>
+						<CircleFadingArrowUp class="size-4 text-muted" /> Update firmware
+					</button>
+				{/if}
+				{#if firmwareOpen && device.router.firmware}
+					<FirmwareDialog
+						device={device.id}
+						advice={device.router.firmware}
+						model={device.router.board.model}
+						onclose={() => (firmwareOpen = false)}
+					/>
+				{/if}
+			{/if}
+			{#if store.me?.role === 'admin'}
+				{@const mutedUntil = store.alarms?.muted[device.id]}
+				<button
+					onclick={async () => {
+						await api.mute(device.id, mutedUntil ? 0 : 60);
+						store.refreshHistory();
+					}}
+					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
+					title={mutedUntil ? `No alarms until ${dayClock(mutedUntil)}` : 'No alarms for an hour'}
+				>
+					{#if mutedUntil}<BellOff class="size-4 text-muted" /> Muted{:else}<Bell
+							class="size-4 text-muted"
+						/> Mute 1 h{/if}
+				</button>
+				<MaintenanceButton kind="devices" id={device.id} devices={[device.id]} />
 			{/if}
 		</div>
 	</header>
@@ -320,49 +363,79 @@
 	{:else if tab === 'setup'}
 		{#if store.me}
 			<p class="mt-6 mb-4 max-w-2xl text-sm text-muted">
-				How Kastellan reaches this device, and what it may do there. Each part is set up once, with
-				your login (used for that one connection), or with commands to run yourself.
+				How Kastellan reaches this device and what it may do there. Each part is set up once, with
+				your login (used for that one connection) or with commands to run yourself.
 			</p>
 			{#if device.outdated_scripts.length}
 				<p class="mb-3 text-sm" style:color="var(--warning-text)">
-					Kastellan's {device.outdated_scripts.join(' and ')} on this host {device.outdated_scripts
+					Kastellan's {device.outdated_scripts.join(' and ')} here {device.outdated_scripts
 						.length === 1
 						? 'is'
-						: 'are'} older than this Kastellan: set {device.outdated_scripts.length === 1
-						? 'it'
-						: 'them'} up again below to renew. Kastellan can't do it by itself: its keys there may only
-					run these scripts, never replace them.
+						: 'are'} older than this Kastellan: Renew below (it takes your login once; Kastellan's own
+					keys may run these scripts, never replace them).
 				</p>
 			{/if}
+			{@const hostLike = !device.openwrt && HOSTS.includes(device.kind)}
+			{@const parts = [
+				{
+					id: 'openwrt',
+					shown: !!device.openwrt || ['router', 'access-point', 'switch'].includes(device.kind),
+					set: !!device.openwrt
+				},
+				{ id: 'wifi', shown: !!device.openwrt && !!device.router?.radios?.length, set: true },
+				{ id: 'collector', shown: !!device.collect || hostLike, set: !!device.collect },
+				{ id: 'actor', shown: !!device.act || hostLike, set: !!device.act },
+				{ id: 'access', shown: true, set: !!device.ssh },
+				{ id: 'keys', shown: !!device.ssh, set: true }
+			].filter((p) => p.shown)}
 			<!-- Keyed: going from one device's page to another's starts these afresh. -->
-			<div class="grid items-start gap-4 xl:grid-cols-2">
-				{#key device.id}
-					{#if device.openwrt || ['router', 'access-point', 'switch'].includes(device.kind)}
-						<OpenWrtSetup
-							device={device.id}
-							canInstall={!!store.me.user}
-							services={(device.router?.services ?? []).map((s) => s.name)}
-							allowedServices={device.router?.services_allowed ?? []}
-						/>
+			{#key device.id}
+				{#each [{ title: 'Set up', set: true }, { title: 'Can be set up', set: false }] as group (group.title)}
+					{@const these = parts.filter((p) => p.set === group.set)}
+					{#if these.length}
+						<h2 class="mt-6 mb-3 text-sm font-semibold">{group.title}</h2>
+						<div class="grid auto-rows-fr gap-4 sm:grid-cols-2 xl:grid-cols-3">
+							{#each these as p (p.id)}
+								{#if p.id === 'openwrt'}
+									<OpenWrtSetup
+										device={device.id}
+										canInstall={!!store.me.user}
+										services={(device.router?.services ?? []).map((s) => s.name)}
+										allowedServices={device.router?.services_allowed ?? []}
+									/>
+								{:else if p.id === 'wifi'}
+									{@const names = (device.router?.radios ?? []).flatMap((r) =>
+										r.interfaces.map((i) => i.ssid ?? i.section)
+									)}
+									<SetupCard
+										title="Wi-Fi"
+										about="Network names, passwords, radios on or off, channels. Applied with a rollback: undone if the device can't be reached afterwards."
+										stage="set"
+										note={[...new Set(names)].join(', ')}
+										button="Change"
+										onclick={() => (wifiOpen = true)}
+									/>
+								{:else if p.id === 'collector'}
+									<CollectorSetup device={device.id} canInstall={!!store.me.user} />
+								{:else if p.id === 'actor'}
+									<ActorSetup
+										device={device.id}
+										containers={(device.containers ?? []).map((c) => c.name)}
+										canInstall={!!store.me.user}
+									/>
+								{:else if p.id === 'access'}
+									<AccessSetup device={device.id} canSetUp={!!store.me.user} />
+								{:else}
+									<DeviceKeys device={device.id} canChange={!!store.me.user} />
+								{/if}
+							{/each}
+						</div>
 					{/if}
-					<!-- Linux hosts only (a router or a camera has its own way, or none); shown elsewhere
-					     only when set up already, so it can be removed. -->
-					{#if device.collect || (!device.openwrt && HOSTS.includes(device.kind))}
-						<CollectorSetup device={device.id} canInstall={!!store.me.user} />
-					{/if}
-					{#if device.act || (!device.openwrt && HOSTS.includes(device.kind))}
-						<ActorSetup
-							device={device.id}
-							containers={(device.containers ?? []).map((c) => c.name)}
-							canInstall={!!store.me.user}
-						/>
-					{/if}
-					<AccessSetup device={device.id} canSetUp={!!store.me.user} />
-					{#if device.ssh}
-						<DeviceKeys device={device.id} canChange={!!store.me.user} />
-					{/if}
-				{/key}
-			</div>
+				{/each}
+			{/key}
+			{#if wifiOpen}
+				<WifiDialog device={device.id} onclose={() => (wifiOpen = false)} />
+			{/if}
 		{/if}
 	{:else}
 		{#if device.kind === 'ups'}
@@ -415,11 +488,13 @@
 			</p>
 		{/if}
 
+		<BackupsCard device={device.id} />
 		{#if device.host_report}
 			<HostHealth
 				report={device.host_report}
 				checked={device.host_checked ?? null}
 				error={device.host_error ?? null}
+				forecast={device.host_forecast ?? {}}
 				device={device.id}
 				canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
 			/>
@@ -449,6 +524,7 @@
 							store.now
 						)}
 					{/if}
+					{#if device.collect && device.host_report?.docker}· <ReadAgain device={device.id} />{/if}
 				</p>
 			</div>
 			{#if device.containers}<ContainersTable

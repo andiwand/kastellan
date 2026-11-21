@@ -19,14 +19,16 @@ from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from . import __version__, config_edit, demo, docker, maintenance, notify, releases, vulns
 from . import config as config_mod
-from . import config_edit, demo, docker, notify, vulns
 from .access import hub_address
 from .alarms import Alarms, Message, Problem, Severity, evaluate
 from .audit import Audit
 from .auth import Sessions, password_tag
+from .backups import Backups
 from .config import Config, Device, NotifyChannel, Role
 from .desktop_api import Tickets
+from .disks import DiskHistory
 from .drivers import DRIVERS
 from .history import History
 from .host import actor, collector
@@ -119,6 +121,16 @@ class Hub:
         self.terminals = Terminals()
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)
+        self.disks = DiskHistory(data)
+        self.backups = Backups(data)
+        self.latest_release: releases.Release | None = None  # Kastellan's newest (releases.py)
+        if self.demo:  # the made-up backups reported in: one last night, one failed this morning
+            now = datetime.now(UTC)
+            self.backups.report("nas-b2", True, "", now - timedelta(hours=7))
+            self.backups.report("homeserver-borg", True, "", now - timedelta(hours=31))
+            self.backups.report(
+                "homeserver-borg", False, "Failed to create/acquire the lock", now - timedelta(hours=7)
+            )
         self.push = Push(settings.data, self.vault)  # web push: the hub's key, the browsers that allowed it
         self._events_since = datetime.now(UTC)
         self.started = datetime.now(UTC)  # alarms use only results from after this
@@ -156,6 +168,10 @@ class Hub:
         off on purpose, remove the users and delete the marker."""
         try:
             config = self._load()
+            try:
+                self.backups.sync(config)
+            except OSError as e:
+                raise ConfigProblem("could not save the backup configuration") from e
         except ConfigProblem as problem:
             self.config_error = problem.message
             if self._loaded:
@@ -301,6 +317,7 @@ class Hub:
             asyncio.create_task(self._resolve_hosts(), name="resolve device names"),
             asyncio.create_task(self._poll_hosts(), name="collect from hosts"),
             asyncio.create_task(self._heartbeat(), name="heartbeat"),
+            asyncio.create_task(self._check_releases(), name="Kastellan releases"),
             asyncio.create_task(self._poll_routers(), name="OpenWrt devices"),
         ]
 
@@ -379,39 +396,48 @@ class Hub:
             await asyncio.gather(*(one(id, d) for id, d in list(self.config.devices.items())))
             await asyncio.sleep(DRIVER_EVERY)
 
+    async def collect_host(self, id: str, device: Device) -> None:
+        """Read one host's collector now (host health; its containers, with updates from the
+        registries). Also right after the actor changed something there, so pages see it."""
+        status = self.monitor.status.get(id)
+        if status is None or device.collect is None or self.demo:
+            return
+        try:
+            report = await collector.collect(self.keys, device)
+        except Exception as e:  # what it said last stays, marked by its time
+            status.host_error = _brief(e)
+            log.info("%s: the collector: %s", id, status.host_error)
+            return
+        now = datetime.now(UTC)
+        status.host, status.host_checked, status.host_error = report, now, None
+        self.disks.note(id, report, now)
+        status.host_forecast = self.disks.forecasts(id, now)
+        items = report.get("docker")
+        if isinstance(items, list):
+            try:
+                self._set_containers(id, status, await docker.from_collector(items, self.registries))
+                status.containers_error = None
+            except Exception as e:
+                status.containers_error = _brief(e)
+                log.exception("%s: reading its containers failed", id)
+
     async def _poll_hosts(self) -> None:
-        """The collector on every device with `collect:`, every COLLECT_EVERY seconds (host
-        health; its containers, with updates from the registries)."""
+        """The collector on every device with `collect:`, every COLLECT_EVERY seconds."""
         limit = asyncio.Semaphore(4)
 
         async def one(id: str, device: Device) -> None:
             async with limit:
-                status = self.monitor.status.get(id)
-                if status is None:
-                    return
-                try:
-                    report = await collector.collect(self.keys, device)
-                except Exception as e:  # what it said last stays, marked by its time
-                    status.host_error = _brief(e)
-                    log.info("%s: the collector: %s", id, status.host_error)
-                    return
-                status.host, status.host_checked, status.host_error = report, datetime.now(UTC), None
-                items = report.get("docker")
-                if isinstance(items, list):
-                    try:
-                        self._set_containers(id, status, await docker.from_collector(items, self.registries))
-                        status.containers_error = None
-                    except Exception as e:
-                        status.containers_error = _brief(e)
-                        log.exception("%s: reading its containers failed", id)
+                await self.collect_host(id, device)
 
         while True:
             if self.demo:  # the made-up network's made-up reports
                 for id, report in demo.HOST.items():
                     if status := self.monitor.status.get(id):
                         status.host, status.host_checked = report, datetime.now(UTC)
+                        status.host_forecast = demo.FORECASTS.get(id)
             else:
                 hosts = [(id, d) for id, d in list(self.config.devices.items()) if d.collect]
+                self.disks.forget({id for id, _ in hosts})
                 # Each host on its own: one host's trouble never stops the others, or the loop.
                 await asyncio.gather(*(one(id, d) for id, d in hosts), return_exceptions=True)
             await asyncio.sleep(COLLECT_EVERY)
@@ -652,6 +678,19 @@ class Hub:
                 "error": error,
             }
 
+    async def _check_releases(self) -> None:
+        """Whether a newer Kastellan is out, once a day (releases.py); the Updates page shows it
+        and an info event tells it once."""
+        await asyncio.sleep(60)
+        while True:
+            if self.config.check_releases and not self.demo:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        self.latest_release = await releases.latest(client)
+                except Exception as e:
+                    log.info("can't ask for Kastellan's releases: %s", _brief(e))
+            await asyncio.sleep(releases.EVERY)
+
     async def _heartbeat(self) -> None:
         """Call the heartbeat URL every minute while the hub runs (a dead man's switch)."""
         async with httpx.AsyncClient(timeout=10) as client:
@@ -763,12 +802,19 @@ class Hub:
                     self.ups_switched,
                 )
                 problems += self._vuln_problems()
+                problems += self.backups.problems(self.config, now)
                 problems += self.alarms.carry(self._vuln_keys_unknown())
                 problems += self.alarms.carry(unjudged)
                 # Muted or removed devices: their alarms end without a "back up".
                 quiet = {d for d, until in self.alarms.muted.items() if until > now}
                 quiet |= {a.device for a in self.alarms.open.values() if a.device not in self.config.devices}
-                messages = self.alarms.update(problems, now, quiet) + self._events(now, send=not first)
+                for device in self.alarms.ended_maintenance(now):
+                    self.audit.record("device.maintenance.end", None, device=device, by="time")
+                held = set(maintenance.active(self.config, now, self.alarms.maintenance))
+                remind = timedelta(hours=self.config.alarms.remind_hours) or None
+                problems = [p for p in problems if p.device not in quiet]
+                messages = self.alarms.update(problems, now, quiet, held, remind)
+                messages += self._events(now, send=not first)
                 first = False
                 await self._send(messages, now)
                 await self._retry_outbox(now)
@@ -777,14 +823,24 @@ class Hub:
 
     async def _send(self, messages: list[Message], now: datetime) -> None:
         """Send, and keep what failed for _retry_outbox."""
+        quiet = self._quiet_notifications(now)
+        messages = [m for m in messages if m.device not in quiet]
         failed = await notify.send(self.config.notify, messages, now, push=self.push)
         self._outbox.extend((c, m, now, now, 1) for c, m in failed)
+
+    def _quiet_notifications(self, now: datetime) -> set[str]:
+        return {d for d, until in self.alarms.muted.items() if until > now} | set(
+            maintenance.active(self.config, now, self.alarms.maintenance)
+        )
 
     async def _retry_outbox(self, now: datetime) -> None:
         """Retry failed notifications: after 1, 2, 4 ... 32 minutes from the last try, for a day;
         all due ones at once, within one time limit (a dead ntfy must not hold up the alarms)."""
         due, later = [], []
+        quiet = self._quiet_notifications(now)
         for channel, message, first_try, last_try, tries in self._outbox:
+            if message.device in quiet:
+                continue  # maintenance ends with a fresh alarm if the problem remains
             if (now - first_try).total_seconds() > 86400:
                 log.warning("giving up on a notification after a day: %s", message.title)
             elif channel not in self.config.notify:
@@ -798,7 +854,7 @@ class Hub:
         async with httpx.AsyncClient(timeout=10) as client:
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(20):
-                    await self.push.retry_due(client)
+                    await self.push.retry_due(client, blocked_urls={f"/devices/{d}" for d in quiet})
         if not due:
             return
 
@@ -880,6 +936,13 @@ class Hub:
                 noun = "vulnerability" if len(new) == 1 else "vulnerabilities"
                 title = f"{label}: {len(new)} new known {noun}"
                 out.append(Message(Severity.INFO, title, "; ".join(new[:8]), id))
+        if new_release := releases.newer(
+            self.latest_release if self.config.check_releases else None, __version__
+        ):
+            key = f"kastellan:{new_release.version}"
+            title = f"Kastellan {new_release.version} is out (this hub runs {__version__})"
+            if m := self.alarms.event(key, title, new_release.url, None, now, send):
+                out.append(m)
         # A minute of overlap: the log keeps whole seconds; seen_events keeps it from repeating.
         for change in self.versions.changes(self._events_since - timedelta(seconds=60)):
             device = self.config.devices.get(change["device"])

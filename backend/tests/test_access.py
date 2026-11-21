@@ -9,7 +9,7 @@ import asyncssh
 import pytest
 from fastapi.testclient import TestClient
 
-from kastellan.access import hub_address, setup_script
+from kastellan.access import DROPBEAR, hub_address, setup_script, ssh_greeting
 from kastellan.api import create_app
 from kastellan.auth import hash_password
 from kastellan.settings import Settings
@@ -29,6 +29,41 @@ def test_scripts() -> None:
     with pytest.raises(ValueError):
         setup_script("bad;user", "k", None, False, False)
     assert hub_address("127.0.0.1") == "127.0.0.1"
+
+
+def test_dropbear_only_when_openwrt_runs_it(tmp_path: Path) -> None:
+    """OpenWrt with openssh-server running reads ~/.ssh like any OpenSSH (and knows from=)."""
+    release = tmp_path / "openwrt_release"
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    test = DROPBEAR.replace("/etc/openwrt_release", str(release))
+
+    def dropbear(sshd_running: bool) -> bool:
+        (bin / "pidof").write_text(f"#!/bin/sh\nexit {0 if sshd_running else 1}\n")
+        (bin / "pidof").chmod(0o755)
+        return subprocess.run(["sh", "-c", test], env={"PATH": f"{bin}:/usr/bin:/bin"}).returncode == 0
+
+    assert not dropbear(sshd_running=False)  # not OpenWrt
+    release.write_text("DISTRIB_ID='OpenWrt'\n")
+    assert dropbear(sshd_running=False)
+    assert not dropbear(sshd_running=True)
+    assert DROPBEAR in setup_script("root", "ssh-ed25519 AAAA k", None, False, False)
+
+
+def test_ssh_greeting() -> None:
+    async def main() -> tuple[str, str]:
+        async def greet(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            writer.write(b"SSH-2.0-dropbear_2022.83\r\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(greet, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        async with server:
+            heard = await ssh_greeting("127.0.0.1", port)
+        return heard, await ssh_greeting("127.0.0.1", port, wait=0.5)  # closed by now
+
+    assert asyncio.run(main()) == ("SSH-2.0-dropbear_2022.83", "")
 
 
 @pytest.fixture

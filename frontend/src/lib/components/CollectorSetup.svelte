@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SetupCard from './SetupCard.svelte';
 	import { api, type CollectSetup } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import SetupDialog from './SetupDialog.svelte';
@@ -41,13 +42,20 @@
 
 	const button =
 		'inline-flex h-8 items-center rounded-lg border border-line px-3 text-xs font-medium hover:border-line-strong disabled:opacity-50';
+	const dev = $derived(store.byId.get(device)); // how it stands (config.yaml, reports)
 </script>
 
-<details
-	class="card p-4"
-	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !setup && load()}
+<SetupCard
+	title="Collector"
+	about="Reads how the host is doing: disks, RAID, health, temperatures, updates, containers, VMs, UPS."
+	stage={!dev?.collect
+		? 'available'
+		: dev.outdated_scripts.includes('collector')
+			? 'outdated'
+			: 'set'}
+	note={dev?.collect && dev.host_error ? `not answering: ${dev.host_error}` : ''}
+	onopen={() => !setup && load()}
 >
-	<summary class="cursor-pointer text-sm font-semibold">Collector: how the host is doing</summary>
 	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 	{#if note}<p class="mt-2 text-xs" style:color="var(--good-text)">{note}</p>{/if}
 	{#if !setup && !error}<p class="mt-2 text-xs text-muted">Loading…</p>{/if}
@@ -83,7 +91,7 @@
 			</span>
 		</div>
 	{/if}
-</details>
+</SetupCard>
 
 {#if installing && setup}
 	<SetupDialog

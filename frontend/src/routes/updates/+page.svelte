@@ -5,6 +5,7 @@
 	import FirmwareDialog from '#lib/components/FirmwareDialog.svelte';
 	import Check from '@lucide/svelte/icons/check';
 	import JobStatus from '#lib/components/JobStatus.svelte';
+	import RenewScripts from '#lib/components/RenewScripts.svelte';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 
 	/** Every update waiting on the network, in one list: what, where, from what to what, and the
@@ -15,6 +16,7 @@
 	let confirm = $state<string | null>(null); // one update, asked once before it runs
 	let confirmAll = $state(false);
 	let selected = $state<string[]>([]);
+	let renewing = $state<{ device: string; names: string[] } | null>(null);
 	let firmware = $state<Extract<Update, { kind: 'firmware' }> | null>(null);
 
 	const keyOf = (u: Update) => `${u.device.id}:${u.kind}:${u.kind === 'container' ? u.name : ''}`;
@@ -73,6 +75,23 @@
 	router firmware. Kastellan installs only where a device allows it, and nothing by itself (except a
 	fix for a known vulnerability on an internet-facing device, where that's switched on).
 </p>
+
+{#if store.health?.newer}
+	{@const n = store.health.newer}
+	<div class="card mt-6 flex flex-wrap items-center gap-x-3 gap-y-1 p-4 text-sm">
+		<span class="font-medium">Kastellan {n.version} is out</span>
+		<span class="text-muted">this hub runs {store.health.version}</span>
+		<a class="text-accent hover:underline" href={n.url} target="_blank" rel="noopener noreferrer">
+			What changed
+		</a>
+		<span class="w-full text-xs text-muted">
+			Set the image tag in compose.yaml to {n.version}, then run:
+			<code class="font-mono">
+				docker compose pull kastellan && docker compose up -d kastellan
+			</code>
+		</span>
+	</div>
+{/if}
 
 {#if runner.progress.total}
 	{@const p = runner.progress}
@@ -250,17 +269,25 @@
 						{/if}
 					</div>
 				{:else if u.kind === 'scripts'}
-					<a
-						class="text-xs text-muted hover:text-text"
-						href="/devices/{u.device.id}?tab=setup"
-						title="Kastellan's keys may only run these scripts, not replace them: renewing takes a login on the host"
-					>
-						set up again there
-					</a>
+					{#if admin}
+						<button
+							class="btn btn-sm"
+							title="Kastellan's keys may only run these scripts, not replace them: renewing takes a login on the host"
+							onclick={() => (renewing = { device: u.device.id, names: u.names })}
+						>
+							Renew
+						</button>
+					{:else}
+						<span class="text-xs text-muted">admins only</span>
+					{/if}
 				{/if}
 			</li>
 		{/each}
 	</ul>
+{/if}
+
+{#if renewing}
+	<RenewScripts device={renewing.device} names={renewing.names} onclose={() => (renewing = null)} />
 {/if}
 
 {#if firmware && firmware.device.router?.firmware}

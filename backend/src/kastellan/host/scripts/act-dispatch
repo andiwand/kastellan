@@ -15,11 +15,15 @@ VM_NAME = re.compile(  # libvirt allows more; Kastellan this much, and never a n
     r"(?!\d+$)(?![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$)"
     r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}"  # virsh reads those as a domain id or UUID first
 )
+UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
 FORMS = {
     "update-container": NAME,  # pull its image, recreate it with the same settings
+    "rollback-container": NAME,  # back to the image it ran before its last update
     "restart-container": NAME,
     "start-container": NAME,
     "stop-container": NAME,
+    "container-logs": NAME,  # reads only: the last lines of its log
+    "unit-logs": UNIT,  # reads only: the last lines of a systemd unit's journal
     "vm-start": VM_NAME,  # libvirt's virtual machines
     "vm-shutdown": VM_NAME,
     "vm-reboot": VM_NAME,

@@ -247,3 +247,72 @@ def test_vms_in_the_report() -> None:
     # One that should start with the host but doesn't: a warning. One left off on purpose: nothing.
     assert found == {"host:sv1:vm:win11": "SV1: VM win11 is shut off"}
     assert normalize({"vms": "junk"})["vms"] is None and "vms" not in normalize({})
+
+
+def test_the_collector_tells_a_kept_previous_image() -> None:
+    """kastellan-previous:<name> (kept by the actor's update) shows as the container's
+    `previous` when it isn't what runs."""
+    import shutil
+    import socketserver
+    import tempfile
+    import threading
+
+    a, b = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    answers = {
+        "/containers/json": [
+            {"Names": ["/app"], "Image": "me/app:1", "ImageID": b, "State": "running"},
+            {"Names": ["/db"], "Image": "db:2", "ImageID": a, "State": "exited"},
+        ],
+        "/images/json": [{"Id": a, "RepoTags": ["kastellan-previous:app", "kastellan-previous:db"]}],
+    }
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self) -> None:
+            path = self.rfile.readline().split()[1].decode().split("?")[0]
+            while self.rfile.readline() not in (b"\r\n", b""):
+                pass
+            body = json.dumps(answers.get(path, {"RepoDigests": []})).encode()
+            self.wfile.write(b"HTTP/1.0 200 OK\r\n\r\n" + body)
+
+    folder = Path(tempfile.mkdtemp(prefix="kcol", dir="/tmp"))  # short: a socket path's limit
+    sock = folder / "d.sock"
+    server = socketserver.UnixStreamServer(str(sock), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        code = collector.script().replace("/var/run/docker.sock", str(sock))
+        r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=60)
+        docker = {c["name"]: c for c in normalize(json.loads(r.stdout))["docker"]}
+    finally:
+        server.shutdown()
+        shutil.rmtree(folder, ignore_errors=True)
+    assert docker["app"]["previous"] == "a" * 12
+    assert docker["db"]["previous"] is None  # it runs that one: nothing to go back to
+
+
+def test_reading_a_host_again(tmp_path: Path, monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from kastellan.api import create_app
+    from kastellan.auth import hash_password
+    from kastellan.settings import Settings
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "devices:\n  nas:\n    host: 127.0.0.1\n    collect: {user: kastellan-collect}\n"
+        "  cam:\n    host: 127.0.0.2\n"
+        f"users:\n  ada:\n    role: admin\n    password: {hash_password('admin password')}\n"
+    )
+    asked = []
+
+    async def fake_collect(keys, device):
+        asked.append(device.host)
+        return {"version": 1, "errors": {}}
+
+    monkeypatch.setattr(collector, "collect", fake_collect)
+    h = {"X-Kastellan": "1"}
+    with TestClient(create_app(Settings(config=path, data=tmp_path))) as c:
+        c.post("/api/auth/login", json={"user": "ada", "password": "admin password"}, headers=h)
+        r = c.post("/api/devices/nas/collect/now", headers=h)
+        assert r.status_code == 200 and r.json()["checked"] and "127.0.0.1" in asked
+        assert c.post("/api/devices/nas/collect/now", headers=h).status_code == 429  # just read
+        assert c.post("/api/devices/cam/collect/now", headers=h).status_code == 409

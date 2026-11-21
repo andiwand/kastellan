@@ -73,6 +73,20 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     revision makes NVD findings `confidence="upstream"`. `vuln_policy.py`: the table from
     findings to alarms, and `auto_update_reason` (all conditions or nothing). The hub sweeps two
     minutes after start and every `vulns.every_hours`.
+  - `maintenance.py`: planned windows (config `maintenance:`, once or weekly; naive and weekly
+    times use the hub’s timezone, one-off forms send UTC; for devices, groups, sites) and ones started from the app (`Alarms.maintenance`,
+    `POST /api/devices|groups/{id}/maintenance`, audited, ended by time in `_watch_alarms`).
+    `evaluate` doesn't know of them: `Alarms.update(..., held=)` opens a held device's alarms
+    without a message (`Alarm.held`), sends it when the maintenance ends with the problem still
+    there, and resolves held ones silently.
+    `remind` (config `alarms.remind_hours`): an unacknowledged alarm is said again ("Still: …").
+  - `backups.py` + `backups_api.py`: config `backups:` (id → name, device, within_hours); jobs
+    report with `POST /api/backups/<id>/ok|fail` and a bearer token (SHA-256 kept in
+    `<data>/backups.json`; made on the device page, audited). The Guard lets exactly those two
+    paths through without session or CSRF header (`auth_api.REPORT_PATH`); wrong tokens hit a
+    `Brake`. `Backups.problems` (warning, `backup:<id>`, on its device): failed, late, never.
+  - `releases.py`: GitHub’s highest published version (including 0.x prereleases), daily (`hub._check_releases`, not in demo mode, off
+    with `check_releases: false`); `/api/health` `newer`, and an info event once per version.
   - Alarms only from fresh results (after `hub.started`, not overdue); folding to the top-most
     down ancestor; `RESOLVE_AFTER` hysteresis; silent resolves for muted, removed or folded
     devices. Failed notifications wait in `hub._outbox` and are retried with backoff for a day.
@@ -129,7 +143,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `command=`.
   - Keys go onto devices only through `access.authorize()`: written as the target user (su), never
     by root into a home that user controls (a symlink there would aim root's write anywhere);
-    dropbear (`/etc/openwrt_release`) gets plain lines, OpenSSH `from=` (and `restrict`).
+    dropbear (`access.DROPBEAR`: OpenWrt without a running sshd) gets plain lines, OpenSSH
+    (also OpenWrt with openssh-server) `from=` (and `restrict`).
   - A command run over SSH with nothing to send gets `stdin=asyncssh.DEVNULL`: with `input=""`
     asyncssh leaves stdin open and a script that reads it waits forever.
   - `tls.py`: the certificate an https check meets (its own handshake, one overall time limit,
@@ -173,12 +188,22 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     Virtual machines: the collector's `vms` section reads libvirt through `virsh` (fixed argv,
     `list --all --name`, `dominfo`, `domblklist`; never the XML), shown as `vms` in /api/devices;
     an autostart VM that isn't running is a warning (`alarms.host_problems`).
+    `disks.py`: hourly disk usage per host and mount (`<data>/disk-usage.json`, 30 days), a line
+    through the last 7 days (from the last clean-up) gives `host_forecast` (days until full);
+    `host_problems` warns under `alarms.disk_days` (same key as the full-disk alarm).
   - `host/actor.py` + `host/scripts/act-*` + `act_api.py`: the actor. `act-dispatch` (as
     kastellan-act, bound to the act key) accepts exact forms and execs `sudo -n python3 -I
     <ability> <arg>`; each ability is `act-common` + `act-<ability>`, root-owned, checks its
     argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog. `install_script` is
     declarative (abilities not chosen are removed). Containers: update, restart, start, stop
-    (`CONTAINER_ABILITIES`, names `NAME`); VMs: vm-start, vm-shutdown (ACPI, waits 3 min),
+    (`CONTAINER_ABILITIES`, names `NAME`); update and rollback (`REPLACING`) share
+    `act-containers` (settings for the new container, the swap that puts the old one back): an
+    update keeps the image it ran before as `kastellan-previous:<name>` (the collector reports it
+    as a container's `previous`), rollback points the container's reference at it and swaps;
+    `container-logs` and `unit-logs` (`READING`: no lock, no re-collect after; journal by
+    `UNIT` name, allow list `*`) return `lines`, excluded from hub and host audit logs. Renewal uses `allowed` to preserve
+    each ability’s targets, including restricted unit lists.
+    VMs: vm-start, vm-shutdown (ACPI, waits 3 min),
     vm-reboot, vm-force-off (`VM_ABILITIES`, names `VM_NAME`, allows `+`); each its own allow
     list (`install_script(..., vms=)`). Tests run the real scripts against a fake Docker API and
     a fake `virsh` (tests/test_actor.py). Root scripts take nothing from the environment.

@@ -64,6 +64,7 @@ export interface Device {
 	router_checked?: string | null;
 	router_error?: string | null;
 	host_report?: HostReport | null;
+	host_forecast?: Record<string, number> | null; // days until full, per mount (disks.py)
 	/** libvirt's virtual machines on the host, from its collector (null: it can't tell). */
 	vms?: Vm[] | null;
 	runs_on?: RunsOn | null;
@@ -242,7 +243,12 @@ export interface Settings {
 	version: string;
 	secrets: Record<string, boolean>;
 	sections: {
-		general: { check_interval: number; retention_days: number; heartbeat: string | null };
+		general: {
+			check_interval: number;
+			retention_days: number;
+			heartbeat: string | null;
+			check_releases?: boolean;
+		};
 		alarms: {
 			alarms: {
 				down_after: number;
@@ -250,6 +256,8 @@ export interface Settings {
 				disk_warning: number;
 				disk_critical: number;
 				disk_temperature: number;
+				remind_hours?: number;
+				disk_days?: number;
 			};
 		};
 		notify: { notify: NotifyChannelForm[] };
@@ -258,6 +266,10 @@ export interface Settings {
 		groups: { groups: Record<string, { name: string; devices: string[] }> };
 		sites: { sites: Record<string, string> };
 		users: { users: Record<string, { role: 'admin' | 'observer'; password?: string }> };
+		maintenance: { maintenance: MaintenanceWindowForm[] };
+		backups: {
+			backups: Record<string, { name?: string; device: string; within_hours?: number }>;
+		};
 	};
 }
 
@@ -414,6 +426,7 @@ export interface Container {
 	update: boolean;
 	update_to: string | null;
 	unchecked: string | null;
+	previous?: string | null; // the image kept from before its last update (actor), short id
 }
 
 export interface Alarm {
@@ -428,14 +441,61 @@ export interface Alarm {
 	acknowledged_by: string | null;
 	acknowledged_note: string | null;
 	acknowledged_at: string | null;
+	held?: boolean; // opened during maintenance: not sent (yet)
+}
+
+/** A device in maintenance now (maintenance.py). */
+export interface InMaintenance {
+	until: string;
+	reason: string;
+	planned: boolean; // from config.yaml; else started here, and can be ended here
+}
+
+/** A planned window, with its current or next times. */
+export interface MaintenanceWindowInfo {
+	index: number;
+	name: string;
+	devices: string[];
+	start: string | null;
+	end: string | null;
+	now: boolean;
+}
+
+/** A planned window as config.yaml has it. */
+export interface MaintenanceWindowForm {
+	name?: string;
+	devices?: string[];
+	groups?: string[];
+	sites?: string[];
+	start?: string | null;
+	end?: string | null;
+	days?: string[];
+	at?: string | null;
+	minutes?: number | null;
+}
+
+/** A backup that reports in (backups.py). */
+export interface Backup {
+	id: string;
+	name: string;
+	device: string;
+	within_hours: number;
+	ok: string | null; // when it last said it succeeded
+	failed: string | null;
+	message: string;
+	since: string;
+	token: boolean; // a token was made for its job
+	state: 'ok' | 'failed' | 'late' | 'waiting';
 }
 
 export interface Alarms {
 	open: Alarm[];
 	muted: Record<string, string>;
+	maintenance?: Record<string, InMaintenance>;
+	windows?: MaintenanceWindowInfo[];
 	channels: number;
 	heartbeat?: { on: boolean; last: string | null; error: string | null };
-	limits?: { disk_warning: number; disk_critical: number };
+	limits?: { disk_warning: number; disk_critical: number; disk_days?: number };
 }
 
 export interface Finding {
@@ -567,6 +627,8 @@ export interface Setup {
 
 export interface Access {
 	user: string;
+	/** OpenWrt: one login (root), no sudo; only the first way applies. */
+	openwrt: boolean;
 	port: number;
 	hub_ip: string | null;
 	key: string;
@@ -591,6 +653,8 @@ export interface Health {
 	vault: VaultState;
 	/** Locked rings Kastellan uses by itself: what needs their secrets waits. */
 	vault_waiting: string[];
+	/** A newer Kastellan, if one is out (releases.py). */
+	newer?: { version: string; url: string } | null;
 }
 
 export type VaultState = 'absent' | 'locked' | 'partly' | 'unlocked' | 'damaged';
@@ -920,7 +984,10 @@ export const api = {
 	vpnKeyRotate: (step: 'start' | 'finish' | 'cancel', anyway = false) =>
 		call<VpnKey>('POST', `/vpn/key/rotate/${step}`, step === 'finish' ? { anyway } : undefined),
 	vpnKeyForget: (host: string) => call<VpnKey>('POST', '/vpn/key/rotate/forget', { host }),
-	access: (device: string) => get<Access>(`/devices/${encodeURIComponent(device)}/access`),
+	access: (device: string, login?: string) =>
+		get<Access>(
+			`/devices/${encodeURIComponent(device)}/access${login ? `?login=${encodeURIComponent(login)}` : ''}`
+		),
 	ovpnInstall: (vid: string, role: string) =>
 		call<{ output: string }>('POST', `/vpns/${vid}/openvpn/setup/${role}/install`),
 	config: () => get<{ text: string; version: string; error: string | null }>('/config'),
@@ -955,11 +1022,18 @@ export const api = {
 			'POST',
 			`/devices/${encodeURIComponent(id)}/collect/test`
 		),
-	actScript: (id: string, abilities: string[], containers: string[], vms: string[] = []) =>
+	actScript: (
+		id: string,
+		abilities: string[],
+		containers: string[],
+		vms: string[] = [],
+		allowed?: Record<string, string[]>
+	) =>
 		call<ActSetup>('POST', `/devices/${encodeURIComponent(id)}/act/script`, {
 			abilities,
 			containers,
-			vms
+			vms,
+			allowed
 		}),
 	act: (id: string, ability: string, container?: string) =>
 		call<{
@@ -972,6 +1046,18 @@ export const api = {
 		}>('POST', `/devices/${encodeURIComponent(id)}/act/${ability}`, {
 			container: container ?? null
 		}),
+	collectNow: (id: string) =>
+		call<{ checked: string | null }>('POST', `/devices/${encodeURIComponent(id)}/collect/now`),
+	backups: () => get<Backup[]>('/backups'),
+	backupToken: (id: string) =>
+		call<{ token: string }>('POST', `/backups/${encodeURIComponent(id)}/token`),
+	/** The last lines of a container's log or a systemd unit's journal, through the actor. */
+	logs: (id: string, what: { container: string } | { unit: string }) =>
+		call<{ lines: string[]; running?: boolean; state?: string }>(
+			'POST',
+			`/devices/${encodeURIComponent(id)}/act/${'unit' in what ? 'unit-logs' : 'container-logs'}`,
+			what
+		),
 	openwrtScript: (id: string, abilities: string[], services: string[] = []) =>
 		call<OpenWrtSetup>('POST', `/devices/${encodeURIComponent(id)}/openwrt/script`, {
 			abilities,
@@ -1058,6 +1144,12 @@ export const api = {
 	vaultDelete: (id: string) => call<{ id: string }>('DELETE', `/vault/entries/${id}`),
 	vaultReveal: (id: string, password: string) =>
 		call<{ secret: string }>('POST', `/vault/entries/${id}/reveal`, { password }),
+	maintenance: (kind: 'devices' | 'groups', id: string, minutes: number, reason = '') =>
+		call<{ devices: string[]; until: string | null }>(
+			'POST',
+			`/${kind}/${encodeURIComponent(id)}/maintenance`,
+			{ minutes, reason }
+		),
 	mute: (device: string, minutes: number) =>
 		call<{ muted_until: string | null }>('POST', `/devices/${encodeURIComponent(device)}/mute`, {
 			minutes

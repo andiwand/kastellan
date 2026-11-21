@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SetupCard from './SetupCard.svelte';
 	import { VM_NAME } from '#lib/actions.js';
 	import { untrack } from 'svelte';
 	import { api, type ActSetup } from '#lib/api.js';
@@ -30,12 +31,15 @@
 	// The host's VMs as its collector reports them (none known: none to pick, "all" still works).
 	// Only names the actor can take (actions.ts VM_NAME); the others are named, not offered.
 	const vmNames = $derived((store.byId.get(device)?.vms ?? []).map((v) => v.name));
-	const vms = $derived(vmNames.filter((n) => VM_NAME.test(n)));
+	const vms = $derived([...new Set([...vmNames.filter((n) => VM_NAME.test(n)), ...vmsPicked])]);
+	const containerNames = $derived([...new Set([...containers, ...picked])]);
 	const unusable = $derived(vmNames.filter((n) => !VM_NAME.test(n)));
 
 	const targets = $derived(all ? ['*'] : picked);
 	const vmTargets = $derived(vmsAll ? ['*'] : vmsPicked);
-	const containerAbilities = $derived(chosen.some((a) => a.endsWith('-container')));
+	const containerAbilities = $derived(
+		chosen.some((a) => a.endsWith('-container') || a === 'container-logs')
+	);
 	const vmAbilities = $derived(chosen.some((a) => a.startsWith('vm-')));
 	const ready = $derived(
 		(!containerAbilities || targets.length > 0) && (!vmAbilities || vmTargets.length > 0)
@@ -50,7 +54,7 @@
 				chosen = Object.keys(setup.allowed);
 				const of = (kind: (a: string) => boolean) =>
 					Object.entries(setup!.allowed!).filter(([a]) => kind(a));
-				const isContainer = (a: string) => a.endsWith('-container');
+				const isContainer = (a: string) => a.endsWith('-container') || a === 'container-logs';
 				const isVm = (a: string) => a.startsWith('vm-');
 				uneven =
 					new Set(of(isContainer).map(([, l]) => [...l].sort().join(' '))).size > 1 ||
@@ -77,20 +81,20 @@
 			if (opened && setup) load();
 		});
 	});
+	const dev = $derived(store.byId.get(device)); // how it stands (config.yaml, reports)
 </script>
 
-<details
-	class="card p-4"
-	ontoggle={(e) => {
-		if ((e.currentTarget as HTMLDetailsElement).open && !opened) {
+<SetupCard
+	title="Actor"
+	about="What Kastellan may change here, ability by ability: containers, VMs, system updates, a reboot, logs."
+	stage={!dev?.act ? 'available' : dev.outdated_scripts.includes('actor') ? 'outdated' : 'set'}
+	onopen={() => {
+		if (!opened) {
 			opened = true;
 			load(true);
 		}
 	}}
 >
-	<summary class="cursor-pointer text-sm font-semibold">
-		Actor: what Kastellan may change here
-	</summary>
 	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 	{#if !setup && !error}<p class="mt-2 text-xs text-muted">Loading…</p>{/if}
 	{#if setup}
@@ -125,7 +129,7 @@
 				</label>
 				{#if !all}
 					<div class="ml-6.5 grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-3">
-						{#each containers as name (name)}
+						{#each containerNames as name (name)}
 							<label class="choice font-mono text-xs">
 								<input type="checkbox" value={name} bind:group={picked} />
 								<span class="truncate">{name}</span>
@@ -194,7 +198,7 @@
 			</button>
 		</div>
 	{/if}
-</details>
+</SetupCard>
 
 {#if installing && setup}
 	<SetupDialog

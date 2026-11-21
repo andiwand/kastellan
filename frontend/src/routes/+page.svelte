@@ -50,7 +50,12 @@
 		)
 	);
 	const unchecked = $derived(
-		devices.reduce((n, d) => n + (d.containers ?? []).filter((c) => c.unchecked).length, 0)
+		devices.reduce(
+			(n, d) =>
+				n +
+				(d.containers ?? []).filter((c) => c.unchecked && c.unchecked !== 'not checked yet').length,
+			0
+		)
 	);
 
 	const alwaysOn = $derived(devices.filter((d) => d.always_on));
@@ -235,6 +240,14 @@
 						>
 							{alarm.title}
 						</a>
+						{#if alarm.held}
+							<span
+								class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs text-muted"
+								title="Opened during maintenance: sent only if still there when it ends"
+							>
+								maintenance · not sent
+							</span>
+						{/if}
 						{#if alarm.acknowledged_by}
 							<span class="text-xs text-muted">
 								{alarm.acknowledged_by} is on it{alarm.acknowledged_note

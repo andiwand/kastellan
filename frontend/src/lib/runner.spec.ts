@@ -108,4 +108,24 @@ describe('runner', () => {
 			'sv1: force off VM stuck'
 		);
 	});
+
+	it('shows a row its latest job, a done one only for a while, a failed one until dismissed', async () => {
+		const jobs = [
+			{ device: 'box', kind: 'stop', name: 'app' },
+			{ device: 'box', kind: 'start', name: 'app' }
+		] as const;
+		runner.add([jobs[0]]);
+		await idle();
+		runner.add([jobs[1]]);
+		await idle();
+		const last = runner.latest([...jobs])!;
+		expect(last.job.kind).toBe('start');
+		expect(runner.latest([...jobs], last.state.ended! + 61_000)).toBeUndefined();
+		const broken = { device: 'box', kind: 'restart', name: 'broken' } as const;
+		runner.add([broken]);
+		await idle();
+		expect(runner.latest([broken], Date.now() + 3_600_000)?.state.state).toBe('failed');
+		runner.dismiss(broken);
+		expect(runner.latest([broken])).toBeUndefined();
+	});
 });

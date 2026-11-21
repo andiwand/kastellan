@@ -175,12 +175,12 @@ class Push:
             del self._pending[:-MAX_PENDING]
         return all(results)
 
-    async def retry_due(self, client: httpx.AsyncClient) -> None:
+    async def retry_due(self, client: httpx.AsyncClient, blocked_urls: set[str] | None = None) -> None:
         """Try the failed pushes that are due again (after 1, 2, 4 ... minutes, for a day)."""
         now, due, later = time.time(), [], []
         known = {s["endpoint"]: s for s in self.subscriptions}
         for endpoint, payload, first, last, tries in self._pending:
-            if endpoint not in known or now - first > TTL:
+            if endpoint not in known or now - first > TTL or payload.get("url") in (blocked_urls or set()):
                 continue  # dropped meanwhile, or too old to matter
             if now - last >= RETRY_EVERY * 2 ** min(tries - 1, 6):
                 due.append((endpoint, payload, first, tries))
