@@ -282,6 +282,15 @@ export interface Settings {
 		};
 		device_backups: { device_backups: { every_hours?: number; keep?: number } | null };
 		wifi: { wifi: { scan_at?: string | null } | null };
+		hub_backup: {
+			hub_backup: {
+				every_hours?: number;
+				keep?: number;
+				history?: boolean;
+				logs?: boolean;
+				targets?: { path: string; device?: string | null }[];
+			} | null;
+		};
 		internet: {
 			internet: {
 				enabled?: boolean;

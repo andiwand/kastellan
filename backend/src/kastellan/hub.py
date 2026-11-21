@@ -27,6 +27,7 @@ from . import (
     demo_more,
     devbackups,
     docker,
+    hubbackup,
     internet_api,
     logs_poll,
     maintenance,
@@ -50,6 +51,7 @@ from .fritzbox.client import Fritz
 from .history import History
 from .host import actor, collector
 from .hub_errors import yaml_problem
+from .hubbackup import HubBackup
 from .internet import Internet
 from .logs import LogStore
 from .monitor import DeviceStatus, Monitor, run_check
@@ -158,6 +160,8 @@ class Hub:
             else lambda: base64.b64decode(self.own_secret(devbackups.KEY_SECRET, devbackups.new_key)),
         )
         self.backup_status: dict[str, dict[str, Any]] = {}  # per device: the last attempt
+        # Kastellan's own backup (hubbackup.py): its key comes from a passphrase, not the hub.
+        self.hub_backup = HubBackup(data if self.demo else settings.data, self._hub_backup_key)
         self.internet = Internet(data / "internet")  # the internet connection (internet.py)
         self.wifi_scans = Scans(data / "wifi")  # what the radios heard (wifi.py)
         self.wifi_scanning: set[str] = set()  # devices scanning now
@@ -377,6 +381,7 @@ class Hub:
             asyncio.create_task(logs_poll.run(self), name="logs"),
             asyncio.create_task(self._poll_fritzboxes(), name="FRITZ!Boxes"),
             asyncio.create_task(devbackups.run(self), name="device backups"),
+            asyncio.create_task(hubbackup.run(self), name="Kastellan's own backup"),
             asyncio.create_task(internet_api.run(self), name="internet connection"),
             asyncio.create_task(wifi_api.run(self), name="scheduled Wi-Fi scans"),
         ]
@@ -610,6 +615,12 @@ class Hub:
             if not self.vault.is_open(KASTELLAN):
                 self.push.forget_key()
                 self._ubus, self._fritz = {}, {}
+
+    def _hub_backup_key(self) -> bytes:
+        """The key of Kastellan's own backup (made from its passphrase; hubbackup.py)."""
+        import json as _json
+
+        return base64.b64decode(_json.loads(self.secrets.get(hubbackup.KEY_SECRET))["key"])
 
     def own_secret(self, name: str, make=None) -> str:
         """A secret Kastellan makes for itself (a key, a password only it uses): read, or made
@@ -942,6 +953,7 @@ class Hub:
                 problems += self._vuln_problems()
                 problems += self.backups.problems(self.config, now)
                 problems += devbackups.problems(self, now)
+                problems += hubbackup.problems(self, time.time())
                 problems += internet_api.problems(self)
                 problems += self.alarms.carry(self._vuln_keys_unknown())
                 problems += self.alarms.carry(unjudged)

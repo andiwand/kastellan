@@ -22,6 +22,7 @@ services:
     volumes:
       - ./config:/config # config.yaml
       - ./data:/data # history, sign-in state, the hub's SSH key, the audit log
+      # - /mnt/nas/kastellan:/backup # a place for Kastellan's own backup (Settings → Kastellan's own backup)
 
   # Remote desktop (RDP, VNC): Apache Guacamole's daemon. Kastellan talks to it on localhost;
   # it reaches the desktops. Leave it out if you don't use remote desktop.

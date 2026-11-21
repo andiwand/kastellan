@@ -55,8 +55,11 @@ MAX_DIFF_TEXT = 512 * 1024
 SECRET_FILE = re.compile(
     r"(^|/)(shadow|passwd-|gshadow|\.htpasswd)$|(^|/)etc/dropbear/|\.key$|_key$|(^|/)etc/wireguard/"
     r"|(^|/)etc/openvpn/|(^|/)etc/ssl/private/|(^|/)etc/acme/.*\.key|/\.ssh/|^export-password\.txt$"
+    # Kastellan's own data (hubbackup.py): key rings, secrets as files, its SSH and push keys.
+    r"|^vault\.json$|^secrets/|^ssh/[^/]*_ed25519|^push/|^sessions\.json$"
 )
 TEXT_CONFIGS = {f"etc/config/{name}" for name in ("wireless", "network", "system", "dhcp", "firewall")}
+TEXT_CONFIGS |= {"@config/config.yaml"}  # Kastellan's own (hubbackup.py): passwords masked like the rest
 # uci options (and similar `name value` lines) whose values are secrets.
 SECRET_OPTIONS = (
     "key|key[1-4]|password|passwd|sae_password|private_key|preshared_key|psk|wpa_psk|auth_secret"

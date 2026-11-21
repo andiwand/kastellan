@@ -30,6 +30,7 @@ from .groups_api import router as groups_router
 from .host import collector
 from .host_api import router as host_router
 from .hub import Hub
+from .hubbackup_api import router as hubbackup_router
 from .internet_api import router as internet_router
 from .logs_api import router as logs_router
 from .monitor import CheckStatus, DeviceStatus
@@ -124,6 +125,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(backups_router(hub))
     app.include_router(logs_router(hub))
     app.include_router(devbackups_router(hub))
+    app.include_router(hubbackup_router(hub))
     app.include_router(fritzbox_router(hub))
     app.include_router(internet_router(hub))
     app.include_router(wifi_router(hub))

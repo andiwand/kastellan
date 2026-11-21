@@ -94,6 +94,13 @@
 	});
 	let devBackups = $state({ every_hours: 24, keep: 60 });
 	let wifiScan = $state({ on: true, at: '04:00' });
+	let hubBackup = $state({
+		every_hours: 24,
+		keep: 30,
+		history: true,
+		logs: false,
+		targets: [] as { path: string; device: string }[]
+	});
 	let net = $state({
 		enabled: true,
 		router: '',
@@ -169,6 +176,17 @@
 			const b = s.device_backups?.device_backups ?? {};
 			devBackups = { every_hours: b.every_hours ?? 24, keep: b.keep ?? 60 };
 			next.device_backups = json(devBackups);
+		}
+		if (clean('hub_backup', hubBackup)) {
+			const h = s.hub_backup?.hub_backup ?? {};
+			hubBackup = {
+				every_hours: h.every_hours ?? 24,
+				keep: h.keep ?? 30,
+				history: h.history ?? true,
+				logs: h.logs ?? false,
+				targets: (h.targets ?? []).map((t) => ({ path: t.path, device: t.device ?? '' }))
+			};
+			next.hub_backup = json(hubBackup);
 		}
 		if (clean('wifi', wifiScan)) {
 			const w = s.wifi?.wifi;
@@ -434,6 +452,69 @@
 					<input class="input" type="number" min="1" max="65535" bind:value={logs.tlsPort} />
 				</label>
 			{/if}
+		</SettingsCard>
+
+		<SettingsCard
+			title="Kastellan's own backup"
+			description="Where Kastellan's own backup goes besides the hub's disk: a folder (a NAS share mounted into the container, e.g. /backup) or a folder on a device over SFTP (Kastellan's SSH login there). Each copy is a whole backup; the passphrase is made on the Backups page."
+			dirty={json(hubBackup) !== base.hub_backup}
+			reset={() => (hubBackup = JSON.parse(base.hub_backup))}
+			save={() =>
+				save('hub_backup', {
+					hub_backup: {
+						...hubBackup,
+						targets: hubBackup.targets.map((t) => ({ path: t.path, device: t.device || null }))
+					}
+				})}
+		>
+			<div class="grid gap-4 sm:grid-cols-2">
+				<label class="field">
+					Every (hours)
+					<input class="input" type="number" min="1" bind:value={hubBackup.every_hours} />
+				</label>
+				<label class="field">
+					Keep (versions)
+					<input class="input" type="number" min="1" max="1000" bind:value={hubBackup.keep} />
+				</label>
+			</div>
+			<label class="choice text-sm">
+				<input type="checkbox" bind:checked={hubBackup.history} /> With the check history (the graphs)
+			</label>
+			<label class="choice text-sm">
+				<input type="checkbox" bind:checked={hubBackup.logs} /> With the central logs (large)
+			</label>
+			{#each hubBackup.targets as t, i (i)}
+				<div class="flex flex-wrap items-end gap-2">
+					<label class="field">
+						On
+						<select class="input" bind:value={t.device}>
+							<option value="">this hub (a mounted folder)</option>
+							{#each (store.devices ?? []).filter((d) => d.ssh) as d (d.id)}
+								<option value={d.id}>{d.name} (SFTP)</option>
+							{/each}
+						</select>
+					</label>
+					<label class="field min-w-64 flex-1">
+						Folder
+						<input class="input" placeholder="/backup/kastellan" bind:value={t.path} />
+					</label>
+					<button
+						class="btn btn-sm mb-0.5"
+						type="button"
+						onclick={() => hubBackup.targets.splice(i, 1)}
+						aria-label="Remove"
+					>
+						<Trash2 class="size-3.5" />
+					</button>
+				</div>
+			{/each}
+			<button
+				class="btn btn-sm self-start"
+				type="button"
+				onclick={() => hubBackup.targets.push({ path: '', device: '' })}
+			>
+				<Plus class="size-3.5" /> A place for copies
+			</button>
 		</SettingsCard>
 
 		<SettingsCard

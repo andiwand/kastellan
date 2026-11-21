@@ -28,7 +28,17 @@ def main() -> None:
     )
     secret.add_argument("action", choices=["set", "list"])
     secret.add_argument("name", nargs="?")
+    restoring = commands.add_parser(
+        "restore", help="bring a hub back from its own backup (a backup folder or a .kbak file)"
+    )
+    restoring.add_argument("source", help="a copy of the backup folder, or a downloaded .kbak file")
+    restoring.add_argument("--version", help="a version's id (default: the newest)")
+    restoring.add_argument("--force", action="store_true", help="write over a data folder with keys")
+    restoring.add_argument("--list", action="store_true", help="only list the versions")
     args = parser.parse_args()
+    if args.command == "restore":
+        restore_command(args.source, args.version, args.force, args.list)
+        return
     if args.command == "hash-password":
         hash_password_command(allow_short=args.short)
         return
@@ -74,6 +84,42 @@ def secret_command(action: str, name: str | None) -> None:
         raise SystemExit("Nothing stored.")
     secrets.set(name, value)
     print(f"Stored {name}.")
+
+
+def restore_command(source: str, version: str | None, force: bool, only_list: bool) -> None:
+    """`kastellan restore /backup/kastellan`: asks for the backup's passphrase (or takes
+    KASTELLAN_BACKUP_PASSPHRASE) and writes config.yaml and the data folder as the settings
+    name them (KASTELLAN_CONFIG, KASTELLAN_DATA). Run it with the hub stopped."""
+    import getpass
+    import json
+    import os
+    from pathlib import Path
+
+    from . import devbackups, hubbackup
+
+    settings = Settings.from_env()
+    path = Path(source)
+    if not path.exists():
+        raise SystemExit(f"No {path}.")
+    phrase = os.environ.get("KASTELLAN_BACKUP_PASSPHRASE") or getpass.getpass("The backup's passphrase: ")
+    try:
+        if path.is_dir():
+            if only_list:
+                header = json.loads((path / hubbackup.HEADER).read_text())
+                key = hubbackup.key_from(header, phrase)
+                for s in devbackups.Store(path, lambda: key).snapshots(hubbackup.ID):
+                    print(f"{s.id}  {s.taken}  {len(s.files)} files")
+                return
+            done = hubbackup.restore(path, phrase, settings.data, settings.config, version, force)
+        else:
+            done = hubbackup.restore_file(path, phrase, settings.data, settings.config, force)
+    except (ValueError, OSError, KeyError) as e:
+        raise SystemExit(f"Not restored: {e}") from e
+    except Exception as e:  # a damaged or altered backup (AES-GCM refuses it)
+        why = f"the backup is damaged or not this passphrase's ({type(e).__name__})"
+        raise SystemExit(f"Not restored: {why}") from e
+    print(f"Restored {done['files']} files into {settings.data} (and {settings.config}).")
+    print("Start the hub and sign in as before; the key rings open with your password.")
 
 
 SHORT = 10  # under this, a password is easy to guess; allowed, after a warning

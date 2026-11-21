@@ -500,6 +500,15 @@ class Vault:
                 for s in (ring["slots"] if ring else [])
             )
 
+    def check_recovery(self, rid: str, recovery: str) -> bool:
+        """Whether this recovery key opens the ring (without opening it)."""
+        with self._lock:
+            ring = self._read()["rings"].get(rid)
+            return any(
+                slot["way"] == "recovery" and self._try(rid, slot, _normal_recovery(recovery)) is not None
+                for slot in (ring["slots"] if ring else [])
+            )
+
     def unlock_recovery(self, rid: str, recovery: str) -> None:
         with self._lock:
             ring = self._read()["rings"].get(rid)

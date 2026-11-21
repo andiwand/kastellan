@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Kastellan's own backup:** its configuration, key rings, SSH keys, certificates, alarms,
+  history and the devices' backups, on the same store as device backups (each version once,
+  deduplicated, encrypted, "what changed" with secrets masked). The key comes from a
+  passphrase made once and shown once; copies go to a mounted folder or a device over SFTP.
+  `kastellan restore <folder|file.kbak>` brings a new hub back; the Backups page checks that
+  the passphrase and the key rings' recovery keys still work, and a failing backup warns.
+
 - **Logs:** searchable router events, Linux journals, Docker logs and WireGuard presence,
   with live follow, retention limits and opt-in UDP or client-authenticated TLS syslog. Reading requires a signed-in admin; UDP messages
   from known device addresses remain marked unverified.

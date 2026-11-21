@@ -85,8 +85,8 @@ Published images may lag behind `main`; see the changelog's Unreleased section.
 
 These are suggestions, not implemented features or release commitments.
 
-1. **Hub recovery:** export/restore config and state, recovery-key checks and a tested restore
-   procedure. Config-file backups alone cannot recover the vault, keys or history.
+1. **Hub recovery, the rest:** restore from the web app on a fresh hub, S3/WebDAV targets.
+   (Done: Kastellan's own backup, `kastellan restore`, passphrase and recovery-key checks.)
 2. **MFA:** passkeys or TOTP, recovery codes and step-up authentication for secret reveals and
    destructive actions. VPN access does not replace stronger hub authentication.
 3. **Discovery before an agent:** suggest devices from router clients, ARP and mDNS; require

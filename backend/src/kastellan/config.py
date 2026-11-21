@@ -440,6 +440,34 @@ class LogSettings(BaseModel):
     syslog_tls: SyslogTlsSettings = Field(default_factory=SyslogTlsSettings)
 
 
+class HubBackupTarget(BaseModel):
+    """Where Kastellan's own backup is copied: a folder (`path`, e.g. a NAS share mounted into
+    the container), or with `device` a folder on that device over SFTP (its `ssh:` login)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(pattern=r"^/[^\x00\n]*$", max_length=500)
+    device: str | None = None
+
+    @model_validator(mode="after")
+    def _plain(self) -> Self:
+        if ".." in self.path.split("/"):
+            raise ValueError("a backup target's path has no ..")
+        return self
+
+
+class HubBackupSettings(BaseModel):
+    """Kastellan's own backup (hubbackup.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    every_hours: int = Field(default=24, ge=1, le=24 * 30)
+    keep: int = Field(default=30, ge=1, le=1000)
+    history: bool = True  # the check history (checks/): larger, but the graphs come back too
+    logs: bool = False  # the central logs (logs.db): large; they come back in by themselves
+    targets: list[HubBackupTarget] = Field(default_factory=list, max_length=8)
+
+
 class DeviceBackupSettings(BaseModel):
     """Device configuration backups (devbackups.py): taken from every device whose login may
     (OpenWrt's `backup` ability, a FRITZ!Box login), deduplicated, kept encrypted."""
@@ -808,6 +836,7 @@ class Config(BaseModel):
     backups: dict[str, BackupCheck] = Field(default_factory=dict)  # backups that report in
     logs: LogSettings = Field(default_factory=LogSettings)  # central logs
     device_backups: DeviceBackupSettings = Field(default_factory=DeviceBackupSettings)
+    hub_backup: HubBackupSettings = Field(default_factory=HubBackupSettings)
     internet: InternetSettings = Field(default_factory=InternetSettings)
     wifi: WifiSettings = Field(default_factory=WifiSettings)
 
@@ -839,6 +868,13 @@ class Config(BaseModel):
             if len(set(group.devices)) != len(group.devices):
                 raise ValueError(f"groups.{gid}: a device is listed twice")
             group.name = group.name or gid
+        return self
+
+    @model_validator(mode="after")
+    def _hub_backup(self) -> Self:
+        for t in self.hub_backup.targets:
+            if t.device is not None and t.device not in self.devices:
+                raise ValueError(f"hub_backup.targets: no device {t.device!r}")
         return self
 
     @model_validator(mode="after")

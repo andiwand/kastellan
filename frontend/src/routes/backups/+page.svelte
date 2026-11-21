@@ -4,6 +4,7 @@
 	import { store } from '#lib/state.svelte.js';
 	import { ago, dayClock } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
+	import HubBackupCard from '#lib/components/HubBackupCard.svelte';
 
 	/** Every backup in one place: the jobs that report in (backups.py) and the devices'
 	 * configurations Kastellan keeps itself (devbackups.py). */
@@ -62,6 +63,8 @@
 	itself: each version once, encrypted, with what changed from one to the next.
 </p>
 {#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
+
+<div class="mt-6"><HubBackupCard /></div>
 
 <h2 class="mt-8 mb-3 text-sm font-semibold">Device configurations</h2>
 {#if configs === null}

@@ -102,6 +102,7 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "device_backups": ("device_backups",),
     "internet": ("internet",),
     "wifi": ("wifi",),
+    "hub_backup": ("hub_backup",),
 }
 
 
@@ -367,6 +368,7 @@ def router(hub: Hub) -> APIRouter:
             Config,
             DeviceBackupSettings,
             GroupSettings,
+            HubBackupSettings,
             InternetSettings,
             LogSettings,
             MaintenanceWindow,
@@ -393,6 +395,8 @@ def router(hub: Hub) -> APIRouter:
                 return {
                     "device_backups": dump(DeviceBackupSettings, value.get("device_backups") or {}) or None
                 }
+            if section == "hub_backup":
+                return {"hub_backup": dump(HubBackupSettings, value.get("hub_backup") or {}) or None}
             if section == "wifi":
                 v = value.get("wifi") or {}
                 out = {"scan_at": v.get("scan_at")} if v.get("scan_at", "04:00") != "04:00" else {}
@@ -472,6 +476,7 @@ def router(hub: Hub) -> APIRouter:
             "group-fingerprints",
             "device-backups",
             "syslog-ca-key",
+            "hub-backup-key",
             *(hub.openwrt_secret(id) for id in hub.config.devices),
             *(hub.fritz_secret(id) for id in hub.config.devices),
         }
