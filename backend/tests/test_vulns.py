@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
@@ -151,3 +152,65 @@ def test_moving_tags_are_not_looked_up() -> None:
     assert from_image("library/nginx", "1.27.3-alpine") is not None
     assert from_software("nginx", "1.24.0", "Ubuntu").distro == "Ubuntu"  # any distribution counts
     assert len(from_software("nginx", "1.24.0").more_cpes) == 1  # also NVD's older vendor name
+
+
+def sshhole(*matches: dict) -> dict:
+    """CVE-2026-123158 as NVD lists it: OpenSSH before 10.6, and 10.6 and 10.6p1 (fixed in 10.6p2)."""
+    return {
+        "vulnerabilities": [
+            {
+                "cve": {
+                    "id": "CVE-2026-123158",
+                    "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 8.1}}]},
+                    "configurations": [{"nodes": [{"operator": "OR", "cpeMatch": list(matches)}]}],
+                }
+            }
+        ]
+    }
+
+
+OPENSSH = "cpe:2.3:a:openbsd:openssh"
+RANGE = {"vulnerable": True, "criteria": f"{OPENSSH}:*:*:*:*:*:*:*:*", "versionEndExcluding": "10.6"}
+PLAIN = {"vulnerable": True, "criteria": "cpe:2.3:a:openbsd:openssh:10.6:-:*:*:*:*:*:*"}
+P1 = {"vulnerable": True, "criteria": "cpe:2.3:a:openbsd:openssh:10.6:p1:*:*:*:*:*:*"}
+ALPINE = {"vulnerable": False, "criteria": "cpe:2.3:o:alpinelinux:alpine_linux:*:*:*:*:*:*:*:*"}
+
+
+def cpe_of(version: str) -> str:
+    product = from_software("OpenSSH", version)
+    assert product and product.cpe
+    return product.cpe
+
+
+def test_a_banner_without_patch_level_is_not_a_firm_finding() -> None:
+    """OpenWrt's OpenSSH 10.6p2 says "OpenSSH_10.6": NVD's 10.6 entry matches, but p2 is fixed."""
+    data = sshhole(RANGE, PLAIN, P1, ALPINE)
+    assert vulns.parse_nvd(data, cpe_of("10.6"))[0].patch_level  # 10.6 or 10.6p2: can't tell
+    assert not vulns.parse_nvd(data, cpe_of("10.6p1"))[0].patch_level  # said, and affected
+    assert not vulns.parse_nvd(data, cpe_of("9.8"))[0].patch_level  # every 9.8 is in the range
+    assert not vulns.parse_nvd(data)[0].patch_level  # nothing asked, nothing assumed
+    # NVD naming only "10.6" (no patch levels told apart) or a range over the whole 10.6 line.
+    assert not vulns.parse_nvd(sshhole(PLAIN), cpe_of("10.6"))[0].patch_level
+    whole = {**RANGE, "versionEndExcluding": "10.7"}
+    assert not vulns.parse_nvd(sshhole(whole, PLAIN, P1), cpe_of("10.6"))[0].patch_level
+    # A range ending at a patch level of the version itself leaves the later ones out.
+    upto_p2 = {**RANGE, "versionStartIncluding": "10.6", "versionEndExcluding": "10.6p2"}
+    assert vulns.parse_nvd(sshhole(upto_p2, PLAIN, P1), cpe_of("10.6"))[0].patch_level
+
+
+async def test_lookup_says_check_the_device_for_an_unknown_patch_level(tmp_path: Path) -> None:
+    from kastellan.config import Device
+    from kastellan.vuln_policy import assess
+
+    def nvd(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"totalResults": 1, "resultsPerPage": 1, **sshhole(RANGE, PLAIN, P1)})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(nvd)) as client:
+        sources = Sources(tmp_path)
+        [plain] = await sources.lookup(client, from_software("OpenSSH", "10.6")) or [None]
+        sources._nvd_next = 0  # time stands still here (no_nvd_wait): no rate-limit pause
+        [said] = await sources.lookup(client, from_software("OpenSSH", "10.6p1")) or [None]
+    assert plain.confidence == "patch" and said.confidence == "exact"
+    exposed = Device(host="wifi1", exposed=True)
+    assert assess(exposed, asdict(plain)).alarm is None  # no alarm, shown as "check the device"
+    assert assess(exposed, asdict(said)).alarm is not None

@@ -509,7 +509,8 @@ export interface Finding {
 	aliases: string[];
 	fixed_in: string | null;
 	exploited: boolean;
-	confidence: 'exact' | 'upstream';
+	/** upstream: a distribution may have fixed it; patch: the patch level is unknown (e.g. OpenSSH 10.6 for 10.6p2) */
+	confidence: 'exact' | 'upstream' | 'patch';
 }
 
 export interface Vulns {

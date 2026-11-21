@@ -40,6 +40,10 @@ logs, and release notices.
 
 ### Fixed
 
+- Vulnerabilities: software that doesn't say its patch level (OpenWrt's OpenSSH 10.6p2 reports
+  "OpenSSH_10.6") no longer raises an alarm for a CVE that NVD lists only for some patch levels
+  of that version (CVE-2026-123158: 10.6 and 10.6p1). It shows as "patch level unknown: check
+  the device". Old versions inside an affected range stay firm findings.
 - OpenWrt with OpenSSH uses its authorized_keys path, including VPN key rotation.
   Access instructions distinguish OpenSSH’s source-address restriction from Dropbear.
 - Rollback runs through SSH; replacement checks inherited image health checks.

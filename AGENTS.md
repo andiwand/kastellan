@@ -70,7 +70,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     OSV) and `Sources` (NVD with its rate limit, OSV, CISA KEV; cached a day in `<data>/vulns/`).
     `None` from a lookup means "couldn't ask", never "safe". A missing patch level is `-` in a
     CPE, never `*` (that matched 29 CVEs for OpenSSH 9.8 instead of 1). A distribution's package
-    revision makes NVD findings `confidence="upstream"`. `vuln_policy.py`: the table from
+    revision makes NVD findings `confidence="upstream"`; a version asked without a patch level
+    that NVD matched only through some patch levels of exactly that version (10.6 and 10.6p1,
+    no range over the line) makes them `confidence="patch"` (OpenWrt's OpenSSH 10.6p2 says
+    "OpenSSH_10.6"). Neither raises alarms. `vuln_policy.py`: the table from
     findings to alarms, and `auto_update_reason` (all conditions or nothing). The hub sweeps two
     minutes after start and every `vulns.every_hours`.
   - `maintenance.py`: planned windows (config `maintenance:`, once or weekly; naive and weekly

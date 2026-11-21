@@ -10,6 +10,10 @@ known product mapping. Each becomes a `Product`, and each source answers in its 
   finds none by itself.
 
 Honesty rules:
+- When the software doesn't say its patch level ("OpenSSH_10.6", where 10.6p2 may be meant) and
+  NVD names only some patch levels of exactly that version as affected (10.6 and 10.6p1, no
+  range over the whole 10.6 line), a later patch level may have fixed it: `confidence="patch"`,
+  "check the device", never an alarm or an automatic action.
 - When the software carries a distribution's package revision ("OpenSSH 10.2p1
   (Ubuntu-2ubuntu3.8)"), the distribution may have patched the bug without changing the upstream
   version. Such NVD matches are `confidence="upstream"`: shown as "check your distribution", never
@@ -69,7 +73,9 @@ class Finding:
     aliases: list[str] = field(default_factory=list)
     fixed_in: str | None = None
     exploited: bool = False  # in CISA's KEV catalogue
-    confidence: str = "exact"  # exact, or upstream (a distribution may have fixed it)
+    confidence: str = "exact"  # exact; upstream (a distribution may have fixed it); patch (see top)
+    # NVD lists only some patch levels of the version that was asked without one (see top).
+    patch_level: bool = False
 
 
 # --- What a piece of software is, in the sources' terms -------------------------------------
@@ -178,7 +184,58 @@ def _severity(score: float | None) -> str:
     return "critical" if score >= 9 else "high" if score >= 7 else "medium" if score >= 4 else "low"
 
 
-def parse_nvd(data: dict[str, Any]) -> list[Finding]:
+def _base(version: str) -> tuple[int, ...] | None:
+    m = VERSION.match(version)
+    return version_key(m.group(1)) if m else None
+
+
+def _covers(match: dict[str, Any], number: tuple[int, ...]) -> bool:
+    """Whether a range entry ("*" with start/end) covers every patch level of `number`. An end at
+    a patch level of the version itself (excluding 10.6p2) leaves the later ones out."""
+    start_in, start_ex = match.get("versionStartIncluding"), match.get("versionStartExcluding")
+    end_in, end_ex = match.get("versionEndIncluding"), match.get("versionEndExcluding")
+    for value, ok in (
+        (start_in, lambda b: b <= number),
+        (start_ex, lambda b: b < number),
+        (end_in, lambda b: number <= b),
+        (end_ex, lambda b: number < b),
+    ):
+        if value is None:
+            continue
+        b = _base(str(value))
+        if b is None or not ok(b):
+            return False
+    return True
+
+
+def _patch_level_only(cve: dict[str, Any], asked: str | None) -> bool:
+    """True when `asked` (a CPE without a patch level: ...:openssh:10.6:-:...) matched this CVE
+    only through entries for some patch levels of exactly that version (10.6:-, 10.6:p1), not
+    through a range over the whole line: a later patch level (10.6p2) may be fixed."""
+    parts = (asked or "").split(":")
+    if len(parts) < 7 or parts[6] != "-":
+        return False
+    product, number = parts[3:5], _base(parts[5])
+    if number is None:
+        return False
+    updates: set[str] = set()
+    for config in cve.get("configurations") or []:
+        for node in (config or {}).get("nodes") or []:
+            for m in (node or {}).get("cpeMatch") or []:
+                c = str((m or {}).get("criteria") or "").split(":")
+                if not m.get("vulnerable") or len(c) < 7 or c[3:5] != product:
+                    continue
+                if c[5] == "*":
+                    if _covers(m, number):
+                        return False  # the whole line, whatever the patch level
+                elif c[5] == parts[5]:
+                    updates.add(c[6])
+    # Only named patch levels, and more than "none": the version has them, NVD tells them apart.
+    return bool(updates) and "*" not in updates and bool(updates - {"-"})
+
+
+def parse_nvd(data: dict[str, Any], asked: str | None = None) -> list[Finding]:
+    """`asked`: the CPE the question was for (decides `patch_level`)."""
     out = []
     for item in data.get("vulnerabilities") or []:
         cve = (item or {}).get("cve") or {}
@@ -207,6 +264,7 @@ def parse_nvd(data: dict[str, Any]) -> list[Finding]:
                 severity=_severity(score),
                 published=str(cve.get("published") or "")[:10] or None,
                 url=f"https://nvd.nist.gov/vuln/detail/{cid}",
+                patch_level=_patch_level_only(cve, asked),
             )
         )
     return out
@@ -343,7 +401,9 @@ class Sources:
         """Findings for a product; None when no source could be asked (not "none found")."""
         key = product.cpe or "|".join(product.osv or ())
         cached = self._cache.get(key)
-        if cached and time.time() - cached["fetched"] < CACHE_SECONDS:
+        # Entries cached before patch_level was known are asked again.
+        current = cached and all("patch_level" in f for f in cached["findings"])
+        if cached and current and time.time() - cached["fetched"] < CACHE_SECONDS:
             findings = [Finding(**f) for f in cached["findings"]]
         else:
             findings = await (
@@ -362,6 +422,8 @@ class Sources:
             f.exploited = f.id in self._kev or any(a in self._kev for a in f.aliases)
             if product.distro and f.source == "nvd":
                 f.confidence = "upstream"
+            elif f.patch_level and f.source == "nvd":
+                f.confidence = "patch"
         return findings
 
     async def _nvd(self, client: httpx.AsyncClient, cpes: list[str]) -> list[Finding] | None:
@@ -374,7 +436,7 @@ class Sources:
                 data = await self._nvd_page(client, cpe, start)
                 if data is None:
                     return None
-                for f in parse_nvd(data):
+                for f in parse_nvd(data, cpe):
                     found.setdefault(f.id, f)
                 total, per_page = int(data.get("totalResults") or 0), int(data.get("resultsPerPage") or 0)
                 start += per_page

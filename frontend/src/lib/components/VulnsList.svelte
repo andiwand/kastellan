@@ -78,7 +78,14 @@
 									exploited
 								</span>
 							{/if}
-							{#if f.confidence !== 'exact'}
+							{#if f.confidence === 'patch'}
+								<span
+									class="text-[11px] text-faint"
+									title="The software doesn't say its patch level (OpenSSH 10.6 may be 10.6p2), and only some patch levels of this version are affected; check the version on the device"
+								>
+									patch level unknown: check the device
+								</span>
+							{:else if f.confidence !== 'exact'}
 								<span
 									class="text-[11px] text-faint"
 									title="The distribution may have fixed this without changing the upstream version; check its security notice"
