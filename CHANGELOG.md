@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.12.0 (2026-11-22)
+
+Sign-ins, VPN servers, provider and line checks, Wi-Fi client diagnostics and roaming checks,
+discovery of unknown devices, and device pages opened signed in.
+
 ### Upgrading
 
 - OpenWrt logins: set them up again (Updates says which) for the new helper scripts and two new
