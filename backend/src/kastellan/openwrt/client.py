@@ -337,8 +337,18 @@ async def read(ubus: Ubus) -> dict[str, Any]:
             if lease.get("macaddr") and lease.get("hostname"):
                 leases[lease["macaddr"].lower()] = lease["hostname"]
     try:
-        radios = []
-        for name, radio in (await ubus.call("network.wireless", "status")).items():
+        try:
+            status = await ubus.call("network.wireless", "status")
+        except UbusError as e:
+            if e.code != 2:  # not "invalid argument": a real refusal
+                raise
+            # OpenWrt 25.12 answers "invalid argument" here: the radios as iwinfo sees them.
+            status = None
+        if status is None:
+            report["radios"] = await _radios_from_iwinfo(ubus, leases)
+            status = {}
+        radios = report.get("radios") or []
+        for name, radio in status.items():
             cfg = radio.get("config") or {}
             ifaces = []
             for iface in radio.get("interfaces") or []:
@@ -374,7 +384,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
                     "name": name,
                     "up": bool(radio.get("up")),
                     "disabled": bool(radio.get("disabled")),
-                    "band": cfg.get("band") or cfg.get("hwmode"),
+                    "band": cfg.get("band") or HWMODE.get(str(cfg.get("hwmode") or ""), cfg.get("hwmode")),
                     "channel": cfg.get("channel"),
                     "htmode": cfg.get("htmode"),
                     "interfaces": ifaces,
@@ -399,6 +409,73 @@ async def read(ubus: Ubus) -> dict[str, Any]:
     except Exception:
         report["services_allowed"] = []
     return report
+
+
+# Before OpenWrt 21.02 radios said hwmode (11g, 11a) where later ones say band (2g, 5g).
+HWMODE = {"11b": "2g", "11g": "2g", "11ng": "2g", "11a": "5g", "11na": "5g", "11ac": "5g", "11ax": "5g"}
+
+
+def _band(info: dict[str, Any]) -> str | None:
+    mhz = info.get("frequency")
+    if not isinstance(mhz, int | float):
+        return None
+    return "2g" if mhz < 3000 else "5g" if mhz < 5950 else "6g"
+
+
+async def _clients(ubus: Ubus, ifname: str, leases: dict[str, str]) -> list[dict[str, Any]]:
+    clients = []
+    with contextlib.suppress(Exception):
+        for c in (await ubus.call("iwinfo", "assoclist", {"device": ifname})).get("results", []):
+            mac = (c.get("mac") or "").lower()
+            clients.append(
+                {
+                    "mac": mac,
+                    "name": leases.get(mac),
+                    "signal": c.get("signal"),
+                    "inactive": c.get("inactive"),
+                }
+            )
+    return clients
+
+
+async def _radios_from_iwinfo(ubus: Ubus, leases: dict[str, str]) -> list[dict[str, Any]]:
+    """The radios and their interfaces from iwinfo alone (devices, info): grouped by phy, named
+    radioN for phyN as OpenWrt does. Without uci's section names (the interface's name instead)."""
+    devices = (await ubus.call("iwinfo", "devices")).get("devices") or []
+    radios: dict[str, dict[str, Any]] = {}
+    for ifname in devices:
+        if not isinstance(ifname, str):
+            continue
+        try:
+            info = await ubus.call("iwinfo", "info", {"device": ifname})
+        except Exception:
+            continue
+        phy = str(info.get("phy") or ifname.split("-")[0])
+        name = "radio" + phy.removeprefix("phy") if phy.startswith("phy") else phy
+        radio = radios.setdefault(
+            name,
+            {
+                "name": name,
+                "up": True,
+                "disabled": False,
+                "band": _band(info),
+                "channel": info.get("channel"),
+                "htmode": info.get("htmode"),
+                "interfaces": [],
+            },
+        )
+        mode = str(info.get("mode") or "").lower()
+        radio["interfaces"].append(
+            {
+                "section": ifname,
+                "ifname": ifname,
+                "ssid": info.get("ssid") or info.get("meshid"),
+                "mode": "ap" if mode.startswith("master") else "mesh" if "mesh" in mode else mode or None,
+                "network": None,
+                "clients": await _clients(ubus, ifname, leases),
+            }
+        )
+    return sorted(radios.values(), key=lambda r: r["name"])
 
 
 async def service(ubus: Ubus, name: str, action: str) -> str:
@@ -712,7 +789,14 @@ async def remove_network(ubus: Ubus, section: str, *, expected_ssid: str | None 
 
 
 async def _radios_up(ubus: Ubus, session: str) -> dict[str, bool]:
-    status = await ubus.call("network.wireless", "status", session=session)
+    try:
+        status = await ubus.call("network.wireless", "status", session=session)
+    except UbusError as e:
+        if e.code != 2:
+            raise
+        # OpenWrt 25.12 (see read): the Wi-Fi interfaces iwinfo lists count as the radios up.
+        devices = (await ubus.call("iwinfo", "devices", session=session)).get("devices") or []
+        return {str(d): True for d in devices}
     return {
         name: bool(r.get("up")) and not r.get("retry_setup_failed")
         for name, r in status.items()

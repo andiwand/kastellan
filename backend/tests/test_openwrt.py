@@ -91,6 +91,7 @@ class FakeRpcd:
         self.rolled_back = False
         self.mesh = True
         self.break_on_apply = False
+        self.status_refused = False  # OpenWrt 25.12: network.wireless status says invalid argument
         self.added = 0
 
     def file_allowed(self, path: str, function: str) -> bool:
@@ -213,6 +214,28 @@ class FakeRpcd:
                 "wpasupplicant": {"sae": True} | ({} if self.mesh is None else {"mesh": self.mesh})
             },
         }
+        if (obj, method) == ("network.wireless", "status") and self.status_refused:
+            return httpx.Response(200, json={"result": [2]})
+        if (obj, method) == ("iwinfo", "devices"):
+            return httpx.Response(200, json={"result": [0, {"devices": ["phy0-ap0", "phy1-ap0"]}]})
+        if (obj, method) == ("iwinfo", "info"):
+            five = args["device"].startswith("phy1")
+            return httpx.Response(
+                200,
+                json={
+                    "result": [
+                        0,
+                        {
+                            "phy": args["device"].split("-")[0],
+                            "ssid": "home",
+                            "mode": "Master",
+                            "channel": 36 if five else 6,
+                            "frequency": 5180 if five else 2437,
+                            "htmode": "HE80" if five else "HE20",
+                        },
+                    ]
+                },
+            )
         if (obj, method) == ("file", "exec") and args["command"].endswith("/service"):
             return httpx.Response(200, json={"result": [0, {"code": 0, "stdout": " ".join(args["params"])}]})
         if (obj, method) == ("uci", "set"):
@@ -772,3 +795,20 @@ async def test_wifi_change_is_one_apply_and_refuses_a_stale_network(tmp_path, mo
     assert result == {"ap": "done"}
     with pytest.raises(ValueError, match="network changed"):
         await ow.remove_network(u, section, expected_ssid=net["ssid"])
+
+
+async def test_radios_on_openwrt_25_through_iwinfo(tmp_path: Path) -> None:
+    rpcd = FakeRpcd([])
+    rpcd.status_refused = True
+    report = await ow.read(ubus(tmp_path, rpcd))
+    assert "wifi" not in report["errors"]
+    assert [(r["name"], r["band"], r["channel"], r["interfaces"][0]["mode"]) for r in report["radios"]] == [
+        ("radio0", "2g", 6, "ap"),
+        ("radio1", "5g", 36, "ap"),
+    ]
+    assert report["radios"][0]["interfaces"][0]["clients"][0]["name"] == "phone"
+    # A Wi-Fi change checks the radios the same way, instead of failing.
+    rpcd = FakeRpcd(["kastellan-wifi"])
+    rpcd.status_refused = True
+    await ow.change_wifi(ubus(tmp_path, rpcd), {"default_radio0": {"ssid": "home2"}}, confirm_after=0)
+    assert rpcd.wireless["default_radio0"]["ssid"] == "home2"

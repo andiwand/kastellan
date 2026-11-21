@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- OpenWrt 25.12: radios and Wi-Fi clients are read through iwinfo, since `network.wireless
+  status` refuses calls over HTTP there (the session field uhttpd adds); Wi-Fi changes check
+  the radios the same way. Radios that report `hwmode` (OpenWrt 22.03) count as 2.4/5 GHz.
+- Device header: actions wrap within half the width instead of squeezing the name; Linux
+  hosts with an actor get Reboot at the top.
+
 ## 0.10.0 (2026-11-21)
 
 Kastellan's own backup, central logs, device configuration backups, FRITZ!Box accounts,

@@ -231,16 +231,9 @@
 					</button>
 				{/if}
 				{#if report.updates.reboot}
-					· <span style:color="var(--warning-text)">wants a reboot</span>
-					{#if canAct && asking !== 'reboot'}
-						<button
-							class="btn btn-sm ml-1"
-							disabled={busy(reboot)}
-							onclick={() => (asking = 'reboot')}
-						>
-							Reboot
-						</button>
-					{/if}
+					· <span style:color="var(--warning-text)">
+						wants a reboot{canAct ? ' (Reboot at the top of the page)' : ''}
+					</span>
 				{/if}
 				{#if asking}
 					<span class="mt-1 flex flex-wrap items-center gap-2 text-xs">

@@ -43,6 +43,7 @@
 	import SyslogSetup from '#lib/components/SyslogSetup.svelte';
 	import OpenWrtSetup from '#lib/components/OpenWrtSetup.svelte';
 	import RouterReboot from '#lib/components/RouterReboot.svelte';
+	import HostReboot from '#lib/components/HostReboot.svelte';
 	import SetupCard from '#lib/components/SetupCard.svelte';
 	import WifiDialog from '#lib/components/WifiDialog.svelte';
 	import FirmwareDialog from '#lib/components/FirmwareDialog.svelte';
@@ -171,8 +172,8 @@
 		There is no device <code class="font-mono">{id}</code> in config.yaml.
 	</div>
 {:else if device}
-	<header class="mt-4 flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-		<div class="flex items-start gap-4">
+	<header class="mt-4 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+		<div class="flex min-w-0 flex-1 items-start gap-4">
 			<div class="card grid size-14 shrink-0 place-items-center rounded-2xl text-muted">
 				<KindIcon kind={device.kind} class="size-6" />
 			</div>
@@ -264,7 +265,8 @@
 				</div>
 			</div>
 		</div>
-		<div class="flex shrink-0 flex-wrap gap-2 self-start">
+		<!-- The actions wrap within at most about half the width: the name keeps the rest. -->
+		<div class="flex flex-wrap gap-2 self-start lg:max-w-[55%] lg:justify-end">
 			<!-- Getting to it, acting on it, then its alarms. -->
 			{#if device.ssh_port && store.me?.role === 'admin' && store.me.user}
 				<a
@@ -319,6 +321,9 @@
 				{#if fritzNote}<span class="self-center text-xs" style:color="var(--critical-text)">
 						{fritzNote}
 					</span>{/if}
+			{/if}
+			{#if device.act && store.me?.role === 'admin' && store.me.user}
+				<HostReboot device={device.id} wanted={!!device.host_report?.updates?.reboot} />
 			{/if}
 			{#if device.openwrt && device.router && store.me?.role === 'admin' && store.me.user}
 				<RouterReboot device={device.id} />
