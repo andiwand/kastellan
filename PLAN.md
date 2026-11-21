@@ -69,14 +69,55 @@ Published images may lag behind `main`; see the changelog's Unreleased section.
       Group attempts across devices; highlight success after repeated failures and new outside
       addresses for an admin. Time/address correlations suggest possible paths, not proven
       identities. Keep address lookups local unless external lookup is enabled.
+- [ ] **Internet connection:** its own place on the overview (and a page for the history).
+  - Health from outside the router: latency, jitter and loss to a few outside targets (more
+    than one provider, so one target's trouble isn't an outage), DNS resolution, IPv4 and IPv6
+    apart. An outage is located step by step: router reachable → line up (router's sync) →
+    first hop at the provider → the internet → DNS; the alarm says which step failed.
+  - Uptime: outages and their length, monthly availability, reconnects and public address
+    changes (from the router where it tells: FRITZ!Box TR-064, OpenWrt's WAN interface;
+    otherwise from the checks). The record to show the provider.
+  - Bandwidth in use: up/down over time from the router's counters (no load added), and
+    which clients use it where the router knows.
+  - Speed: measured tests, opt-in, on a schedule and on request (they use the line: rarely,
+    never while it is busy), against a chosen server (librespeed, or iperf3 on your own server
+    outside); also latency under load (bufferbloat). Compared with the booked speed, which is
+    set once; alarms when it stays far below.
+- [ ] **FRITZ!Box with an account:** today only its public TR-064 description (model, firmware).
+      Next, through TR-064 over HTTPS (port 49443, certificate pinned like OpenWrt's) with a
+      FRITZ!Box user of its own, holding only the rights it needs, its password in the vault:
+  - Read: internet connection (DSL/cable/fibre sync rates, line errors, public address, uptime,
+    reconnects), clients and the mesh (which access point, band, signal), Wi-Fi incl. guest
+    network, firmware and whether an update is offered, port forwards, MyFRITZ and its VPN
+    (security-relevant: shown on the device page, later on the Access page), the event log
+    (into central logs).
+  - Alarms: internet down or reconnecting often, line errors rising, a new port forward or
+    remote access turned on, firmware update offered.
+  - Act: reboot, firmware update, Wi-Fi name/password/on-off and guest network (through the
+    Wi-Fi page), WPS off. Changes FRITZ!OS wants confirmed on the box (its second factor)
+    say so instead of failing silently.
+  - Config export (password-protected, through the vault) as the FRITZ!Box's backup, and its
+    client list as a source for device discovery.
 - [ ] **Wi-Fi page:** a top-level view by network, not by device. Each network name (SSID)
       once, with the access points that broadcast it, bands, encryption, clients, and where the
       members differ (password fingerprints, encryption, a radio off). Change name, password,
       encryption, band and on/off for a network everywhere it is broadcast, member by member
       with each device's rollback; add a network to more access points or remove it. Reuses the
       group line-up (`openwrt/sync.py`) beyond groups: devices that broadcast the same name are
-      one network. OpenWrt first; other vendors (FRITZ!Box) read-only where their API allows.
+      one network. OpenWrt and FRITZ!Box (with an account, above): a network on both is still one network.
       The home for roaming settings (below) once those exist.
+  - Radio settings per access point: channel, width, transmit power, country; shown next to
+    each other for all access points, so overlaps are visible.
+  - Channel diagnostics: neighbouring networks per radio (scan: who, channel, signal), how busy
+    each channel is (`iw survey`: busy and noise), which of our access points hear each other
+    and how loud, clients' signal, retries and rates, DFS radar events. Kept over time, since
+    one scan is a moment. A scan can disturb clients briefly: run on request or in a quiet
+    hour. FRITZ!Box where its API offers it.
+  - Channel plan: a suggestion from the diagnostics (our access points apart from each other,
+    2.4 GHz on 1/6/11, 5 GHz on the least busy channels, DFS only where the radio handles
+    radar), with the reason per radio. Applied on approval, one access point at a time with
+    its rollback, ideally in a maintenance window; never on its own by default. A check
+    afterwards shows whether it got better.
 - [ ] **Wi-Fi roaming in groups:** Kastellan watches and lines up roaming; the access points
       decide (usteer, 802.11r/k/v), so Wi-Fi never depends on the hub. In order:
   - Consistency checks per group: 802.11r on with the same mobility domain, fixed channels that
