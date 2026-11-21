@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-21)
+
+Settings, groups and the VPN set up from forms instead of YAML; everything waiting to be updated
+on one page.
 
 - Settings as forms: the Config page has the checking interval, history, heartbeat, alarms,
   notifications, vulnerability lookups, networks and users as forms (each part saved on its own,
