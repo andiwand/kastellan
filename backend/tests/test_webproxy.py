@@ -59,6 +59,7 @@ def device(monkeypatch: pytest.MonkeyPatch):
             200,
             headers=[
                 ("set-cookie", "sid=abc; Domain=kastellan.test; Path=/; Secure; HttpOnly"),
+                ("set-cookie", "device_login=private; Path=/; HttpOnly"),
                 ("set-cookie", "kastellan_session=evil; Path=/"),
                 ("content-type", "text/plain"),
             ],
@@ -106,7 +107,7 @@ def test_forwards_to_the_device_for_admins(client: TestClient, device) -> None:
     assert sent.headers["cookie"] == "sid=dev" and "x-kastellan" not in sent.headers
     # The device's cookies stay on its own name; it can't set Kastellan's.
     cookies = r.headers.get_list("set-cookie")
-    assert cookies == ["sid=abc; Path=/; HttpOnly"]  # no Domain, no Secure over http
+    assert cookies == ["sid=abc; Path=/; HttpOnly", "device_login=private; Path=/; HttpOnly"]
     r = client.get("http://nas-box.kastellan.test/go", follow_redirects=False)
     assert r.headers["location"] == "http://nas-box.kastellan.test/home"
     # Opening is audited when it's opened from the hub, not per request.
@@ -115,6 +116,29 @@ def test_forwards_to_the_device_for_admins(client: TestClient, device) -> None:
     # Signing out at the hub ends the device name's access too.
     client.post(f"{HUB}/api/auth/logout", headers=H)
     assert client.get(url).status_code == 401
+
+
+def test_device_cookies_are_not_shared_between_browsers(client: TestClient, device) -> None:
+    signin(client)
+    enter(client)
+    url = "http://nas-box.kastellan.test/"
+    assert client.get(url).status_code == 200
+    # Another browser with its own access to the device, but no device login yet.
+    access = next(c.value for c in client.cookies.jar if c.name == webproxy.WEB_COOKIE)
+    assert client.get(url, headers={"Cookie": f"{webproxy.WEB_COOKIE}={access}"}).status_code == 200
+    assert "cookie" not in device[-1].headers
+    # Only the requesting browser's login reaches the device.
+    assert client.get(url, headers={"Cookie": f"{webproxy.WEB_COOKIE}={access}; sid=mine"}).status_code == 200
+    assert device[-1].headers["cookie"] == "sid=mine"
+
+
+async def test_proxy_client_does_not_keep_device_cookies() -> None:
+    async with webproxy.new_client() as client:
+        response = httpx.Response(
+            200, headers={"set-cookie": "sid=private; Path=/"}, request=httpx.Request("GET", "http://nas/")
+        )
+        client.cookies.extract_cookies(response)
+        assert not client.cookies
 
 
 def test_tickets(client: TestClient, device) -> None:

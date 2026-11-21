@@ -1,5 +1,6 @@
 """Changing config.yaml from the app: in place (comments kept), checked, guarded, backed up."""
 
+import errno
 import json
 from pathlib import Path
 
@@ -104,6 +105,22 @@ def test_an_edit_keeps_what_the_form_does_not_cover() -> None:
     )
     assert "ssh:\n      user: admin" in new and "parent: router" in new
     assert "kind: server" in new and "name:" not in new.split("nas:")[1].split("users:")[0]
+
+
+def test_removing_devices_clears_power_and_vm_links() -> None:
+    text = (
+        "devices:\n"
+        "  host: {host: h}\n"
+        "  ups: {kind: ups, host: u}\n"
+        "  guest: {host: g, powered_by: ups, runs_on: {host: host, vm: guest}}\n"
+    )
+    without_ups = config_edit.edit_device(text, "ups", None)
+    assert "powered_by" not in without_ups and "runs_on" in without_ups
+    without_host = config_edit.edit_device(without_ups, "host", None)
+    assert "runs_on" not in without_host and "guest" in without_host
+    from ruamel.yaml import YAML
+
+    Config.model_validate(YAML(typ="safe").load(without_host))
 
 
 @pytest.fixture
@@ -319,6 +336,25 @@ def test_write_keeps_a_symlink_and_the_backups_private(tmp_path: Path) -> None:
     assert link.is_symlink() and real.read_text() == "a: 2\n"
     assert oct((tmp_path / "backups").stat().st_mode & 0o777) == "0o700"
     assert all(oct(p.stat().st_mode & 0o777) == "0o600" for p in (tmp_path / "backups").iterdir())
+
+
+@pytest.mark.parametrize("error", [errno.ENOSPC, errno.EACCES, errno.EBUSY])
+def test_failed_replace_only_falls_back_for_a_bind_mount(tmp_path: Path, monkeypatch, error: int) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("old\n")
+
+    def fail(*args):
+        raise OSError(error, "cannot replace")
+
+    monkeypatch.setattr(config_edit.os, "replace", fail)
+    if error == errno.EBUSY:
+        config_edit.write(path, tmp_path / "backups", "old\n", "new\n")
+        assert path.read_text() == "new\n"
+    else:
+        with pytest.raises(OSError):
+            config_edit.write(path, tmp_path / "backups", "old\n", "new\n")
+        assert path.read_text() == "old\n"
+    assert not list(tmp_path.glob(".config-*.yaml"))
 
 
 def test_the_audit_diff_masks_secrets() -> None:
@@ -662,3 +698,46 @@ def test_a_device_key_removed() -> None:
     )
     out = config_edit.set_device_key(text, "nas", "collect", None)
     assert out == text.replace("    collect: {}\n", "")
+
+
+def test_a_device_on_a_virtual_machine(hub_client) -> None:
+    """runs_on through the form and back; the API resolves the VM's state from the host's
+    report, and the host's VM names the device."""
+    c, config, _ = hub_client
+    signin(c)
+    f = c.get("/api/devices/router/form").json()
+    del f["id"]
+    f["runs_on"] = {"host": "nas", "vm": "router-vm"}
+    assert c.put("/api/devices/router", json=f, headers=H).status_code == 200
+    assert "runs_on:\n      host: nas\n      vm: router-vm" in config.read_text()
+    assert c.get("/api/devices/router/form").json()["runs_on"] == {"host": "nas", "vm": "router-vm"}
+    hub = c.app.state.hub
+    hub.monitor.status["nas"].host = {"vms": [{"name": "router-vm", "state": "running"}]}
+    devices = {d["id"]: d for d in c.get("/api/devices").json()}
+    assert devices["router"]["runs_on"] == {"host": "nas", "vm": "router-vm", "state": "running"}
+    assert devices["nas"]["vms"][0]["device"] == "router"
+    f = c.get("/api/devices/router/form").json()
+    del f["id"]
+    bad = {**f, "runs_on": {"host": "router", "vm": "x"}}  # itself
+    assert c.put("/api/devices/router", json=bad, headers=H).status_code == 400
+    f["runs_on"] = None
+    assert c.put("/api/devices/router", json=f, headers=H).status_code == 200
+    assert "runs_on" not in config.read_text()
+
+
+def test_a_ups_through_the_form(hub_client) -> None:
+    """A UPS with no address, read by a host; another device powered by it."""
+    c, config, _ = hub_client
+    signin(c)
+    body = {"id": "ups1", "name": "UPS", "host": "", "kind": "ups", "ups": {"via": "nas"}, "checks": []}
+    r = c.post("/api/devices", json=body, headers=H)
+    assert r.status_code == 200, r.text
+    text = config.read_text()
+    assert "  ups1:\n    name: UPS\n    kind: ups\n    ups:\n      via: nas\n" in text
+    f = c.get("/api/devices/router/form").json()
+    del f["id"]
+    f["powered_by"] = "ups1"
+    assert c.put("/api/devices/router", json=f, headers=H).status_code == 200
+    assert c.get("/api/devices/router/form").json()["powered_by"] == "ups1"
+    bad = {**body, "id": "ups2", "kind": "server"}  # no host, and not a UPS
+    assert c.post("/api/devices", json=bad, headers=H).status_code == 400

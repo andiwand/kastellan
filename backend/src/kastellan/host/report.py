@@ -15,7 +15,7 @@ MAX_CONTAINERS = 300
 def _num(value: Any, low: float = 0, high: float = 1e18) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    if not math.isfinite(value) or not low <= value <= high:
+    if not low <= value <= high or not math.isfinite(value):
         return None
     return float(value)
 
@@ -180,4 +180,66 @@ def normalize(raw: Any) -> dict[str, Any]:
             out["docker"] = containers
         else:
             out["docker"] = None
+
+    if "vms" in r:
+        items = r.get("vms")
+        if isinstance(items, list):
+            vms = []
+            for v in items[:MAX_ITEMS]:
+                v = _dict(v)
+                name = _text(v.get("name"), 128)
+                if not name:
+                    continue
+                vms.append(
+                    {
+                        "name": name,
+                        "uuid": _text(v.get("uuid"), 64),
+                        "state": _text(v.get("state"), 40) or "",
+                        "autostart": v.get("autostart") is True,
+                        "persistent": v.get("persistent") is True,
+                        "vcpus": _int(v.get("vcpus"), 1, 4096),
+                        "memory": _int(v.get("memory")),
+                        "memory_used": _int(v.get("memory_used")),
+                        "disks": [
+                            {
+                                "target": _text(d.get("target"), 40) or "",
+                                "source": _text(d.get("source"), 300) or "",
+                            }
+                            for d in (_dict(x) for x in _list(v.get("disks"), 16))
+                        ],
+                    }
+                )
+            out["vms"] = vms
+        else:
+            out["vms"] = None
+    if isinstance(r.get("ups"), list):
+        out["ups"] = [_ups(_dict(u)) for u in r["ups"][:8]]
     return out
+
+
+UPS_FLAGS = ("online", "on_battery", "low_battery", "replace_battery", "no_contact", "unknown")
+
+
+def _ups(u: dict[str, Any]) -> dict[str, Any]:
+    """One UPS as its host reads it (apcupsd or NUT): flags from a fixed set, numbers in range."""
+    flags = [f for f in _list(u.get("flags"), 6) if f in UPS_FLAGS]
+    return {
+        "source": "nut" if u.get("source") == "nut" else "apcupsd",
+        "name": _text(u.get("name"), 64),
+        "model": _text(u.get("model"), 100),
+        "serial": _text(u.get("serial"), 64),
+        "firmware": _text(u.get("firmware"), 100),
+        "status": _text(u.get("status"), 100) or "",
+        "flags": list(dict.fromkeys(flags)) or ["unknown"],
+        "charge": _num(u.get("charge"), 0, 100),
+        "runtime": _num(u.get("runtime"), 0, 10**7),  # seconds
+        "load": _num(u.get("load"), 0, 1000),
+        "input_voltage": _num(u.get("input_voltage"), 0, 1000),
+        "battery_voltage": _num(u.get("battery_voltage"), 0, 1000),
+        "nominal_power": _num(u.get("nominal_power"), 0, 10**6),
+        "last_transfer": _text(u.get("last_transfer"), 100),
+        "on_battery_since": _text(u.get("on_battery_since"), 40),
+        "off_battery_since": _text(u.get("off_battery_since"), 40),
+        "transfers": _int(u.get("transfers"), 0, 10**6),
+        "battery_date": _text(u.get("battery_date"), 40),
+    }

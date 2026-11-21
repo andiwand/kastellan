@@ -17,6 +17,8 @@ def test_devices_and_health(tmp_path: Path) -> None:
         assert client.get("/api/devices/nope/history").status_code == 404
         assert client.get("/api/nope").status_code == 404
         assert client.get("/api/series", params={"hours": "nan"}).status_code == 422  # not a 500
+        for route in ("/api/series", "/api/changes", "/api/activity"):
+            assert client.get(route, params={"hours": "-1e300"}).status_code == 422
 
 
 def test_demo(tmp_path: Path) -> None:

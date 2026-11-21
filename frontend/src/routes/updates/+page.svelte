@@ -252,7 +252,7 @@
 				{:else if u.kind === 'scripts'}
 					<a
 						class="text-xs text-muted hover:text-text"
-						href="/devices/{u.device.id}#setup"
+						href="/devices/{u.device.id}?tab=setup"
 						title="Kastellan's keys may only run these scripts, not replace them: renewing takes a login on the host"
 					>
 						set up again there

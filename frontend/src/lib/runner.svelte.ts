@@ -1,12 +1,16 @@
 import { actStream, type ActResult } from '#lib/api.js';
 import { store } from '#lib/state.svelte.js';
 
-/** One thing the actor does on a host (an update from the Updates page or a container's row).
- * Shared by the Updates page, a device's containers and its system updates, so all show the
- * same state, also when moving between pages while it runs. */
+/** One thing the actor does on a host (an update, a container's or a VM's start or stop, ...).
+ * Shared by the Updates, Containers and Virtual machines pages and a device's own lists, so all
+ * show the same state, also when moving between pages while it runs. */
 export type Job =
-	| { device: string; kind: 'container'; name: string }
-	| { device: string; kind: 'restart'; name: string }
+	| { device: string; kind: 'container' | 'restart' | 'start' | 'stop'; name: string }
+	| {
+			device: string;
+			kind: 'vm-start' | 'vm-shutdown' | 'vm-reboot' | 'vm-force-off';
+			name: string;
+	  }
 	| { device: string; kind: 'packages' }
 	| { device: string; kind: 'reboot' };
 
@@ -28,24 +32,35 @@ export interface JobState {
 
 export const jobKey = (j: Job) => `${j.device}:${j.kind}${'name' in j ? `:${j.name}` : ''}`;
 
-const ABILITY = {
+const ABILITY: Record<Job['kind'], string> = {
 	container: 'update-container',
 	restart: 'restart-container',
+	start: 'start-container',
+	stop: 'stop-container',
+	'vm-start': 'vm-start',
+	'vm-shutdown': 'vm-shutdown',
+	'vm-reboot': 'vm-reboot',
+	'vm-force-off': 'vm-force-off',
 	packages: 'upgrade-packages',
 	reboot: 'reboot'
-} as const;
+};
+
+const VERB: Record<Job['kind'], string> = {
+	container: 'update',
+	restart: 'restart',
+	start: 'start',
+	stop: 'stop',
+	'vm-start': 'start VM',
+	'vm-shutdown': 'shut down VM',
+	'vm-reboot': 'restart VM',
+	'vm-force-off': 'force off VM',
+	packages: 'system updates',
+	reboot: 'reboot'
+};
 
 function labelOf(j: Job): string {
 	const where = store.byId?.get(j.device)?.name ?? j.device;
-	const what =
-		j.kind === 'container'
-			? `update ${j.name}`
-			: j.kind === 'restart'
-				? `restart ${j.name}`
-				: j.kind === 'packages'
-					? 'system updates'
-					: 'reboot';
-	return `${where}: ${what}`;
+	return `${where}: ${VERB[j.kind]}${'name' in j ? ` ${j.name}` : ''}`;
 }
 
 /** The answer in a sentence. */
@@ -53,6 +68,12 @@ function sentence(j: Job, r: ActResult): string {
 	if (j.kind === 'container')
 		return r.updated ? `Updated (${r.from} → ${r.to}).` : `Nothing to do: ${r.why ?? 'newest'}.`;
 	if (j.kind === 'restart') return 'Restarted.';
+	if (j.kind === 'start') return 'Started.';
+	if (j.kind === 'stop') return 'Stopped.';
+	// libvirt can't tell whether a guest restarted (it runs throughout): say what was done.
+	if (j.kind === 'vm-reboot') return 'Asked it to restart.';
+	if (j.kind.startsWith('vm-'))
+		return `${j.kind === 'vm-force-off' ? 'Forced off' : 'Done'}${r.state ? `: it is ${r.state}` : ''}.`;
 	if (j.kind === 'packages') {
 		const n = r.upgraded ?? 0;
 		return `${n} ${n === 1 ? 'package' : 'packages'} updated${r.reboot ? '; it wants a reboot now' : ''}.`;
@@ -60,7 +81,7 @@ function sentence(j: Job, r: ActResult): string {
 	return 'Rebooting in a minute (cancel on the host: shutdown -c).';
 }
 
-// A reboot goes last on its host: after the packages and containers queued with it.
+// A host's reboot goes last on it: after the packages, containers and VMs queued with it.
 const rank = (j: Job) => (j.kind === 'reboot' ? 1 : 0);
 
 class Runner {

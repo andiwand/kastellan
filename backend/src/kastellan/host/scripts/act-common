@@ -12,6 +12,10 @@ import syslog
 import time
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # used with fullmatch: no newline sneaks in
+VM_NAME = re.compile(  # libvirt allows more; Kastellan this much, and never a number or a UUID:
+    r"(?!\d+$)(?![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$)"
+    r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}"  # virsh reads those as a domain id or UUID first
+)
 SOCKET = "/var/run/docker.sock"  # fixed: nothing from the environment steers a root script
 ABILITY = os.path.basename(sys.argv[0])
 
@@ -83,8 +87,8 @@ def allowed(name):
     return "*" in lines or name in lines
 
 
-def one_name():
-    if len(sys.argv) != 2 or not NAME.fullmatch(sys.argv[1]):
+def one_name(pattern=NAME):
+    if len(sys.argv) != 2 or not pattern.fullmatch(sys.argv[1]):
         fail("wrong arguments", 2)
     if not allowed(sys.argv[1]):
         fail(f"{sys.argv[1]} isn't on this host's list for {ABILITY}", 3)
@@ -149,3 +153,59 @@ def docker(method, path, body=None, timeout=60, ok=(200, 201, 204, 304)):
         return json.loads(data)
     except ValueError:
         return data.decode(errors="replace")
+
+
+VIRSH = ("/usr/bin/virsh", "/usr/sbin/virsh", "/bin/virsh")  # fixed: libvirt's client
+LIBVIRT = "qemu:///system"
+
+
+def virsh(*args, timeout=60):
+    """libvirt's client with fixed arguments (never a shell); its output, or a failure."""
+    import subprocess
+
+    path = next((p for p in VIRSH if os.path.exists(p)), None)
+    if path is None:
+        fail("no virsh on this host (libvirt's client)")
+    try:
+        r = subprocess.run(
+            [path, "-c", LIBVIRT, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:  # libvirtd hangs, or the domain is stuck in a job
+        fail(f"virsh {args[0]} didn't answer within {timeout} s (is libvirtd stuck?)")
+    except OSError as e:
+        fail(f"virsh {args[0]}: {e}")
+    if r.returncode != 0:
+        fail((r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else f"virsh {args[0]} failed")
+    return r.stdout
+
+
+def vm_uuid(name):
+    """The VM called exactly `name`, by its UUID: every action after this names it by UUID, since
+    virsh takes a number as a domain id (and a UUID-like name as a UUID) before a name."""
+    # With both --uuid and --name, each line is "<uuid> <name>" (names here have no spaces).
+    for line in virsh("list", "--all", "--uuid", "--name", timeout=20).splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == name:
+            return parts[0]
+    fail(f"libvirt knows no VM called {name}")
+
+
+def vm_state(uuid):
+    """`running`, `shut off`, `paused`, ... (fails when libvirt knows no such VM)."""
+    return virsh("domstate", "--", uuid, timeout=20).strip()
+
+
+def wait_vm(uuid, name, until, seconds, every=5):
+    """Wait for the VM's state to become one of `until`; its state at the end."""
+    end = time.time() + seconds
+    state = vm_state(uuid)
+    while state not in until and time.time() < end:
+        time.sleep(every)
+        state = vm_state(uuid)
+        step(f"{name} is {state} ({int(end - time.time())} s left)")
+    return state

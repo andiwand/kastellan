@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { store } from '#lib/state.svelte.js';
 	import { api, type Device, type NetworkRef, type Networks } from '#lib/api.js';
 	import { statusColor, statusLabel, statusOf } from '#lib/status.js';
 	import { ms } from '#lib/format.js';
@@ -153,7 +154,9 @@
 			<p class="tabular truncate text-[11px] text-faint">
 				{ping ? ms(ping.latency_ms) : statusLabel[s]}{device.site !== 'home'
 					? ` · ${device.site_name}`
-					: ''}{note ? ` · ${note}` : ''}
+					: ''}{device.runs_on
+					? ` · on ${store.byId.get(device.runs_on.host)?.name ?? device.runs_on.host}`
+					: ''}{device.powered_by ? ' · on UPS' : ''}{note ? ` · ${note}` : ''}
 			</p>
 		</div>
 		{#if reachable(device)}

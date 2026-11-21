@@ -27,6 +27,7 @@
 	const y = (v: number) => pad.top + innerH - (v / max) * innerH;
 
 	function niceMax(v: number) {
+		if (v <= 0) return 1;
 		const p = 10 ** Math.floor(Math.log10(v));
 		for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
 		return 10 * p;
@@ -89,7 +90,7 @@
 	<svg
 		{width}
 		{height}
-		class="block touch-none select-none"
+		class="block w-full touch-none select-none"
 		role="img"
 		aria-label="Latency over time"
 		onpointermove={move}

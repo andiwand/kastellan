@@ -1,0 +1,18 @@
+# Start one stopped container (on the host's list), found by its exact name.
+name = one_name()
+lock = one_at_a_time()
+try:
+    found = exact(name)
+    if found is None:
+        fail(f"no container called {name}")
+    if found["State"].get("Running"):
+        fail(f"{name} runs already")
+    step(f"starting {name}")
+    docker("POST", f"/containers/{found['Id']}/start", timeout=90)
+    step("checking it runs")
+    state = docker("GET", f"/containers/{found['Id']}/json")["State"]
+except Exception as e:
+    fail(str(e))
+if not state.get("Running"):
+    fail(f"{name} didn't stay up: {state.get('Status')} (exit {state.get('ExitCode')})")
+done({"container": name, "started": True, "running": True})

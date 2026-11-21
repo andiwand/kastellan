@@ -15,7 +15,16 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `config.py`: `config.yaml` is the only configuration; there is no database. A `Device` has a
     `host`, a `kind`, an optional `parent` (what it hangs off: alarms fold a device into its parent's; the "via" link; meant for infrastructure links, not which access point
     a client uses), `tags`, `always_on` (default: false
-    for `pc` and `laptop`), a `site` (where it is; None is `home`) and `checks`. A check is
+    for `pc` and `laptop`), a `site` (where it is; None is `home`), an optional `runs_on:
+    {host, vm}` (a libvirt VM on another device: alarms fold it into its host like a parent;
+    the API resolves the VM's state, a host's VMs name their device; `config.VM_NAME` is the
+    one name pattern, never a number or a UUID) and `checks`. A UPS is `kind: ups` with
+    `ups: {via, name}` (the host whose collector reads it: apcupsd's apcaccess or NUT's upsc;
+    `host` may then be empty: no checks, its state only from that report); any device may
+    have `powered_by: <ups>`. `ups.py` resolves a UPS's reading and its state word; alarms
+    (`ups:<id>:battery|replace|contact`) fold devices that go down while their UPS is on
+    battery (or just back) into its alarm; `PUT /api/devices/{ups}/powered` sets what it
+    powers. A check is
     written `ping`, `tcp: <port>`, `http: <url>` or `dns: <name>` (`Check._shorthand`); its
     `name` defaults to the type and target. `sites:` names sites; `Config.label(id)` is a
     device's name for alarms and notifications, with its site when that isn't home; the device
@@ -160,12 +169,18 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `registry.py`: update checks against the registries (anonymous tokens, digests, version tags),
     cached for hours; `docker.from_collector` builds containers from the report with them.
     `access_api.run_with_password`: log in once with a typed password and run a script (as root).
+    Virtual machines: the collector's `vms` section reads libvirt through `virsh` (fixed argv,
+    `list --all --name`, `dominfo`, `domblklist`; never the XML), shown as `vms` in /api/devices;
+    an autostart VM that isn't running is a warning (`alarms.host_problems`).
   - `host/actor.py` + `host/scripts/act-*` + `act_api.py`: the actor. `act-dispatch` (as
     kastellan-act, bound to the act key) accepts exact forms and execs `sudo -n python3 -I
     <ability> <arg>`; each ability is `act-common` + `act-<ability>`, root-owned, checks its
     argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog. `install_script` is
-    declarative (abilities not chosen are removed). Tests run the real scripts against a fake
-    Docker API (tests/test_actor.py). Root scripts take nothing from the environment.
+    declarative (abilities not chosen are removed). Containers: update, restart, start, stop
+    (`CONTAINER_ABILITIES`, names `NAME`); VMs: vm-start, vm-shutdown (ACPI, waits 3 min),
+    vm-reboot, vm-force-off (`VM_ABILITIES`, names `VM_NAME`, allows `+`); each its own allow
+    list (`install_script(..., vms=)`). Tests run the real scripts against a fake Docker API and
+    a fake `virsh` (tests/test_actor.py). Root scripts take nothing from the environment.
   - Actor steps: an ability says how far it got with `step(text)` (act-common: one
     `KASTELLAN-STEP` line on stderr, never failing: the hub may have gone). `actor.act(...,
     on_step=)` reads them as they come; `POST .../act/{ability}/stream` sends them, then
@@ -270,9 +285,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `UptimeStrip` merges neighbouring buckets (`mergeBuckets`) so a bar keeps ~5 px; it never
     overflows a narrow column.
   - Routes: `/` overview, `/services` (every tcp/http check on every device), `/devices` (list, or networks with `?view=graph`; search and filters
-    apply to both, the networks view fades non-matches), `/groups`, `/updates`, `/vpn`,
-    `/access`, `/config`, `/devices/[id]` (tabs: status, `?tab=edit` the form, `?tab=file` its
-    part of config.yaml; `Tabs` component). Adding a device is an inline form on `/devices`.
+    apply to both, the networks view fades non-matches), `/groups`, `/updates`, `/vpn`, `/keys`,
+    `/settings` (tabs: forms, `?tab=access` Kastellan's SSH key, `?tab=file` config.yaml; `/config`
+    and `/access` redirect there), `/devices/[id]`. Watching and setting up are split everywhere
+    (`Tabs`): a device has Status / Setup / Config (`?tab=setup|config`, Config with a Form | YAML
+    switch, `&view=yaml`), the VPN Clients / Setup, Groups Status / Setup; Setup and Config are
+    for admins, observers see Status only. Adding a device is an inline form on `/devices`.
 - `website/`: the project website, plain HTML/CSS/JS, published by `.github/workflows/pages.yml`.
   Screenshots in `website/img/` come from demo mode, in light and dark (`<picture>`).
 

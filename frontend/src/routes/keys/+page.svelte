@@ -296,14 +296,20 @@
 		<section class="card mt-6 max-w-2xl p-5">
 			<h2 class="text-sm font-semibold">No key rings yet</h2>
 			<p class="mt-1 text-sm text-muted">
-				Making them gives two rings: Kastellan's (what it uses by itself) and people's logins (never
-				used by Kastellan by itself). Kastellan's takes in what is kept as plain files so far{vault
-					.files.length
-					? ` (${vault.files.join(', ')})`
-					: ''}, its SSH keys that can change things and push's key; then those files are removed.
-				Each admin opens them with their own password; you get a recovery key for each, once. How
-				they open after a restart is yours to choose afterwards.
+				Encrypt Kastellan's secrets and your logins, opened with your password.
 			</p>
+			<details class="mt-2 text-xs text-muted">
+				<summary class="cursor-pointer">How it works</summary>
+				<p class="mt-1 max-w-2xl leading-relaxed">
+					Two rings: Kastellan's (what it uses by itself) and people's logins (never used by
+					Kastellan by itself). Kastellan's takes in what is kept as plain files so far{vault.files
+						.length
+						? ` (${vault.files.join(', ')})`
+						: ''}, its SSH keys that can change things and push's key; then those files are removed.
+					Each admin opens them with their own password; you get a recovery key for each, once. How
+					they open after a restart is yours to choose afterwards.
+				</p>
+			</details>
 			{#if canChange}
 				<form class="mt-4 flex flex-wrap items-end gap-2" onsubmit={create}>
 					<label class="field w-64">

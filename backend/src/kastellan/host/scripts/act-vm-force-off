@@ -1,0 +1,13 @@
+# Pull the plug on one virtual machine (libvirt's destroy; on the host's list): it stops at once,
+# like a power cut, without its system shutting down. Its disks stay.
+name = one_name(VM_NAME)
+lock = one_at_a_time()
+vm = vm_uuid(name)
+if vm_state(vm) == "shut off":
+    fail(f"{name} is off already")
+step(f"forcing {name} off")
+virsh("destroy", "--", vm)
+state = wait_vm(vm, name, ("shut off",), 20, every=2)
+if state != "shut off":
+    fail(f"{name} is still {state} after it was forced off")
+done({"vm": name, "state": state, "forced": True})

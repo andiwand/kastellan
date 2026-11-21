@@ -10,6 +10,9 @@
 	import { statusOf } from '#lib/status.js';
 	import Plus from '@lucide/svelte/icons/plus';
 	import { untrack } from 'svelte';
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import Tabs from '#lib/components/Tabs.svelte';
 
 	/** Groups of devices (`groups:` in config.yaml), any kind. For their OpenWrt members: Wi-Fi
 	 * networks lined up by name, the mesh, root's password, each changed on all at once; for
@@ -107,6 +110,11 @@
 		return !!net?.on.some((e) => ['none', 'owe', null].includes(e.encryption));
 	}
 	const canChange = $derived(store.me?.role === 'admin' && !!store.me.user);
+	// Status: what the members say (read); Setup: the same with every way to change it.
+	const setup = $derived(page.url.searchParams.get('tab') === 'setup');
+	function showTab(t: 'status' | 'setup') {
+		goto(t === 'setup' ? '?tab=setup' : '?', { replaceState: true });
+	}
 	const keyOk = (k: string) => k.length >= 8 && k.length <= 63;
 	const input =
 		'h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm outline-none focus:border-accent';
@@ -134,18 +142,29 @@
 			rollback. Passwords are only compared, never shown.
 		</p>
 	</div>
-	{#if canChange && store.editBlocked === null}
+	{#if setup && canChange && store.editBlocked === null}
 		<button class="btn btn-primary" onclick={() => (editing = { id: null })}>
 			<Plus class="size-4" /> New group
 		</button>
 	{/if}
 </div>
 
+<div class="mt-5">
+	<Tabs
+		tabs={[
+			{ id: 'status', label: 'Status' },
+			{ id: 'setup', label: 'Setup' }
+		]}
+		current={setup ? 'setup' : 'status'}
+		onselect={showTab}
+	/>
+</div>
+
 {#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
 {#if groups && !groups.length}
 	<div class="card mt-6 p-8 text-center text-sm text-muted">
-		No groups yet. A group gathers devices that belong together: the access points, the servers of a
-		rack, the cameras.
+		No groups yet{setup ? '' : ' (make one on Setup)'}. A group gathers devices that belong
+		together: the access points, the servers of a rack, the cameras.
 	</div>
 {/if}
 
@@ -156,7 +175,7 @@
 			<h2 class="text-base font-semibold">
 				{g.name} <span class="ml-1 text-xs font-normal text-faint">{g.devices.length}</span>
 			</h2>
-			{#if canChange && store.editBlocked === null}
+			{#if setup && canChange && store.editBlocked === null}
 				<div class="flex items-center gap-2">
 					{#if deleting === g.id}
 						<span class="text-xs">Delete this group? The devices stay.</span>
@@ -247,7 +266,7 @@
 											· not on {net.missing.map(name).join(', ')}
 										</span>{/if}
 								</span>
-								{#if canChange}
+								{#if setup && canChange}
 									<button
 										class="{small} ml-auto"
 										onclick={() => show({ kind: 'network', group: g.id, ssid: net.ssid })}
@@ -274,7 +293,7 @@
 											· not on {m.missing.map(name).join(', ')}
 										</span>{/if}
 								</span>
-								{#if canChange}
+								{#if setup && canChange}
 									<button
 										class="{small} ml-auto"
 										onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: true })}
@@ -286,7 +305,7 @@
 						{:else}
 							<li class="flex items-center py-2 text-sm text-muted">
 								No mesh.
-								{#if canChange}
+								{#if setup && canChange}
 									<button
 										class="{small} ml-auto"
 										onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: false })}
@@ -298,7 +317,7 @@
 						{/each}
 					</ul>
 
-					{#if canChange}
+					{#if setup && canChange}
 						<div class="mt-5 flex items-center justify-between border-t border-line pt-4 text-sm">
 							<span>
 								<span class="text-xs font-medium text-muted">Root's password</span><br />
@@ -314,7 +333,7 @@
 				{/if}
 			</div>
 		{/if}
-		{#if g.ssh.length && store.me?.role === 'admin' && !store.health?.demo}
+		{#if setup && g.ssh.length && store.me?.role === 'admin' && !store.health?.demo}
 			<GroupSsh group={g.id} {canChange} />
 		{/if}
 	</section>

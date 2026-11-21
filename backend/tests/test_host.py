@@ -219,14 +219,31 @@ def test_a_hostile_report_is_tamed() -> None:
         "docker": [{"name": "a", "image": "x", "digests": 5}]
         + [{"name": f"c{i}", "image": "i"} for i in range(1000)],
         "junk": nested,
-        "system": {"load": "high", "memory": 7},
+        "system": {"load": "high", "memory": 7, "uptime": 10**1000},
     }
     r = normalize(bad)
     assert "junk" not in r and r["filesystems"] == [] and r["smart"]["disks"] == []
     assert r["services"] == {"failed": []} and r["raid"][0]["failed"] == []
     assert r["temperatures"] == [] and len(r["docker"]) == 300 and r["docker"][0]["digests"] == []
     assert r["updates"]["reboot_for"] == []
+    assert r["system"]["uptime"] == 0
     host_problems("x", "X", r, AlarmSettings())  # never raises on what normalize lets through
     import json as _json
 
     _json.dumps(r)  # and it serializes
+
+
+def test_vms_in_the_report() -> None:
+    raw = {
+        "vms": [
+            {"name": "win11", "state": "shut off", "autostart": True, "vcpus": 4, "memory": 8 * 1024**3},
+            {"name": "test", "state": "shut off", "autostart": False, "vcpus": "lots", "disks": "no"},
+            {"state": "running"},  # no name: dropped
+        ]
+    }
+    vms = normalize(raw)["vms"]
+    assert [v["name"] for v in vms] == ["win11", "test"] and vms[1]["vcpus"] is None and vms[1]["disks"] == []
+    found = {p.key: p.title for p in host_problems("sv1", "SV1", normalize(raw), AlarmSettings())}
+    # One that should start with the host but doesn't: a warning. One left off on purpose: nothing.
+    assert found == {"host:sv1:vm:win11": "SV1: VM win11 is shut off"}
+    assert normalize({"vms": "junk"})["vms"] is None and "vms" not in normalize({})

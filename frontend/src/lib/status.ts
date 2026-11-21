@@ -20,7 +20,29 @@ export const statusColor: Record<Status, { fill: string; text: string }> = {
 	waiting: { fill: 'var(--offline)', text: 'var(--muted)' }
 };
 
+/** A UPS's state as a status: on battery or a battery to replace is degraded, low battery down,
+ * no contact (or nothing read yet) waiting. */
+export const upsStatus: Record<string, Status> = {
+	online: 'up',
+	on_battery: 'degraded',
+	replace_battery: 'degraded',
+	low_battery: 'down',
+	no_contact: 'waiting',
+	unknown: 'waiting'
+};
+export const upsLabel: Record<string, string> = {
+	online: 'On mains',
+	on_battery: 'On battery',
+	replace_battery: 'Replace battery',
+	low_battery: 'Battery low',
+	no_contact: 'No contact',
+	unknown: 'Unknown',
+	'': 'Not read yet'
+};
+
 export function statusOf(device: Device): Status {
+	if (device.kind === 'ups' && (device.ups || device.checks.length === 0))
+		return upsStatus[device.ups?.state ?? 'unknown'] ?? 'waiting';
 	switch (device.state) {
 		case 'up':
 			return 'up';

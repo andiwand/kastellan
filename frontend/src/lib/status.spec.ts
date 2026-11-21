@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { deviceBuckets, bucketStatus, mergeBuckets } from './status';
+import { deviceBuckets, bucketStatus, mergeBuckets, statusOf } from './status';
+import type { Device } from './api';
 import { stateFor } from './format';
+
+it('uses reachability checks for a network UPS without a collector reading', () => {
+	const device = { kind: 'ups', state: 'up', checks: [{}], ups: null } as Device;
+	expect(statusOf(device)).toBe('up');
+	expect(statusOf({ ...device, checks: [] })).toBe('waiting');
+	expect(statusOf({ ...device, ups: { state: 'on_battery' } as Device['ups'] })).toBe('degraded');
+});
 
 describe('deviceBuckets', () => {
 	it('agrees with the badge: one failing check of two is degraded, not down', () => {

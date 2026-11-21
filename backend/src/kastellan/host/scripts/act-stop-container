@@ -1,0 +1,20 @@
+# Stop one running container (on the host's list), found by its exact name: SIGTERM, and after
+# 30 s SIGKILL (Docker's stop). A container started with --rm would be gone: refused.
+name = one_name()
+lock = one_at_a_time()
+try:
+    found = exact(name)
+    if found is None:
+        fail(f"no container called {name}")
+    if not found["State"].get("Running"):
+        fail(f"{name} isn't running")
+    if found["HostConfig"].get("AutoRemove"):
+        fail("started with --rm: stopping it would remove it")
+    step(f"stopping {name} (up to 30 s)")
+    docker("POST", f"/containers/{found['Id']}/stop?t=30", timeout=90)
+    state = docker("GET", f"/containers/{found['Id']}/json")["State"]
+except Exception as e:
+    fail(str(e))
+if state.get("Running"):
+    fail(f"{name} is still running after it was asked to stop")
+done({"container": name, "stopped": True, "running": False})

@@ -5,10 +5,11 @@ On the host (install_script, run as root; running it again with another choice c
 exactly that choice):
 - a user `kastellan-act` that can do nothing by itself;
 - a dispatcher (scripts/act-dispatch), the only thing the act key may run (`restrict`,
-  `command=`, `from=` the hub): it accepts exactly `update-container <name>`, `restart-container
-  <name>`, `reboot` and `abilities` (which lists what is installed), and starts the ability;
+  `command=`, `from=` the hub): it accepts exactly the known forms (`update-container <name>`,
+  `vm-start <name>`, `reboot`, ...) and `abilities` (which lists what is installed), and starts
+  the ability;
 - per chosen ability, a root-owned script (act-common + act-<ability>) and one sudo rule naming
-  exactly it; the container abilities act only on the containers in a root-owned list on the
+  exactly it; the container and VM abilities act only on the names in a root-owned list on the
   host (/etc/kastellan/act/<ability>.allow), every action goes to the host's syslog.
 
 What isn't installed can't be run, whatever the hub asks.
@@ -28,7 +29,7 @@ from typing import Any
 import asyncssh
 
 from ..access import authorize
-from ..config import Device
+from ..config import VM_NAME, Device
 from ..ssh import Keys, Target
 from .collector import PYTHON_CHECK, digest, remove_user
 
@@ -39,10 +40,17 @@ BASE = "/usr/local/lib/kastellan/act"
 ABILITIES = {
     "update-container": "Update containers (pull the image, recreate it with the same settings)",
     "restart-container": "Restart containers",
+    "start-container": "Start stopped containers",
+    "stop-container": "Stop containers",
+    "vm-start": "Start virtual machines (libvirt)",
+    "vm-shutdown": "Shut virtual machines down (as the power button would)",
+    "vm-reboot": "Restart virtual machines",
+    "vm-force-off": "Force virtual machines off (like pulling the plug: for a guest that hangs)",
     "upgrade-packages": "Install system updates (apt: keeps your config files, removes nothing)",
     "reboot": "Reboot the host (in a minute, so it can still be cancelled there)",
 }
-CONTAINER_ABILITIES = ("update-container", "restart-container")
+CONTAINER_ABILITIES = ("update-container", "restart-container", "start-container", "stop-container")
+VM_ABILITIES = ("vm-start", "vm-shutdown", "vm-reboot", "vm-force-off")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # always with fullmatch
 
 
@@ -55,16 +63,25 @@ def ability_script(ability: str) -> str:
 
 
 def install_script(
-    chosen: set[str], containers: list[str], public_key: str, hub_ip: str | None, user: str = USER
+    chosen: set[str],
+    containers: list[str],
+    public_key: str,
+    hub_ip: str | None,
+    user: str = USER,
+    vms: list[str] | None = None,
 ) -> str:
     """Shell commands, run as root, that give Kastellan exactly the chosen abilities on a host
-    (removing any others): for the container abilities, on `containers` ("*" for all)."""
+    (removing any others): for the container abilities on `containers`, for the VM abilities on
+    `vms` ("*" for all)."""
     q = shlex.quote
+    vms = vms or []
     unknown = chosen - set(ABILITIES)
     if unknown:
         raise ValueError(f"unknown abilities: {', '.join(sorted(unknown))}")
     if any(c != "*" and not NAME.fullmatch(c) for c in containers):
         raise ValueError("container names are letters, digits, _ . - (or * for all)")
+    if any(v != "*" and not VM_NAME.fullmatch(v) for v in vms):
+        raise ValueError("VM names are letters, digits, _ . + - (or * for all)")
     sudoers = f"/etc/sudoers.d/{user}"
     lines = [
         "set -eu",
@@ -92,14 +109,17 @@ def install_script(
         script = f"{BASE}/{ability}"
         if ability in chosen:
             put(script, ability_script(ability), "644")
-            # Container abilities take one argument (checked by the script); reboot none.
-            args = " *" if ability in CONTAINER_ABILITIES else ' ""'
+            # Container and VM abilities take one argument (checked by the script); reboot none.
+            listed = (
+                containers if ability in CONTAINER_ABILITIES else vms if ability in VM_ABILITIES else None
+            )
+            args = " *" if listed is not None else ' ""'
             rules.append(f"{user} ALL=(root) NOPASSWD: $py -I -S {script}{args}")
-            if ability in CONTAINER_ABILITIES:
+            if listed is not None:
                 # The names as quoted words, not in a heredoc: no name can end it early.
                 allow = f"/etc/kastellan/act/{ability}.allow"
-                names = " ".join(q(c) for c in containers)
-                lines.append(f"printf '%s\\n' {names} > {allow}.new" if containers else f": > {allow}.new")
+                names = " ".join(q(c) for c in listed)
+                lines.append(f"printf '%s\\n' {names} > {allow}.new" if listed else f": > {allow}.new")
                 lines.append(
                     f"chown root:root {allow}.new && chmod 644 {allow}.new && mv {allow}.new {allow}"
                 )
@@ -199,7 +219,8 @@ def parse_abilities(out: str) -> tuple[dict[str, list[str]], list[str]]:
     for line in lines[1:]:
         ability, _, rest = line.partition(":")
         if ability in result:
-            result[ability] = [c for c in rest.split() if c == "*" or NAME.fullmatch(c)]
+            pattern = VM_NAME if ability in VM_ABILITIES else NAME
+            result[ability] = [c for c in rest.split() if c == "*" or pattern.fullmatch(c)]
         elif ability == "versions":
             seen = dict(w.split("=", 1) for w in rest.split() if "=" in w)
     expected = {"dispatch": digest(_script("act-dispatch"))} | {a: digest(ability_script(a)) for a in names}
@@ -213,26 +234,44 @@ async def abilities(keys: Keys, device: Device) -> dict[str, list[str]]:
 STEP = "KASTELLAN-STEP "  # an ability's line on how far it got (act-common's step())
 # Longer than the script on the host allows itself, so the hub hears how it ended:
 # update-container: pull 900 + stop 90 + settling 600 + Docker calls; upgrade-packages:
-# dpkg 1200 + update 300 + upgrade 2400.
-LIMITS = {"update-container": 2100, "upgrade-packages": 4200, "restart-container": 180, "reboot": 60}
+# dpkg 1200 + update 300 + upgrade 2400; vm-shutdown: ACPI 60 + waiting 180.
+LIMITS = {
+    "update-container": 2100,
+    "upgrade-packages": 4200,
+    "restart-container": 180,
+    "start-container": 180,
+    "stop-container": 180,
+    "vm-start": 180,
+    "vm-shutdown": 300,
+    "vm-reboot": 180,
+    "vm-force-off": 120,
+    "reboot": 60,
+}
 
 
 async def act(
     keys: Keys,
     device: Device,
     ability: str,
-    container: str | None = None,
+    name: str | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    """Ask the host to do one thing; its answer (JSON) or RuntimeError with its reason. Its
-    steps (how far it got) go to `on_step` as they come; scripts older than steps send none."""
+    """Ask the host to do one thing (to the container or VM `name`, for those abilities); its
+    answer (JSON) or RuntimeError with its reason. Its steps (how far it got) go to `on_step` as
+    they come; scripts older than steps send none."""
     if ability not in ABILITIES:
         raise ValueError("unknown ability")
     words = [ability]
     if ability in CONTAINER_ABILITIES:
-        if not container or not NAME.fullmatch(container):
+        if not name or not NAME.fullmatch(name):
             raise ValueError("a container name is letters, digits, _ . -")
-        words.append(container)
+        words.append(name)
+    elif ability in VM_ABILITIES:
+        if not name or not VM_NAME.fullmatch(name):
+            raise ValueError("a VM name is letters, digits, _ . + -")
+        words.append(name)
+    elif name is not None:
+        raise ValueError(f"{ability} takes no target")
     errors: list[str] = []
     async with asyncio.timeout(LIMITS[ability]), await keys.connect(target_of(device), "act") as conn:
         process = await conn.create_process(" ".join(words), stdin=asyncssh.DEVNULL)

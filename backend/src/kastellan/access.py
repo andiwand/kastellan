@@ -55,7 +55,7 @@ def hub_address(host: str, port: int = 22) -> str | None:
 
 
 def check_user(user: str) -> str:
-    if not USER.match(user):
+    if not USER.fullmatch(user):
         raise ValueError("user names are letters, digits, . _ - (up to 32, not starting with -)")
     return user
 

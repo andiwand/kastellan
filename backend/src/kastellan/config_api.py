@@ -24,6 +24,11 @@ if TYPE_CHECKING:
     from .hub import Hub
 
 
+class Powered(BaseModel):
+    devices: list[str] = Field(max_length=500)  # every device this UPS powers, after the change
+    version: str
+
+
 class FileBody(BaseModel):
     text: str = Field(max_length=1_000_000)
     version: str | None = None  # from GET; None only when checking
@@ -50,11 +55,24 @@ class CheckForm(BaseModel):
     exposed: bool = False
 
 
+class RunsOnForm(BaseModel):
+    host: str = Field(min_length=1, max_length=64)
+    vm: str = Field(min_length=1, max_length=128)
+
+
+class UpsForm(BaseModel):
+    via: str = Field(min_length=1, max_length=64)
+    name: str | None = Field(default=None, max_length=64)
+
+
 class DeviceForm(BaseModel):
     name: str = Field(default="", max_length=120)
-    host: str = Field(min_length=1, max_length=253)
+    host: str = Field(default="", max_length=253)  # empty only for a UPS read through its host
     kind: Kind = Kind.OTHER
     site: str | None = Field(default=None, max_length=40)
+    runs_on: RunsOnForm | None = None  # a virtual machine on another device
+    ups: UpsForm | None = None  # a UPS: which host reads it
+    powered_by: str | None = Field(default=None, max_length=64)  # the UPS it hangs on
     tags: list[str] = Field(default_factory=list, max_length=30)
     always_on: bool | None = None
     exposed: bool = False
@@ -211,6 +229,15 @@ def router(hub: Hub) -> APIRouter:
             "host": form.host.strip(),
             "kind": form.kind.value,
             "site": (form.site or "").strip() or None,
+            "runs_on": (
+                {"host": form.runs_on.host.strip(), "vm": form.runs_on.vm.strip()} if form.runs_on else None
+            ),
+            "ups": (
+                {"via": form.ups.via.strip(), "name": (form.ups.name or "").strip() or None}
+                if form.ups and form.kind is Kind.UPS
+                else None
+            ),
+            "powered_by": (form.powered_by or "").strip() or None,
             "tags": tags,
             "always_on": form.always_on,
             "exposed": form.exposed,
@@ -504,6 +531,28 @@ def router(hub: Hub) -> APIRouter:
     async def delete_device(id: str, request: Request, version: str | None = None) -> dict[str, Any]:
         return edit(request, id, None, False, "device.delete", version)
 
+    @api.put("/devices/{id}/powered")
+    async def set_powered(id: str, body: Powered, request: Request) -> dict[str, Any]:
+        """Which devices UPS `id` powers: each device's `powered_by` set or taken away, in one
+        save (checked and audited like any edit)."""
+        w = guard(request)
+        ups = hub.config.devices.get(id)
+        if ups is None or ups.kind is not Kind.UPS:
+            raise HTTPException(404, "no such UPS device")
+        unknown = [d for d in body.devices if d not in hub.config.devices or d == id]
+        if unknown:
+            raise HTTPException(400, f"not a device it can power: {', '.join(unknown[:5])}")
+        old = current()
+        if body.version != config_edit.version_of(old):
+            raise HTTPException(409, "config.yaml changed since the page was loaded; load it again")
+        text, wanted = old, set(body.devices)
+        for did, device in hub.config.devices.items():
+            if did in wanted and device.powered_by != id:
+                text = config_edit.set_device_key(text, did, "powered_by", id)
+            elif did not in wanted and device.powered_by == id:
+                text = config_edit.set_device_key(text, did, "powered_by", None)
+        return {"version": save(request, w, old, text, "ups.powered", device=id)}
+
     @api.get("/devices/{id}/yaml")
     def get_device_yaml(id: str, request: Request, response: Response) -> dict[str, Any]:
         """The device's part of config.yaml as written, for editing it as text."""
@@ -576,6 +625,9 @@ def router(hub: Hub) -> APIRouter:
             "host": raw.get("host") or "",
             "kind": raw.get("kind") or "other",
             "site": raw.get("site") or "",
+            "runs_on": raw.get("runs_on") if isinstance(raw.get("runs_on"), dict) else None,
+            "ups": raw.get("ups") if isinstance(raw.get("ups"), dict) else None,
+            "powered_by": raw.get("powered_by") or None,
             "tags": [str(t) for t in raw.get("tags") or []],
             "always_on": raw.get("always_on"),
             "exposed": bool(raw.get("exposed", False)),

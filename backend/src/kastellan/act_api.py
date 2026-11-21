@@ -26,8 +26,9 @@ if TYPE_CHECKING:
 
 
 class Choice(BaseModel):
-    abilities: list[str] = Field(default_factory=list, max_length=10)
+    abilities: list[str] = Field(default_factory=list, max_length=20)
     containers: list[str] = Field(default_factory=list, max_length=200)  # ["*"] for all
+    vms: list[str] = Field(default_factory=list, max_length=200)  # ["*"] for all
 
 
 class Install(Choice, Login):
@@ -36,6 +37,7 @@ class Install(Choice, Login):
 
 class Action(BaseModel):
     container: str | None = Field(default=None, max_length=128)
+    vm: str | None = Field(default=None, max_length=128)
 
 
 def router(hub: Hub) -> APIRouter:
@@ -61,7 +63,7 @@ def router(hub: Hub) -> APIRouter:
     def script_for(choice: Choice, hub_ip: str | None) -> str:
         try:
             return actor.install_script(
-                set(choice.abilities), choice.containers, hub.keys.public_key("act"), hub_ip
+                set(choice.abilities), choice.containers, hub.keys.public_key("act"), hub_ip, vms=choice.vms
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
@@ -155,22 +157,30 @@ def router(hub: Hub) -> APIRouter:
             raise HTTPException(409, "no act: for this device (set up the actor first)")
         if ability not in actor.ABILITIES:
             raise HTTPException(404, "no such ability")
+        # The ability says what it acts on: a VM's name for the VM abilities, a container's for
+        # the container ones, nothing else. The other field set is refused, not ignored, so the
+        # audit line always names what was acted on.
+        field = "vm" if ability in actor.VM_ABILITIES else "container"
+        other = body.container if field == "vm" else body.vm
+        if other is not None:
+            raise HTTPException(400, f"{ability} takes a {field}, nothing else")
+        target = body.vm if field == "vm" else body.container
         audit = partial(
             hub.audit.record,
             f"act.{ability}",
             w.user,
             client_address(request.scope),
             device=id,
-            container=body.container,
+            **({field: target} if target is not None else {}),
         )
-        return device, audit
+        return device, target, audit
 
     @api.post("/{id}/act/{ability}/stream")
     async def act_streamed(id: str, ability: str, body: Action, request: Request) -> StreamingResponse:
         """The same, with how far it got as it goes: `KASTELLAN-STEP <text>` lines, then
         `KASTELLAN-DONE {"ok": ..., "result" | "error": ...}`. The hub's task, not the page's:
         it finishes (and is audited) when the browser leaves halfway."""
-        device, audit = action(id, ability, body, request)
+        device, target, audit = action(id, ability, body, request)
         audit(outcome="started")
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
@@ -179,7 +189,7 @@ def router(hub: Hub) -> APIRouter:
 
         async def run() -> None:
             try:
-                result = await actor.act(hub.keys, device, ability, body.container, on_step=said)
+                result = await actor.act(hub.keys, device, ability, target, on_step=said)
                 outcome: dict[str, Any] = {"ok": True, "result": result}
                 audit(outcome="done", result=result)
             except BaseException as e:  # also when the hub stops: the audit still says so
@@ -197,9 +207,9 @@ def router(hub: Hub) -> APIRouter:
     @api.post("/{id}/act/{ability}")
     async def act_now(id: str, ability: str, body: Action, request: Request) -> dict[str, Any]:
         """Do one thing on the host, as far as it allows."""
-        device, audit = action(id, ability, body, request)
+        device, target, audit = action(id, ability, body, request)
         try:
-            result = await actor.act(hub.keys, device, ability, body.container)
+            result = await actor.act(hub.keys, device, ability, target)
         except Exception as e:
             audit(outcome=f"failed: {str(e)[:200] or type(e).__name__}")
             raise failed(e) from e

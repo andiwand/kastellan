@@ -315,4 +315,194 @@ def docker():
     return out
 
 
+VIRSH = ("/usr/bin/virsh", "/usr/sbin/virsh", "/bin/virsh")  # where libvirt's client lives
+LIBVIRT = "qemu:///system"
+
+
+def kib(text):
+    m = re.match(r"(\d+)\s*KiB", text or "")
+    return int(m.group(1)) * 1024 if m else None
+
+
+VMS_WITHIN = 25  # seconds for all VMs: slow libvirt mustn't cost the whole report its time
+
+
+@section("vms")
+def vms():
+    """libvirt's virtual machines (KVM): name, state, autostart, CPUs, memory, disks. Nothing
+    from their definitions beyond that (no XML: it can carry passwords for consoles). Read-only
+    (virsh -r), each VM asked by its UUID (virsh takes a number as a domain id first)."""
+    virsh = next((p for p in VIRSH if os.path.exists(p)), None)
+    if virsh is None:
+        return None
+    base = [virsh, "-r", "-c", LIBVIRT]
+    end = time.monotonic() + VMS_WITHIN
+    code, text = run([*base, "list", "--all", "--uuid", "--name"], timeout=20)
+    if code != 0:
+        raise RuntimeError("virsh list failed (is libvirtd running?)")
+    listed = [line.split() for line in text.splitlines()]
+    out, skipped = [], []
+    for uuid, name in [p for p in listed if len(p) == 2][:64]:
+        if time.monotonic() >= end:
+            skipped.append(name)
+            continue
+        try:
+            _, info = run([*base, "dominfo", "--", uuid], timeout=max(0.01, min(10, end - time.monotonic())))
+            _, blk = run([*base, "domblklist", "--details", "--", uuid], timeout=max(0.01, min(10, end - time.monotonic())))
+        except subprocess.TimeoutExpired:  # a domain stuck in a job: the others still count
+            skipped.append(name)
+            continue
+        fields = {}
+        for line in info.splitlines():
+            key, _, value = line.partition(":")
+            fields[key.strip().lower()] = value.strip()
+        disks = []
+        for line in blk.splitlines()[2:]:
+            words = line.split()
+            if len(words) >= 4 and words[1] == "disk" and words[3] != "-":
+                disks.append({"target": words[2], "source": words[3]})
+        cpus = fields.get("cpu(s)", "")
+        out.append({
+            "name": name,
+            "uuid": uuid,
+            "state": fields.get("state"),
+            "autostart": fields.get("autostart") == "enable",
+            "persistent": fields.get("persistent") == "yes",
+            "vcpus": int(cpus) if cpus.isdigit() else None,
+            "memory": kib(fields.get("max memory")),
+            "memory_used": kib(fields.get("used memory")),
+            "disks": disks[:16],
+        })
+    if skipped:
+        OUT["errors"]["vms"] = f"libvirt didn't answer in time for: {', '.join(skipped[:10])}"[:200]
+    return out
+
+
+APCACCESS = ("/usr/sbin/apcaccess", "/sbin/apcaccess", "/usr/bin/apcaccess")  # apcupsd's client
+UPSC = ("/usr/bin/upsc", "/bin/upsc", "/usr/sbin/upsc")  # NUT's client (localhost, read-only)
+# What a UPS's status words mean, as a few flags (apcupsd's STATUS, NUT's ups.status).
+UPS_FLAGS = {
+    "ONLINE": "online", "OL": "online",
+    "ONBATT": "on_battery", "OB": "on_battery",
+    "LOWBATT": "low_battery", "LB": "low_battery",
+    "REPLACEBATT": "replace_battery", "RB": "replace_battery",
+    "COMMLOST": "no_contact",
+}
+
+
+def number(text):
+    """The number a value starts with ("98.0 Percent", "230.0 Volts", "12.5 Minutes")."""
+    m = re.match(r"\s*(-?\d+(?:\.\d+)?)", text or "")
+    return float(m.group(1)) if m else None
+
+
+def ups_flags(status):
+    flags = []
+    for word in (status or "").upper().split():
+        flag = UPS_FLAGS.get(word)
+        if flag and flag not in flags:
+            flags.append(flag)
+    return flags or ["unknown"]
+
+
+def parse_apcaccess(text):
+    """`apcaccess status`: `KEY      : value` lines."""
+    f = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            f[key.strip().upper()] = value.strip()
+    minutes = number(f.get("TIMELEFT"))
+    transfers = number(f.get("NUMXFERS"))
+    return {
+        "source": "apcupsd",
+        "name": f.get("UPSNAME") or None,
+        "model": f.get("MODEL") or None,
+        "serial": f.get("SERIALNO") or None,
+        "firmware": f.get("FIRMWARE") or None,
+        "status": f.get("STATUS") or "",
+        "flags": ups_flags(f.get("STATUS")),
+        "charge": number(f.get("BCHARGE")),
+        "runtime": minutes * 60 if minutes is not None else None,
+        "load": number(f.get("LOADPCT")),
+        "input_voltage": number(f.get("LINEV")),
+        "battery_voltage": number(f.get("BATTV")),
+        "nominal_power": number(f.get("NOMPOWER")),
+        "last_transfer": f.get("LASTXFER") or None,
+        "on_battery_since": f.get("XONBATT") or None,
+        "off_battery_since": f.get("XOFFBATT") or None,
+        "transfers": int(transfers) if transfers is not None else None,
+        "battery_date": f.get("BATTDATE") or None,
+    }
+
+
+def parse_upsc(name, text):
+    """`upsc <ups>`: `key: value` lines (NUT's variables)."""
+    f = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            f[key.strip()] = value.strip()
+    return {
+        "source": "nut",
+        "name": name,
+        "model": f.get("ups.model") or f.get("device.model") or None,
+        "serial": f.get("ups.serial") or f.get("device.serial") or None,
+        "firmware": f.get("ups.firmware") or None,
+        "status": f.get("ups.status") or "",
+        "flags": ups_flags(f.get("ups.status")),
+        "charge": number(f.get("battery.charge")),
+        "runtime": number(f.get("battery.runtime")),  # seconds already
+        "load": number(f.get("ups.load")),
+        "input_voltage": number(f.get("input.voltage")),
+        "battery_voltage": number(f.get("battery.voltage")),
+        "nominal_power": number(f.get("ups.realpower.nominal")),
+        "last_transfer": f.get("input.transfer.reason") or None,
+        "on_battery_since": None,
+        "off_battery_since": None,
+        "transfers": None,
+        "battery_date": f.get("battery.date") or f.get("battery.mfr.date") or None,
+    }
+
+
+UPS_WITHIN = 15  # seconds for all UPS tools, so a dead daemon can't cost the whole host report
+
+
+@section("ups")
+def ups():
+    """The UPSes this host reads: apcupsd's (apcaccess) and NUT's (upsc, on this host). Nothing
+    but their state; no tool, no section. One the daemon can't reach is there, without contact."""
+    out = []
+    end = time.monotonic() + UPS_WITHIN
+
+    def ask(argv):
+        left = end - time.monotonic()
+        if left <= 0:
+            return 1, ""
+        try:
+            return run(argv, timeout=min(10, left))
+        except (subprocess.TimeoutExpired, OSError):
+            return 1, ""
+
+    apc = next((p for p in APCACCESS if os.path.exists(p)), None)
+    if apc is not None:
+        code, text = ask([apc, "status"])
+        if code == 0 and "STATUS" in text:
+            out.append(parse_apcaccess(text))
+        else:
+            out.append({"source": "apcupsd", "status": "", "flags": ["no_contact"]})
+    upsc = next((p for p in UPSC if os.path.exists(p)), None)
+    if upsc is not None:
+        code, text = ask([upsc, "-l"])
+        for name in [n.strip() for n in text.splitlines() if n.strip()][:8] if code == 0 else []:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name):
+                continue
+            code, data = ask([upsc, name])
+            if code == 0 and "ups.status" in data:
+                out.append(parse_upsc(name, data))
+            else:
+                out.append({"source": "nut", "name": name, "status": "", "flags": ["no_contact"]})
+    return out or None
+
+
 sys.stdout.write(json.dumps(OUT))

@@ -44,6 +44,7 @@ own; it does not talk to Norn.
       known hosts kept alike (fetch, edit, push)
 - [x] Docker containers and updates (WUD or the registries directly)
 - [x] Collector (host health) and actor (update/restart containers, system updates, reboot)
+- [x] UPS readings and power alarms; libvirt VMs and guest links; container and VM start/stop
 - [x] Updates page: everything waiting, with its action; outdated Kastellan scripts
 - [x] Alarms: down devices and services, one alarm for what is behind a device, hysteresis,
       acknowledge with a note, mute; disks, RAID, heat, certificates, vulnerabilities

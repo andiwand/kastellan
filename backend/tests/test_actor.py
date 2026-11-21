@@ -323,6 +323,35 @@ def test_older_scripts_are_told(tmp_path: Path) -> None:
     assert actor.parse_abilities("reboot\n")[1] == ["dispatch", "reboot"]
 
 
+def test_ability_lists_use_each_targets_name_rules(tmp_path: Path) -> None:
+    names = "123 12345678-1234-1234-1234-123456789abc guest+one app"
+    allow = tmp_path / "allow"
+    allow.mkdir()
+    for ability in ("start-container", "vm-start"):
+        (allow / f"{ability}.allow").write_text(names.replace(" ", "\n") + "\n")
+    code = actor._script("act-dispatch").replace("/etc/kastellan/act/", str(allow) + "/")
+    base = tmp_path / "act"
+    base.mkdir()
+    for ability in ("start-container", "vm-start"):
+        (base / ability).touch()
+    code = code.replace('BASE = "/usr/local/lib/kastellan/act"', f"BASE = {str(base)!r}")
+    r = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        capture_output=True,
+        text=True,
+        env={"SSH_ORIGINAL_COMMAND": "abilities"},
+    )
+    assert r.returncode == 0, r.stderr
+    found, _ = actor.parse_abilities(r.stdout)
+    assert found["start-container"] == ["123", "12345678-1234-1234-1234-123456789abc", "app"]
+    assert found["vm-start"] == ["guest+one", "app"]
+
+
+async def test_an_untargeted_action_refuses_a_target() -> None:
+    with pytest.raises(ValueError, match="takes no target"):
+        await actor.act(None, None, "reboot", "app")
+
+
 def test_the_install_script() -> None:
     script = actor.install_script({"update-container", "reboot"}, ["norn", "grundriss"], KEY, "192.168.15.50")
     assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
@@ -453,6 +482,40 @@ def test_the_uninstall_scripts() -> None:
         in collector.uninstall_script()
     )
     assert "userdel -r kastellan-act" in actor.uninstall_script()
+
+
+def test_uninstall_does_not_unlink_through_a_users_home_as_root(tmp_path: Path) -> None:
+    home, victim = tmp_path / "home", tmp_path / "victim"
+    home.mkdir()
+    victim.mkdir()
+    key = victim / "authorized_keys"
+    key.write_text("another user's keys\n")
+    (home / ".ssh").symlink_to(victim, target_is_directory=True)
+    marker = tmp_path / "removed"
+    called = tmp_path / "su-called"
+    commands = {
+        "id": f'test ! -f "{marker}"',
+        "getent": f'echo "kastellan-act:x:123:123::%s:/bin/sh" | sed "s|%s|{home}|"',
+        # Deliberately do not perform the unlink: only the target user's su may attempt it.
+        "su": f'printf "%s\\n" "$@" > "{called}"',
+        "pkill": "exit 0",
+        "sleep": "exit 0",
+        "userdel": f'touch "{marker}"',
+    }
+    for name, body in commands.items():
+        path = tmp_path / name
+        path.write_text("#!/bin/sh\n" + body + "\n")
+        path.chmod(0o755)
+    r = subprocess.run(
+        ["/bin/sh", "-e"],
+        input="\n".join(collector.remove_user("kastellan-act")),
+        text=True,
+        capture_output=True,
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert key.read_text() == "another user's keys\n"
+    assert "kastellan-act" in called.read_text() and str(home) in called.read_text()
 
 
 def test_no_setup_runs_in_demo_mode(tmp_path: Path) -> None:
@@ -674,3 +737,251 @@ def test_a_failure_is_one_line(host) -> None:
     r = run("update-container", "app")
     assert r.returncode == 1 and "forged" in r.stderr
     assert "forged" not in " ".join(steps(r))
+
+
+def test_starting_and_stopping_containers(host) -> None:
+    fake, run = host
+    r = run("stop-container", "app")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["stopped"] is True and "stopping app (up to 30 s)" in steps(r)
+    again = run("stop-container", "app")
+    assert again.returncode == 1 and "isn't running" in again.stderr  # said plainly, nothing done
+    r = run("start-container", "app")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["running"] is True
+    assert run("start-container", "app").returncode == 1  # runs already
+    assert run("stop-container", "app", allow="other\n").returncode == 3  # not on the host's list
+    fake.find("app")["HostConfig"]["AutoRemove"] = True
+    gone = run("stop-container", "app")
+    assert gone.returncode == 1 and "--rm" in gone.stderr
+
+
+FAKE_VIRSH = """#!{python}
+import json, re, sys, time
+state_file = {state!r}
+vms = json.load(open(state_file))
+args = sys.argv[1:]
+with open(state_file + ".log", "a") as log:
+    log.write(" ".join(args) + "\\n")
+if args[:1] == ["-r"]:
+    args = args[1:]
+assert args[:2] == ["-c", "qemu:///system"], args
+cmd, rest = args[2], [a for a in args[3:] if a != "--"]
+def save():
+    json.dump(vms, open(state_file, "w"))
+if cmd == "list":
+    for name, vm in vms.items():
+        print(f"{{vm['uuid']}} {{name}}" if "--uuid" in rest else name)
+    sys.exit(0)
+key = rest[-1]
+# As virsh looks a domain up: by id when it's a number, then by UUID, then by name.
+name = next((n for n, v in vms.items() if key.isdigit() and v.get("id") == int(key)), None)
+name = name or next((n for n, v in vms.items() if v["uuid"] == key), None)
+name = name or (key if key in vms else None)
+if name is None:
+    print(f"error: failed to get domain '{{key}}'", file=sys.stderr)
+    sys.exit(1)
+vm = vms[name]
+if vm.get("hang"):
+    time.sleep(30)
+if cmd == "domstate":
+    print(vm["state"])
+elif cmd == "dominfo":
+    print(f"Name:           {{name}}\\nUUID:           {{vm['uuid']}}\\nState:          {{vm['state']}}\\n"
+          f"CPU(s):         2\\nMax memory:     2097152 KiB\\nUsed memory:    2097152 KiB\\n"
+          f"Persistent:     yes\\nAutostart:      {{'enable' if vm.get('autostart') else 'disable'}}")
+elif cmd == "domblklist":
+    print(" Type   Device   Target   Source\\n" + "-" * 40)
+    print(f" file   disk     vda      /var/lib/libvirt/images/{{name}}.qcow2")
+    print(" file   cdrom    sda      -")
+elif cmd in ("start", "resume"):
+    vm["state"] = "running"
+elif cmd == "shutdown":
+    if vm.get("acpi", True):
+        vm["state"] = "shut off"
+elif cmd == "reboot":
+    pass
+elif cmd == "destroy":
+    vm["state"] = "shut off"
+save()
+"""
+
+
+U1, U2, U3, U4 = (f"0000000{i}-1111-2222-3333-444444444444" for i in range(1, 5))
+
+
+@pytest.fixture
+def libvirt(tmp_path: Path):
+    """A fake virsh with VMs kept in a file, and a runner for the VM abilities against it."""
+    state = tmp_path / "vms.json"
+    state.write_text(
+        json.dumps(
+            {
+                "win11": {"state": "running", "autostart": True, "uuid": U1, "id": 1},
+                "deb+test": {"state": "shut off", "uuid": U2},
+                "stubborn": {"state": "running", "acpi": False, "uuid": U3, "id": 2},
+                "frozen": {"state": "running", "hang": True, "uuid": U4, "id": 3},
+            }
+        )
+    )
+    virsh = tmp_path / "virsh"
+    virsh.write_text(FAKE_VIRSH.format(python=sys.executable, state=str(state)))
+    virsh.chmod(0o755)
+    (tmp_path / "allow").mkdir()
+
+    def with_virsh(code: str) -> str:
+        return code.replace(
+            'VIRSH = ("/usr/bin/virsh", "/usr/sbin/virsh", "/bin/virsh")', f"VIRSH = ({str(virsh)!r},)"
+        )
+
+    def run(ability: str, *args: str, allow: str = "*\n") -> subprocess.CompletedProcess:
+        (tmp_path / "allow" / f"{ability}.allow").write_text(allow)
+        code = with_virsh(actor.ability_script(ability))
+        code = code.replace("/etc/kastellan/act/", f"{tmp_path}/allow/")
+        code = code.replace('LOCK = "/run/kastellan-act.lock"', f"LOCK = {str(tmp_path / 'lock')!r}")
+        code = code.replace(", 180)", ", 0.3)").replace("every=5", "every=0.05")  # no minutes in tests
+        code = code.replace("timeout=20)", "timeout=1)")  # a hanging virsh: a second, not 20
+        script = tmp_path / ability
+        script.write_text(code)
+        return subprocess.run(
+            [sys.executable, "-I", str(script), *args], capture_output=True, text=True, timeout=60
+        )
+
+    run.state = lambda: json.loads(state.read_text())  # type: ignore[attr-defined]
+    run.log = lambda: (tmp_path / "vms.json.log").read_text().splitlines()  # type: ignore[attr-defined]
+    run.with_virsh = with_virsh  # type: ignore[attr-defined]
+    return run
+
+
+def test_vms_are_started_shut_down_and_forced_off(libvirt) -> None:
+    run = libvirt
+    r = run("vm-start", "deb+test")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["state"] == "running" and run.state()["deb+test"]["state"] == "running"
+    assert run("vm-start", "deb+test").returncode == 1  # runs already
+    r = run("vm-shutdown", "win11")
+    assert r.returncode == 0 and run.state()["win11"]["state"] == "shut off"
+    assert "asking win11 to shut down (ACPI)" in steps(r)
+    stubborn = run("vm-shutdown", "stubborn")  # a guest that ignores ACPI: it says so, nothing forced
+    assert stubborn.returncode == 1 and "still running" in stubborn.stderr
+    assert run.state()["stubborn"]["state"] == "running"
+    r = run("vm-force-off", "stubborn")
+    assert r.returncode == 0 and json.loads(r.stdout)["forced"] is True
+    assert run.state()["stubborn"]["state"] == "shut off"
+    assert run("vm-reboot", "stubborn").returncode == 1  # not running
+    # Acted on by its UUID, never by a name virsh could read as another domain's id.
+    assert f"-c qemu:///system destroy -- {U3}" in run.log()
+    assert not any(line.endswith(" stubborn") for line in run.log() if " destroy " in line)
+    assert run("vm-start", "win11", allow="deb+test\n").returncode == 3  # not on the host's list
+    assert run("vm-start", "nope").returncode == 1  # libvirt knows no such VM
+    for bad in ("-c", "a b", "x;y", "", "2", U1, U1.upper()):  # a number or a UUID: never a name
+        assert run("vm-start", bad).returncode == 2, bad
+
+
+def test_a_restart_is_only_asked_for(libvirt) -> None:
+    """libvirt can't tell whether the guest restarted: the answer says it was asked."""
+    r = libvirt("vm-reboot", "win11")
+    assert r.returncode == 0 and json.loads(r.stdout)["asked"] is True
+    assert any("libvirt can't tell" in s for s in steps(r))
+
+
+def test_a_hanging_virsh_is_one_line(libvirt) -> None:
+    """libvirtd stuck, or the domain in a job: a short failure, not a traceback."""
+    r = libvirt("vm-shutdown", "frozen")
+    assert r.returncode == 1
+    lines = [ln for ln in r.stderr.splitlines() if not ln.startswith("KASTELLAN-STEP")]
+    assert len(lines) == 1 and "didn't answer" in lines[0], r.stderr
+
+
+def test_the_collector_lists_vms(libvirt) -> None:
+    code = libvirt.with_virsh(collector.script()).replace("timeout=10)", "timeout=1)")
+    data = json.loads(
+        subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True).stdout
+    )
+    by_name = {v["name"]: v for v in data["vms"]}
+    assert set(by_name) == {"win11", "deb+test", "stubborn"}  # the stuck one is left out, and said
+    assert "frozen" in data["errors"]["vms"]
+    assert by_name["win11"]["uuid"] == U1
+    assert all(line.startswith("-r ") for line in libvirt.log())  # read-only, every call
+    assert not any(line.endswith(" win11") for line in libvirt.log())  # asked by UUID
+    win = by_name["win11"]
+    assert win["state"] == "running" and win["autostart"] is True and win["vcpus"] == 2
+    assert win["memory"] == 2 * 1024**3
+    assert win["disks"] == [{"target": "vda", "source": "/var/lib/libvirt/images/win11.qcow2"}]  # no cdrom
+
+
+def test_the_dispatcher_knows_the_new_forms(tmp_path: Path) -> None:
+    for command, installed in [
+        ("start-container app", ("start-container",)),
+        ("stop-container app", ("stop-container",)),
+        ("vm-shutdown deb+test", ("vm-shutdown",)),
+        ("vm-force-off win11", ("vm-force-off",)),
+    ]:
+        ok = dispatch(tmp_path, command, installed)
+        assert ok.returncode == 0 and ok.stdout.strip().endswith(command.split(" ", 1)[1]), command
+    assert dispatch(tmp_path, "vm-start a;b", ("vm-start",)).returncode == 2
+    assert dispatch(tmp_path, "vm-start 12", ("vm-start",)).returncode == 2  # a domain id
+    assert dispatch(tmp_path, f"vm-start {U1}", ("vm-start",)).returncode == 2  # a UUID
+    assert dispatch(tmp_path, "vm-start", ("vm-start",)).returncode == 2
+
+
+def test_the_install_script_lists_vms() -> None:
+    script = actor.install_script(
+        {"vm-start", "stop-container"}, ["app"], KEY, None, vms=["win11", "deb+test"]
+    )
+    assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
+    assert "printf '%s\\n' win11 deb+test > /etc/kastellan/act/vm-start.allow.new" in script
+    assert "printf '%s\\n' app > /etc/kastellan/act/stop-container.allow.new" in script
+    with pytest.raises(ValueError):
+        actor.install_script({"vm-start"}, [], KEY, None, vms=["a;b"])
+    for ability in actor.ABILITIES:
+        compile(actor.ability_script(ability), ability, "exec")
+
+
+def test_the_collector_stops_asking_libvirt_in_time(libvirt) -> None:
+    """All VMs within VMS_WITHIN: past it, the rest are skipped (and named), the report goes on."""
+    code = libvirt.with_virsh(collector.script()).replace("VMS_WITHIN = 25", "VMS_WITHIN = 0")
+    data = json.loads(
+        subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True).stdout
+    )
+    assert data["vms"] == [] and "win11" in data["errors"]["vms"]
+    assert "raid" in data  # the other sections are all there
+
+
+def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A VM ability takes `vm`, a container ability `container`: the other field is refused, and
+    the audit names what was acted on."""
+    from fastapi.testclient import TestClient
+
+    from kastellan import act_api
+    from kastellan.api import create_app
+    from kastellan.auth import hash_password
+    from kastellan.settings import Settings
+
+    asked: list[tuple[str, str | None]] = []
+
+    async def fake_act(keys, device, ability, name=None, on_step=None):
+        asked.append((ability, name))
+        return {"ok": True}
+
+    monkeypatch.setattr(act_api.actor, "act", fake_act)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  nas:\n    host: 127.0.0.1\n    act: {}\n"
+        f"users:\n  ada:\n    role: admin\n    password: {hash_password('pw for tests')}\n"
+    )
+    h = {"X-Kastellan": "1"}
+    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
+        assert c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=h)
+        url = "/api/devices/nas/act"
+        assert c.post(f"{url}/restart-container", json={"vm": "x"}, headers=h).status_code == 400
+        assert c.post(f"{url}/vm-start", json={"container": "x"}, headers=h).status_code == 400
+        both = {"vm": "x", "container": "y"}
+        assert c.post(f"{url}/vm-start", json=both, headers=h).status_code == 400
+        assert c.post(f"{url}/vm-start", json={"vm": "win11"}, headers=h).status_code == 200
+        assert c.post(f"{url}/restart-container", json={"container": "app"}, headers=h).status_code == 200
+    assert asked == [("vm-start", "win11"), ("restart-container", "app")]
+    audit = [json.loads(ln) for ln in (tmp_path / "audit.log").read_text().splitlines()]
+    acts = {a["action"]: a for a in audit if a.get("action", "").startswith("act.")}
+    assert acts["act.vm-start"]["vm"] == "win11" and "container" not in acts["act.vm-start"]
+    assert acts["act.restart-container"]["container"] == "app"

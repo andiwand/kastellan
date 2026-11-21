@@ -17,6 +17,7 @@ devices:
   nas:
     host: nas.lan
     kind: server
+    powered_by: ups # on that UPS, power-wise: while it is on battery, what goes down waits in its alarm
     parent: router # what it is connected through, for the graph (infrastructure; skip Wi-Fi clients)
     tags: [docker]
     checks:
@@ -29,6 +30,22 @@ devices:
         interval: 30
       - http: https://media.example.org # the same service by its public name: its certificate
         name: jellyfin (public) #         is watched (valid, and not ending within 14 days)
+
+  home-assistant:
+    host: homeassistant.lan
+    parent: router
+    runs_on: { host: nas, vm: haos } # a virtual machine on the NAS (libvirt's name for it):
+    #                                  its state and actions show here, and when the NAS is
+    #                                  down this one waits in the NAS's alarm
+    checks:
+      - ping
+      - http: http://homeassistant.lan:8123
+
+  ups:
+    kind: ups # an uninterruptible power supply on the NAS's USB: no address of its own
+    ups: { via: nas } # the host whose collector reads it (apcupsd, or NUT: add name:)
+    #   alarms: on battery (critical below alarms: ups_charge_critical % or
+    #   ups_runtime_critical min), a battery to replace, no contact
 
   laptop:
     host: laptop.lan

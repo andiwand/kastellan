@@ -258,7 +258,7 @@
 		<p class="font-medium text-text">Nothing says this device has SSH.</p>
 		<p class="mt-2">
 			Give it an SSH service (a port check named ssh, or on port 22) on its page, or set up
-			Kastellan's key there (<a class="underline" href="/devices/{id}#setup">SSH access</a>).
+			Kastellan's key there (<a class="underline" href="/devices/{id}?tab=setup">SSH access</a>).
 		</p>
 	</div>
 {:else}
@@ -325,7 +325,7 @@
 				<p class="font-medium">Log in to {device?.host}</p>
 				<p class="mt-1 text-muted">
 					{p.why}. Log in yourself, or
-					<a class="underline" href="/devices/{id}#setup">set up Kastellan's own key</a> so it can.
+					<a class="underline" href="/devices/{id}?tab=setup">set up Kastellan's own key</a> so it can.
 				</p>
 				{#if p.stored.length}
 					<div class="mt-3 flex flex-wrap items-center gap-2">

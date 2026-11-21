@@ -1,0 +1,15 @@
+# Start one virtual machine, or resume a paused one (libvirt; on the host's list).
+name = one_name(VM_NAME)
+lock = one_at_a_time()
+vm = vm_uuid(name)
+state = vm_state(vm)
+if state == "running":
+    fail(f"{name} runs already")
+if state not in ("shut off", "paused"):
+    fail(f"{name} is {state}: it can't be started from there (force it off first)")
+step(f"{'resuming' if state == 'paused' else 'starting'} {name}")
+virsh("resume" if state == "paused" else "start", "--", vm)
+state = wait_vm(vm, name, ("running",), 30)
+if state != "running":
+    fail(f"{name} is {state}, not running")
+done({"vm": name, "state": state})

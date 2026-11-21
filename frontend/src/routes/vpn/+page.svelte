@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import Tabs from '#lib/components/Tabs.svelte';
 	import { api, type OvpnClient, type Vpn, type WgClient } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { ago } from '#lib/format.js';
@@ -23,6 +26,15 @@
 	let newDays = $state<Record<string, number | null>>({});
 
 	const admin = $derived(store.me?.role === 'admin' && (store.me.user || !store.me.signin));
+	// Clients: who has access, and since when (for everyone); Setup: the VPNs themselves, their
+	// hosts and Kastellan's VPN key (admins).
+	const canSetUp = $derived(store.me?.role === 'admin');
+	const tab = $derived(
+		canSetUp && page.url.searchParams.get('tab') === 'setup' ? 'setup' : 'clients'
+	);
+	function show(t: 'clients' | 'setup') {
+		goto(t === 'setup' ? '?tab=setup' : '?', { replaceState: true });
+	}
 	const canManage = $derived(store.me?.role === 'admin' && !!store.me.user);
 	const canEdit = $derived(canManage && store.editBlocked === null);
 	const names = $derived(Object.fromEntries((vpns ?? []).map((v) => [v.id, v.name])));
@@ -106,7 +118,7 @@
 
 <div class="flex flex-wrap items-baseline justify-between gap-3">
 	<h1 class="text-2xl font-semibold tracking-tight">VPN</h1>
-	{#if canEdit && vpns?.length && adding === null}
+	{#if tab === 'setup' && canEdit && vpns?.length && adding === null}
 		<button class="btn btn-sm" onclick={() => (adding = 'choose')}>
 			<Plus class="size-3.5" /> Add a VPN
 		</button>
@@ -116,6 +128,19 @@
 	Who can reach the network from outside, and how. Kastellan manages each VPN's clients; it doesn't
 	run the VPN itself.
 </p>
+
+{#if canSetUp}
+	<div class="mt-5">
+		<Tabs
+			tabs={[
+				{ id: 'clients', label: 'Clients' },
+				{ id: 'setup', label: 'Setup' }
+			]}
+			current={tab}
+			onselect={show}
+		/>
+	</div>
+{/if}
 
 {#if error}
 	<p
@@ -144,16 +169,22 @@
 
 {#if vpns && vpns.length === 0 && adding === null}
 	<div class="mt-6">
-		{#if canEdit}
+		{#if canEdit && tab === 'setup'}
 			<p class="mb-3 text-sm text-muted">No VPN yet. Which kind is yours?</p>
 			{@render kindChoice()}
+		{:else if canEdit}
+			<p class="text-sm text-muted">
+				No VPN yet. <button class="underline" onclick={() => show('setup')}>Set one up</button>.
+			</p>
 		{:else}
 			<p class="text-sm text-muted">No VPN set up.</p>
 		{/if}
 	</div>
 {/if}
 
-{#if adding === 'choose'}
+{#if tab !== 'setup'}
+	<!-- adding a VPN is Setup's -->
+{:else if adding === 'choose'}
 	<section class="mt-6">
 		<div class="mb-3 flex items-baseline justify-between gap-2">
 			<h2 class="text-sm font-semibold">Add a VPN: which kind?</h2>
@@ -187,7 +218,7 @@
 					· {KINDS[v.kind].name} through {KINDS[v.kind].via}
 				</span>
 			</h2>
-			{#if canEdit && editing !== v.id}
+			{#if tab === 'setup' && canEdit && editing !== v.id}
 				<div class="flex flex-wrap gap-1.5">
 					<button class="btn btn-sm" onclick={() => (editing = v.id)}>Settings</button>
 					{#if confirm === `vpn:${v.id}`}
@@ -221,7 +252,7 @@
 		</div>
 		{#if v.error}<p class="mt-2 text-xs" style:color="var(--warning-text)">{v.error}</p>{/if}
 
-		{#if editing === v.id}
+		{#if tab === 'setup' && editing === v.id}
 			<div class="mt-4 rounded-xl border border-line p-4">
 				<VpnForm
 					kind={v.kind}
@@ -235,7 +266,20 @@
 			</div>
 		{/if}
 
-		{#if v.kind === 'wireguard'}
+		{#if tab === 'setup'}
+			{#if v.kind === 'openvpn' && canManage}
+				<!-- Keyed: changed hosts or mode give fresh commands (not the ones read before). -->
+				{#key JSON.stringify(v.settings ?? null)}
+					<VpnSetup vid={v.id} canInstall={canManage} />
+				{/key}
+			{:else if editing !== v.id}
+				<p class="mt-2 text-xs text-muted">
+					{v.kind === 'wireguard'
+						? 'Kastellan reaches wg-easy with the address and password in Settings; nothing to set up on a host.'
+						: 'Sign in to set up its hosts.'}
+				</p>
+			{/if}
+		{:else if v.kind === 'wireguard'}
 			{#if v.insecure}
 				<p class="mt-2 text-xs" style:color="var(--warning-text)">
 					wg-easy is reached over plain HTTP on another machine, so its admin password crosses the
@@ -434,7 +478,7 @@
 			</ul>
 		{/if}
 
-		{#if canManage}
+		{#if tab === 'clients' && canManage}
 			<form
 				class="mt-3 flex flex-wrap items-center gap-2"
 				onsubmit={(e) => {
@@ -472,17 +516,11 @@
 					{v.kind === 'wireguard' ? 'Add' : 'Issue'}
 				</button>
 			</form>
-			{#if v.kind === 'openvpn'}
-				<!-- Keyed: changed hosts or mode give fresh commands (not the ones read before). -->
-				{#key JSON.stringify(v.settings ?? null)}
-					<VpnSetup vid={v.id} canInstall={canManage} />
-				{/key}
-			{/if}
 		{/if}
 	</section>
 {/each}
 
-{#if canManage}
+{#if tab === 'setup' && canManage}
 	<div class="mt-6"><VpnKey canChange={canManage} {names} {restricted} /></div>
 {/if}
 

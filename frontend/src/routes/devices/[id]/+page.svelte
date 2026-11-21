@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import { api, type Change, type Series } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { statusOf } from '#lib/status.js';
+	import { statusColor, statusOf, upsLabel, upsStatus } from '#lib/status.js';
 	import { ago, dayClock } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
@@ -19,6 +19,9 @@
 	import ActivityItem from '#lib/components/ActivityItem.svelte';
 	import ServicesTable from '#lib/components/ServicesTable.svelte';
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
+	import VmsTable from '#lib/components/VmsTable.svelte';
+	import UpsCard from '#lib/components/UpsCard.svelte';
+	import { vmTone } from '#lib/actions.js';
 	import VulnsList from '#lib/components/VulnsList.svelte';
 	import AccessSetup from '#lib/components/AccessSetup.svelte';
 	import DeviceEditor from '#lib/components/DeviceEditor.svelte';
@@ -37,14 +40,26 @@
 	const status = $derived(device ? statusOf(device) : 'waiting');
 	const parent = $derived(device?.parent ? store.byId.get(device.parent) : undefined);
 	const children = $derived((store.devices ?? []).filter((d) => d.parent === id));
-	// Admins can change it here: its form, or its part of config.yaml as text.
-	const canEdit = $derived(store.me?.role === 'admin' && store.editBlocked === null);
-	const tab = $derived.by(() => {
+	// Watching it (Status) is for everyone; setting it up (Setup) and changing its part of
+	// config.yaml (Config: a form or the text) are for admins. Old links (?tab=edit|file) still
+	// lead to the right place.
+	type Tab = 'status' | 'setup' | 'config';
+	const admin = $derived(store.me?.role === 'admin');
+	const tab = $derived.by((): Tab => {
 		const t = page.url.searchParams.get('tab');
-		return canEdit && (t === 'edit' || t === 'file') ? t : 'status';
+		if (!admin) return 'status';
+		if (t === 'setup') return 'setup';
+		return t === 'config' || t === 'edit' || t === 'file' ? 'config' : 'status';
 	});
-	function show(t: 'status' | 'edit' | 'file') {
-		goto(t === 'status' ? '?' : `?tab=${t}`, { replaceState: true });
+	const view = $derived(
+		page.url.searchParams.get('view') === 'yaml' || page.url.searchParams.get('tab') === 'file'
+			? 'yaml'
+			: 'form'
+	);
+	function show(t: Tab, v: 'form' | 'yaml' = 'form') {
+		const q =
+			t === 'status' ? '?' : `?tab=${t}${t === 'config' && v === 'yaml' ? '&view=yaml' : ''}`;
+		goto(q, { replaceState: true });
 	}
 	/** One action through the host's actor; what happened, in words. */
 	// Through the hub on its own name (webproxy.py) for signed-in admins when web: is set: the
@@ -112,6 +127,7 @@
 		laptop: 'Laptop',
 		printer: 'Printer',
 		camera: 'Camera',
+		ups: 'UPS',
 		other: 'Device'
 	};
 </script>
@@ -138,22 +154,62 @@
 					<StatusBadge {status} />
 				</div>
 				<div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
-					<button
-						onclick={copyHost}
-						class="inline-flex items-center gap-1.5 font-mono text-[13px] hover:text-text"
-						title="Copy the address"
-					>
-						{device.host}
-						{#if copied}<Check class="size-3.5" style="color: var(--good-text)" />{:else}<Copy
-								class="size-3.5 text-faint"
-							/>{/if}
-					</button>
-					<span class="text-faint">·</span>
+					{#if device.host}
+						<button
+							onclick={copyHost}
+							class="inline-flex items-center gap-1.5 font-mono text-[13px] hover:text-text"
+							title="Copy the address"
+						>
+							{device.host}
+							{#if copied}<Check class="size-3.5" style="color: var(--good-text)" />{:else}<Copy
+									class="size-3.5 text-faint"
+								/>{/if}
+						</button>
+						<span class="text-faint">·</span>
+					{/if}
 					<span>{kindLabel[device.kind] ?? device.kind}</span>
 					{#if parent}
 						<span class="text-faint">·</span>
 						<span>
 							via <a href="/devices/{parent.id}" class="text-text hover:underline">{parent.name}</a>
+						</span>
+					{/if}
+					{#if device.powered_by}
+						{@const u = store.byId.get(device.powered_by.ups)}
+						<span class="text-faint">·</span>
+						<span>
+							on <a class="text-text hover:underline" href="/devices/{device.powered_by.ups}">
+								{u?.name ?? device.powered_by.ups}
+							</a>
+							<span style:color={statusColor[upsStatus[device.powered_by.state] ?? 'waiting'].text}>
+								· {upsLabel[device.powered_by.state] ?? device.powered_by.state}
+							</span>
+						</span>
+					{/if}
+					{#each device.reads_ups ?? [] as r (r.device)}
+						<span class="text-faint">·</span>
+						<span>
+							UPS <a class="text-text hover:underline" href="/devices/{r.device}">
+								{store.byId.get(r.device)?.name ?? r.device}
+							</a>
+							<span style:color={statusColor[upsStatus[r.state] ?? 'waiting'].text}>
+								· {upsLabel[r.state] ?? r.state}
+							</span>
+						</span>
+					{/each}
+					{#if device.runs_on}
+						{@const host = store.byId.get(device.runs_on.host)}
+						<span class="text-faint">·</span>
+						<span>
+							virtual machine on <a
+								class="text-text hover:underline"
+								href="/devices/{device.runs_on.host}"
+							>
+								{host?.name ?? device.runs_on.host}
+							</a>
+							<span style:color={vmTone(device.runs_on.state ?? '')}>
+								· {device.runs_on.state || 'not reported'}
+							</span>
 						</span>
 					{/if}
 					{#if device.info?.model}
@@ -215,93 +271,56 @@
 		</div>
 	</header>
 
-	{#if canEdit}
+	{#if admin}
 		<div class="mt-6">
 			<Tabs
 				tabs={[
 					{ id: 'status', label: 'Status' },
-					{ id: 'edit', label: 'Edit' },
-					{ id: 'file', label: 'config.yaml', mono: true }
+					{ id: 'setup', label: 'Setup' },
+					{ id: 'config', label: 'Config' }
 				]}
 				current={tab}
-				onselect={show}
+				onselect={(t) => show(t)}
 			/>
 		</div>
 	{/if}
 
-	{#if tab === 'edit'}
-		<!-- Keyed: another device's page must never keep (and save) this one's form or text. -->
-		{#key device.id}
-			<div class="mt-6"><DeviceEditor id={device.id} onclose={() => show('status')} /></div>
-		{/key}
-	{:else if tab === 'file'}
-		{#key device.id}
-			<div class="mt-6"><ConfigFile device={device.id} /></div>
-		{/key}
-	{:else}
-		<!-- Range -->
-		<div class="mt-8 flex items-center justify-between">
-			<h2 class="text-sm font-semibold">Services</h2>
-			<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-				{#each ranges as r (r.label)}
-					<button
-						onclick={() => (range = r)}
-						class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range === r
-							? 'bg-surface-3 text-text'
-							: 'text-muted hover:text-text'}"
-					>
-						{r.label}
-					</button>
-				{/each}
+	{#if tab === 'config'}
+		{#if store.editBlocked !== null}
+			<div class="card mt-6 p-5 text-sm text-muted">
+				Its config can't be changed from here: {store.editBlocked}.
 			</div>
-		</div>
-
-		{#if loadError}
-			<p class="mt-3 text-sm" style:color="var(--critical-text)">
-				Cannot load the history: {loadError}. Showing what was loaded before.
-			</p>
+		{:else}
+			<div class="mt-6 flex flex-wrap items-center gap-3">
+				<Tabs
+					tabs={[
+						{ id: 'form', label: 'Form' },
+						{ id: 'yaml', label: 'YAML', mono: true }
+					]}
+					current={view}
+					onselect={(v) => show('config', v)}
+				/>
+				<p class="text-xs text-muted">
+					{view === 'form'
+						? 'Name, address, kind, tags and services; the rest stays as it is in config.yaml.'
+						: 'Its part of config.yaml, comments and all.'}
+				</p>
+			</div>
+			<!-- Keyed: another device's page must never keep (and save) this one's form or text. -->
+			{#key device.id}
+				{#if view === 'form'}
+					<div class="mt-4"><DeviceEditor id={device.id} onclose={() => show('status')} /></div>
+				{:else}
+					<div class="mt-4"><ConfigFile device={device.id} /></div>
+				{/if}
+			{/key}
 		{/if}
-
-		<div class="mt-3">
-			<ServicesTable
-				rows={device.checks.map((check) => ({ device: device!, check }))}
-				buckets={(_, name) => checkSeries[name] ?? []}
-				start={series?.start ?? null}
-				step={series?.step_seconds ?? 0}
-				rangeLabel={range.label}
-			/>
-		</div>
-
-		{#if device.router}
-			<RouterCard
-				device={device.id}
-				report={device.router}
-				checked={device.router_checked ?? null}
-				error={device.router_error ?? null}
-				canChange={store.me?.role === 'admin' && !!store.me.user}
-			/>
-		{:else if device.openwrt && device.router_error}
-			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
-				Kastellan can't read this OpenWrt device: {device.router_error}
+	{:else if tab === 'setup'}
+		{#if store.me}
+			<p class="mt-6 mb-4 max-w-2xl text-sm text-muted">
+				How Kastellan reaches this device, and what it may do there. Each part is set up once, with
+				your login (used for that one connection), or with commands to run yourself.
 			</p>
-		{/if}
-
-		{#if device.host_report}
-			<HostHealth
-				report={device.host_report}
-				checked={device.host_checked ?? null}
-				error={device.host_error ?? null}
-				device={device.id}
-				canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
-			/>
-		{:else if device.collect && device.host_error}
-			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
-				The collector doesn't answer: {device.host_error}
-			</p>
-		{/if}
-
-		{#if store.me?.role === 'admin'}
-			<h2 id="setup" class="mt-8 mb-3 text-sm font-semibold">Set up</h2>
 			{#if device.outdated_scripts.length}
 				<p class="mb-3 text-sm" style:color="var(--warning-text)">
 					Kastellan's {device.outdated_scripts.join(' and ')} on this host {device.outdated_scripts
@@ -343,10 +362,69 @@
 				{/key}
 			</div>
 		{/if}
+	{:else}
+		{#if device.kind === 'ups'}
+			<UpsCard {device} canChange={store.editBlocked === null && store.me?.role === 'admin'} />
+		{/if}
+		<!-- Range (a UPS read through its host has no services of its own) -->
+		{#if device.checks.length}<div class="mt-8 flex items-center justify-between">
+				<h2 class="text-sm font-semibold">Services</h2>
+				<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
+					{#each ranges as r (r.label)}
+						<button
+							onclick={() => (range = r)}
+							class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range === r
+								? 'bg-surface-3 text-text'
+								: 'text-muted hover:text-text'}"
+						>
+							{r.label}
+						</button>
+					{/each}
+				</div>
+			</div>
 
-		{#if device.vulns}
-			<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
-			<VulnsList vulns={device.vulns} exposed={device.exposed} />
+			{#if loadError}
+				<p class="mt-3 text-sm" style:color="var(--critical-text)">
+					Cannot load the history: {loadError}. Showing what was loaded before.
+				</p>
+			{/if}
+
+			<div class="mt-3">
+				<ServicesTable
+					rows={device.checks.map((check) => ({ device: device!, check }))}
+					buckets={(_, name) => checkSeries[name] ?? []}
+					start={series?.start ?? null}
+					step={series?.step_seconds ?? 0}
+					rangeLabel={range.label}
+				/>
+			</div>{/if}
+
+		{#if device.router}
+			<RouterCard
+				device={device.id}
+				report={device.router}
+				checked={device.router_checked ?? null}
+				error={device.router_error ?? null}
+				canChange={store.me?.role === 'admin' && !!store.me.user}
+			/>
+		{:else if device.openwrt && device.router_error}
+			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
+				Kastellan can't read this OpenWrt device: {device.router_error}
+			</p>
+		{/if}
+
+		{#if device.host_report}
+			<HostHealth
+				report={device.host_report}
+				checked={device.host_checked ?? null}
+				error={device.host_error ?? null}
+				device={device.id}
+				canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
+			/>
+		{:else if device.collect && device.host_error}
+			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
+				The collector doesn't answer: {device.host_error}
+			</p>
 		{/if}
 
 		{#if device.containers || device.containers_error}
@@ -379,8 +457,41 @@
 				/>{/if}
 		{/if}
 
-		<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">
-			<section>
+		{#if device.runs_on}
+			{@const host = store.byId.get(device.runs_on.host)}
+			{@const vm = host?.vms?.find((v) => v.name === device.runs_on?.vm)}
+			{#if host && vm}
+				<h2 class="mt-8 mb-3 text-sm font-semibold">
+					Its virtual machine <span class="font-normal text-faint">on {host.name}</span>
+				</h2>
+				<VmsTable
+					device={host.id}
+					vms={[vm]}
+					canAct={!!host.act && store.me?.role === 'admin' && !!store.me.user}
+				/>
+			{/if}
+		{/if}
+
+		{#if device.vms?.length}
+			<h2 class="mt-8 mb-3 text-sm font-semibold">
+				Virtual machines <span class="tabular ml-1 font-normal text-faint">
+					{device.vms.length}
+				</span>
+			</h2>
+			<VmsTable
+				device={device.id}
+				vms={device.vms}
+				canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
+			/>
+		{/if}
+
+		{#if device.vulns}
+			<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
+			<VulnsList vulns={device.vulns} exposed={device.exposed} />
+		{/if}
+
+		<div class="mt-8 grid min-w-0 grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1fr)_20rem]">
+			<section class="min-w-0">
 				<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
 					<h2 class="text-sm font-semibold">Response time</h2>
 					{#if device.checks.length > 1}

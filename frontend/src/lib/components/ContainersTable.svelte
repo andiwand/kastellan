@@ -2,13 +2,14 @@
 	import type { Container } from '#lib/api.js';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import JobStatus from './JobStatus.svelte';
+	import { containerActions, type ContainerAction } from '#lib/actions.js';
 	import ArrowUpCircle from '@lucide/svelte/icons/circle-arrow-up';
 	import CircleHelp from '@lucide/svelte/icons/circle-help';
 	import Check from '@lucide/svelte/icons/check';
 
 	/** A host's containers: what runs, and whether a newer image exists (or why that's unknown).
-	 * With `canAct`, a signed-in admin can update or restart them through the host's actor (which
-	 * acts only on what the host allows), through the same queue as the Updates page. */
+	 * With `canAct`, a signed-in admin can update, restart, stop or start them through the host's
+	 * actor (which acts only on what the host allows), through the same queue as the Updates page. */
 	let {
 		device,
 		containers,
@@ -20,6 +21,30 @@
 
 	const update = (c: Container): Job => ({ device, kind: 'container', name: c.name });
 	const restart = (c: Container): Job => ({ device, kind: 'restart', name: c.name });
+	/** What can be done to it now (only what can work from its state: actions.ts), each with its
+	 * button and its question. */
+	function actions(c: Container): { job: Job; label: string; ask: string; title?: string }[] {
+		const all: Record<ContainerAction, { job: Job; label: string; ask: string; title?: string }> = {
+			update: {
+				job: update(c),
+				label: 'Update',
+				ask: `Update ${c.name}? It is recreated with the new image (the old one comes back if that fails).`,
+				title: 'Pull its image again and recreate it with the same settings'
+			},
+			start: {
+				job: { device, kind: 'start', name: c.name },
+				label: 'Start',
+				ask: `Start ${c.name}?`
+			},
+			restart: { job: restart(c), label: 'Restart', ask: `Restart ${c.name}?` },
+			stop: {
+				job: { device, kind: 'stop', name: c.name },
+				label: 'Stop',
+				ask: `Stop ${c.name}? It stays stopped until started again (or until the host restarts, if it is set to restart).`
+			}
+		};
+		return containerActions(c.state, updatable.includes(c)).map((a) => all[a]);
+	}
 	const keyOf = (j: Job) => `${j.kind}:${'name' in j ? j.name : ''}`;
 	const busy = (j: Job) => ['queued', 'running'].includes(runner.state(j)?.state ?? '');
 	// The actor pulls the tag a container runs again: a newer build, not a new tag.
@@ -97,38 +122,29 @@
 					{/if}
 					{#if canAct}
 						<span class="ml-auto flex shrink-0 gap-1">
-							{#if updatable.includes(c)}
+							{#each actions(c) as a (a.label)}
 								<button
-									class="btn btn-sm"
-									disabled={busy(update(c))}
-									onclick={() => (asking = keyOf(update(c)))}
-									title="Pull its image again and recreate it with the same settings"
+									class="btn btn-sm {a.label === 'Update' ? '' : 'text-muted'}"
+									disabled={busy(a.job)}
+									onclick={() => (asking = keyOf(a.job))}
+									title={a.title ?? ''}
 								>
-									Update
+									{a.label}
 								</button>
-							{/if}
-							<button
-								class="btn btn-sm text-muted"
-								disabled={busy(restart(c))}
-								onclick={() => (asking = keyOf(restart(c)))}
-							>
-								Restart
-							</button>
+							{/each}
 						</span>
 					{/if}
 				</span>
-				{#each [update(c), restart(c)] as j (keyOf(j))}
-					{#if asking === keyOf(j)}
+				{#each actions(c) as a (a.label)}
+					{#if asking === keyOf(a.job)}
 						<p class="col-span-full flex flex-wrap items-center gap-2 text-xs">
-							{j.kind === 'container'
-								? `Update ${c.name}? It is recreated with the new image (the old one comes back if that fails).`
-								: `Restart ${c.name}?`}
-							<button class="btn btn-sm btn-primary" onclick={() => go([j])}>
-								{j.kind === 'container' ? 'Update' : 'Restart'}
-							</button>
+							{a.ask}
+							<button class="btn btn-sm btn-primary" onclick={() => go([a.job])}>{a.label}</button>
 							<button class="btn btn-sm" onclick={() => (asking = null)}>Not now</button>
 						</p>
 					{/if}
+				{/each}
+				{#each [update(c), restart(c), { device, kind: 'start', name: c.name } as Job, { device, kind: 'stop', name: c.name } as Job] as j (keyOf(j))}
 					{#if runner.state(j)}<div class="col-span-full">
 							<JobStatus job={runner.state(j)} />
 						</div>{/if}

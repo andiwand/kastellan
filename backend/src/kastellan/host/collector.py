@@ -23,7 +23,7 @@ from typing import Any
 
 import asyncssh
 
-from ..access import authorize
+from ..access import authorize, check_user
 from ..config import Device
 from ..ssh import Keys, Target
 from .report import normalize
@@ -108,13 +108,13 @@ def install_script(public_key: str, hub_ip: str | None, user: str = USER) -> str
 
 def remove_user(user: str) -> list[str]:
     """Shell lines (as root) that remove a Kastellan user and its home (its authorized_keys)."""
-    q = shlex.quote(user)
+    q = shlex.quote(check_user(user))
     # Its key first (a running poll mustn't keep the way in), then its processes, then the user;
     # judged by whether the user is gone, not by userdel's exit (its home may stay behind).
     return [
         f"if id -u {q} >/dev/null 2>&1; then",
         f"  home=$(getent passwd {q} 2>/dev/null | cut -d: -f6 || true)",
-        '  [ -n "$home" ] && rm -f "$home/.ssh/authorized_keys"',
+        f'  [ -z "$home" ] || su -s /bin/sh {q} -c \'rm -f -- "$0/.ssh/authorized_keys"\' "$home"',
         f"  pkill -KILL -u {q} 2>/dev/null || true",
         "  sleep 1",
         "  if command -v userdel >/dev/null; then",

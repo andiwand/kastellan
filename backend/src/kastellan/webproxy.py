@@ -27,6 +27,7 @@ import ssl
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
@@ -72,6 +73,13 @@ OURS = {SESSION_COOKIE, WEB_COOKIE}
 PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
 
 
+class NoCookies(DefaultCookiePolicy):
+    """Device cookies belong to the browser, never to the shared connection pool."""
+
+    def set_ok(self, cookie, request) -> bool:
+        return False
+
+
 def new_client() -> httpx.AsyncClient:
     # No read timeout: a camera's stream or a long download goes on as long as it goes on. Each
     # stream gives its connection back when it ends (also when the browser leaves).
@@ -79,6 +87,7 @@ def new_client() -> httpx.AsyncClient:
         verify=False,
         timeout=httpx.Timeout(30, read=None, pool=10),
         limits=httpx.Limits(max_connections=256, max_keepalive_connections=32),
+        cookies=CookieJar(policy=NoCookies()),
     )
 
 
@@ -362,7 +371,9 @@ class WebProxy:
         has_body = headers.get("content-length", "0") != "0" or "transfer-encoding" in headers
         if not has_body:
             read_all.set()
-        request = self._client.build_request(
+        # Construct directly: client defaults (especially another browser's cookies) must
+        # never be merged into a proxied request.
+        request = httpx.Request(
             scope["method"],
             target + _path(scope),
             headers=self._forwarded(scope, headers, target, here),

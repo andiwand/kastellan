@@ -72,7 +72,7 @@ desktop needs guacd next to it (in [compose.yaml](compose.yaml), listening on lo
 ## Configuration
 
 Everything is in `config.yaml` (`/config` in the container), editable in the app once sign-in is
-on: as forms on the Config, Groups and VPN pages and on each device's page, or as the file itself. Kastellan picks up changes by itself. Settings left out keep their defaults:
+on: as forms on the Settings, Groups and VPN pages and on each device's page, or as the file itself. Kastellan picks up changes by itself. Settings left out keep their defaults:
 
 ```yaml
 check_interval: 60 # seconds
@@ -92,7 +92,7 @@ devices:
     kind: server
     exposed: true # all of it reachable from the internet: vulnerabilities count as urgent
     ssh: { user: andreas } # the terminal, and Kastellan's SSH access
-    collect: {} # the collector (see below)
+    collect: {} # the collector (see below): also lists libvirt's virtual machines
     act: {} # the actor (see below)
     checks:
       - tcp: 22
@@ -101,6 +101,13 @@ devices:
         name: jellyfin (public)
       - tcp: 32400
         exposed: true # only this service is reachable from the internet (a port forward)
+  ups:
+    kind: ups # no address: read by the NAS's collector (apcupsd or NUT)
+    ups: { via: nas }
+  home-assistant:
+    host: homeassistant.lan
+    powered_by: ups # what it hangs on, power-wise
+    runs_on: { host: nas, vm: haos } # a virtual machine on the NAS: shown and acted on there
   vps:
     host: 203.0.113.20
     site: hetzner # not at home: the list groups by site, alarms say where
@@ -168,8 +175,8 @@ goes to `data/audit.log`. Short passwords are allowed after a warning (`--short`
 
 ### Keys (key rings)
 
-Passwords, tokens and Kastellan's own SSH keys that can change things, encrypted in
-`data/vault.json`; none of them, nor the keys that open them, is on disk as plain text. An
+Passwords, tokens and Kastellan's own SSH keys that can change things are encrypted in
+`data/vault.json`. How the keys that open the rings are kept depends on the chosen policy below. An
 entry's name is visible (so the page can say where it is used while a ring is locked); a login's
 user name and notes are encrypted with it. There
 are rings: **Kastellan's** (what it uses by itself: router logins, its keys, push's key) and
@@ -203,6 +210,17 @@ What this protects against: a copy of `data/` (a backup, a stolen disk) reveals 
 without a way to open its ring. Someone who can change the data folder while Kastellan runs is
 an admin already; that isn't what it guards against.
 
+### UPSes
+
+A UPS plugged into a host by USB or serial is read by that host's collector: apcupsd
+(`apcaccess`) or NUT (`upsc`, on that host), nothing to install for Kastellan beyond the
+collector. Add it as a device of `kind: ups` with `ups: { via: <host> }` (with NUT and
+several UPSes, also `name:`); it needs no address. Its page shows its state, charge, runtime
+left, load, voltages, when it last went on battery and why, and its battery's age, and which
+devices it powers (each device's `powered_by:`, set on the UPS's page or in a device's form).
+On battery is a warning, critical below `alarms: ups_charge_critical` (30 %) or
+`ups_runtime_critical` (5 minutes); devices that go down meanwhile wait in its alarm.
+
 ### Device web pages through Kastellan
 
 Every device's web interface on a name of its own, through the hub: with
@@ -232,7 +250,7 @@ command (`restrict`, `command=`, only from the hub's address):
 | ------------- | --------------------- | ------------------------------------------------------------------------------ |
 | SSH access    | yours, or `kastellan` | The terminal, as that user.                                                     |
 | Collector     | `kastellan-collect`   | Run one root-owned, read-only script: system, space, RAID, SMART, temperatures, services, updates, containers (never their settings). |
-| Actor         | `kastellan-act`       | Only the abilities you tick, each a root-owned script with one sudo rule: update or restart chosen containers, install system updates (apt), reboot. |
+| Actor         | `kastellan-act`       | Only the abilities you tick, each a root-owned script with one sudo rule: update, restart, stop or start chosen containers; start, shut down, restart or force off chosen virtual machines (libvirt); install system updates (apt); reboot. |
 | VPN           | `kastellan-pki`, root | Only the client-certificate and CRL scripts.                                    |
 | OpenWrt       | rpcd login `kastellan` | Through the device's own API (HTTPS, certificate pinned), with an access list of its own: read always; reboot, Wi-Fi settings, firmware, chosen services (start/stop/restart, at boot), who is connected to its OpenVPN server only if ticked. |
 

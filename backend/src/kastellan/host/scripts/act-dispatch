@@ -11,9 +11,19 @@ import sys
 
 BASE = "/usr/local/lib/kastellan/act"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # with fullmatch
+VM_NAME = re.compile(  # libvirt allows more; Kastellan this much, and never a number or a UUID:
+    r"(?!\d+$)(?![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$)"
+    r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}"  # virsh reads those as a domain id or UUID first
+)
 FORMS = {
     "update-container": NAME,  # pull its image, recreate it with the same settings
     "restart-container": NAME,
+    "start-container": NAME,
+    "stop-container": NAME,
+    "vm-start": VM_NAME,  # libvirt's virtual machines
+    "vm-shutdown": VM_NAME,
+    "vm-reboot": VM_NAME,
+    "vm-force-off": VM_NAME,
     "upgrade-packages": None,  # apt-get update and upgrade (keeps config files, removes nothing)
     "reboot": None,  # in a minute (shutdown -r +1), so it can still be cancelled on the host
 }
@@ -26,8 +36,9 @@ if words == ["abilities"]:
     print(" ".join(installed))
     for ability in installed:
         try:
+            pattern = FORMS[ability]
             with open(f"/etc/kastellan/act/{ability}.allow") as f:
-                allowed = [ln.strip() for ln in f if NAME.fullmatch(ln.strip()) or ln.strip() == "*"]
+                allowed = [ln.strip() for ln in f if pattern and (pattern.fullmatch(ln.strip()) or ln.strip() == "*")]
             print(f"{ability}: {' '.join(allowed)}")
         except OSError:
             pass

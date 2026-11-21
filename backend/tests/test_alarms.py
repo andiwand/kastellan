@@ -155,3 +155,65 @@ def test_alarms_say_where_a_device_away_from_home_is() -> None:
     st = {id: DeviceStatus(checks={"ping": down}) for id in config.devices}
     titles = sorted(p.title for p in evaluate(config, st, NOW, {}, STARTED))
     assert titles == ["NAS is down", "vps (Hetzner Cloud) is down"]
+
+
+def test_a_virtual_machine_folds_into_its_host_and_says_why_it_is_down() -> None:
+    """A device that runs on another as a VM (runs_on): the host down covers it, like a parent;
+    with the host up and the VM shut off, its own alarm says so."""
+    config = Config.model_validate(
+        {
+            "devices": {
+                "router": {"host": "r"},
+                "sv1": {"host": "s", "parent": "router", "kind": "server"},
+                "ha": {"host": "h", "parent": "router", "runs_on": {"host": "sv1", "vm": "haos"}},
+            }
+        }
+    )
+    st = {
+        id: DeviceStatus(
+            checks={
+                "ping": CheckStatus(
+                    up=id not in ("sv1", "ha"), since=NOW - timedelta(minutes=10), checked=NOW
+                )
+            }
+        )
+        for id in config.devices
+    }
+    found = evaluate(config, st, NOW, {}, STARTED)
+    assert [p.key for p in found] == ["down:sv1"] and found[0].hidden == ["ha"]
+    st["router"].checks["ping"].up = False
+    found = evaluate(config, st, NOW, {}, STARTED)
+    assert [p.key for p in found] == ["down:router"] and found[0].hidden == ["ha", "sv1"]
+    st["router"].checks["ping"].up = True
+    st["sv1"].checks["ping"] = CheckStatus(up=True, since=NOW - timedelta(minutes=10), checked=NOW)
+    st["sv1"].host = {"vms": [{"name": "haos", "state": "shut off"}]}
+    found = evaluate(config, st, NOW, {}, STARTED)
+    assert [p.key for p in found] == ["down:ha"]
+    assert found[0].detail == "its virtual machine on sv1 is shut off"
+
+
+def test_a_virtual_router_and_its_host_do_not_hide_each_others_alarm() -> None:
+    config = Config.model_validate(
+        {
+            "devices": {
+                "router": {"host": "r", "runs_on": {"host": "server", "vm": "router"}},
+                "server": {"host": "s", "parent": "router"},
+                "guest": {"host": "g", "parent": "router"},
+            }
+        }
+    )
+    st = {
+        id: DeviceStatus(
+            checks={
+                "ping": CheckStatus(
+                    up=False,
+                    since=NOW - timedelta(minutes=10),
+                    checked=NOW,
+                )
+            }
+        )
+        for id in config.devices
+    }
+    found = evaluate(config, st, NOW, {}, STARTED)
+    assert [p.key for p in found] == ["down:router"]
+    assert found[0].hidden == ["guest", "server"]

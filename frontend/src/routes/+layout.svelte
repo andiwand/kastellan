@@ -7,12 +7,13 @@
 	import Logo from '#lib/components/Logo.svelte';
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
 	import MonitorSmartphone from '@lucide/svelte/icons/monitor-smartphone';
+	import Container from '@lucide/svelte/icons/container';
+	import ServerCog from '@lucide/svelte/icons/server-cog';
 	import Group from '@lucide/svelte/icons/group';
 	import AppWindow from '@lucide/svelte/icons/app-window';
 	import GlobeLock from '@lucide/svelte/icons/globe-lock';
 	import LockKeyhole from '@lucide/svelte/icons/lock-keyhole';
-	import FileCog from '@lucide/svelte/icons/file-cog';
-	import ShieldCheck from '@lucide/svelte/icons/shield-check';
+	import Settings from '@lucide/svelte/icons/settings';
 	import CircleArrowUp from '@lucide/svelte/icons/circle-arrow-up';
 	import { updatesOf } from '#lib/updates.js';
 	import { runner } from '#lib/runner.svelte.js';
@@ -28,24 +29,26 @@
 
 	$effect(() => store.use());
 
-	const nav = [
+	// `admin`: only for admins (password hashes, keys, Wi-Fi settings). In menu order.
+	const nav: {
+		href: string;
+		label: string;
+		short?: string;
+		icon: typeof Group;
+		admin?: boolean;
+	}[] = [
 		{ href: '/', label: 'Overview', icon: LayoutDashboard },
 		{ href: '/devices', label: 'Devices', icon: MonitorSmartphone },
-		{ href: '/groups', label: 'Groups', icon: Group },
+		{ href: '/containers', label: 'Containers', icon: Container },
+		{ href: '/vms', label: 'Virtual machines', short: 'VMs', icon: ServerCog },
+		{ href: '/groups', label: 'Groups', icon: Group, admin: true },
 		{ href: '/services', label: 'Services', icon: AppWindow },
 		{ href: '/vpn', label: 'VPN', icon: GlobeLock },
 		{ href: '/updates', label: 'Updates', icon: CircleArrowUp },
-		{ href: '/access', label: 'Access', icon: ShieldCheck },
-		{ href: '/keys', label: 'Keys', icon: LockKeyhole },
-		{ href: '/config', label: 'Config', icon: FileCog }
-	] as { href: string; label: string; short?: string; icon: typeof Group }[];
-	// Config, access and groups are for admins (password hashes, keys, Wi-Fi settings).
-	const shownNav = $derived(
-		nav.filter(
-			(i) =>
-				!['/config', '/access', '/groups', '/keys'].includes(i.href) || store.me?.role === 'admin'
-		)
-	);
+		{ href: '/keys', label: 'Keys', icon: LockKeyhole, admin: true },
+		{ href: '/settings', label: 'Settings', icon: Settings, admin: true }
+	];
+	const shownNav = $derived(nav.filter((i) => !i.admin || store.me?.role === 'admin'));
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
 	const attention = $derived((store.devices ?? []).filter(needsAttention).length);
@@ -303,15 +306,15 @@
 		</main>
 
 		<!-- Tab bar (narrow screens) -->
+		<!-- Ten places don't fit side by side on a phone: the bar scrolls sideways instead. -->
 		<nav
-			style:grid-template-columns="repeat({shownNav.length}, minmax(0, 1fr))"
-			class="fixed inset-x-0 bottom-0 z-30 grid border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden"
+			class="fixed inset-x-0 bottom-0 z-30 flex [scrollbar-width:none] overflow-x-auto border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden"
 			aria-label="Main"
 		>
 			{#each shownNav as item (item.href)}
 				<a
 					href={item.href}
-					class="relative flex h-16 flex-col items-center justify-center gap-1 text-[11px] font-medium {active(
+					class="relative flex h-16 min-w-[4.5rem] flex-1 shrink-0 flex-col items-center justify-center gap-1 px-1 text-[11px] font-medium {active(
 						item.href
 					)
 						? 'text-accent'

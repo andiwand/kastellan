@@ -1,0 +1,11 @@
+# Ask one running virtual machine to restart the clean way (libvirt; on the host's list). libvirt
+# can't tell whether the guest did (it keeps running throughout): the answer says it was asked.
+name = one_name(VM_NAME)
+lock = one_at_a_time()
+vm = vm_uuid(name)
+if vm_state(vm) != "running":
+    fail(f"{name} isn't running")
+step(f"asking {name} to restart (ACPI)")
+virsh("reboot", "--", vm)
+step(f"asked {name} to restart; libvirt can't tell whether the guest did")
+done({"vm": name, "state": vm_state(vm), "asked": True})

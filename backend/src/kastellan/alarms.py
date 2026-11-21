@@ -33,10 +33,12 @@ import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from typing import Any
 
-from .config import Check, Config
+from . import ups as upsmod
+from .config import Check, Config, Kind
 from .monitor import CheckStatus, DeviceStatus
 
 log = logging.getLogger(__name__)
@@ -84,7 +86,7 @@ def evaluate(
     started: datetime,
     unjudged: set[str] | None = None,
 ) -> list[Problem]:
-    """The problems now (critical and warning). `unjudged` gets the keys of certificate
+    """The problems now (critical and warning). `unjudged` gets the keys of UPS and certificate
     problems that can't be judged now (the certificate can't be seen: the service or device is
     down, or behind one that is, or no fresh result): their open alarms stay as they are
     (Alarms.carry), as an alarm about a certificate ends when a good one is seen."""
@@ -116,18 +118,42 @@ def evaluate(
         if since is not None and now - since >= after:
             down[id] = since
 
+    def above(id: str) -> list[str]:
+        """What a device needs to be reachable: its parent (the network path) and, for a virtual
+        machine, the host it runs on."""
+        d = config.devices[id]
+        return [p for p in (d.parent, d.runs_on.host if d.runs_on else None) if p in config.devices]
+
+    @cache
     def chain(id: str) -> list[str]:
-        """id's parents, nearest first (cycles cut)."""
+        """Everything id hangs on, nearest first (parents and VM hosts, theirs too; cycles cut)."""
         out: list[str] = []
-        parent = config.devices[id].parent
-        while parent and parent in config.devices and parent not in out and parent != id:
-            out.append(parent)
-            parent = config.devices[parent].parent
+        todo = above(id)
+        while todo:
+            p = todo.pop(0)
+            if p != id and p not in out:
+                out.append(p)
+                todo += above(p)
         return out
 
+    def vm_state(id: str) -> tuple[str, str] | None:
+        """A virtual machine's host and its state there, as the host's collector reports it."""
+        runs = config.devices[id].runs_on
+        st = status.get(runs.host) if runs else None
+        report = st.host if st else None
+        vm = next((v for v in (report or {}).get("vms") or [] if v.get("name") == runs.vm), None)
+        return (runs.host, str(vm.get("state") or "")) if runs and vm else None
+
+    @cache
     def top_down_ancestor(id: str) -> str | None:
-        downs = [p for p in chain(id) if p in down]
-        return downs[-1] if downs else None
+        downs = [p for p in [id, *chain(id)] if p in down]
+        # With both a network parent and a VM host, breadth-first order isn't ancestry:
+        # a parent may be listed before a host that itself depends on that parent.
+        # Mutual dependencies (a virtual router and its host) choose one stable alarm,
+        # rather than hiding each other's alarms. Ancestors outside that cycle still win.
+        roots = [p for p in downs if not any(a in down and p not in chain(a) for a in chain(p))]
+        top = min(roots, default=None)
+        return top if top != id else None
 
     def parent_settling(id: str) -> bool:
         """A parent came back less than a check interval ago: its children's checks may not have
@@ -142,20 +168,59 @@ def evaluate(
                 return True
         return False
 
+    # UPSes whose power is the trouble now: on battery, low, or back on mains within minutes (what
+    # went down in the outage may still be coming up). What they power folds into their alarm.
+    readings: dict[str, dict[str, Any]] = {}
+    for id, device in config.devices.items():
+        r = upsmod.reading(config, status, id) if device.kind is Kind.UPS else None
+        if r and r.get("checked") and r["checked"] >= started and now - r["checked"] <= upsmod.MAX_AGE:
+            readings[id] = r  # only from a fresh report
+        if device.ups and unjudged is not None and not is_muted(id):
+            if id not in readings:
+                unjudged.update(f"ups:{id}:{kind}" for kind in ("battery", "replace", "contact"))
+            elif {"no_contact", "unknown"} & set(r["flags"]):
+                unjudged.update(f"ups:{id}:{kind}" for kind in ("battery", "replace"))
+
+    def power_trouble(id: str) -> bool:
+        r = readings.get(id)
+        if r is None or "no_contact" in r["flags"]:
+            return False
+        back = upsmod.since(r.get("off_battery_since"))
+        return bool({"on_battery", "low_battery"} & set(r["flags"])) or (
+            back is not None and timedelta(0) <= now - back < timedelta(minutes=10)
+        )
+
+    def troubled_ups(id: str) -> str | None:
+        """The UPS (up its powered_by chain) whose power trouble a device is down in."""
+        seen, at = {id}, config.devices[id].powered_by
+        while at and at not in seen and at in config.devices:
+            if power_trouble(at):
+                return at
+            seen.add(at)
+            at = config.devices[at].powered_by
+        return None
+
     problems: list[Problem] = []
     hidden: dict[str, list[str]] = {}
+    on_battery: dict[str, list[str]] = {}  # a UPS in trouble -> the devices down with it
     for id in down:
-        if top := top_down_ancestor(id):
+        top = top_down_ancestor(id)
+        if u := troubled_ups(top or id):
+            on_battery.setdefault(u, []).append(id)
+        elif top:
             hidden.setdefault(top, []).append(id)
     for id, since in down.items():
-        if top_down_ancestor(id) or is_muted(id) or parent_settling(id):
+        if top_down_ancestor(id) or troubled_ups(id) or is_muted(id) or parent_settling(id):
             continue
         label = config.label(id)
         behind = sorted(hidden.get(id, []))
         title = f"{label} is down"
         if behind:
             title += f", and {len(behind)} {'device' if len(behind) == 1 else 'devices'} behind it"
-        problems.append(Problem(f"down:{id}", Severity.CRITICAL, id, label, title, "", since, behind))
+        detail = ""
+        if (vm := vm_state(id)) and vm[1] != "running":
+            detail = f"its virtual machine on {config.label(vm[0])} is {vm[1] or 'in an unknown state'}"
+        problems.append(Problem(f"down:{id}", Severity.CRITICAL, id, label, title, detail, since, behind))
 
     # Services down on devices that are otherwise up (and not behind a device that is down).
     for id, device in config.devices.items():
@@ -214,6 +279,80 @@ def evaluate(
             problems += host_problems(id, name, st.host or {}, limits)
         except Exception:  # one host's odd report never stops the alarms of all the others
             log.exception("%s: judging its report failed", id)
+
+    # UPSes: on battery (critical at the limits), a battery to replace, no contact.
+    for id, r in readings.items():
+        if is_muted(id):
+            continue
+        name, flags = config.label(id), r["flags"]
+        powers = [config.devices[d].name for d in upsmod.powered(config, id)]
+        if "no_contact" in flags:
+            via = config.devices[id].ups.via  # type: ignore[union-attr]
+            problems.append(
+                Problem(
+                    f"ups:{id}:contact",
+                    Severity.WARNING,
+                    id,
+                    name,
+                    f"{name}: its host can't reach it",
+                    f"read through {config.label(via)}",
+                )
+            )
+            continue
+        if "replace_battery" in flags:
+            problems.append(
+                Problem(
+                    f"ups:{id}:replace",
+                    Severity.WARNING,
+                    id,
+                    name,
+                    f"{name}: replace its battery",
+                    f"battery from {r['battery_date']}" if r.get("battery_date") else "",
+                )
+            )
+        charge, runtime = r.get("charge"), r.get("runtime")
+        if {"on_battery", "low_battery"} & set(flags):
+            low = (
+                "low_battery" in flags
+                or (charge is not None and charge < limits.ups_charge_critical)
+                or (runtime is not None and runtime < limits.ups_runtime_critical * 60)
+            )
+            left = ", ".join(
+                p
+                for p in (
+                    f"{charge:.0f} %" if charge is not None else "",
+                    f"{runtime / 60:.0f} min left" if runtime is not None else "",
+                )
+                if p
+            )
+            detail = "; ".join(p for p in (left, f"on battery: {', '.join(powers)}" if powers else "") if p)
+            problems.append(
+                Problem(
+                    f"ups:{id}:battery",
+                    Severity.CRITICAL if low else Severity.WARNING,
+                    id,
+                    name,
+                    f"{name} is on battery" + (", running low" if low else ""),
+                    detail,
+                    upsmod.since(r.get("on_battery_since")),
+                    sorted(on_battery.get(id, [])),
+                )
+            )
+        elif on_battery.get(id):  # back on mains, and what it powers isn't back yet
+            still = sorted(on_battery[id])
+            devices = f"{len(still)} {'device' if len(still) == 1 else 'devices'}"
+            problems.append(
+                Problem(
+                    f"ups:{id}:battery",
+                    Severity.WARNING,
+                    id,
+                    name,
+                    f"{name} is back on mains; {devices} it powers still down",
+                    "",
+                    upsmod.since(r.get("off_battery_since")),
+                    still,
+                )
+            )
 
     # OpenWrt devices: their API answers, and their firmware still gets fixes.
     for id, device in config.devices.items():
@@ -299,7 +438,8 @@ def evaluate(
 
 
 def host_problems(id: str, name: str, report: dict[str, Any], limits: Any) -> list[Problem]:
-    """Problems in one collector report: full disks, RAID, disk health, heat, failed services."""
+    """Problems in one collector report: full disks, RAID, disk health, heat, failed services,
+    VMs that should run but don't."""
     out: list[Problem] = []
 
     def add(key: str, severity: Severity, what: str, title: str, detail: str = "") -> None:
@@ -389,6 +529,11 @@ def host_problems(id: str, name: str, report: dict[str, Any], limits: Any) -> li
     if failed:
         noun = "service has" if len(failed) == 1 else "services have"
         add("services", Severity.WARNING, "services", f"{len(failed)} {noun} failed", ", ".join(failed[:10]))
+    # A VM set to start with the host is meant to run: one that doesn't is worth a look.
+    for vm in report.get("vms") or []:
+        if vm.get("autostart") and vm.get("state") not in ("running", None):
+            vm_name = str(vm.get("name"))[:80]
+            add(f"vm:{vm_name}", Severity.WARNING, f"VM {vm_name}", f"VM {vm_name} is {vm.get('state')}")
     return out
 
 

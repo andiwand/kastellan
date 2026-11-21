@@ -1,0 +1,17 @@
+# Shut one virtual machine down the clean way (libvirt; on the host's list): ACPI, as the power
+# button would, then wait up to three minutes. A guest that ignores it keeps running: forcing it
+# off is a separate ability.
+name = one_name(VM_NAME)
+lock = one_at_a_time()
+vm = vm_uuid(name)
+state = vm_state(vm)
+if state == "shut off":
+    fail(f"{name} is off already")
+if state != "running":
+    fail(f"{name} is {state}: only a running VM can be asked to shut down (force it off instead)")
+step(f"asking {name} to shut down (ACPI)")
+virsh("shutdown", "--", vm)
+state = wait_vm(vm, name, ("shut off",), 180)
+if state != "shut off":
+    fail(f"{name} is still {state} after 3 minutes (does the guest listen to ACPI?)")
+done({"vm": name, "state": state})

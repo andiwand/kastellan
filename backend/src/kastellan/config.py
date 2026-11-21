@@ -33,6 +33,7 @@ from __future__ import annotations
 import ipaddress
 import re
 from enum import StrEnum
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Self
 from urllib.parse import urlsplit
@@ -43,6 +44,12 @@ from ruamel.yaml import YAML
 from .tls import public_name
 
 ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# A libvirt VM's name as Kastellan takes it (the actor, config's runs_on): libvirt allows more,
+# but never a number or a UUID, which virsh reads as a domain id or UUID before a name.
+VM_NAME = re.compile(
+    r"(?!\d+$)(?![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$)"
+    r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}"
+)
 HOME = "home"  # the site of a device without `site:`
 
 
@@ -55,6 +62,7 @@ class Kind(StrEnum):
     LAPTOP = "laptop"
     PRINTER = "printer"
     CAMERA = "camera"
+    UPS = "ups"
     OTHER = "other"
 
 
@@ -154,6 +162,30 @@ class Check(BaseModel):
         return self.verify or public_name(self.hostname or "")
 
 
+class RunsOn(BaseModel):
+    """The device is a virtual machine on another device (libvirt): which host, which VM. Kept
+    apart from `parent:` (the network path): alarms fold it into its host when that is down."""
+
+    model_config = ConfigDict(extra="forbid")
+    host: str  # a configured device's id
+    vm: str  # the VM's name in libvirt
+
+    @model_validator(mode="after")
+    def _names(self) -> Self:
+        if not VM_NAME.fullmatch(self.vm):
+            raise ValueError("runs_on.vm: letters, digits and _ . + - (not a number or a UUID)")
+        return self
+
+
+class UpsLink(BaseModel):
+    """Which host reads the UPS (its collector: apcupsd's apcaccess, or NUT's upsc) and, with NUT,
+    which of its UPSes this is. A UPS on USB or serial has no address of its own."""
+
+    model_config = ConfigDict(extra="forbid")
+    via: str  # a configured device's id: the host it is plugged into
+    name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")  # NUT's
+
+
 class SshAccess(BaseModel):
     """How the hub logs in to a device (terminal, and later what it reads over SSH)."""
 
@@ -249,10 +281,13 @@ class Device(BaseModel):
         return any(reachable(c) for c in self.checks)
 
     name: str = ""
-    host: str
+    host: str = ""  # needed, except for a UPS read through its host (ups.via): it has none
     kind: Kind = Kind.OTHER
     site: str | None = None  # where it is (an id: home, hetzner, ...); None: the home site
     parent: str | None = None
+    runs_on: RunsOn | None = None  # a virtual machine on another device
+    ups: UpsLink | None = None  # a UPS: which host reads it (only for kind ups)
+    powered_by: str | None = None  # the UPS it hangs on, power-wise (a device of kind ups)
     tags: list[str] = Field(default_factory=list)
     # Down is a problem only for devices that should always be on; a laptop that is off is just
     # offline. None: by kind (pcs and laptops are not always on).
@@ -298,6 +333,16 @@ class Device(BaseModel):
                 )
         if self.always_on is None:
             self.always_on = self.kind not in (Kind.PC, Kind.LAPTOP)
+        if self.ups is not None and self.kind is not Kind.UPS:
+            raise ValueError("ups: is for devices of kind ups")
+        if not self.host:
+            # Only a UPS read through its host has no address: nothing to check, its state comes
+            # from that host's report.
+            if self.ups is None:
+                raise ValueError("host: needed (an address or a name)")
+            if "checks" in self.model_fields_set and self.checks:
+                raise ValueError("checks: need a host (a UPS without one is read through ups.via)")
+            self.checks = []
         names = [c.name for c in self.checks]
         if len(names) != len(set(names)):
             raise ValueError("two checks have the same name; give one a `name`")
@@ -338,6 +383,9 @@ class AlarmSettings(BaseModel):
     disk_warning: int = Field(default=85, ge=50, le=99)
     disk_critical: int = Field(default=95, ge=50, le=100)
     disk_temperature: int = Field(default=55, ge=30, le=90)  # °C a disk may get (SMART)
+    # A UPS on battery: critical below this charge (percent) or runtime left (minutes).
+    ups_charge_critical: int = Field(default=30, ge=5, le=95)
+    ups_runtime_critical: int = Field(default=5, ge=1, le=120)
 
 
 class NotifyChannel(BaseModel):
@@ -592,7 +640,7 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def _groups(self) -> Self:
         for gid, group in self.groups.items():
-            if not ID.match(gid):
+            if not ID.fullmatch(gid):
                 raise ValueError(f"group id {gid!r}: use lowercase letters, digits, - and _")
             for id in group.devices:
                 if id not in self.devices:
@@ -605,7 +653,7 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def _site_ids(self) -> Self:
         for site in self.sites:
-            if not ID.match(site):
+            if not ID.fullmatch(site):
                 raise ValueError(f"site id {site!r}: use lowercase letters, digits, - and _")
         return self
 
@@ -639,7 +687,7 @@ class Config(BaseModel):
     def _vpns(self) -> Self:
         used: dict[tuple[str, str], str] = {}  # (device, restricted login) -> the VPN using it
         for vid, vpn in self.vpns.items():
-            if not ID.match(vid) or len(vid) > 40:
+            if not ID.fullmatch(vid) or len(vid) > 40:
                 raise ValueError(f"vpns: {vid!r}: ids are lowercase letters, digits, - and _")
             if vpn.kind != "openvpn":
                 continue
@@ -667,19 +715,52 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def _ids_and_parents(self) -> Self:
         for id, device in self.devices.items():
-            if not ID.match(id):
+            if not ID.fullmatch(id):
                 raise ValueError(f"device id {id!r}: use lowercase letters, digits, - and _")
             if not device.name:
                 device.name = id
             for net in device.network:
                 if net != "internet" and net not in self.networks:
                     raise ValueError(f"device {id!r}: network {net!r} is not in networks: (or internet)")
-            if device.site is not None and not ID.match(device.site):
+            if device.site is not None and not ID.fullmatch(device.site):
                 raise ValueError(
                     f"device {id!r}: site {device.site!r}: use lowercase letters, digits, - and _"
                 )
             if device.parent is not None and device.parent not in self.devices:
                 raise ValueError(f"device {id!r}: parent {device.parent!r} is not a device")
+            if device.ups is not None:
+                if device.ups.via == id:
+                    raise ValueError(f"device {id!r}: ups.via: the host that reads it, not itself")
+                if device.ups.via not in self.devices:
+                    raise ValueError(f"device {id!r}: ups.via {device.ups.via!r} is not a device")
+                if not self.devices[device.ups.via].host:
+                    raise ValueError(f"device {id!r}: ups.via needs a host with an address")
+            if device.powered_by is not None:
+                ups = self.devices.get(device.powered_by)
+                if ups is None or ups.kind is not Kind.UPS:
+                    raise ValueError(f"device {id!r}: powered_by {device.powered_by!r} is not a UPS device")
+                seen, at = {id}, device.powered_by
+                while at is not None:  # a UPS on a UPS is fine; a circle isn't
+                    if at in seen:
+                        raise ValueError(f"device {id!r}: powered_by goes round in a circle")
+                    seen.add(at)
+                    at = self.devices[at].powered_by if at in self.devices else None
+            if device.runs_on is not None:
+                if device.runs_on.host == id:
+                    raise ValueError(f"device {id!r}: runs_on: a device can't run on itself")
+                if device.runs_on.host not in self.devices:
+                    raise ValueError(f"device {id!r}: runs_on.host {device.runs_on.host!r} is not a device")
+        # Each relation is acyclic on its own. Together they may cycle legitimately: a
+        # virtual router can run on the server whose network parent is that router.
+        for relation in ("parent", "runs_on"):
+            dependencies = {}
+            for id, d in self.devices.items():
+                parent = d.parent if relation == "parent" else d.runs_on.host if d.runs_on else None
+                dependencies[id] = [parent] if parent is not None else []
+            try:
+                TopologicalSorter(dependencies).prepare()
+            except CycleError as e:
+                raise ValueError(f"{relation}: device dependencies go round in a circle") from e
         return self
 
 

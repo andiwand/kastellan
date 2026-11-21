@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import errno
 import hashlib
 import io
 import os
@@ -83,9 +84,11 @@ def write(path: Path, backups: Path, old: str, new: str) -> None:
                 os.chown(tmp, st.st_uid, st.st_gid)
         try:
             os.replace(tmp, path)
-        except OSError:
+        except OSError as e:
             # A file mounted on its own (Docker: -v ./config.yaml:/config/config.yaml) can't be
             # replaced, only written over.
+            if e.errno != errno.EBUSY:
+                raise
             path.write_text(new)
     finally:
         Path(tmp).unlink(missing_ok=True)
@@ -140,7 +143,19 @@ def diff(old: str, new: str) -> str:
 # changed in place, and its tail (that trailing comment) is taken off before and put back on
 # whatever is last afterwards; a deleted device hands its tail to the one before it.
 
-FORM_FIELDS = ("name", "host", "kind", "site", "tags", "always_on", "exposed", "checks")
+FORM_FIELDS = (
+    "name",
+    "host",
+    "kind",
+    "site",
+    "runs_on",
+    "ups",
+    "powered_by",
+    "tags",
+    "always_on",
+    "exposed",
+    "checks",
+)
 DEFAULTS: dict[str, Any] = {
     "kind": "other",
     "site": None,
@@ -317,10 +332,15 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
                     next(iter(devices)), before="\n".join(header), indent=2
                 )
         for other in devices.values():  # nothing may hang off a device that is gone
-            if isinstance(other, CommentedMap) and other.get("parent") == id:
-                rest = _take_tail(other)
-                del other["parent"]
-                _put_tail(other, rest)
+            if not isinstance(other, CommentedMap):
+                continue
+            rest = _take_tail(other)
+            for key in ("parent", "powered_by"):
+                if other.get(key) == id:
+                    del other[key]
+            if isinstance(other.get("runs_on"), dict) and other["runs_on"].get("host") == id:
+                del other["runs_on"]
+            _put_tail(other, rest)
         groups = doc.get("groups")  # nor stay in a group; a group left empty goes too
         if isinstance(groups, CommentedMap):
             for gid in list(groups):
@@ -353,6 +373,10 @@ def edit_device(text: str, id: str, fields: dict[str, Any] | None, new: bool = F
                 device.pop(key, None)  # unset, or a default not written
             elif key == "exposed" and value is False:
                 device.pop(key, None)
+            elif key in device and _plain(device[key]) == value:
+                continue  # as written already (its comments and style stay)
+            elif isinstance(value, dict):  # runs_on, ups
+                _place(device, key, CommentedMap({k: v for k, v in value.items() if v not in (None, "")}))
             elif key == "tags":
                 tags = CommentedSeq(value)
                 tags.fa.set_flow_style()

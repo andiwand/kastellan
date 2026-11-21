@@ -26,6 +26,7 @@
 		'laptop',
 		'printer',
 		'camera',
+		'ups',
 		'other'
 	];
 
@@ -36,6 +37,36 @@
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 	let confirmDelete = $state(false);
+
+	// A UPS: which host reads it; without an address of its own, that is all there is to it.
+	$effect(() => {
+		if (form?.kind === 'ups' && !form.ups) form.ups = { via: '', name: '' };
+	});
+	const hostless = $derived(form?.kind === 'ups' && !form.host.trim());
+	const upses = $derived((store.devices ?? []).filter((d) => d.kind === 'ups' && d.id !== id));
+
+	// Where a virtual machine runs: the other devices (hosts reporting VMs first), their VMs.
+	const hosts = $derived(
+		(store.devices ?? [])
+			.filter((d) => d.id !== id)
+			.sort(
+				(a, b) => Number(!!b.vms?.length) - Number(!!a.vms?.length) || a.name.localeCompare(b.name)
+			)
+	);
+	const hostVms = $derived(
+		(store.devices ?? []).find((d) => d.id === form?.runs_on?.host)?.vms?.map((v) => v.name) ?? []
+	);
+	// A VM named like this device, not linked yet: offered, never set by itself.
+	const simple = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+	const suggestion = $derived.by(() => {
+		if (!form || form.runs_on) return null;
+		const names = [id ?? '', form.name].filter(Boolean).map(simple);
+		for (const d of store.devices ?? [])
+			for (const v of d.vms ?? [])
+				if (d.id !== id && !v.device && names.includes(simple(v.name)))
+					return { host: d.id, hostName: d.name, vm: v.name };
+		return null;
+	});
 
 	// The sites devices are at already, to pick from (any new id works too).
 	const sites = $derived([...new Set((store.devices ?? []).map((d) => d.site))].sort());
@@ -103,7 +134,9 @@
 				.split(/[,\s]+/)
 				.map((t) => t.trim())
 				.filter(Boolean),
-			checks: form.checks.map(named)
+			// A UPS read through its host has no address: nothing of its own to check.
+			checks: hostless ? [] : form.checks.map(named),
+			ups: form.kind === 'ups' ? form.ups : null
 		};
 		try {
 			if (id) await api.changeDevice(id, body);
@@ -154,8 +187,10 @@
 					<input
 						class="{input} font-mono"
 						bind:value={form.host}
-						placeholder="192.168.1.10 or nas.lan"
-						required
+						placeholder={form.kind === 'ups'
+							? 'none: read through its host'
+							: '192.168.1.10 or nas.lan'}
+						required={form.kind !== 'ups'}
 					/>
 				</label>
 				<label class={label}>
@@ -210,6 +245,66 @@
 					<input class={input} bind:value={tags} placeholder="docker, ubuntu (comma-separated)" />
 				</label>
 			</div>
+			<div class="flex flex-col gap-2">
+				<label class="choice text-sm">
+					<input
+						type="checkbox"
+						checked={!!form.runs_on}
+						onchange={(e) => {
+							if (form) form.runs_on = e.currentTarget.checked ? { host: '', vm: '' } : null;
+						}}
+					/>
+					<span>
+						A virtual machine on another device
+						<span class="block text-xs text-muted">
+							Its host's state and actions show here; when the host is down, this one waits in its
+							alarm.
+						</span>
+					</span>
+				</label>
+				{#if form.runs_on}
+					<div class="ml-6.5 grid items-start gap-3 sm:grid-cols-2">
+						<label class={label}>
+							Runs on
+							<select class={input} bind:value={form.runs_on.host} required>
+								<option value="" disabled>choose its host</option>
+								{#each hosts as h (h.id)}
+									<option value={h.id}>
+										{h.name}{h.vms?.length ? ` (${h.vms.length} VMs)` : ''}
+									</option>
+								{/each}
+							</select>
+						</label>
+						<label class={label}>
+							Its name there
+							<input
+								class="{input} font-mono"
+								bind:value={form.runs_on.vm}
+								list="host-vms"
+								placeholder="as libvirt names it"
+								required
+							/>
+							<datalist id="host-vms">
+								{#each hostVms as v (v)}<option value={v}></option>{/each}
+							</datalist>
+						</label>
+					</div>
+				{:else if suggestion}
+					{@const s = suggestion}
+					<p class="ml-6.5 flex flex-wrap items-center gap-2 text-xs text-muted">
+						Is it the virtual machine <b class="font-mono">{s.vm}</b> on {s.hostName}?
+						<button
+							type="button"
+							class="btn btn-sm"
+							onclick={() => {
+								if (form) form.runs_on = { host: s.host, vm: s.vm };
+							}}
+						>
+							Yes, link it
+						</button>
+					</p>
+				{/if}
+			</div>
 			<label class="choice text-sm">
 				<input type="checkbox" bind:checked={form.exposed} />
 				<span>
@@ -221,7 +316,46 @@
 				</span>
 			</label>
 
-			<div>
+			{#if form.kind === 'ups' && form.ups}
+				<div class="grid items-start gap-3 sm:grid-cols-2">
+					<label class={label}>
+						Read by
+						<select class={input} bind:value={form.ups.via} required>
+							<option value="" disabled>the host it's plugged into</option>
+							{#each hosts.filter((h) => h.kind !== 'ups') as h (h.id)}
+								<option value={h.id}>{h.name}</option>
+							{/each}
+						</select>
+						<span class="font-normal text-faint">Its collector reads apcupsd or NUT there.</span>
+					</label>
+					<label class={label}>
+						Its NUT name
+						<input
+							class="{input} font-mono"
+							bind:value={form.ups.name}
+							placeholder="(apcupsd: none)"
+						/>
+						<span class="font-normal text-faint">Only when the host has several (upsc -l).</span>
+					</label>
+				</div>
+			{/if}
+			{#if upses.length}
+				<label class="{label} sm:max-w-xs">
+					Powered by
+					<select
+						class={input}
+						value={form.powered_by ?? ''}
+						onchange={(e) => {
+							if (form) form.powered_by = e.currentTarget.value || null;
+						}}
+					>
+						<option value="">no UPS (or not known)</option>
+						{#each upses as u (u.id)}<option value={u.id}>{u.name}</option>{/each}
+					</select>
+				</label>
+			{/if}
+
+			<div class:hidden={hostless}>
 				<h3 class="text-sm font-semibold">Services</h3>
 				<p class="mt-0.5 text-xs text-muted">
 					One per way in: an address at home and a public name are two services. A device without

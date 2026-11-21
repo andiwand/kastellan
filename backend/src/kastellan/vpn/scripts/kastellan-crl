@@ -110,17 +110,43 @@ refuse() { rm -f "$tmp"; echo "kastellan-crl: $*" >&2; exit 2; }
 grep -q "^-----BEGIN X509 CRL-----" "$tmp" && grep -q "^-----END X509 CRL-----" "$tmp" || refuse "not a CRL"
 if command -v openssl >/dev/null 2>&1; then
   # Signed by our CA (a CRL from elsewhere would leave no revocation in force with some builds)...
-  openssl crl -in "$tmp" -noout -CAfile "$CA" 2>/dev/null || refuse "not signed by $CA"
+  verified=$(LC_ALL=C openssl crl -in "$tmp" -noout -CAfile "$CA" 2>&1) || refuse "not signed by $CA"
+  # Some OpenSSL/LibreSSL versions exit successfully even for "verify failure".
+  [ "$verified" = "verify OK" ] || refuse "not signed by $CA"
   # ...and not older than the one in place (an old CRL would un-revoke clients).
-  new=$(openssl crl -in "$tmp" -noout -crlnumber 2>/dev/null | sed 's/.*=//')
+  crl_time() {
+    LC_ALL=C openssl crl -in "$1" -noout -lastupdate 2>/dev/null | awk -F= '
+      /^lastUpdate=/ {
+        split($2, d, / +/); split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", months, " ")
+        for (m = 1; m <= 12; m++) if (months[m] == d[1] && d[5] == "GMT") {
+          gsub(/:/, "", d[3]); printf "%04d%02d%02d%s\n", d[4], m, d[2], d[3]; exit
+        }
+      }'
+  }
+  new_time=$(crl_time "$tmp")
+  [ -n "$new_time" ] || refuse "cannot read the CRL's issue time"
+  if [ -r "$CRL" ]; then
+    old_time=$(crl_time "$CRL")
+    [ -n "$old_time" ] || refuse "cannot read the installed CRL's issue time"
+    if ! awk -v old="$old_time" -v new="$new_time" 'BEGIN { exit ("x" new < "x" old) }'; then
+      refuse "older than the CRL in place"
+    fi
+  fi
+  new=$(openssl crl -in "$tmp" -noout -crlnumber 2>/dev/null | sed 's/.*=//; s/^0x//')
   old=""
-  if [ -r "$CRL" ]; then old=$(openssl crl -in "$CRL" -noout -crlnumber 2>/dev/null | sed 's/.*=//' || true); fi
-  # Only when both carry a CRL number (easy-rsa 3.2 writes none by default: then this is skipped).
+  if [ -r "$CRL" ]; then old=$(openssl crl -in "$CRL" -noout -crlnumber 2>/dev/null | sed 's/.*=//; s/^0x//' || true); fi
+  # Also compare numbers when present (easy-rsa 3.2 writes none by default).
   case "$new" in *[!0-9A-Fa-f]* | "") new="" ;; esac
   case "$old" in *[!0-9A-Fa-f]* | "") old="" ;; esac
-  if [ -n "$old" ] && [ -n "$new" ] && [ "$((0x$new))" -lt "$((0x$old))" ]; then refuse "older than the CRL in place"; fi
+  if [ -n "$old" ] && [ -n "$new" ]; then
+    # CRL numbers can exceed shell integers: compare normalized hex strings, not arithmetic.
+    if ! awk -v old="$old" -v new="$new" 'BEGIN {
+      old = tolower(old); new = tolower(new); sub(/^0+/, "", old); sub(/^0+/, "", new)
+      exit (length(new) < length(old) || (length(new) == length(old) && "x" new < "x" old))
+    }'; then refuse "older than the CRL in place"; fi
+  fi
 else
-  echo "kastellan-crl: no openssl here; only the format was checked (opkg install openssl-util)" >&2
+  refuse "openssl is required to verify the CRL (OpenWrt: opkg install openssl-util)"
 fi
 mv "$tmp" "$CRL"
 echo "installed"

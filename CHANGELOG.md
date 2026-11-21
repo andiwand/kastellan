@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- Security: device web logins are never kept in the proxy's shared HTTP client or reused for
+  another browser. Removing a collector or actor removes its SSH key as its own user, so a
+  symlink in that user's home cannot direct root's deletion elsewhere.
+- Security: the OpenVPN CRL helper checks the signature verification result, including on
+  OpenSSL/LibreSSL versions that return success for a bad signature. Older CRLs are refused by
+  issue time and, when present, CRL number (including large hexadecimal numbers). OpenSSL is
+  required. **Set the VPN server's helper up again to apply these checks to existing hosts.**
+- UPS reports stop claiming a current state when stale; missing readings report no contact,
+  and unknown readings don't resolve battery alarms. Slow UPS tools share a time limit and
+  preserve other readings. Alarm folding keeps all descendants, including VMs, and mutual
+  dependencies such as a virtual router and its host keep one visible alarm.
+- Actor permission lists keep valid numeric container names separate from VM names; actions
+  refuse unexpected targets and report failed stops accurately. Removing devices clears their
+  VM and power links. Invalid IDs and cyclic parent or VM-host chains are refused.
+- A failed atomic config replacement preserves the original file; only a bind-mounted file
+  uses the overwrite fallback. Oversized numbers in host reports and invalid history ranges
+  are handled without exceptions. Device response charts fit phone screens and zero latency.
+- UPSes (`kind: ups`): read through the host they're plugged into (apcupsd or NUT, by the
+  collector; no address needed), with their own page: state, charge, runtime left, load,
+  voltages, the last time on battery and why, the battery's age. Devices say which UPS powers
+  them (`powered_by`, or from the UPS's page). Alarms: on battery (critical when low, below
+  30 % or 5 minutes), a battery to replace, no contact; what goes down while its UPS is on
+  battery waits in that alarm, which names what runs on battery. Set the collector up again
+  on the host to read it.
+- A device can be a virtual machine on another (`runs_on: {host, vm}`, or "A virtual machine
+  on another device" in its form, with a suggestion when a VM is named like it): its page
+  shows the VM's state and actions, the VM list shows the device, the network graph says "on
+  <host>", and when the host is down the device waits in its alarm; a VM that is shut off is
+  named in the device's own alarm.
+- Containers (a new page): the Docker containers on every host, grouped by host, with
+  filters (running, stopped, with updates), "Update all" across hosts, and starting and
+  stopping them (two new actor abilities) besides restart and update.
+- Virtual machines (a new page): libvirt/KVM VMs on every host, read by the collector (state,
+  vCPUs, memory, disks, whether it starts with the host); started, shut down, restarted or
+  forced off through four new actor abilities, each on the VMs you choose. A VM set to start
+  with the host that isn't running is a warning. Set the collector and the actor up again on a
+  host to get them.
+- Watching and setting up are apart: a device has Status, Setup (how Kastellan reaches it, what
+  it may do) and Config (a form, or its YAML); the VPN has Clients and Setup; Groups have
+  Status and Setup. Observers see the status only.
+- Config is now Settings, with Kastellan's SSH key (formerly Access) as a tab, in short cards;
+  old links still work. Making the key rings is explained in a sentence, the rest on request.
 - VPNs, reviewed: setting a VPN up again on a login another one used replaces its key line
   (the first match counts, so the old one would win); the daily CRL renewal goes on when a VPN
   is removed meanwhile; several OpenVPN servers on one router are told apart (`instance:`),

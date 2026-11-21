@@ -321,7 +321,7 @@ class Hub:
         seen: frozenset[str] = frozenset()
         last = 0.0
         while True:
-            hosts = frozenset(d.host for d in self.config.devices.values())
+            hosts = frozenset(d.host for d in self.config.devices.values() if d.host)
             now = asyncio.get_running_loop().time()
             if hosts != seen or now - last > RESOLVE_EVERY:
                 if self.demo:  # the made-up network has made-up addresses

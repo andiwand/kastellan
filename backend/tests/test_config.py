@@ -47,6 +47,13 @@ def test_missing_file_is_empty(tmp_path: Path) -> None:
     [
         {"a": {"host": "x", "parent": "b"}},  # unknown parent
         {"A": {"host": "x"}},  # bad id
+        {"a\n": {"host": "x"}},  # no trailing newline in an id
+        {"a": {"host": "x", "parent": "a"}},
+        {"a": {"host": "x", "parent": "b"}, "b": {"host": "y", "parent": "a"}},
+        {
+            "a": {"host": "x", "runs_on": {"host": "b", "vm": "a"}},
+            "b": {"host": "y", "runs_on": {"host": "a", "vm": "b"}},
+        },
         {"a": {"host": "x", "checks": [{"tcp": "ssh"}]}},  # tcp without a port
         {"a": {"host": "x", "checks": [{"http": "example.com"}]}},  # http without a scheme
         {"a": {"host": "x", "checks": ["ping", "ping"]}},  # duplicate names
@@ -96,3 +103,18 @@ def test_sites() -> None:
 def test_a_dns_expect_is_addresses() -> None:
     with pytest.raises(ValueError):
         Check.model_validate({"dns": "example.org", "expect": 200})
+
+
+def test_runs_on_names_a_vm_on_another_device() -> None:
+    ok = Config.model_validate(
+        {"devices": {"sv1": {"host": "s"}, "ha": {"host": "h", "runs_on": {"host": "sv1", "vm": "haos"}}}}
+    )
+    assert ok.devices["ha"].runs_on is not None and ok.devices["ha"].runs_on.vm == "haos"
+    for bad in (
+        {"host": "nope", "vm": "haos"},  # not a device
+        {"host": "ha", "vm": "haos"},  # itself
+        {"host": "sv1", "vm": "12"},  # a number: virsh would read a domain id
+        {"host": "sv1", "vm": "a b"},
+    ):
+        with pytest.raises(ValueError):
+            Config.model_validate({"devices": {"sv1": {"host": "s"}, "ha": {"host": "h", "runs_on": bad}}})

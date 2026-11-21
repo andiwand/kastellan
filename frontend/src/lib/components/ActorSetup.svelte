@@ -1,11 +1,12 @@
 <script lang="ts">
+	import { VM_NAME } from '#lib/actions.js';
 	import { untrack } from 'svelte';
 	import { api, type ActSetup } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import SetupDialog from './SetupDialog.svelte';
 
 	/** What Kastellan may change on a host, ability by ability: only what is chosen here is
-	 * installed there, and the container abilities only act on the chosen containers. Set up in a
+	 * installed there, and the container and VM abilities only act on the chosen ones. Set up in a
 	 * dialog: with your own login (asked then, used once, not kept), or the commands to run
 	 * yourself, so Kastellan never sees a login at all. */
 	let {
@@ -24,25 +25,43 @@
 	let installing = $state(false);
 	let removing = $state(false);
 
+	let vmsAll = $state(false);
+	let vmsPicked = $state<string[]>([]);
+	// The host's VMs as its collector reports them (none known: none to pick, "all" still works).
+	// Only names the actor can take (actions.ts VM_NAME); the others are named, not offered.
+	const vmNames = $derived((store.byId.get(device)?.vms ?? []).map((v) => v.name));
+	const vms = $derived(vmNames.filter((n) => VM_NAME.test(n)));
+	const unusable = $derived(vmNames.filter((n) => !VM_NAME.test(n)));
+
 	const targets = $derived(all ? ['*'] : picked);
+	const vmTargets = $derived(vmsAll ? ['*'] : vmsPicked);
 	const containerAbilities = $derived(chosen.some((a) => a.endsWith('-container')));
-	const ready = $derived(!containerAbilities || targets.length > 0);
+	const vmAbilities = $derived(chosen.some((a) => a.startsWith('vm-')));
+	const ready = $derived(
+		(!containerAbilities || targets.length > 0) && (!vmAbilities || vmTargets.length > 0)
+	);
 
 	async function load(first = false) {
 		error = null;
 		try {
-			setup = await api.actScript(device, chosen, targets);
+			setup = await api.actScript(device, chosen, targets, vmTargets);
 			if (first && setup.allowed) {
 				// Start from what the host allows now.
 				chosen = Object.keys(setup.allowed);
-				const lists = Object.entries(setup.allowed)
-					.filter(([a]) => a.endsWith('-container'))
-					.map(([, l]) => [...l].sort().join(' '));
-				uneven = new Set(lists).size > 1;
-				const names = [...new Set(Object.values(setup.allowed).flat())];
+				const of = (kind: (a: string) => boolean) =>
+					Object.entries(setup!.allowed!).filter(([a]) => kind(a));
+				const isContainer = (a: string) => a.endsWith('-container');
+				const isVm = (a: string) => a.startsWith('vm-');
+				uneven =
+					new Set(of(isContainer).map(([, l]) => [...l].sort().join(' '))).size > 1 ||
+					new Set(of(isVm).map(([, l]) => [...l].sort().join(' '))).size > 1;
+				const names = [...new Set(of(isContainer).flatMap(([, l]) => l))];
 				all = names.includes('*');
 				picked = all ? [] : names;
-				setup = await api.actScript(device, chosen, targets);
+				const vmNames = [...new Set(of(isVm).flatMap(([, l]) => l))];
+				vmsAll = vmNames.includes('*');
+				vmsPicked = vmsAll ? [] : vmNames;
+				setup = await api.actScript(device, chosen, targets, vmTargets);
 			}
 		} catch (e) {
 			error = (e as Error).message;
@@ -53,6 +72,7 @@
 	$effect(() => {
 		void chosen.length;
 		void targets.length;
+		void vmTargets.length;
 		untrack(() => {
 			if (opened && setup) load();
 		});
@@ -127,6 +147,34 @@
 				{/if}
 			</fieldset>
 		{/if}
+		{#if vmAbilities}
+			<fieldset class="mt-4 flex flex-col gap-2 text-xs">
+				<legend class="mb-2 text-xs font-medium text-muted">On which virtual machines</legend>
+				<label class="choice">
+					<input type="radio" bind:group={vmsAll} value={false} /> Only these
+				</label>
+				{#if !vmsAll}
+					<div class="ml-6.5 grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-3">
+						{#each vms as name (name)}
+							<label class="choice font-mono text-xs">
+								<input type="checkbox" value={name} bind:group={vmsPicked} />
+								<span class="truncate">{name}</span>
+							</label>
+						{/each}
+						{#if vmNames.length === 0}<span class="text-xs text-faint">
+								no VMs known yet (the collector lists them)
+							</span>{/if}
+					</div>
+					{#if unusable.length}<p class="ml-6.5 text-xs text-faint">
+							Not offered (Kastellan acts on names of letters, digits and _ . + -, never a number or
+							a UUID): {unusable.join(', ')}
+						</p>{/if}
+				{/if}
+				<label class="choice">
+					<input type="radio" bind:group={vmsAll} value={true} /> All of them, also ones added later
+				</label>
+			</fieldset>
+		{/if}
 		<div class="mt-4 flex justify-end gap-2">
 			{#if setup.configured}
 				<button
@@ -139,7 +187,7 @@
 			<button
 				class="inline-flex h-8 items-center rounded-lg border border-line px-3 text-xs font-medium hover:border-line-strong disabled:opacity-50"
 				disabled={!ready}
-				title={ready ? '' : 'tick at least one container'}
+				title={ready ? '' : 'tick at least one container or VM for the abilities chosen'}
 				onclick={() => (installing = true)}
 			>
 				{setup.configured ? 'Set up again, exactly this' : 'Set up exactly this'}
@@ -153,9 +201,11 @@
 		title="Set up the actor"
 		intro={`Kastellan logs in once with your login and sets the host up for exactly this, as root: ${
 			chosen.length ? chosen.join(', ') : 'no abilities (only listing)'
-		}${containerAbilities ? ` on ${all ? 'all containers' : picked.join(', ')}` : ''}. Abilities not ticked are removed.`}
+		}${containerAbilities ? ` on ${all ? 'all containers' : picked.join(', ')}` : ''}${
+			vmAbilities ? `; VMs: ${vmsAll ? 'all' : vmsPicked.join(', ')}` : ''
+		}. Abilities not ticked are removed.`}
 		path="/devices/{encodeURIComponent(device)}/act/install"
-		body={{ abilities: chosen, containers: targets }}
+		body={{ abilities: chosen, containers: targets, vms: vmTargets }}
 		script={setup.script}
 		port={setup.port}
 		canRun={canInstall}

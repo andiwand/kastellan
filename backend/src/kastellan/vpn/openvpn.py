@@ -306,7 +306,7 @@ def install_script(
         lines += [
             "# openssl lets the script check each CRL's signature (OpenWrt: openssl-util).",
             "command -v openssl >/dev/null || (command -v opkg >/dev/null && opkg install openssl-util) \\",
-            "  || true",
+            "  || { echo 'needs openssl to verify CRLs (OpenWrt: openssl-util)' >&2; exit 1; }",
             _heredoc("/usr/bin/kastellan-crl", script("kastellan-crl")).rstrip("\n"),
             "chmod 755 /usr/bin/kastellan-crl",
             _heredoc(crl_path, crl_conf(s)).rstrip("\n"),

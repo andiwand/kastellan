@@ -13,12 +13,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import __version__, checks, stats
+from . import ups as upsmod
 from .access_api import router as access_router
 from .act_api import router as act_router
 from .alarms_api import router as alarms_router
 from .auth_api import Guard
 from .auth_api import router as auth_router
-from .config import Check, Device
+from .config import Check, Device, Kind
 from .config_api import router as config_router
 from .desktop_api import router as desktop_router
 from .groups_api import router as groups_router
@@ -46,7 +47,7 @@ from .webproxy import upstream as web_upstream
 WEB = Path(__file__).parent / "web"
 
 # How far back; NaN and infinity are refused (timedelta can't take them).
-Hours = Annotated[float, Query(allow_inf_nan=False)]
+Hours = Annotated[float, Query(gt=0, allow_inf_nan=False)]
 
 
 def version_event(e: dict[str, Any]) -> dict[str, Any]:
@@ -183,6 +184,10 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
 
     def where(device: Device, status: Any) -> dict[str, Any]:
         """Which networks the device is in, and its ways in from the internet (networks.py)."""
+        if not device.host and device.ups and device.ups.via in hub.config.devices:
+            # A UPS on a host's USB has no address: it is where that host is, with no way in.
+            via = hub.config.devices[device.ups.via]
+            return {**where(via, hub.monitor.status.get(device.ups.via)), "address": None, "public_ways": []}
         address = hub.resolver.address(device.host)
         nets = networks_of(hub.config, device, address, hub.gateway, hub_place())
         assumed = False
@@ -211,6 +216,44 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                 {"id": id, "name": n.name or id, "cidr": n.cidr} for id, n in hub.config.networks.items()
             ],
         }
+
+    def vms_of(id: str) -> list[dict[str, Any]] | None:
+        """A host's VMs as its collector reports them, each with the device that runs in it."""
+        status = hub.monitor.status.get(id)
+        vms = (status.host or {}).get("vms") if status else None
+        if vms is None:
+            return None
+        guests = {
+            d.runs_on.vm: gid for gid, d in hub.config.devices.items() if d.runs_on and d.runs_on.host == id
+        }
+        return [{**v, "device": guests.get(v.get("name"))} for v in vms]
+
+    def runs_on(device: Device) -> dict[str, Any] | None:
+        """Where a virtual machine device runs, and its state there ("" when not reported)."""
+        if device.runs_on is None:
+            return None
+        host = device.runs_on.host
+        vm = next((v for v in vms_of(host) or [] if v.get("name") == device.runs_on.vm), None)
+        return {"host": host, "vm": device.runs_on.vm, "state": (vm or {}).get("state") or ""}
+
+    def ups_view(id: str, device: Device) -> dict[str, Any]:
+        """A UPS's reading and what it powers; for others, the UPS they hang on and the UPSes they
+        read (their host's)."""
+        status = hub.monitor.status
+        now = datetime.now(UTC)
+        out: dict[str, Any] = {"powered_by": None, "ups": None, "powers": [], "reads_ups": []}
+        if device.kind is Kind.UPS:
+            r = upsmod.reading(hub.config, status, id)
+            out["ups"] = {**r, "state": upsmod.current_state(r, now)} if r else None
+            out["powers"] = upsmod.powered(hub.config, id)
+        if device.powered_by:
+            r = upsmod.reading(hub.config, status, device.powered_by)
+            out["powered_by"] = {"ups": device.powered_by, "state": upsmod.current_state(r, now)}
+        for uid, u in hub.config.devices.items():
+            if u.ups and u.ups.via == id:
+                r = upsmod.reading(hub.config, status, uid)
+                out["reads_ups"].append({"device": uid, "state": upsmod.current_state(r, now)})
+        return out
 
     @app.get("/api/devices")
     def devices() -> list[dict[str, Any]]:
@@ -247,6 +290,10 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "router_checked": status.router_checked if status else None,
                     "router_error": status.router_error if status else None,
                     "host_report": status.host if status else None,
+                    # libvirt's VMs on the host, from its collector (None: it can't tell)
+                    "vms": vms_of(id),
+                    "runs_on": runs_on(device),
+                    **ups_view(id, device),
                     "host_checked": status.host_checked if status else None,
                     "host_error": status.host_error if status else None,
                     "outdated_scripts": [] if hub.demo else outdated_scripts(device, status),

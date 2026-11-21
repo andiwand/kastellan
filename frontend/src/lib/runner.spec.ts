@@ -89,4 +89,23 @@ describe('runner', () => {
 			text: 'skipped: an earlier update there failed'
 		});
 	});
+
+	it('starts and stops containers and VMs through their own abilities', async () => {
+		calls.length = 0;
+		runner.add([
+			{ device: 'sv1', kind: 'stop', name: 'app' },
+			{ device: 'sv1', kind: 'vm-shutdown', name: 'win11' },
+			{ device: 'sv1', kind: 'vm-force-off', name: 'stuck' }
+		]);
+		await idle();
+		expect(calls.filter((c) => c.endsWith('start'))).toEqual([
+			'sv1 stop-container app start',
+			'sv1 vm-shutdown win11 start',
+			'sv1 vm-force-off stuck start'
+		]);
+		expect(runner.state({ device: 'sv1', kind: 'stop', name: 'app' })?.text).toBe('Stopped.');
+		expect(runner.state({ device: 'sv1', kind: 'vm-force-off', name: 'stuck' })?.label).toBe(
+			'sv1: force off VM stuck'
+		);
+	});
 });

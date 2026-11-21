@@ -64,6 +64,14 @@ export interface Device {
 	router_checked?: string | null;
 	router_error?: string | null;
 	host_report?: HostReport | null;
+	/** libvirt's virtual machines on the host, from its collector (null: it can't tell). */
+	vms?: Vm[] | null;
+	runs_on?: RunsOn | null;
+	/** A UPS (kind ups): what its host reads of it. */
+	ups?: UpsReading | null;
+	powers?: string[]; // a UPS: the devices it powers
+	powered_by?: { ups: string; state: string } | null; // the UPS a device hangs on, and its state
+	reads_ups?: { device: string; state: string }[]; // a host: the UPSes it reads
 	host_checked?: string | null;
 	host_error?: string | null;
 	state: CheckState;
@@ -346,6 +354,54 @@ export interface Networks {
 	hub_address: string | null;
 	gateway: string | null;
 	named: { id: string; name: string; cidr: string | null }[];
+}
+
+/** A virtual machine on a host (libvirt), as its collector reports it. */
+export interface Vm {
+	name: string;
+	uuid: string | null;
+	state: string; // running, shut off, paused, ...
+	autostart: boolean;
+	persistent: boolean;
+	vcpus: number | null;
+	memory: number | null; // bytes
+	memory_used: number | null;
+	disks: { target: string; source: string }[];
+	device?: string | null; // the configured device that runs in it (its runs_on), if any
+}
+
+/** A UPS as its host reads it (apcupsd or NUT). `state` is the flag that matters most. */
+export interface UpsReading {
+	source: 'apcupsd' | 'nut';
+	name: string | null;
+	model: string | null;
+	serial: string | null;
+	firmware: string | null;
+	status: string;
+	flags: string[];
+	state: UpsState;
+	charge: number | null; // percent
+	runtime: number | null; // seconds
+	load: number | null; // percent
+	input_voltage: number | null;
+	battery_voltage: number | null;
+	nominal_power: number | null; // watts
+	last_transfer: string | null; // why it last went to battery
+	on_battery_since: string | null;
+	off_battery_since: string | null;
+	transfers: number | null;
+	battery_date: string | null;
+	checked: string | null;
+}
+export type UpsState =
+	'online' | 'on_battery' | 'low_battery' | 'replace_battery' | 'no_contact' | 'unknown';
+
+/** Where a device runs as a virtual machine (config.yaml's runs_on), and the VM's state as its
+ * host reports it ("" when not reported). */
+export interface RunsOn {
+	host: string;
+	vm: string;
+	state?: string;
 }
 
 export interface Container {
@@ -643,6 +699,9 @@ export interface DeviceForm {
 	host: string;
 	kind: string;
 	site?: string; // empty: home
+	runs_on?: { host: string; vm: string } | null; // a virtual machine on another device
+	ups?: { via: string; name?: string | null } | null; // a UPS: which host reads it
+	powered_by?: string | null; // the UPS it hangs on
 	tags: string[];
 	always_on: boolean | null; // null: by kind
 	exposed: boolean;
@@ -791,6 +850,12 @@ export interface ActResult {
 	to?: string;
 	why?: string;
 	restarted?: boolean;
+	started?: boolean;
+	stopped?: boolean;
+	running?: boolean;
+	vm?: string;
+	state?: string; // a VM's state after it acted
+	forced?: boolean;
 	reboot?: string | boolean;
 	upgraded?: number;
 	packages?: string[];
@@ -802,12 +867,12 @@ export interface ActResult {
 export async function actStream(
 	device: string,
 	ability: string,
-	container: string | null,
+	name: string | null, // the container's, or the VM's for vm-* abilities
 	onStep: (text: string) => void
 ): Promise<ActResult> {
 	const outcome = (await streamSetup(
 		`/devices/${encodeURIComponent(device)}/act/${ability}/stream`,
-		{ container },
+		ability.startsWith('vm-') ? { vm: name } : { container: name },
 		(line) => {
 			if (line.startsWith('KASTELLAN-STEP ')) onStep(line.slice(15));
 		}
@@ -864,6 +929,12 @@ export const api = {
 	saveConfig: (text: string, version: string) =>
 		call<{ version: string }>('PUT', '/config', { text, version }),
 	deviceForm: (id: string) => get<DeviceForm>(`/devices/${encodeURIComponent(id)}/form`),
+	/** Which devices a UPS powers (each one's powered_by), at the file's version. */
+	setPowered: (id: string, devices: string[], version: string) =>
+		call<{ version: string }>('PUT', `/devices/${encodeURIComponent(id)}/powered`, {
+			devices,
+			version
+		}),
 	deviceYaml: (id: string) =>
 		get<{ text: string; version: string }>(`/devices/${encodeURIComponent(id)}/yaml`),
 	saveDeviceYaml: (id: string, text: string, version: string) =>
@@ -884,10 +955,11 @@ export const api = {
 			'POST',
 			`/devices/${encodeURIComponent(id)}/collect/test`
 		),
-	actScript: (id: string, abilities: string[], containers: string[]) =>
+	actScript: (id: string, abilities: string[], containers: string[], vms: string[] = []) =>
 		call<ActSetup>('POST', `/devices/${encodeURIComponent(id)}/act/script`, {
 			abilities,
-			containers
+			containers,
+			vms
 		}),
 	act: (id: string, ability: string, container?: string) =>
 		call<{

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -6,6 +6,74 @@ import pytest
 from kastellan.secrets import Secrets
 from kastellan.vpn.openvpn import parse_list
 from kastellan.vpn.wireguard import _client, _id
+
+
+def test_crl_installs_verify_signatures_and_refuse_rollback(tmp_path: Path) -> None:
+    import os
+    import shlex
+    import subprocess
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from kastellan.vpn.openvpn import script
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    issuer = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "test CA")])
+    now = datetime.now(UTC)
+    ca = (
+        x509.CertificateBuilder()
+        .subject_name(issuer)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(1)
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    ca_path, crl_path = tmp_path / "ca.pem", tmp_path / "crl.pem"
+    ca_path.write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    conf = tmp_path / "crl.conf"
+    conf.write_text(f"CA={shlex.quote(str(ca_path))}\nCRL={shlex.quote(str(crl_path))}\n")
+    executable = tmp_path / "kastellan-crl"
+    executable.write_text(script("kastellan-crl"))
+
+    def crl(number, signing_key=key, issued=now):
+        builder = (
+            x509.CertificateRevocationListBuilder()
+            .issuer_name(issuer)
+            .last_update(issued)
+            .next_update(now + timedelta(days=1))
+        )
+        if number is not None:
+            builder = builder.add_extension(x509.CRLNumber(number), critical=False)
+        return builder.sign(signing_key, hashes.SHA256()).public_bytes(serialization.Encoding.PEM)
+
+    def install(pem):
+        return subprocess.run(
+            ["sh", str(executable), str(conf)],
+            input=pem,
+            capture_output=True,
+            env={**os.environ, "SSH_ORIGINAL_COMMAND": "install"},
+        )
+
+    for number in (255, 256, 2**100):
+        current = crl(number)
+        result = install(current)
+        assert result.returncode == 0, result.stderr
+        result = install(crl(number - 1))
+        assert result.returncode != 0 and b"older" in result.stderr
+        assert crl_path.read_bytes() == current
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    result = install(crl(2**100 + 1, other))
+    assert result.returncode != 0 and b"not signed" in result.stderr
+    assert crl_path.read_bytes() == current
+    current = crl(None)
+    assert install(current).returncode == 0
+    assert install(crl(None, issued=now - timedelta(days=1))).returncode != 0
+    assert crl_path.read_bytes() == current
 
 
 def test_secrets_are_private_files(tmp_path: Path) -> None:
@@ -143,10 +211,8 @@ def test_the_daily_crl_renewal_survives_a_vpn_removed_meanwhile(tmp_path, monkey
     import asyncio
     import contextlib
 
-    from fastapi.testclient import TestClient
-
     from kastellan import hub as hub_module
-    from kastellan.api import create_app
+    from kastellan.config import load
     from kastellan.settings import Settings
 
     config = tmp_path / "config.yaml"
@@ -156,35 +222,35 @@ def test_the_daily_crl_renewal_survives_a_vpn_removed_meanwhile(tmp_path, monkey
         "  b: {kind: openvpn, pki: sv1, server: gw, pki_user: b-pki, server_user: b-crl}\n"
         "  c: {kind: openvpn, pki: sv1, server: gw, pki_user: c-pki, server_user: c-crl}\n"
     )
-    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
-        hub = c.app.state.hub
-        pushed: list[str] = []
+    hub = hub_module.Hub(Settings(config=config, data=tmp_path / "data"))
+    hub.config = load(config)
+    pushed: list[str] = []
 
-        async def push(vid: str, renew: bool = False) -> None:
-            pushed.append(vid)
-            if vid == "a":  # meanwhile, an admin removes b
-                hub.config.vpns.pop("b")
-            if vid == "c":
-                raise RuntimeError("the server didn't answer")
+    async def push(vid: str, renew: bool = False) -> None:
+        pushed.append(vid)
+        if vid == "a":  # meanwhile, an admin removes b
+            hub.config.vpns.pop("b")
+        if vid == "c":
+            raise RuntimeError("the server didn't answer")
 
-        sleeps = iter([None])
+    sleeps = iter([None])
 
-        async def sleep(seconds: float) -> None:
-            if next(sleeps, "stop") == "stop":
-                raise asyncio.CancelledError
+    async def sleep(seconds: float) -> None:
+        if next(sleeps, "stop") == "stop":
+            raise asyncio.CancelledError
 
-        monkeypatch.setattr(hub, "push_crl", push)
-        monkeypatch.setattr(hub_module.asyncio, "sleep", sleep)
-        sent = []
+    monkeypatch.setattr(hub, "push_crl", push)
+    monkeypatch.setattr(hub_module.asyncio, "sleep", sleep)
+    sent = []
 
-        async def send(messages, now) -> None:
-            sent.extend(messages)
+    async def send(messages, now) -> None:
+        sent.extend(messages)
 
-        monkeypatch.setattr(hub, "_send", send)
-        with contextlib.suppress(asyncio.CancelledError):
-            asyncio.run(hub._renew_crl())
-        assert pushed == ["a", "c"]  # b skipped once gone; c's failure didn't end the loop early
-        assert [m.title for m in sent] == ["c: the CRL couldn't be renewed"]
+    monkeypatch.setattr(hub, "_send", send)
+    with contextlib.suppress(asyncio.CancelledError):
+        asyncio.run(hub._renew_crl())
+    assert pushed == ["a", "c"]  # b skipped once gone; c's failure didn't end the loop early
+    assert [m.title for m in sent] == ["c: the CRL couldn't be renewed"]
 
 
 async def test_several_openvpn_servers_on_one_router_are_kept_apart(tmp_path: Path, monkeypatch) -> None:
