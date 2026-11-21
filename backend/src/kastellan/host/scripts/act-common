@@ -16,7 +16,23 @@ SOCKET = "/var/run/docker.sock"  # fixed: nothing from the environment steers a 
 ABILITY = os.path.basename(sys.argv[0])
 
 
+STARTED = time.time()
+
+
+def step(text):
+    """A line on how far it got, for the hub to show while it runs (stderr, one line). Never
+    fails: the hub may have gone, and the action goes on without anyone to tell."""
+    try:
+        sys.stderr.write("KASTELLAN-STEP " + " ".join(str(text).split())[:200] + "\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def fail(message, code=1):
+    # One line, as step() writes: a message carrying text from outside (a registry's error)
+    # must not add lines the hub reads as steps.
+    message = " ".join(str(message).split())[:500]
     syslog.syslog(syslog.LOG_WARNING, f"{ABILITY}: refused or failed: {message}")
     print(message, file=sys.stderr)
     sys.exit(code)
@@ -51,6 +67,7 @@ def exact(container):
 
 
 def done(result):
+    result = {**result, "seconds": round(time.time() - STARTED, 1)}
     syslog.syslog(syslog.LOG_NOTICE, f"{ABILITY}: {json.dumps(result)[:400]}")
     print(json.dumps(result))
     sys.exit(0)

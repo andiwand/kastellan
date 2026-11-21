@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from kastellan.api import create_app
-from kastellan.auth import hash_password
+from kastellan.auth import hash_password, password_tag
 from kastellan.settings import Settings
 from kastellan.ssh import Keys
 
@@ -30,6 +30,12 @@ def ssh_server(tmp_path: Path):
     class Server(asyncssh.SSHServer):
         def begin_auth(self, username: str) -> bool:
             return True
+
+        def password_auth_supported(self) -> bool:
+            return True
+
+        def validate_password(self, username: str, password: str) -> bool:
+            return password == "the device's password"
 
     async def shell(process: asyncssh.SSHServerProcess) -> None:
         process.stdout.write(f"$ welcome {process.get_extra_info('username')}\r\n")
@@ -102,6 +108,7 @@ def test_terminal_end_to_end(tmp_path: Path, ssh_server) -> None:
             assert json.loads(ws.receive_text()) == {
                 "type": "unknown-host",
                 "fingerprint": state["fingerprint"],
+                "port": port,
             }
 
         trusted = c.post("/api/devices/box/ssh/trust", json={"fingerprint": state["fingerprint"]}, headers=H)
@@ -213,3 +220,107 @@ def test_trusting_a_device_before_its_ssh_is_set_up(tmp_path: Path, ssh_server) 
         assert c.post("/api/devices/box/ssh/trust", json=body, headers=H).status_code == 200
         known = (tmp_path / "data" / "ssh" / "known_hosts").read_text()
         assert known.startswith(f"[127.0.0.1]:{port} ")
+
+
+def test_logging_in_without_kastellans_key(tmp_path: Path, ssh_server) -> None:
+    """A device without ssh: (only an SSH check): the page logs in with a typed password, used
+    for that connection only, or stores it in the People ring and uses it from there."""
+    port, host_key = ssh_server
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"devices:\n  pi:\n    host: 127.0.0.1\n    checks:\n      - tcp: {port}\n        name: ssh\n"
+        f"users:\n  ada:\n    role: admin\n    password: {HASH}\n"
+    )
+    with TestClient(
+        create_app(Settings(config=config, data=tmp_path / "data")), base_url="http://hub.lan"
+    ) as c:
+        signin(c, "ada")
+        card = c.get("/api/devices/pi/access").json()  # the SSH access card: the key to trust
+        assert card["port"] == port and card["host_key"] == {
+            "state": "unknown",
+            "fingerprint": host_key.get_fingerprint(),
+        }
+        trust = {"fingerprint": host_key.get_fingerprint(), "port": card["port"]}
+        assert c.post("/api/devices/pi/ssh/trust", json=trust, headers=H).status_code == 200
+        assert c.get("/api/devices/pi/access").json()["host_key"]["state"] == "trusted"
+        assert c.get("/api/devices").json()[0]["ssh_port"] == port
+
+        def opened(login: dict, then: list[dict] | None = None) -> bytes:
+            with c.websocket_connect("/api/devices/pi/terminal", headers=ws_headers(c)) as ws:
+                asked = json.loads(ws.receive_text())
+                assert asked["type"] == "login-needed" and asked["port"] == port
+                for wrong in then or []:
+                    ws.send_text(json.dumps(wrong))
+                    assert json.loads(ws.receive_text())["type"] == "login-failed"
+                ws.send_text(json.dumps({"type": "login", **login}))
+                frame = ws.receive()
+                while frame.get("text") and json.loads(frame["text"])["type"] == "note":
+                    frame = ws.receive()
+                return frame.get("bytes") or b""
+
+        wrong = {"type": "login", "user": "pi", "password": "nope"}
+        assert b"welcome pi" in opened({"user": "pi", "password": "the device's password"}, [wrong])
+
+        # Stored in the People ring (open after making the key rings), then used from there.
+        assert c.post("/api/vault/create", json={"password": "pw for tests"}, headers=H).status_code == 200
+        assert b"welcome pi" in opened({"user": "pi", "password": "the device's password", "store": True})
+        stored = [e for e in c.get("/api/vault").json()["entries"] if e["ring"] == "people"]
+        assert [e["id"] for e in stored] == ["ssh-pi-pi"]
+        assert b"welcome pi" in opened({"entry": "ssh-pi-pi"})
+
+        # The People ring locked: the stored login isn't offered, and asking for it is refused.
+        c.post("/api/vault/lock", json={"ring": "people"}, headers=H)
+        with c.websocket_connect("/api/devices/pi/terminal", headers=ws_headers(c)) as ws:
+            asked = json.loads(ws.receive_text())
+            assert asked["ring_open"] is False and asked["stored"] == []
+            ws.send_text(json.dumps({"type": "login", "entry": "ssh-pi-pi"}))
+            assert json.loads(ws.receive_text())["type"] == "login-failed"
+
+    log = (tmp_path / "data" / "audit.log").read_text()
+    assert '"way": "password"' in log and '"way": "stored"' in log
+    assert "the device's password" not in log and "nope" not in log
+
+
+def test_a_stored_login_stays_with_its_device(tmp_path: Path, ssh_server) -> None:
+    """A login stored for one device is never offered to, or sent to, another (a host someone
+    else controls would get the password); an admin without their own slot in the People ring
+    doesn't use its logins. And the host key comes first: no password for an untrusted host."""
+    port, host_key = ssh_server
+    config = tmp_path / "config.yaml"
+    checks = f"    checks:\n      - tcp: {port}\n        name: ssh\n"
+    config.write_text(
+        f"devices:\n  pi:\n    host: 127.0.0.1\n{checks}  box:\n    host: 127.0.0.1\n{checks}"
+        f"users:\n  ada:\n    role: admin\n    password: {HASH}\n"
+    )
+    with TestClient(
+        create_app(Settings(config=config, data=tmp_path / "data")), base_url="http://hub.lan"
+    ) as c:
+        signin(c, "ada")
+        with c.websocket_connect("/api/devices/pi/terminal", headers=ws_headers(c)) as ws:
+            assert json.loads(ws.receive_text())["type"] == "unknown-host"  # before any password
+        trust = {"fingerprint": host_key.get_fingerprint(), "port": port}
+        assert c.post("/api/devices/pi/ssh/trust", json=trust, headers=H).status_code == 200
+        assert c.post("/api/vault/create", json={"password": "pw for tests"}, headers=H).status_code == 200
+        with c.websocket_connect("/api/devices/pi/terminal", headers=ws_headers(c)) as ws:
+            assert json.loads(ws.receive_text())["type"] == "login-needed"
+            ws.send_text(
+                json.dumps(
+                    {"type": "login", "user": "pi", "password": "the device's password", "store": True}
+                )
+            )
+            frame = ws.receive()
+            while frame.get("text") and json.loads(frame["text"])["type"] == "note":
+                frame = ws.receive()
+            assert b"welcome pi" in (frame.get("bytes") or b"")
+
+        with c.websocket_connect("/api/devices/box/terminal", headers=ws_headers(c)) as ws:
+            asked = json.loads(ws.receive_text())
+            assert asked["type"] == "login-needed" and asked["stored"] == []  # pi's, not box's
+            ws.send_text(json.dumps({"type": "login", "entry": "ssh-pi-pi"}))
+            assert json.loads(ws.receive_text())["type"] == "login-failed"
+
+        # Only an admin's own slot made with the password they have now counts.
+        vault = c.app.state.hub.vault
+        assert vault.has_slot("people", "ada", password_tag(HASH))
+        assert not vault.has_slot("people", "ada", "another password's tag")
+        assert not vault.has_slot("people", "bob", password_tag(HASH))  # never signed in

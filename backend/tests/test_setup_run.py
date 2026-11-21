@@ -7,6 +7,7 @@ import json
 import asyncssh
 import pytest
 
+from kastellan import setup_run
 from kastellan.setup_run import Login, _lines, stream
 from kastellan.ssh import Keys
 
@@ -136,3 +137,20 @@ async def test_a_page_that_leaves_doesnt_stop_it(server) -> None:
         await asyncio.sleep(0.02)
     assert after_ran == [True]
     assert [a["outcome"] for a in audited] == ["started", "done"]
+
+
+async def test_a_quiet_run_says_it_is_alive(monkeypatch) -> None:
+    """A proxy ends a response that says nothing for a minute: while the host is quiet, the
+    stream sends a line the page ignores."""
+    monkeypatch.setattr(setup_run, "ALIVE_EVERY", 0.05)
+    queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+    async def run() -> None:
+        await asyncio.sleep(0.2)
+        queue.put_nowait(b"KASTELLAN-DONE {}\n")
+        queue.put_nowait(None)
+
+    response = setup_run._hub_task(run(), queue)
+    lines = [chunk async for chunk in response.body_iterator]
+    assert lines[-1] == b"KASTELLAN-DONE {}\n"
+    assert lines.count(b"KASTELLAN-ALIVE\n") >= 2

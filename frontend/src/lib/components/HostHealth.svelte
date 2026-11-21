@@ -2,6 +2,8 @@
 	import type { HostReport } from '#lib/api.js';
 	import { ago, duration } from '#lib/format.js';
 	import { store } from '#lib/state.svelte.js';
+	import { runner, type Job } from '#lib/runner.svelte.js';
+	import JobStatus from './JobStatus.svelte';
 
 	/** How a host is doing, from its collector: system, disks and their space, RAID, disk
 	 * health, temperatures, failed services, updates. Coloured only where something is wrong. */
@@ -9,43 +11,20 @@
 		report,
 		checked,
 		error,
-		reboot = null,
-		upgrade = null
+		device = '',
+		canAct = false
 	}: {
 		report: HostReport;
 		checked: string | null;
 		error: string | null;
-		reboot?: (() => Promise<string>) | null; // through the actor, where the host allows it
-		upgrade?: (() => Promise<string>) | null; // install the system's updates, likewise
+		device?: string;
+		canAct?: boolean; // system updates and a reboot through the actor (the Updates page's queue)
 	} = $props();
 
-	let upgrading = $state<'ask' | 'busy' | null>(null);
-	let upgradeNote = $state<{ ok: boolean; text: string } | null>(null);
-	async function doUpgrade() {
-		if (!upgrade) return;
-		upgrading = 'busy';
-		try {
-			upgradeNote = { ok: true, text: await upgrade() };
-		} catch (e) {
-			upgradeNote = { ok: false, text: (e as Error).message };
-		} finally {
-			upgrading = null;
-		}
-	}
-
-	let confirming = $state(false);
-	let rebootAsked = $state(false); // asked once: a second click would only postpone it
-	let rebootNote = $state<{ ok: boolean; text: string } | null>(null);
-	async function doReboot() {
-		if (!reboot) return;
-		confirming = false;
-		try {
-			rebootNote = { ok: true, text: await reboot() };
-			rebootAsked = true;
-		} catch (e) {
-			rebootNote = { ok: false, text: (e as Error).message };
-		}
-	}
+	const upgrade = $derived<Job>({ device, kind: 'packages' });
+	const reboot = $derived<Job>({ device, kind: 'reboot' });
+	const busy = (j: Job) => ['queued', 'running'].includes(runner.state(j)?.state ?? '');
+	let asking = $state<'packages' | 'reboot' | null>(null);
 
 	// The same limits the alarms use (config.yaml's alarms:).
 	const WARN = $derived(store.alarms?.limits?.disk_warning ?? 85);
@@ -215,55 +194,46 @@
 					: report.updates.available === 0
 						? 'none pending'
 						: `${report.updates.available} pending${report.updates.security ? `, ${report.updates.security} for security` : ''}`}
-				{#if upgrade && report.updates.available}
-					{#if upgrading === null}
-						<button class="ml-1 text-xs underline" onclick={() => (upgrading = 'ask')}>
-							Install
-						</button>
-					{:else if upgrading === 'ask'}
-						<span class="ml-1 text-xs">
-							Install them now (apt; keeps config files)?
-							<button class="underline" onclick={doUpgrade}>Yes</button>
-							<button class="ml-1 underline" onclick={() => (upgrading = null)}>No</button>
-						</span>
-					{:else}
-						<span class="ml-1 text-xs text-muted">installing… (this can take minutes)</span>
-					{/if}
-				{/if}
-				{#if upgradeNote}
-					<span
-						class="block text-xs"
-						style:color={upgradeNote.ok ? 'var(--good-text)' : 'var(--critical-text)'}
+				{#if canAct && report.updates.available && asking !== 'packages'}
+					<button
+						class="btn btn-sm ml-1"
+						disabled={busy(upgrade)}
+						onclick={() => (asking = 'packages')}
 					>
-						{upgradeNote.text}
-					</span>
+						Install
+					</button>
 				{/if}
 				{#if report.updates.reboot}
 					· <span style:color="var(--warning-text)">wants a reboot</span>
-					{#if reboot && rebootAsked}
-						<span class="ml-1 text-xs text-muted">(asked for)</span>
-					{:else if reboot && !confirming}
-						<button class="ml-1 text-xs underline" onclick={() => (confirming = true)}>
+					{#if canAct && asking !== 'reboot'}
+						<button
+							class="btn btn-sm ml-1"
+							disabled={busy(reboot)}
+							onclick={() => (asking = 'reboot')}
+						>
 							Reboot
 						</button>
-					{:else if reboot}
-						<span class="ml-1 text-xs">
-							Reboot it in a minute?
-							<button class="underline" style:color="var(--critical-text)" onclick={doReboot}>
-								Yes
-							</button>
-							<button class="ml-1 underline" onclick={() => (confirming = false)}>No</button>
-						</span>
 					{/if}
 				{/if}
-				{#if rebootNote}
-					<span
-						class="block text-xs"
-						style:color={rebootNote.ok ? 'var(--good-text)' : 'var(--critical-text)'}
-					>
-						{rebootNote.text}
+				{#if asking}
+					<span class="mt-1 flex flex-wrap items-center gap-2 text-xs">
+						{asking === 'packages'
+							? 'Install them now (apt; keeps config files, removes nothing)?'
+							: 'Reboot it in a minute (cancel on the host: shutdown -c)?'}
+						<button
+							class="btn btn-sm btn-primary"
+							onclick={() => {
+								runner.add([asking === 'packages' ? upgrade : reboot]);
+								asking = null;
+							}}
+						>
+							{asking === 'packages' ? 'Install' : 'Reboot'}
+						</button>
+						<button class="btn btn-sm" onclick={() => (asking = null)}>Not now</button>
 					</span>
 				{/if}
+				<JobStatus job={runner.state(upgrade)} />
+				<JobStatus job={runner.state(reboot)} />
 			</p>
 		{/if}
 	</div>

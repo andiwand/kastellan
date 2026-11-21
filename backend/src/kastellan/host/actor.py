@@ -16,9 +16,12 @@ What isn't installed can't be run, whatever the hub asks.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 import shlex
+from collections.abc import Callable
 from importlib.resources import files
 from typing import Any
 
@@ -28,6 +31,8 @@ from ..access import authorize
 from ..config import Device
 from ..ssh import Keys, Target
 from .collector import PYTHON_CHECK, digest, remove_user
+
+log = logging.getLogger(__name__)
 
 USER = "kastellan-act"
 BASE = "/usr/local/lib/kastellan/act"
@@ -205,8 +210,22 @@ async def abilities(keys: Keys, device: Device) -> dict[str, list[str]]:
     return (await ask(keys, device))[0]
 
 
-async def act(keys: Keys, device: Device, ability: str, container: str | None = None) -> dict[str, Any]:
-    """Ask the host to do one thing; its answer (JSON) or RuntimeError with its reason."""
+STEP = "KASTELLAN-STEP "  # an ability's line on how far it got (act-common's step())
+# Longer than the script on the host allows itself, so the hub hears how it ended:
+# update-container: pull 900 + stop 90 + settling 600 + Docker calls; upgrade-packages:
+# dpkg 1200 + update 300 + upgrade 2400.
+LIMITS = {"update-container": 2100, "upgrade-packages": 4200, "restart-container": 180, "reboot": 60}
+
+
+async def act(
+    keys: Keys,
+    device: Device,
+    ability: str,
+    container: str | None = None,
+    on_step: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Ask the host to do one thing; its answer (JSON) or RuntimeError with its reason. Its
+    steps (how far it got) go to `on_step` as they come; scripts older than steps send none."""
     if ability not in ABILITIES:
         raise ValueError("unknown ability")
     words = [ability]
@@ -214,15 +233,25 @@ async def act(keys: Keys, device: Device, ability: str, container: str | None = 
         if not container or not NAME.fullmatch(container):
             raise ValueError("a container name is letters, digits, _ . -")
         words.append(container)
-    # Longer than the script on the host allows itself, so the hub hears how it ended:
-    # update-container: pull 900 + stop 90 + settling 600 + Docker calls; upgrade-packages:
-    # dpkg 1200 + update 300 + upgrade 2400.
-    limits = {"update-container": 2100, "upgrade-packages": 4200, "restart-container": 180, "reboot": 60}
-    code, out, err = await _run(keys, device, words, limits[ability])
+    errors: list[str] = []
+    async with asyncio.timeout(LIMITS[ability]), await keys.connect(target_of(device), "act") as conn:
+        process = await conn.create_process(" ".join(words), stdin=asyncssh.DEVNULL)
+        out = asyncio.ensure_future(process.stdout.read())  # alongside: neither pipe fills up
+        async for line in process.stderr:
+            line = str(line).rstrip("\n")
+            if line.startswith(STEP):
+                text = line[len(STEP) :][:300]
+                log.debug("%s %s: %s", device.host, ability, text)
+                if on_step is not None:
+                    on_step(text)
+            elif line.strip():
+                errors = [*errors, line][-20:]
+        stdout = str(await out)[-65536:]
+        code = (await process.wait(check=False)).exit_status
     if code != 0:
-        raise RuntimeError(err.strip().splitlines()[-1][:300] if err.strip() else f"exit {code}")
+        raise RuntimeError(errors[-1][:300] if errors else f"exit {code}")
     try:
-        result = json.loads(out.strip().splitlines()[-1])
+        result = json.loads(stdout.strip().splitlines()[-1])
     except (ValueError, IndexError) as e:
         raise RuntimeError("the host's answer wasn't readable") from e
     return result if isinstance(result, dict) else {"result": result}

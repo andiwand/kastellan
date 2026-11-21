@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from .hub import Hub
 
 DONE = "KASTELLAN-DONE"
+ALIVE = "KASTELLAN-ALIVE"  # a stream's "still working" line, ignored by the page
+ALIVE_EVERY = 20  # seconds
 TIMEOUT = 1800  # seconds the whole script may take
 
 
@@ -137,7 +139,17 @@ def _hub_task(run: Coroutine[Any, Any, None], queue: asyncio.Queue[bytes | None]
     task.add_done_callback(_running.discard)
 
     async def follow() -> AsyncIterator[bytes]:
-        while (chunk := await queue.get()) is not None:
+        while True:
+            # A line now and then while the host is quiet (an image pulled, apt downloading): a
+            # proxy in front ends a response that says nothing for a minute, and the page would
+            # take the run for failed while it goes on.
+            try:
+                chunk = await asyncio.wait_for(queue.get(), ALIVE_EVERY)
+            except TimeoutError:
+                yield f"{ALIVE}\n".encode()
+                continue
+            if chunk is None:
+                return
             yield chunk
 
     return StreamingResponse(

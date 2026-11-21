@@ -95,15 +95,126 @@ async def test_the_hub_says_why_nobody_is_seen(tmp_path: Path, monkeypatch, text
         return text
 
     monkeypatch.setattr(hub_module.openwrt_client, "openvpn_status", status)
-    me = SimpleNamespace(ovpn_seen=Seen(tmp_path), ovpn_status={"connected": [{"name": "old"}]})
-    await hub_module.Hub._read_openvpn(me, "gw", None)  # type: ignore[arg-type]
-    assert me.ovpn_status["connected"] == []
-    assert (error is None and me.ovpn_status["error"] is None) or error in me.ovpn_status["error"]
+    seen = Seen(tmp_path, "office")
+    me = SimpleNamespace(
+        seen=lambda vid: seen,
+        ovpn_status={"office": {"connected": [{"name": "old"}]}},
+        config=SimpleNamespace(vpns={"office": SimpleNamespace(instance=None)}),
+    )
+    await hub_module.Hub._read_openvpn(me, ["office"], "gw", None)  # type: ignore[arg-type]
+    status = me.ovpn_status["office"]
+    assert status["connected"] == []
+    assert (error is None and status["error"] is None) or error in status["error"]
 
     async def broken(ubus) -> str:
         raise RuntimeError("Access denied")
 
     monkeypatch.setattr(hub_module.openwrt_client, "openvpn_status", broken)
-    me.ovpn_status = {"checked": "x", "connected": [{"name": "old"}], "error": None}
-    await hub_module.Hub._read_openvpn(me, "gw", None)  # type: ignore[arg-type]
-    assert me.ovpn_status["connected"] == [] and me.ovpn_status["error"]
+    me.ovpn_status = {"office": {"checked": "x", "connected": [{"name": "old"}], "error": None}}
+    await hub_module.Hub._read_openvpn(me, ["office"], "gw", None)  # type: ignore[arg-type]
+    assert me.ovpn_status["office"]["connected"] == [] and me.ovpn_status["office"]["error"]
+
+
+def test_setting_a_vpn_up_again_replaces_its_old_key_line(tmp_path) -> None:
+    """The first line matching a key counts: an older VPN's line for the same script would win."""
+    import subprocess
+
+    from kastellan import access
+
+    k, other = "AAAAC3NzaC1lZDI1NTE5AAAAIK" + "k" * 42, "AAAAC3NzaC1lZDI1NTE5AAAAIO" + "o" * 42
+    pki = "/usr/local/bin/kastellan-pki"
+    old = f'from="10.0.0.1",restrict,command="{pki} /etc/kastellan-pki.conf" ssh-ed25519 {k}'
+    new = f'restrict,command="/usr/local/bin/kastellan-pki /etc/kastellan-pki-home.conf" ssh-ed25519 {k}'
+    crl = f'command="/usr/bin/kastellan-crl /etc/kastellan-crl.conf",no-pty ssh-ed25519 {k}'
+    near = f'command="/usr/local/bin/kastellan-pkix x" ssh-ed25519 {k}'  # another script
+    mine = f"ssh-ed25519 {other} ada@laptop"
+    f = tmp_path / "authorized_keys"
+    f.write_text("\n".join([old, crl, near, mine, new]) + "\n")
+    subprocess.run(["sh", "-c", access._DEDUPE, str(f), new, "/usr/local/bin/kastellan-pki", k], check=True)
+    assert f.read_text() == "\n".join([crl, near, mine, new]) + "\n"
+    script = "\n".join(
+        access.authorize("kastellan-pki", "OPEN", "DROP", replace=("/usr/local/bin/kastellan-pki", k))
+    )
+    assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
+
+
+def test_the_daily_crl_renewal_survives_a_vpn_removed_meanwhile(tmp_path, monkeypatch) -> None:
+    """A VPN removed while another's CRL was pushed: skipped, and the loop goes on for all."""
+    import asyncio
+    import contextlib
+
+    from fastapi.testclient import TestClient
+
+    from kastellan import hub as hub_module
+    from kastellan.api import create_app
+    from kastellan.settings import Settings
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  sv1: {host: h}\n  gw: {host: g}\n"
+        "vpns:\n  a: {kind: openvpn, pki: sv1, server: gw}\n"
+        "  b: {kind: openvpn, pki: sv1, server: gw, pki_user: b-pki, server_user: b-crl}\n"
+        "  c: {kind: openvpn, pki: sv1, server: gw, pki_user: c-pki, server_user: c-crl}\n"
+    )
+    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
+        hub = c.app.state.hub
+        pushed: list[str] = []
+
+        async def push(vid: str, renew: bool = False) -> None:
+            pushed.append(vid)
+            if vid == "a":  # meanwhile, an admin removes b
+                hub.config.vpns.pop("b")
+            if vid == "c":
+                raise RuntimeError("the server didn't answer")
+
+        sleeps = iter([None])
+
+        async def sleep(seconds: float) -> None:
+            if next(sleeps, "stop") == "stop":
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(hub, "push_crl", push)
+        monkeypatch.setattr(hub_module.asyncio, "sleep", sleep)
+        sent = []
+
+        async def send(messages, now) -> None:
+            sent.extend(messages)
+
+        monkeypatch.setattr(hub, "_send", send)
+        with contextlib.suppress(asyncio.CancelledError):
+            asyncio.run(hub._renew_crl())
+        assert pushed == ["a", "c"]  # b skipped once gone; c's failure didn't end the loop early
+        assert [m.title for m in sent] == ["c: the CRL couldn't be renewed"]
+
+
+async def test_several_openvpn_servers_on_one_router_are_kept_apart(tmp_path: Path, monkeypatch) -> None:
+    """Each VPN counts only its own server's clients: by `instance:`, else none when it can't
+    tell (no guessing between servers)."""
+    from types import SimpleNamespace
+
+    from kastellan import hub as hub_module
+    from kastellan.vpn.openvpn import Seen
+
+    text = (
+        "== office\nCommon Name,Real Address,Bytes Received,Bytes Sent,Connected Since\n"
+        "laptop,198.51.100.7:40000,5,6,2026-11-21 08:00:00\n"
+        "== lab.conf\n!unreadable\n"
+    )
+
+    async def status(ubus) -> str:
+        return text
+
+    monkeypatch.setattr(hub_module.openwrt_client, "openvpn_status", status)
+    seen = {v: Seen(tmp_path, v) for v in ("a", "b", "c")}
+    vpns = {
+        "a": SimpleNamespace(instance="office"),
+        "b": SimpleNamespace(instance="lab.conf"),
+        "c": SimpleNamespace(instance=None),
+    }
+    me = SimpleNamespace(seen=lambda v: seen[v], ovpn_status={}, config=SimpleNamespace(vpns=vpns))
+    await hub_module.Hub._read_openvpn(me, ["a", "b", "c"], "gw", None)  # type: ignore[arg-type]
+    a, b, c = (me.ovpn_status[v] for v in ("a", "b", "c"))
+    assert [x["name"] for x in a["connected"]] == ["laptop"] and a["error"] is None
+    assert b["connected"] == [] and "can't be read" in b["error"]  # its own error only
+    assert c["connected"] == [] and "choose its instance" in c["error"]
+    assert "laptop" in seen["a"].last and not seen["b"].last and not seen["c"].last

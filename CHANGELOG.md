@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+- VPNs, reviewed: setting a VPN up again on a login another one used replaces its key line
+  (the first match counts, so the old one would win); the daily CRL renewal goes on when a VPN
+  is removed meanwhile; several OpenVPN servers on one router are told apart (`instance:`),
+  each VPN counting only its own clients; a rotation started before several VPNs, or with no
+  restricted OpenVPN left, still ends; the VPN form keeps options it doesn't show and refuses
+  saving over a change made meanwhile; a missing wg-easy password points to the VPN's Settings.
+- The terminal: a Terminal button on every device that has SSH (an ssh: login, or an SSH
+  check); a device Kastellan has no key on asks for a login there (used once, or stored in the
+  People ring), or offers a stored login. A host key it doesn't know yet is compared and trusted
+  (or not) right there, also from the SSH access card; a changed one is forgotten on purpose,
+  never trusted in one click.
+- The collector and the actor are offered only for computers (servers, PCs, laptops), not for
+  routers, access points, printers or cameras, unless they are set up there already.
+- VPNs: any number, of either kind (two WireGuards, an OpenVPN per site). The VPN page shows a
+  card per VPN with its clients, its settings and its setup; "Add a VPN" asks which kind, then
+  that kind's form. config.yaml's `vpn:` (one of each) still works and becomes `vpns:` when a
+  VPN is changed in the app.
+- Updates: choose several (or all Kastellan can do) and update them in one go. A queue runs
+  them one after another on each device (a reboot last) and devices side by side; the
+  Updates page, a device's containers (now with "Update all") and its system updates share
+  it, with the same words and buttons, also while moving between pages.
+- Updates show how far they got: each step the host reports (pulling, creating, waiting until
+  it runs steadily, the package being set up), a progress card for the batch (done, failed,
+  waiting, what runs now and for how long), the count in the menu while it works, and per
+  update its details (every step with its time, the answer, how long it took).
+- Groups and the VPN have their own icons in the menu (no more key next to the Keys page).
+- Updates and the terminal, reviewed: a reboot queued after a failed update on the same host
+  doesn't run, and a reboot is refused while apt or dpkg still works; an odd byte in apt's
+  output no longer stops an upgrade halfway; a proxy in front no longer cuts a quiet update
+  short (the hub says it is still working); a stored login goes only to the devices it is for
+  (set on the Keys page with your password), and only for an admin with their own way into the
+  People ring; a terminal asks about the host's key before any password.
+
 ## 0.7.0 (2026-11-21)
 
 Key rings: Kastellan's secrets and people's logins encrypted, opened as securely as you choose.

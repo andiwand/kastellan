@@ -54,8 +54,12 @@
 	}
 
 	function blank(ring = 'people'): VaultForm {
-		return { ring, kind: 'password', name: '', user: '', notes: '', secret: '' };
+		return { ring, kind: 'password', name: '', user: '', notes: '', secret: '', devices: [] };
 	}
+	let devicesBefore = $state<string[]>([]); // a login's devices as it was opened
+	const devicesChanged = $derived(
+		[...(form.devices ?? [])].sort().join() !== [...devicesBefore].sort().join()
+	);
 
 	const admin = $derived(store.me?.role === 'admin');
 	const canChange = $derived(admin && !!store.me?.user && !store.health?.demo);
@@ -123,7 +127,12 @@
 		newRing = null;
 	});
 	const save = submit(async () => {
-		const body = { ...form, secret: form.secret || null };
+		const body = {
+			...form,
+			secret: form.secret || null,
+			devices: devicesChanged ? form.devices : undefined,
+			password: devicesChanged ? password : undefined
+		};
 		if (editing) await api.vaultChange(editing, body);
 		else await api.vaultAdd(body);
 		adding = false;
@@ -145,8 +154,9 @@
 	function edit(entry: VaultEntry) {
 		adding = false;
 		editing = entry.id;
-		const { ring, kind, name, user, notes } = entry;
-		form = { ring, kind, name, user, notes, secret: '' };
+		const { ring, kind, name, user, notes, devices } = entry;
+		form = { ring, kind, name, user, notes, secret: '', devices: [...devices] };
+		devicesBefore = [...devices];
 	}
 
 	// --- The level and each ring's ways ---------------------------------------------------------
@@ -610,6 +620,11 @@
 							<p class="mt-1 text-xs text-muted">Used by {e.used_by.join(', ')}</p>
 						{/if}
 						{#if e.notes}<p class="mt-1 text-xs whitespace-pre-wrap text-muted">{e.notes}</p>{/if}
+						{#if e.devices?.length}
+							<p class="mt-1 text-xs text-muted">
+								For {e.devices.map((d) => store.byId.get(d)?.name ?? d).join(', ')}
+							</p>
+						{/if}
 						{#if e.public}
 							<p class="mt-1 truncate font-mono text-[11px] text-faint" title={e.public}>
 								{e.public}
@@ -702,7 +717,15 @@
 		{#if canChange && anyOpen}
 			<div class="mt-6">
 				{#if !adding}
-					<button class="btn" onclick={() => ((adding = true), (editing = null), (form = blank()))}>
+					<button
+						class="btn"
+						onclick={() => (
+							(adding = true),
+							(editing = null),
+							(form = blank()),
+							(devicesBefore = [])
+						)}
+					>
 						<Plus class="size-4" /> Add a login
 					</button>
 				{:else}
@@ -753,12 +776,40 @@
 			Notes
 			<textarea class="input h-16 py-2" bind:value={form.notes}></textarea>
 		</label>
+		{#if form.ring === 'people' && form.kind === 'password'}
+			<fieldset class="field sm:col-span-2">
+				<legend class="mb-1">A terminal may use it on</legend>
+				<span class="text-xs font-normal text-muted">
+					Only these devices are sent this login: a stored password never goes to another host.
+				</span>
+				<div class="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+					{#each store.devices ?? [] as d (d.id)}
+						<label class="choice text-xs font-normal">
+							<input type="checkbox" value={d.id} bind:group={form.devices} />
+							<span>{d.name}</span>
+						</label>
+					{/each}
+				</div>
+			</fieldset>
+			{#if devicesChanged}
+				<label class="field sm:col-span-2">
+					Your password, again (it decides where a password may go)
+					<input
+						class="input"
+						type="password"
+						bind:value={password}
+						autocomplete="current-password"
+						required
+					/>
+				</label>
+			{/if}
+		{/if}
 		<div class="flex gap-2 sm:col-span-2">
 			<button class="btn btn-primary" disabled={busy}>{editing ? 'Save' : 'Add'}</button>
 			<button
 				type="button"
 				class="btn"
-				onclick={() => ((adding = false), (editing = null), (form = blank()))}
+				onclick={() => ((adding = false), (editing = null), (form = blank()), (devicesBefore = []))}
 			>
 				Cancel
 			</button>

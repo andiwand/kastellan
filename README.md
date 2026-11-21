@@ -34,7 +34,8 @@ lets you look after them: through narrow doors you open host by host.</p>
   system updates and reboots, Docker containers and their updates; installing system updates,
   updating or restarting a container, a reboot: as far as the host allows.
 - **Terminal and remote desktop** in the browser (SSH; RDP and VNC through Apache Guacamole).
-- **VPN**: WireGuard clients through wg-easy, OpenVPN clients through easy-rsa.
+- **VPN**: any number of VPNs, WireGuard clients through wg-easy and OpenVPN clients through
+  easy-rsa, each added on the VPN page.
 - **SSH keys**: which keys may log in where; rotating Kastellan's own; a group's
   authorized_keys and known_hosts side by side (several users per device), changed on all at once.
 - **A YAML file, no database**: edit `config.yaml` by hand or in the app; comments stay.
@@ -143,9 +144,9 @@ notify:
 
 heartbeat: https://hc-ping.com/<id> # called every minute: a dead man's switch tells you when it stops
 
-vpn:
-  wireguard: { wg_easy: http://nas.lan:51821 } # its password: kastellan secret set wg-easy
-  openvpn: { pki: nas, server: router } # easy-rsa on the nas, OpenVPN on the router
+vpns: # any number, of either kind (the VPN page adds and changes them)
+  home: { kind: wireguard, name: Home, wg_easy: http://nas.lan:51821 } # its password: on the VPN page
+  office: { kind: openvpn, name: Office, pki: nas, server: router } # easy-rsa on the nas, OpenVPN on the router
 ```
 
 | Variable              | Default                 | What                                                        |

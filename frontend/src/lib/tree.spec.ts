@@ -13,6 +13,7 @@ const device = (id: string, parent: string | null = null): Device => ({
 	tags: [],
 	always_on: true,
 	ssh: null,
+	ssh_port: null,
 	desktop: null,
 	driver: null,
 	info: null,

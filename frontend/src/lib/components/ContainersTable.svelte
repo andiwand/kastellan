@@ -1,37 +1,34 @@
 <script lang="ts">
 	import type { Container } from '#lib/api.js';
+	import { runner, type Job } from '#lib/runner.svelte.js';
+	import JobStatus from './JobStatus.svelte';
 	import ArrowUpCircle from '@lucide/svelte/icons/circle-arrow-up';
 	import CircleHelp from '@lucide/svelte/icons/circle-help';
 	import Check from '@lucide/svelte/icons/check';
 
 	/** A host's containers: what runs, and whether a newer image exists (or why that's unknown).
-	 * With `act`, a signed-in admin can update or restart one through the host's actor (which
-	 * acts only on what the host allows). */
+	 * With `canAct`, a signed-in admin can update or restart them through the host's actor (which
+	 * acts only on what the host allows), through the same queue as the Updates page. */
 	let {
+		device,
 		containers,
 		stale = false,
-		act = null
-	}: {
-		containers: Container[];
-		stale?: boolean;
-		act?:
-			((ability: 'update-container' | 'restart-container', name: string) => Promise<string>) | null;
-	} = $props();
+		canAct = false
+	}: { device: string; containers: Container[]; stale?: boolean; canAct?: boolean } = $props();
 
-	let busy = $state<string | null>(null);
-	let asking = $state<string | null>(null); // `${ability} ${name}`: asked once before it acts
-	let notes = $state<Record<string, { ok: boolean; text: string }>>({});
-	async function run(ability: 'update-container' | 'restart-container', name: string) {
-		if (!act) return;
+	let asking = $state<string | null>(null); // a job's key (or "all"): asked once before it runs
+
+	const update = (c: Container): Job => ({ device, kind: 'container', name: c.name });
+	const restart = (c: Container): Job => ({ device, kind: 'restart', name: c.name });
+	const keyOf = (j: Job) => `${j.kind}:${'name' in j ? j.name : ''}`;
+	const busy = (j: Job) => ['queued', 'running'].includes(runner.state(j)?.state ?? '');
+	// The actor pulls the tag a container runs again: a newer build, not a new tag.
+	const updatable = $derived(containers.filter((c) => c.update && c.update_to === 'newer build'));
+	const waiting = $derived(updatable.filter((c) => !busy(update(c))));
+
+	function go(jobs: Job[]) {
+		runner.add(jobs);
 		asking = null;
-		busy = name;
-		try {
-			notes[name] = { ok: true, text: await act(ability, name) };
-		} catch (e) {
-			notes[name] = { ok: false, text: (e as Error).message };
-		} finally {
-			busy = null;
-		}
 	}
 
 	const order = (c: Container) => (c.update ? 0 : c.unchecked ? 1 : 2);
@@ -40,6 +37,24 @@
 	);
 </script>
 
+{#if canAct && waiting.length > 1}
+	<div class="mb-3 flex flex-wrap items-center gap-2 text-sm">
+		{#if asking === 'all'}
+			<span class="text-xs">
+				Update {waiting.map((c) => c.name).join(', ')}? One after another, each recreated with its
+				new image (the old one comes back if that fails).
+			</span>
+			<button class="btn btn-sm btn-primary" onclick={() => go(waiting.map(update))}>
+				Update {waiting.length}
+			</button>
+			<button class="btn btn-sm" onclick={() => (asking = null)}>Not now</button>
+		{:else}
+			<button class="btn btn-sm" onclick={() => (asking = 'all')}>
+				Update all ({waiting.length})
+			</button>
+		{/if}
+	</div>
+{/if}
 <div class="card overflow-hidden" class:opacity-60={stale}>
 	<div
 		class="hidden grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted md:grid"
@@ -80,46 +95,44 @@
 					{#if c.state !== 'running'}
 						<span class="ml-auto text-faint md:hidden">{c.state}</span>
 					{/if}
-					{#if act}
+					{#if canAct}
 						<span class="ml-auto flex shrink-0 gap-1">
-							{#if c.update && c.update_to === 'newer build'}
+							{#if updatable.includes(c)}
 								<button
-									class="h-6 rounded-md border border-line px-2 hover:border-line-strong disabled:opacity-50"
-									disabled={busy !== null}
-									onclick={() => (asking = `update-container ${c.name}`)}
+									class="btn btn-sm"
+									disabled={busy(update(c))}
+									onclick={() => (asking = keyOf(update(c)))}
 									title="Pull its image again and recreate it with the same settings"
 								>
-									{busy === c.name ? '…' : 'Update'}
+									Update
 								</button>
 							{/if}
 							<button
-								class="h-6 rounded-md border border-line px-2 text-muted hover:border-line-strong disabled:opacity-50"
-								disabled={busy !== null}
-								onclick={() => (asking = `restart-container ${c.name}`)}
+								class="btn btn-sm text-muted"
+								disabled={busy(restart(c))}
+								onclick={() => (asking = keyOf(restart(c)))}
 							>
 								Restart
 							</button>
 						</span>
 					{/if}
 				</span>
-				{#if asking?.endsWith(` ${c.name}`)}
-					{@const ability = asking.split(' ')[0] as 'update-container' | 'restart-container'}
-					<p class="col-span-full text-xs">
-						{ability === 'update-container'
-							? `Update ${c.name}? It is recreated with the new image (the old one comes back if that fails).`
-							: `Restart ${c.name}?`}
-						<button class="ml-1 underline" onclick={() => run(ability, c.name)}>Yes</button>
-						<button class="ml-1 underline" onclick={() => (asking = null)}>No</button>
-					</p>
-				{/if}
-				{#if notes[c.name]}
-					<p
-						class="col-span-full text-xs"
-						style:color={notes[c.name].ok ? 'var(--good-text)' : 'var(--critical-text)'}
-					>
-						{notes[c.name].text}
-					</p>
-				{/if}
+				{#each [update(c), restart(c)] as j (keyOf(j))}
+					{#if asking === keyOf(j)}
+						<p class="col-span-full flex flex-wrap items-center gap-2 text-xs">
+							{j.kind === 'container'
+								? `Update ${c.name}? It is recreated with the new image (the old one comes back if that fails).`
+								: `Restart ${c.name}?`}
+							<button class="btn btn-sm btn-primary" onclick={() => go([j])}>
+								{j.kind === 'container' ? 'Update' : 'Restart'}
+							</button>
+							<button class="btn btn-sm" onclick={() => (asking = null)}>Not now</button>
+						</p>
+					{/if}
+					{#if runner.state(j)}<div class="col-span-full">
+							<JobStatus job={runner.state(j)} />
+						</div>{/if}
+				{/each}
 			</li>
 		{/each}
 	</ul>

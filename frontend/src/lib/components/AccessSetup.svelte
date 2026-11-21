@@ -15,6 +15,25 @@
 	let way = $state<'existing' | 'dedicated'>('existing');
 	let understood = $state(false);
 	let setting = $state(false);
+	let trusting = $state(false);
+	let keyError = $state<string | null>(null);
+
+	// The host key, right here: an unknown one trusted after comparing, a changed one forgotten
+	// on purpose (never trusted in one click).
+	async function keyAction(how: 'trust' | 'forget') {
+		if (!access?.host_key.fingerprint) return;
+		trusting = true;
+		keyError = null;
+		try {
+			if (how === 'trust') await api.trustHost(device, access.host_key.fingerprint, access.port);
+			else await api.forgetHost(device, access.port);
+			await load();
+		} catch (e) {
+			keyError = (e as Error).message;
+		} finally {
+			trusting = false;
+		}
+	}
 
 	async function load() {
 		error = null;
@@ -50,6 +69,31 @@
 				</li>
 			{/each}
 		</ul>
+		{#if access.host_key.state === 'unknown' || access.host_key.state === 'changed'}
+			{@const changed = access.host_key.state === 'changed'}
+			<div class="mt-3 rounded-lg border border-line p-3 text-xs leading-relaxed">
+				<p style:color={changed ? 'var(--critical-text)' : undefined}>
+					{changed
+						? 'The host key changed since it was trusted: after a reinstall, or someone sits in between. Kastellan connects only once you know which.'
+						: "Kastellan hasn't met this host yet. Compare its key with the host's own before trusting it:"}
+				</p>
+				<p class="mt-1 font-mono break-all">{access.host_key.fingerprint}</p>
+				<p class="mt-1 break-all text-muted">
+					On the host: <code class="font-mono">
+						ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+					</code>; on OpenWrt:
+					<code class="font-mono">dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key</code>
+				</p>
+				<button
+					class="btn btn-sm mt-2 {changed ? '' : 'btn-primary'}"
+					disabled={trusting}
+					onclick={() => keyAction(changed ? 'forget' : 'trust')}
+				>
+					{changed ? 'It was reinstalled: forget the old key' : 'Trust this key'}
+				</button>
+				{#if keyError}<p class="mt-1" style:color="var(--critical-text)">{keyError}</p>{/if}
+			</div>
+		{/if}
 
 		<div
 			class="mt-4 inline-flex max-w-full gap-1 rounded-xl border border-line bg-surface p-1 text-sm"

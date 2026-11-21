@@ -1,57 +1,44 @@
 <script lang="ts">
-	import { api } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { updatesOf, type Update } from '#lib/updates.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import FirmwareDialog from '#lib/components/FirmwareDialog.svelte';
 	import Check from '@lucide/svelte/icons/check';
+	import JobStatus from '#lib/components/JobStatus.svelte';
+	import { runner, type Job } from '#lib/runner.svelte.js';
 
 	/** Every update waiting on the network, in one list: what, where, from what to what, and the
 	 * action, where Kastellan may take it (the device's actor or OpenWrt login allows it). */
 	const updates = $derived(updatesOf(store.devices ?? []));
 	const canAct = $derived(store.me?.role === 'admin' && !!store.me.user);
 
-	let busy = $state<string | null>(null);
-	let notes = $state<Record<string, { ok: boolean; text: string }>>({});
-	let confirm = $state<string | null>(null);
+	let confirm = $state<string | null>(null); // one update, asked once before it runs
+	let confirmAll = $state(false);
+	let selected = $state<string[]>([]);
 	let firmware = $state<Extract<Update, { kind: 'firmware' }> | null>(null);
 
 	const keyOf = (u: Update) => `${u.device.id}:${u.kind}:${u.kind === 'container' ? u.name : ''}`;
 
-	async function run(u: Update, fn: () => Promise<string>) {
-		const key = keyOf(u);
-		busy = key;
-		confirm = null;
-		try {
-			notes[key] = { ok: true, text: await fn() };
-			await store.refresh();
-		} catch (e) {
-			notes[key] = { ok: false, text: (e as Error).message };
-		} finally {
-			busy = null;
-		}
+	/** What the actor does for it, if it can (the same jobs as a device's container table). */
+	function jobOf(u: Update): Job | null {
+		if (!canAct || !possible(u) || newTag(u)) return null;
+		if (u.kind === 'container') return { device: u.device.id, kind: 'container', name: u.name };
+		if (u.kind === 'packages' || u.kind === 'reboot') return { device: u.device.id, kind: u.kind };
+		return null;
 	}
+	const runnable = $derived(updates.filter((u) => jobOf(u)));
+	const chosen = $derived(runnable.filter((u) => selected.includes(keyOf(u))));
+	const busyOf = (u: Update) => {
+		const j = jobOf(u);
+		const s = j ? runner.state(j)?.state : undefined;
+		return s === 'queued' || s === 'running';
+	};
 
-	function act(u: Update) {
-		if (u.kind === 'container')
-			return run(u, async () => {
-				const r = await api.act(u.device.id, 'update-container', u.name);
-				return r.updated
-					? `Updated (${r.from} → ${r.to}).`
-					: `Nothing to do: ${r.why ?? 'newest'}.`;
-			});
-		if (u.kind === 'packages')
-			return run(u, async () => {
-				const r = await api.act(u.device.id, 'upgrade-packages');
-				const n = r.upgraded ?? 0;
-				return `${n} ${n === 1 ? 'package' : 'packages'} updated${r.reboot ? '; it wants a reboot now' : ''}.`;
-			});
-		if (u.kind === 'reboot')
-			return run(u, async () => {
-				await api.act(u.device.id, 'reboot');
-				return 'Rebooting in a minute.';
-			});
-		if (u.kind === 'firmware') firmware = u;
+	function start(list: Update[]) {
+		runner.add(list.map(jobOf).filter((j): j is Job => j !== null));
+		selected = selected.filter((k) => !list.some((u) => keyOf(u) === k));
+		confirm = null;
+		confirmAll = false;
 	}
 
 	const LABEL: Record<Update['kind'], string> = {
@@ -87,6 +74,38 @@
 	fix for a known vulnerability on an internet-facing device, where that's switched on).
 </p>
 
+{#if runner.progress.total}
+	{@const p = runner.progress}
+	{@const finished = p.done + p.failed}
+	<div class="card mt-6 p-4 text-sm" role="status">
+		<div class="flex flex-wrap items-center justify-between gap-2">
+			<p>
+				<b>{finished} of {p.total}</b> done{#if p.failed}, <span style:color="var(--critical-text)">
+						{p.failed} failed
+					</span>{/if}{#if p.waiting}, {p.waiting} waiting{/if}{#if !runner.working}. Finished.{/if}
+			</p>
+			{#if !runner.working}
+				<button class="btn btn-sm" onclick={() => runner.clear()}>Clear</button>
+			{/if}
+		</div>
+		<div class="mt-2 flex h-2 overflow-hidden rounded-full bg-surface-2" aria-hidden="true">
+			<div style:width="{(p.done / p.total) * 100}%" style:background="var(--good)"></div>
+			<div style:width="{(p.failed / p.total) * 100}%" style:background="var(--critical)"></div>
+			<div
+				class="animate-pulse"
+				style:width="{(p.running.length / p.total) * 100}%"
+				style:background="var(--accent)"
+			></div>
+		</div>
+		{#each p.running as job (job.label)}
+			<p class="mt-2 text-xs">
+				<span class="font-medium">{job.label}</span>
+			</p>
+			<JobStatus {job} />
+		{/each}
+	</div>
+{/if}
+
 {#if store.devices === null}
 	<div class="card mt-6 h-48 animate-pulse"></div>
 {:else if updates.length === 0}
@@ -106,10 +125,66 @@
 				{counts.security === 1 ? 'host' : 'hosts'}
 			</span>{/if}.
 	</p>
+	{#if runnable.length}
+		<div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
+			<label class="choice text-xs">
+				<input
+					type="checkbox"
+					checked={chosen.length > 0 && chosen.length === runnable.filter((u) => !busyOf(u)).length}
+					onchange={(e) =>
+						(selected = e.currentTarget.checked
+							? runnable.filter((u) => !busyOf(u)).map(keyOf)
+							: [])}
+				/>
+				<span>All Kastellan can do here</span>
+			</label>
+			<button
+				class="btn btn-sm btn-primary"
+				disabled={!chosen.length}
+				onclick={() => (confirmAll = true)}
+			>
+				Update selected{chosen.length ? ` (${chosen.length})` : ''}
+			</button>
+		</div>
+		{#if confirmAll && chosen.length}
+			<div class="card mt-3 p-4 text-sm">
+				<p>
+					These {chosen.length} go one after another on each device (a reboot last), devices side by side:
+				</p>
+				<ul class="mt-2 list-inside list-disc text-xs text-muted">
+					{#each chosen as u (keyOf(u))}
+						<li>
+							{u.device.name}: {u.kind === 'container'
+								? `container ${u.name}`
+								: u.kind === 'packages'
+									? `${u.count} system packages`
+									: 'reboot'}
+						</li>
+					{/each}
+				</ul>
+				<div class="mt-3 flex gap-2">
+					<button class="btn btn-sm btn-primary" onclick={() => start(chosen)}>
+						Update {chosen.length}
+					</button>
+					<button class="btn btn-sm" onclick={() => (confirmAll = false)}>Not now</button>
+				</div>
+			</div>
+		{/if}
+	{/if}
 	<ul class="card mt-3 divide-y divide-line">
 		{#each updates as u (keyOf(u))}
 			{@const key = keyOf(u)}
 			<li class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+				{#if runnable.length}
+					<input
+						type="checkbox"
+						class="shrink-0"
+						aria-label="Choose this update"
+						value={key}
+						bind:group={selected}
+						disabled={!jobOf(u) || busyOf(u)}
+					/>
+				{/if}
 				<a href="/devices/{u.device.id}" class="flex w-48 min-w-0 items-center gap-2.5 text-sm">
 					<KindIcon kind={u.device.kind} class="size-4 shrink-0 text-muted" />
 					<span class="truncate font-medium hover:underline">{u.device.name}</span>
@@ -143,14 +218,7 @@
 						{u.names.length} OpenWrt {u.names.length === 1 ? 'package' : 'packages'}
 						<span class="text-xs text-muted">· come with the next firmware</span>
 					{/if}
-					{#if notes[key]}
-						<span
-							class="block text-xs"
-							style:color={notes[key].ok ? 'var(--good-text)' : 'var(--critical-text)'}
-						>
-							{notes[key].text}
-						</span>
-					{/if}
+					{#if jobOf(u)}<JobStatus job={runner.state(jobOf(u)!)} />{/if}
 				</div>
 				{#if LABEL[u.kind]}
 					<div class="flex items-center gap-2">
@@ -167,23 +235,17 @@
 							</a>
 						{:else if !canAct}
 							<span class="text-xs text-muted">{admin ? 'needs sign-in' : 'admins only'}</span>
+						{:else if u.kind === 'firmware'}
+							<button class="btn btn-sm" onclick={() => (firmware = u)}>{LABEL[u.kind]}</button>
 						{:else if confirm === key}
 							<span class="text-xs">{u.kind === 'reboot' ? 'Reboot it now?' : 'Go ahead?'}</span>
-							<button
-								class="btn btn-sm btn-primary"
-								disabled={busy !== null}
-								onclick={() => act(u)}
-							>
+							<button class="btn btn-sm btn-primary" onclick={() => start([u])}>
 								{LABEL[u.kind]}
 							</button>
 							<button class="btn btn-sm" onclick={() => (confirm = null)}>Not now</button>
 						{:else}
-							<button
-								class="btn btn-sm"
-								disabled={busy !== null}
-								onclick={() => (u.kind === 'firmware' ? act(u) : (confirm = key))}
-							>
-								{busy === key ? 'Working…' : LABEL[u.kind]}
+							<button class="btn btn-sm" disabled={busyOf(u)} onclick={() => (confirm = key)}>
+								{LABEL[u.kind]}
 							</button>
 						{/if}
 					</div>

@@ -33,6 +33,7 @@ from .push_api import router as push_router
 from .settings import Settings
 from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
+from .terminal_api import ssh_port
 from .tls import public_name
 from .vault import Damaged, Locked, NotForKastellan
 from .vault_api import router as vault_router
@@ -228,6 +229,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "tags": device.tags,
                     "always_on": device.always_on,
                     "ssh": device.ssh.model_dump() if device.ssh else None,
+                    "ssh_port": ssh_port(device),  # where it answers SSH (ssh:, or an SSH check)
                     "desktop": device.desktop.model_dump(include={"protocol", "user"})
                     if device.desktop
                     else None,

@@ -5,6 +5,7 @@ hand; see tools/)."""
 import asyncio
 import base64
 import concurrent.futures
+import contextlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -89,6 +90,12 @@ def wg_easy():
 
 @pytest.fixture
 def pki(tmp_path: Path):
+    with serve_pki(tmp_path) as servers:
+        yield servers
+
+
+@contextlib.contextmanager
+def serve_pki(tmp_path: Path):
     """Two SSH servers on one thread: the PKI host (kastellan-pki) and the OpenVPN server
     (kastellan-crl), each running only its command, like command= in authorized_keys."""
     keys = Keys(tmp_path / "data" / "ssh")
@@ -199,6 +206,11 @@ users:
     return TestClient(create_app(Settings(config=config, data=tmp_path / "data")))
 
 
+def by_id(c: TestClient, vid: str) -> dict:
+    """One VPN of GET /api/vpn's list."""
+    return next(v for v in c.get("/api/vpn").json()["vpns"] if v["id"] == vid)
+
+
 def signin(c: TestClient, user: str = "ada") -> None:
     assert (
         c.post("/api/auth/login", json={"user": user, "password": "pw for tests"}, headers=H).status_code
@@ -211,22 +223,22 @@ def test_wireguard(tmp_path: Path, wg_easy, pki) -> None:
     with make_client(tmp_path, url, pki[0], pki[1]) as c:
         signin(c)
         # Without the secret: said plainly.
-        assert "kastellan secret set wg-easy" in c.get("/api/vpn").json()["wireguard"]["error"]
+        assert "enter it in this VPN's Settings" in by_id(c, "wireguard")["error"]
         c.app.state.hub.secrets.set("wg-easy", "wrong")
-        assert c.get("/api/vpn").json()["wireguard"]["error"] == "wg-easy refused the login"
+        assert by_id(c, "wireguard")["error"] == "wg-easy refused the login"
         c.app.state.hub.secrets.set("wg-easy", "wg-secret")
-        assert [x["name"] for x in c.get("/api/vpn").json()["wireguard"]["clients"]] == ["phone"]
+        assert [x["name"] for x in by_id(c, "wireguard")["clients"]] == ["phone"]
 
-        assert c.post("/api/vpn/wireguard", json={"name": "laptop", "days": 30}, headers=H).json() == {
-            "id": "2"
-        }
-        assert c.post("/api/vpn/wireguard/2/disable", headers=H).status_code == 200
+        assert c.post(
+            "/api/vpns/wireguard/wireguard", json={"name": "laptop", "days": 30}, headers=H
+        ).json() == {"id": "2"}
+        assert c.post("/api/vpns/wireguard/wireguard/2/disable", headers=H).status_code == 200
         assert state["clients"][1]["enabled"] is False
-        r = c.get("/api/vpn/wireguard/2/config")
+        r = c.get("/api/vpns/wireguard/wireguard/2/config")
         assert r.status_code == 200 and "PrivateKey" in r.text
         assert "attachment" in r.headers["content-disposition"] and r.headers["cache-control"] == "no-store"
-        assert c.delete("/api/vpn/wireguard/2", headers=H).status_code == 200
-        assert c.post("/api/vpn/wireguard/1/reboot", headers=H).status_code == 404
+        assert c.delete("/api/vpns/wireguard/wireguard/2", headers=H).status_code == 200
+        assert c.post("/api/vpns/wireguard/wireguard/1/reboot", headers=H).status_code == 404
 
         log = (tmp_path / "data" / "audit.log").read_text()
         assert all(
@@ -241,7 +253,7 @@ def test_openvpn(tmp_path: Path, wg_easy, pki) -> None:
         signin(c)
         hub = c.app.state.hub
         # The hosts' keys must be trusted first, like for the terminal.
-        assert "not trusted" in c.get("/api/vpn").json()["openvpn"]["error"]
+        assert "not trusted" in by_id(c, "openvpn")["error"]
         for device in ("sv1", "openwrt"):
             r = c.post(
                 f"/api/devices/{device}/ssh/trust",
@@ -249,10 +261,10 @@ def test_openvpn(tmp_path: Path, wg_easy, pki) -> None:
                 headers=H,
             )
             assert r.status_code == 200
-        assert c.post("/api/vpn/openvpn", json={"name": "alice"}, headers=H).status_code == 200
+        assert c.post("/api/vpns/openvpn/openvpn", json={"name": "alice"}, headers=H).status_code == 200
         assert certs == {"alice": "V"}
-        assert c.post("/api/vpn/openvpn", json={"name": "../evil"}, headers=H).status_code == 400
-        assert c.get("/api/vpn").json()["openvpn"]["clients"][0]["status"] == "valid"
+        assert c.post("/api/vpns/openvpn/openvpn", json={"name": "../evil"}, headers=H).status_code == 400
+        assert by_id(c, "openvpn")["clients"][0]["status"] == "valid"
 
         from datetime import UTC, datetime
 
@@ -261,40 +273,46 @@ def test_openvpn(tmp_path: Path, wg_easy, pki) -> None:
         now = datetime.now(UTC).isoformat(timespec="seconds")
 
         def connected() -> object:
-            clients = c.get("/api/vpn").json()["openvpn"]["clients"]
+            clients = by_id(c, "openvpn")["clients"]
             return next(x for x in clients if x["name"] == "alice")["connected"]
 
-        hub.ovpn_status = {"checked": now, "connected": [alice], "error": None}
+        hub.ovpn_status["openvpn"] = {"checked": now, "connected": [alice], "error": None}
         assert connected() == alice
-        hub.ovpn_status = {"checked": "2026-11-20T00:00:00+00:00", "connected": [alice], "error": None}
+        hub.ovpn_status["openvpn"] = {
+            "checked": "2026-11-20T00:00:00+00:00",
+            "connected": [alice],
+            "error": None,
+        }
         assert connected() is None  # stale: the router hasn't been read for a while
-        hub.ovpn_status = {"checked": now, "connected": [alice], "error": "it doesn't answer"}
+        hub.ovpn_status["openvpn"] = {"checked": now, "connected": [alice], "error": "it doesn't answer"}
         assert connected() is None
 
-        r = c.get("/api/vpn/openvpn/alice/config")
+        r = c.get("/api/vpns/openvpn/openvpn/alice/config")
         assert (
             r.status_code == 200
             and "<key>" in r.text
             and 'filename="alice.ovpn"' in r.headers["content-disposition"]
         )
 
-        assert c.post("/api/vpn/openvpn/alice/revoke", headers=H).json() == {
+        assert c.post("/api/vpns/openvpn/openvpn/alice/revoke", headers=H).json() == {
             "revoked": True,
             "crl_pushed": True,
         }
         assert certs == {"alice": "R"} and "revoked: alice" in installed[-1]  # the server has the new CRL
-        assert c.get("/api/vpn/openvpn/alice/config").status_code == 400  # revoked: no more config
-        assert c.post("/api/vpn/openvpn", json={"name": "server"}, headers=H).status_code == 400  # reserved
-        assert c.post("/api/vpn/openvpn/server/revoke", headers=H).status_code == 400
+        assert c.get("/api/vpns/openvpn/openvpn/alice/config").status_code == 400  # revoked: no more config
+        assert (
+            c.post("/api/vpns/openvpn/openvpn", json={"name": "server"}, headers=H).status_code == 400
+        )  # reserved
+        assert c.post("/api/vpns/openvpn/openvpn/server/revoke", headers=H).status_code == 400
 
         # The server can't take the CRL: the revoke still stands and is audited; push later.
-        c.post("/api/vpn/openvpn", json={"name": "bob"}, headers=H)
+        c.post("/api/vpns/openvpn/openvpn", json={"name": "bob"}, headers=H)
         broken.append(True)
-        r = c.post("/api/vpn/openvpn/bob/revoke", headers=H).json()
+        r = c.post("/api/vpns/openvpn/openvpn/bob/revoke", headers=H).json()
         assert r["revoked"] and not r["crl_pushed"] and "disk full" in r["error"]
-        assert c.get("/api/vpn").json()["openvpn"]["crl"]["error"]
+        assert by_id(c, "openvpn")["crl"]["error"]
         broken.clear()
-        assert c.post("/api/vpn/openvpn/crl", headers=H).status_code == 200
+        assert c.post("/api/vpns/openvpn/openvpn/crl", headers=H).status_code == 200
         assert "revoked: alice,bob" in installed[-1]
         log = (tmp_path / "data" / "audit.log").read_text()
         assert '"vpn.openvpn.revoke"' in log and "failed: " in log
@@ -304,11 +322,14 @@ def test_openvpn(tmp_path: Path, wg_easy, pki) -> None:
 def test_observers_see_but_dont_touch(tmp_path: Path, wg_easy, pki) -> None:
     with make_client(tmp_path, wg_easy[0], pki[0], pki[1]) as c:
         signin(c, "obi")
-        seen = c.get("/api/vpn").json()
-        assert seen["openvpn"]["error"] == "The PKI host can't be reached right now"  # no details
-        assert c.post("/api/vpn/wireguard", json={"name": "x"}, headers=H).status_code == 403
-        assert c.get("/api/vpn/wireguard/1/config").status_code == 403  # a private key: admins only
-        assert c.get("/api/vpn/openvpn/alice/config").status_code == 403
+        seen = by_id(c, "openvpn")
+        assert seen["error"] == "The PKI host can't be reached right now"  # no details
+        assert seen["where"] is None  # which hosts: for admins
+        assert c.post("/api/vpns/wireguard/wireguard", json={"name": "x"}, headers=H).status_code == 403
+        assert (
+            c.get("/api/vpns/wireguard/wireguard/1/config").status_code == 403
+        )  # a private key: admins only
+        assert c.get("/api/vpns/openvpn/openvpn/alice/config").status_code == 403
 
 
 def test_setup_page(tmp_path: Path, wg_easy, pki) -> None:
@@ -317,9 +338,9 @@ def test_setup_page(tmp_path: Path, wg_easy, pki) -> None:
     pki_port, crl_port, host_key, *_ = pki
     with make_client(tmp_path, wg_easy[0], pki_port, crl_port) as c:
         signin(c, "obi")
-        assert c.get("/api/vpn/openvpn/setup").status_code == 403  # admins only
+        assert c.get("/api/vpns/openvpn/openvpn/setup").status_code == 403  # admins only
         signin(c)
-        setup = c.get("/api/vpn/openvpn/setup").json()
+        setup = c.get("/api/vpns/openvpn/openvpn/setup").json()
         assert setup["mode"] == "restricted" and setup["vpn_key"].startswith("ssh-ed25519 ")
         pki_host, server = setup["hosts"]
         assert pki_host["checks"][0] == {
@@ -340,7 +361,7 @@ def test_setup_page(tmp_path: Path, wg_easy, pki) -> None:
                 json={"fingerprint": host_key.get_fingerprint()},
                 headers=H,
             )
-        pki_host = c.get("/api/vpn/openvpn/setup").json()["hosts"][0]
+        pki_host = c.get("/api/vpns/openvpn/openvpn/setup").json()["hosts"][0]
         assert [ch["ok"] for ch in pki_host["checks"][:2]] == [True, True]  # trusted, the script answers
 
 
@@ -352,10 +373,12 @@ def test_last_seen_and_the_key(tmp_path: Path, wg_easy, pki) -> None:
     with make_client(tmp_path, wg_easy[0], pki[0], pki[1]) as c:
         signin(c)
         hub = c.app.state.hub
-        vpn = c.get("/api/vpn").json()["openvpn"]
+        vpn = by_id(c, "openvpn")
         assert vpn["seen"]["how"] == "no-openwrt"  # the server has no openwrt: login
-        hub.ovpn_seen.note([Connection("alice", None, None, None, None)], datetime(2026, 11, 21, tzinfo=UTC))
-        assert hub.ovpn_seen.last == {"alice": "2026-11-21T00:00:00+00:00"}
+        hub.seen("openvpn").note(
+            [Connection("alice", None, None, None, None)], datetime(2026, 11, 21, tzinfo=UTC)
+        )
+        assert hub.seen("openvpn").last == {"alice": "2026-11-21T00:00:00+00:00"}
 
         key = c.get("/api/vpn/key").json()
         assert key["fingerprint"] == hub.keys.hub_key("vpn").get_fingerprint() and key["rotation"] is None
@@ -363,14 +386,205 @@ def test_last_seen_and_the_key(tmp_path: Path, wg_easy, pki) -> None:
         # trusted here, so adding fails per host and is reported, not raised.
         assert c.post("/api/vpn/key/rotate/start").status_code == 403
         r = c.post("/api/vpn/key/rotate/start", headers=H).json()
-        assert set(r["rotation"]["devices"]) == {"pki", "server"}
+        assert set(r["rotation"]["devices"]) == {"openvpn:pki", "openvpn:server"}
         assert not any(s["added"] for s in r["rotation"]["devices"].values())
         assert c.post("/api/vpn/key/rotate/finish", json={}, headers=H).status_code == 409
-        assert c.post("/api/vpn/key/rotate/forget", json={"host": "pki"}, headers=H).status_code == 409
+        assert (
+            c.post("/api/vpn/key/rotate/forget", json={"host": "openvpn:pki"}, headers=H).status_code == 409
+        )
         assert c.post("/api/vpn/key/rotate/cancel", headers=H).json()["rotation"] is None
         log = (tmp_path / "data" / "audit.log").read_text()
         assert '"vpn.key.rotate.start"' in log and '"vpn.key.rotate.cancel"' in log
         cancel = json.loads(next(ln for ln in log.splitlines() if '"vpn.key.rotate.cancel"' in ln))
-        assert cancel["stage"] == "cancelled" and set(cancel["hosts"]) == {"pki", "server"}
+        assert cancel["stage"] == "cancelled" and set(cancel["hosts"]) == {"openvpn:pki", "openvpn:server"}
         signin(c, "obi")
         assert c.get("/api/vpn/key").status_code == 403
+
+
+def test_vpns_in_config() -> None:
+    """The one-of-each `vpn:` reads as `vpns:`; ids and shared restricted logins are checked."""
+    from kastellan.config import Config
+
+    devices = {"sv1": {"host": "h", "ssh": {"user": "root"}}, "gw": {"host": "g"}}
+    old = Config.model_validate(
+        {"devices": devices, "vpn": {"wireguard": {"wg_easy": "http://x"}, "openvpn": {"pki": "sv1"}}}
+    )
+    assert {k: (v.kind, v.name) for k, v in old.vpns.items()} == {
+        "wireguard": ("wireguard", "WireGuard"),
+        "openvpn": ("openvpn", "OpenVPN"),
+    }
+    assert old.vpns["wireguard"].password_secret == "wg-easy"  # its secret, as before
+    two = {
+        "a": {"kind": "wireguard", "wg_easy": "http://a", "password_secret": "wg-easy-a"},
+        "b": {"kind": "wireguard", "wg_easy": "http://b", "password_secret": "wg-easy-b"},
+    }
+    assert Config.model_validate({"vpns": two}).vpn_name("a") == "a"  # no name: its id
+    with pytest.raises(ValueError, match="both"):
+        Config.model_validate({"vpns": two, "vpn": {"wireguard": {"wg_easy": "http://x"}}})
+    with pytest.raises(ValueError, match="ids"):
+        Config.model_validate({"vpns": {"Bad Id": two["a"]}})
+    # One VPN key, bound to one script per login: two VPNs can't share a restricted login.
+    shared = {
+        "office": {"kind": "openvpn", "pki": "sv1"},
+        "lab": {"kind": "openvpn", "pki": "sv1"},
+    }
+    with pytest.raises(ValueError, match="its own user"):
+        Config.model_validate({"devices": devices, "vpns": shared})
+    shared["lab"]["pki_user"] = "lab-pki"
+    assert set(Config.model_validate({"devices": devices, "vpns": shared}).vpns) == {"office", "lab"}
+
+
+def test_two_openvpns_side_by_side(tmp_path: Path) -> None:
+    """Two OpenVPNs on two PKI hosts: their clients, CRLs, last seen and setup apart; the VPN key's
+    rotation covers the hosts of both."""
+    from datetime import UTC, datetime
+
+    from kastellan.vpn.openvpn import Connection
+
+    with serve_pki(tmp_path) as one, serve_pki(tmp_path) as two:
+        config = tmp_path / "config.yaml"
+        config.write_text(
+            f"""
+devices:
+  sv1: {{host: 127.0.0.1, ssh: {{user: kastellan, port: {one[0]}}}}}
+  gw: {{host: 127.0.0.1, ssh: {{user: root, port: {one[1]}}}}}
+  sv2: {{host: 127.0.0.1, ssh: {{user: kastellan, port: {two[0]}}}}}
+vpns:
+  office: {{kind: openvpn, name: Office, pki: sv1, server: gw}}
+  lab: {{kind: openvpn, pki: sv2, pki_user: lab-pki}}
+users:
+  ada: {{role: admin, password: {HASH}}}
+"""
+        )
+        with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
+            hub = c.app.state.hub
+            signin(c)
+            for device in ("sv1", "gw", "sv2"):
+                state = c.get(f"/api/devices/{device}/ssh").json()
+                assert (
+                    c.post(
+                        f"/api/devices/{device}/ssh/trust",
+                        json={"fingerprint": state["fingerprint"]},
+                        headers=H,
+                    ).status_code
+                    == 200
+                )
+            assert c.post("/api/vpns/office/openvpn", json={"name": "alice"}, headers=H).status_code == 200
+            assert c.post("/api/vpns/lab/openvpn", json={"name": "bob"}, headers=H).status_code == 200
+            vpns = {v["id"]: v for v in c.get("/api/vpn").json()["vpns"]}
+            assert [x["name"] for x in vpns["office"]["clients"]] == ["alice"]
+            assert [x["name"] for x in vpns["lab"]["clients"]] == ["bob"]
+            assert vpns["office"]["name"] == "Office" and vpns["lab"]["name"] == "lab"
+            assert vpns["lab"]["crl_to_server"] is False
+            # The CRL goes to office's server only; its state is office's.
+            assert c.post("/api/vpns/office/openvpn/crl", headers=H).status_code == 200
+            assert hub.crl_state["office"]["error"] is None and "lab" not in hub.crl_state
+            assert c.post("/api/vpns/lab/openvpn/crl", headers=H).status_code == 400  # no server
+            # Last seen, per VPN (and its own file).
+            hub.seen("office").note(
+                [Connection("alice", None, None, None, None)], datetime(2026, 11, 21, tzinfo=UTC)
+            )
+            assert hub.seen("lab").last == {}
+            assert (tmp_path / "data" / "vpn" / "openvpn-seen-office.json").exists()
+            # Setup commands per VPN: lab's settings file is its own.
+            setup = c.get("/api/vpns/lab/openvpn/setup").json()
+            assert "/etc/kastellan-pki-lab.conf" in setup["hosts"][0]["script"]
+            assert [h["role"] for h in c.get("/api/vpns/office/openvpn/setup").json()["hosts"]] == [
+                "pki",
+                "server",
+            ]
+            # One VPN key: its rotation covers every restricted host of both.
+            r = c.post("/api/vpn/key/rotate/start", headers=H).json()
+            assert set(r["rotation"]["devices"]) == {"office:pki", "office:server", "lab:pki"}
+            assert c.get("/api/vpns/nope/openvpn/setup").status_code == 404
+
+
+def test_adding_changing_and_removing_vpns(tmp_path: Path, wg_easy, pki) -> None:
+    url, _ = wg_easy
+    with make_client(tmp_path, url, pki[0], pki[1]) as c:
+        signin(c, "obi")
+        assert (
+            c.put(
+                "/api/vpns/home", json={"vpn": {"kind": "wireguard"}, "version": "x"}, headers=H
+            ).status_code
+            == 403
+        )
+        signin(c)
+        version = c.get("/api/settings").json()["version"]
+        wg = {"kind": "wireguard", "name": "Home", "wg_easy": url}
+        assert c.put("/api/vpns/home", json={"vpn": wg, "version": "stale"}, headers=H).status_code == 409
+        r = c.put("/api/vpns/home", json={"vpn": wg, "version": version, "new": True}, headers=H)
+        assert r.status_code == 200, r.text
+        text = (tmp_path / "config.yaml").read_text()
+        # Written as vpns: (the old vpn: converted), the new one with a secret of its own.
+        assert "\nvpn:" not in text and "vpns:" in text and "wg-easy-home" in text
+        assert {v["id"] for v in c.get("/api/vpn").json()["vpns"]} == {"wireguard", "openvpn", "home"}
+        assert c.put("/api/secrets/wg-easy-home", json={"value": "secret"}, headers=H).status_code == 200
+        assert c.put("/api/secrets/wg-easy-other", json={"value": "x"}, headers=H).status_code == 403
+        version = r.json()["version"]
+        again = c.put("/api/vpns/home", json={"vpn": wg, "version": version, "new": True}, headers=H)
+        assert again.status_code == 400  # taken
+        other_kind = {"kind": "openvpn", "pki": "sv1"}
+        assert (
+            c.put("/api/vpns/home", json={"vpn": other_kind, "version": version}, headers=H).status_code
+            == 400
+        )
+        renamed = c.put(
+            "/api/vpns/home", json={"vpn": {**wg, "name": "At home"}, "version": version}, headers=H
+        )
+        assert renamed.status_code == 200
+        assert next(v for v in c.get("/api/vpn").json()["vpns"] if v["id"] == "home")["name"] == "At home"
+        version = renamed.json()["version"]
+        assert c.delete(f"/api/vpns/home?version={version}", headers=H).status_code == 200
+        assert "home" not in {v["id"] for v in c.get("/api/vpn").json()["vpns"]}
+        assert c.delete("/api/vpns/home", headers=H).status_code == 404
+        audit = (tmp_path / "data" / "audit.log").read_text()
+        assert (
+            '"config.vpn.add"' in audit and '"config.vpn.change"' in audit and '"config.vpn.remove"' in audit
+        )
+
+
+def test_a_rotation_ends_even_with_no_restricted_openvpn_left(tmp_path: Path) -> None:
+    """Started while an OpenVPN was restricted, then it went: forgetting and cancelling still work."""
+    import json
+
+    config = tmp_path / "config.yaml"
+    config.write_text(f"devices:\n  sv1: {{host: h}}\nusers:\n  ada: {{role: admin, password: {HASH}}}\n")
+    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
+        signin(c)
+        assert c.post("/api/vpn/key/rotate/start", headers=H).status_code == 409  # nothing to rotate
+        hub = c.app.state.hub
+        path = hub.keys.folder / "vpn-rotation.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "started": "2026-11-21T09:00:00+00:00",
+                    "stage": "removing",
+                    "devices": {"gone:pki": {"added": True}},
+                }
+            )
+        )
+        r = c.post("/api/vpn/key/rotate/forget", json={"host": "gone:pki"}, headers=H)
+        assert r.status_code == 200 and r.json()["rotation"]["stage"] == "done"
+
+
+def test_a_vpn_form_keeps_what_it_doesnt_show_and_refuses_a_stale_version(tmp_path: Path) -> None:
+    """The form sends its fields only: other options stay as the file has them now; a change made
+    since the form opened refuses the save."""
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  sv1: {host: h, ssh: {user: root}}\n"
+        "vpns:\n  office: {kind: openvpn, pki: sv1, tls_key: /etc/openvpn/ta.key}\n"
+        f"users:\n  ada: {{role: admin, password: {HASH}}}\n"
+    )
+    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
+        signin(c)
+        version = c.get("/api/settings").json()["version"]
+        form = {"kind": "openvpn", "name": "Office", "pki": "sv1", "days": 400, "instance": "server"}
+        r = c.put("/api/vpns/office", json={"vpn": form, "version": version}, headers=H)
+        assert r.status_code == 200, r.text
+        text = config.read_text()
+        assert "tls_key: /etc/openvpn/ta.key" in text and "days: 400" in text and "instance: server" in text
+        stale = c.put("/api/vpns/office", json={"vpn": form | {"days": 30}, "version": version}, headers=H)
+        assert stale.status_code == 409

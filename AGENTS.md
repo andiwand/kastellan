@@ -66,6 +66,14 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - Alarms only from fresh results (after `hub.started`, not overdue); folding to the top-most
     down ancestor; `RESOLVE_AFTER` hysteresis; silent resolves for muted, removed or folded
     devices. Failed notifications wait in `hub._outbox` and are retried with backoff for a day.
+  - VPNs: `vpns:` (config.py), id -> a VPN of `kind` wireguard or openvpn, any number of each;
+    the old one-of-each `vpn: {wireguard, openvpn}` reads as ids `wireguard`/`openvpn` and is
+    written as `vpns:` once the app changes them (config_api `PUT/DELETE /api/vpns/{id}`). Per
+    VPN: its wg-easy secret (`wg-easy-<id>`; `wg-easy` for the old one), clients under
+    `/api/vpns/{id}/...`, CRL state, who is connected and last seen (`hub.crl_state[id]`,
+    `hub.ovpn_status[id]`, `hub.seen(id)`), and on the hosts its own settings files
+    (`/etc/kastellan-pki-<id>.conf`, `-crl-<id>`; plain names for id `openvpn`). One VPN key for
+    all: two restricted VPNs can't share a login on a host (refused by the config).
   - VPN: `vpn/wireguard.py` (wg-easy 15.5's API, Basic auth), `vpn/openvpn.py` (talks only to
     `vpn/scripts/kastellan-pki` and `kastellan-crl`: installed and bound with `command=` to the
     hub's separate VPN key in restricted mode, or sent over a normal login per call in direct
@@ -101,7 +109,7 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     files, through its OpenWrt login's `openvpn` ability (one fixed script,
     `setup.OPENVPN_STATUS`, paths from the device's own config, client lines only), read with
     the router poll (`hub._read_openvpn`); `openvpn.Seen` keeps the last time per client in
-    `<data>/vpn/openvpn-seen.json` (status files list only who is connected now).
+    `<data>/vpn/openvpn-seen[-<id>].json` (status files list only who is connected now).
   - VPN key rotation (`vpn/rotation.py`, restricted mode): the scripts' `add-key OLD NEW` copies
     the line bound to themselves with the new key (options by field, exactly), `keep-key NEW`
     leaves only NEW bound to them (a key added with a leaked one goes too); the same text in both
@@ -158,6 +166,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog. `install_script` is
     declarative (abilities not chosen are removed). Tests run the real scripts against a fake
     Docker API (tests/test_actor.py). Root scripts take nothing from the environment.
+  - Actor steps: an ability says how far it got with `step(text)` (act-common: one
+    `KASTELLAN-STEP` line on stderr, never failing: the hub may have gone). `actor.act(...,
+    on_step=)` reads them as they come; `POST .../act/{ability}/stream` sends them, then
+    `KASTELLAN-DONE {json}`, as a hub task (finishes and is audited when the page leaves). The
+    frontend's queue (`lib/runner.svelte.ts`) keeps each job's log and the batch's progress;
+    `JobStatus` shows both, the same on Updates, a device's containers and its system updates.
   - Removing them: `collector.uninstall_script` / `actor.uninstall_script` (user, scripts, sudo
     rules; logs stay), run like a setup (`/collect/uninstall`, `/act/uninstall`), then
     `setup_run.remove_device_key`. A setup's unknown host key is trusted from its dialog
@@ -218,7 +232,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     (`<data>/ssh/known_hosts`); never trust on first use by itself: `UnknownHost` until an admin
     trusts the fingerprint, `ChangedHost` until someone forgets the old key. No ssh-agent, no
     passwords. `terminal_api.py`: the terminal WebSocket (JSON input/resize in, binary output),
-    trust/forget routes; audit open/close, never keystrokes.
+    trust/forget routes; audit open/close, never keystrokes. A device has SSH when it has `ssh:`
+    or an SSH check (`terminal_api.ssh_port`: named ssh, or port 22). Without `ssh:` (or when the
+    hub key is refused) the socket asks the page for a login (`login-needed`), then takes a typed
+    one (this connection only; optionally stored in the People ring) or a stored People entry
+    (`vault.get(id, by=<the admin>)`); typed passwords go through a per-address `Brake`; the
+    audit says `way` (key, password, stored), never a password.
   - `guac.py`: the Guacamole protocol (instructions, handshake with guacd). `desktop_api.py`:
     one-time tickets (POST, 60 s, bound to the session) carry the desktop password, so it is never
     in a URL; the WebSocket (subprotocol `guacamole`) relays instructions between guacd and

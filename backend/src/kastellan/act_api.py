@@ -5,6 +5,7 @@ actions themselves. Changing anything: signed-in admins, every action audited.""
 from __future__ import annotations
 
 import asyncio
+import json
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -147,9 +148,7 @@ def router(hub: Hub) -> APIRouter:
 
         return setup_run.stream(conn, actor.uninstall_script(), body, audit, after)
 
-    @api.post("/{id}/act/{ability}")
-    async def act_now(id: str, ability: str, body: Action, request: Request) -> dict[str, Any]:
-        """Do one thing on the host, as far as it allows."""
+    def action(id: str, ability: str, body: Action, request: Request):
         w = require_signin(request)
         device = device_of(id)
         if device.act is None:
@@ -164,6 +163,41 @@ def router(hub: Hub) -> APIRouter:
             device=id,
             container=body.container,
         )
+        return device, audit
+
+    @api.post("/{id}/act/{ability}/stream")
+    async def act_streamed(id: str, ability: str, body: Action, request: Request) -> StreamingResponse:
+        """The same, with how far it got as it goes: `KASTELLAN-STEP <text>` lines, then
+        `KASTELLAN-DONE {"ok": ..., "result" | "error": ...}`. The hub's task, not the page's:
+        it finishes (and is audited) when the browser leaves halfway."""
+        device, audit = action(id, ability, body, request)
+        audit(outcome="started")
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+        def said(text: str) -> None:
+            queue.put_nowait(f"{actor.STEP}{text}\n".encode())
+
+        async def run() -> None:
+            try:
+                result = await actor.act(hub.keys, device, ability, body.container, on_step=said)
+                outcome: dict[str, Any] = {"ok": True, "result": result}
+                audit(outcome="done", result=result)
+            except BaseException as e:  # also when the hub stops: the audit still says so
+                if not isinstance(e, Exception):
+                    audit(outcome=f"interrupted: {type(e).__name__}")
+                    queue.put_nowait(None)
+                    raise
+                outcome = {"ok": False, "error": failed(e).detail}
+                audit(outcome=f"failed: {str(e)[:200] or type(e).__name__}")
+            queue.put_nowait(f"{setup_run.DONE} {json.dumps(outcome)}\n".encode())
+            queue.put_nowait(None)
+
+        return setup_run._hub_task(run(), queue)
+
+    @api.post("/{id}/act/{ability}")
+    async def act_now(id: str, ability: str, body: Action, request: Request) -> dict[str, Any]:
+        """Do one thing on the host, as far as it allows."""
+        device, audit = action(id, ability, body, request)
         try:
             result = await actor.act(hub.keys, device, ability, body.container)
         except Exception as e:

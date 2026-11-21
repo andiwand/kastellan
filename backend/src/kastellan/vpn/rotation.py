@@ -51,6 +51,16 @@ class VpnRotator:
     def state(self) -> Rotation | None:
         return Rotation.load(self.path)
 
+    def rename_hosts(self, names: dict[str, str]) -> None:
+        """A rotation saved with other names for its hosts (before several VPNs: "pki" and
+        "server", now "openvpn:pki" and "openvpn:server"), renamed once, so it carries on."""
+        rot = self.state()
+        if rot is not None and any(old in rot.devices for old in names):
+            for old, new in names.items():
+                if old in rot.devices and new not in rot.devices:
+                    rot.devices[new] = rot.devices.pop(old)
+            rot.save(self.path)
+
     async def _run(self, target: Target, command: str, only: asyncssh.SSHKey) -> str:
         async with await self.keys.connect(target, "vpn", only=only) as conn:
             r = await conn.run(command, check=False, stdin=asyncssh.DEVNULL, timeout=30)

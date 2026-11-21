@@ -41,6 +41,7 @@ export interface Device {
 	tags: string[];
 	always_on: boolean;
 	ssh: { user: string; port: number } | null;
+	ssh_port: number | null; // where it answers SSH: its ssh:, or an SSH check (a terminal is offered)
 	desktop: { protocol: 'rdp' | 'vnc'; user: string | null } | null;
 	driver: string | null;
 	info: { model: string | null; name: string | null; firmware: string | null } | null;
@@ -245,18 +246,6 @@ export interface Settings {
 		};
 		notify: { notify: NotifyChannelForm[] };
 		vulns: { vulns: { enabled: boolean; every_hours: number; nvd_api_key: string | null } };
-		vpn: {
-			vpn: {
-				wireguard: { wg_easy: string; user: string; password_secret: string } | null;
-				openvpn: {
-					mode: 'restricted' | 'direct';
-					pki: string;
-					server: string | null;
-					days: number;
-					[k: string]: unknown;
-				} | null;
-			};
-		};
 		networks: { networks: Record<string, { name: string; cidr: string | null }> };
 		groups: { groups: Record<string, { name: string; devices: string[] }> };
 		sites: { sites: Record<string, string> };
@@ -443,7 +432,7 @@ export interface OvpnClient {
 	last_seen?: string | null;
 }
 
-/** Rotating the VPN key: the steps per host ("pki", "server"), as for the hub key. */
+/** Rotating the VPN key: the steps per host ("<vpn>:pki", "<vpn>:server"), as for the hub key. */
 export interface VpnKey {
 	fingerprint: string;
 	next: string | null;
@@ -465,21 +454,41 @@ export interface VpnKey {
 	} | null;
 }
 
+/** A VPN's settings, as config.yaml's `vpns:` has them (what its form edits). */
+export type VpnSettings =
+	| { kind: 'wireguard'; name: string; wg_easy: string; user: string; password_secret: string }
+	| {
+			kind: 'openvpn';
+			name: string;
+			mode: 'restricted' | 'direct';
+			pki: string;
+			server: string | null;
+			days: number;
+			[k: string]: unknown;
+	  };
+
+/** One VPN Kastellan manages the clients of (GET /api/vpn: all of them). */
 export interface Vpn {
-	wireguard: { clients: WgClient[]; error?: string; insecure?: boolean } | null;
-	openvpn: {
-		clients: OvpnClient[];
-		error?: string;
-		crl_to_server?: boolean;
-		crl?: { pushed?: string; next_update?: string | null; error?: string | null };
-		/** Whether Kastellan sees who is connected: through the server's OpenWrt login. */
-		seen?: {
-			how: 'openwrt' | 'not-allowed' | 'no-openwrt';
-			device?: string | null;
-			checked: string | null;
-			error: string | null;
-		};
-	} | null;
+	id: string;
+	kind: 'wireguard' | 'openvpn';
+	name: string;
+	error?: string;
+	settings?: VpnSettings; // admins
+	// WireGuard
+	clients: (WgClient | OvpnClient)[];
+	insecure?: boolean;
+	password_set?: boolean;
+	// OpenVPN
+	mode?: 'restricted' | 'direct';
+	crl_to_server?: boolean;
+	crl?: { pushed?: string; next_update?: string | null; error?: string | null };
+	/** Whether Kastellan sees who is connected: through the server's OpenWrt login. */
+	seen?: {
+		how: 'openwrt' | 'not-allowed' | 'no-openwrt';
+		device?: string | null;
+		checked: string | null;
+		error: string | null;
+	};
 }
 
 export interface SetupHost {
@@ -506,6 +515,10 @@ export interface Access {
 	hub_ip: string | null;
 	key: string;
 	checks: { name: string; ok: boolean; detail: string }[];
+	host_key: {
+		state: 'trusted' | 'unknown' | 'changed' | 'unreachable';
+		fingerprint: string | null;
+	};
 	scripts: { existing: string | null; dedicated: string };
 }
 
@@ -568,6 +581,7 @@ export interface VaultEntry {
 	created: number;
 	changed: number;
 	public: string; // an SSH key's public half
+	devices: string[]; // a login's devices: a terminal sends it only there
 	used_by: string[];
 	own: boolean; // Kastellan's own key: changed by rotating it
 }
@@ -579,6 +593,8 @@ export interface VaultForm {
 	user: string;
 	notes: string;
 	secret: string | null; // null on a change: kept
+	devices?: string[]; // a login's devices; left out: kept
+	password?: string; // typed again: needed to change its devices
 }
 
 export type UnlockItem = 'password' | 'config' | { keyfile: string } | { env: string };
@@ -760,10 +776,44 @@ export async function streamSetup(
 			const line = buffer.slice(0, nl);
 			buffer = buffer.slice(nl + 1);
 			if (line.startsWith('KASTELLAN-DONE ')) outcome = JSON.parse(line.slice(15));
-			else onLine(line);
+			else if (line !== 'KASTELLAN-ALIVE') onLine(line); // the hub's "still working"
 		}
 	}
 	return outcome;
+}
+
+/** What the actor answers when it is done (the ability's JSON). */
+export interface ActResult {
+	container?: string;
+	image?: string;
+	updated?: boolean;
+	from?: string;
+	to?: string;
+	why?: string;
+	restarted?: boolean;
+	reboot?: string | boolean;
+	upgraded?: number;
+	packages?: string[];
+	seconds?: number;
+}
+
+/** One action through a host's actor, followed as it goes: each step it reports, then its
+ * answer (or why it failed, thrown). Older scripts report no steps; it works all the same. */
+export async function actStream(
+	device: string,
+	ability: string,
+	container: string | null,
+	onStep: (text: string) => void
+): Promise<ActResult> {
+	const outcome = (await streamSetup(
+		`/devices/${encodeURIComponent(device)}/act/${ability}/stream`,
+		{ container },
+		(line) => {
+			if (line.startsWith('KASTELLAN-STEP ')) onStep(line.slice(15));
+		}
+	)) as SetupOutcome & { result?: ActResult };
+	if (!outcome.ok) throw new Error(outcome.error ?? 'it failed');
+	return outcome.result ?? {};
 }
 
 export interface Me {
@@ -781,28 +831,33 @@ export const api = {
 		get<Change[]>('/changes', { hours, device, limit }),
 	me: () => get<Me>('/auth/me'),
 	alarms: () => get<Alarms>('/alarms'),
-	vpn: () => get<Vpn>('/vpn'),
-	wgCreate: (name: string, days: number | null) =>
-		call<{ id: string }>('POST', '/vpn/wireguard', { name, days }),
-	wgEnable: (id: string, on: boolean) =>
-		call<{ enabled: boolean }>('POST', `/vpn/wireguard/${id}/${on ? 'enable' : 'disable'}`),
-	wgDelete: (id: string) => call<{ deleted: boolean }>('DELETE', `/vpn/wireguard/${id}`),
-	ovpnIssue: (name: string, days: number | null) =>
-		call<{ name: string }>('POST', '/vpn/openvpn', { name, days }),
-	ovpnRevoke: (name: string) =>
+	vpn: () => get<{ vpns: Vpn[] }>('/vpn'),
+	putVpn: (vid: string, vpn: Partial<VpnSettings>, version: string, isNew: boolean) =>
+		call<{ id: string; version: string }>('PUT', `/vpns/${vid}`, { vpn, version, new: isNew }),
+	deleteVpn: (vid: string, version: string) =>
+		call<{ version: string }>('DELETE', `/vpns/${vid}?version=${encodeURIComponent(version)}`),
+	wgCreate: (vid: string, name: string, days: number | null) =>
+		call<{ id: string }>('POST', `/vpns/${vid}/wireguard`, { name, days }),
+	wgEnable: (vid: string, id: string, on: boolean) =>
+		call<{ enabled: boolean }>('POST', `/vpns/${vid}/wireguard/${id}/${on ? 'enable' : 'disable'}`),
+	wgDelete: (vid: string, id: string) =>
+		call<{ deleted: boolean }>('DELETE', `/vpns/${vid}/wireguard/${id}`),
+	ovpnIssue: (vid: string, name: string, days: number | null) =>
+		call<{ name: string }>('POST', `/vpns/${vid}/openvpn`, { name, days }),
+	ovpnRevoke: (vid: string, name: string) =>
 		call<{ revoked: boolean; crl_pushed: boolean; error?: string }>(
 			'POST',
-			`/vpn/openvpn/${encodeURIComponent(name)}/revoke`
+			`/vpns/${vid}/openvpn/${encodeURIComponent(name)}/revoke`
 		),
-	ovpnPushCrl: () => call<{ crl: unknown }>('POST', '/vpn/openvpn/crl'),
-	ovpnSetup: () => get<Setup>('/vpn/openvpn/setup'),
+	ovpnPushCrl: (vid: string) => call<{ crl: unknown }>('POST', `/vpns/${vid}/openvpn/crl`),
+	ovpnSetup: (vid: string) => get<Setup>(`/vpns/${vid}/openvpn/setup`),
 	vpnKey: () => get<VpnKey>('/vpn/key'),
 	vpnKeyRotate: (step: 'start' | 'finish' | 'cancel', anyway = false) =>
 		call<VpnKey>('POST', `/vpn/key/rotate/${step}`, step === 'finish' ? { anyway } : undefined),
 	vpnKeyForget: (host: string) => call<VpnKey>('POST', '/vpn/key/rotate/forget', { host }),
 	access: (device: string) => get<Access>(`/devices/${encodeURIComponent(device)}/access`),
-	ovpnInstall: (role: string) =>
-		call<{ output: string }>('POST', `/vpn/openvpn/setup/${role}/install`),
+	ovpnInstall: (vid: string, role: string) =>
+		call<{ output: string }>('POST', `/vpns/${vid}/openvpn/setup/${role}/install`),
 	config: () => get<{ text: string; version: string; error: string | null }>('/config'),
 	checkConfig: (text: string) =>
 		call<{ ok: boolean; error: string | null }>('POST', '/config/check', { text }),
@@ -953,6 +1008,9 @@ export const api = {
 			`/devices/${encodeURIComponent(device)}/desktop/ticket`,
 			credentials
 		),
-	forgetHost: (device: string) =>
-		call<{ state: string }>('POST', `/devices/${encodeURIComponent(device)}/ssh/forget`)
+	forgetHost: (device: string, port?: number) =>
+		call<{ state: string }>(
+			'POST',
+			`/devices/${encodeURIComponent(device)}/ssh/forget${port ? `?port=${port}` : ''}`
+		)
 };

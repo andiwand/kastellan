@@ -25,15 +25,30 @@ def run(command, what, timeout):
     """A command never killed halfway (that can leave dpkg broken): past `timeout` the answer is
     that it still runs, and it goes on by itself. Its output goes to LOG, not a pipe: a pipe
     nobody reads any more would kill it (SIGPIPE) at its next line."""
-    with open(LOG, "a+") as log:
+    # Bytes, decoded line by line with replacement: a maintainer script's odd byte, or a
+    # character apt has only half written yet, must never stop the run halfway.
+    with open(LOG, "a+b") as log:
         start = log.seek(0, os.SEEK_END)
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=ENV)
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            fail(f"{what} still runs after {timeout // 60} minutes; it goes on by itself (see {LOG})")
+        deadline, seen, rest = time.time() + timeout, start, b""
+        while True:
+            try:
+                process.wait(timeout=2)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            # Which package it is at, from what apt wrote so far (whole lines only).
+            log.seek(seen)
+            rest += log.read()
+            seen = log.tell()
+            *whole, rest = rest.split(b"\n")
+            for line in (w.decode("utf-8", errors="replace") for w in whole):
+                if m := re.match(r"(Unpacking|Setting up) ([^\s:]+)", line):
+                    step(f"{m.group(1).lower()} {m.group(2)}")
+            if time.time() > deadline:
+                fail(f"{what} still runs after {timeout // 60} minutes; it goes on by itself (see {LOG})")
         log.seek(start)
-        text = log.read()
+        text = log.read().decode("utf-8", errors="replace")
     if process.returncode != 0:
         if "Could not get lock" in text or "is held by process" in text:
             fail("apt is busy (another update runs, e.g. unattended-upgrades): try again later")
@@ -61,9 +76,13 @@ def newer_kernel():
 dpkg = shutil.which("dpkg", path="/usr/bin:/bin")
 if dpkg:
     # An earlier run that was interrupted (a power cut) left packages half set up: finish them.
+    step("finishing package setups an earlier run left halfway")
     run([dpkg, "--configure", "-a", "--force-confdef", "--force-confold"], "dpkg --configure", 1200)
+step("refreshing the package lists")
 apt_get("update", timeout=300)
+step("installing the updates")
 out = apt_get("-y", "--with-new-pkgs", *KEEP, "upgrade", timeout=2400)
+step("checking whether it needs a reboot")
 names = sorted({m.group(1) for m in re.finditer(r"^(?:Setting up|Unpacking) ([^\s:]+)", out, re.M)})
 done({
     "upgraded": len(names),

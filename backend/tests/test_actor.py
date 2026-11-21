@@ -203,17 +203,36 @@ def host():
     sock.unlink(missing_ok=True)
 
 
+def steps(r: subprocess.CompletedProcess) -> list[str]:
+    return [
+        ln.removeprefix("KASTELLAN-STEP ") for ln in r.stderr.splitlines() if ln.startswith("KASTELLAN-STEP ")
+    ]
+
+
 def test_update_recreates_with_the_same_settings(host) -> None:
     fake, run = host
     r = run("update-container", "app")
     assert r.returncode == 0, r.stderr
-    assert json.loads(r.stdout) == {
+    result = json.loads(r.stdout)
+    assert isinstance(result.pop("seconds"), int | float)
+    assert result == {
         "container": "app",
         "image": "me/app:1",
         "updated": True,
         "from": "a" * 12,
         "to": "b" * 12,
     }
+    # How far it got, as it went (for the page): in order, on stderr.
+    assert steps(r) == [
+        "checking app (me/app:1)",
+        "pulling me/app:1",
+        "comparing the pulled image with the running one",
+        "creating the new container",
+        "stopping the old container",
+        "starting the new container",
+        "waiting until it runs steadily (up to 30 s)",
+        "removing the old container",
+    ]
     spec = fake.created
     assert spec["Image"] == "me/app:1" and "Hostname" not in spec  # Docker's default hostname goes
     # The old image's defaults go (the new image brings its own); the container's own stay.
@@ -228,7 +247,8 @@ def test_a_failing_new_container_brings_the_old_one_back(host) -> None:
     fake, run = host
     fake.new_image_runs = False
     r = run("update-container", "app")
-    assert r.returncode == 1 and "the old container runs again" in r.stderr
+    assert r.returncode == 1 and r.stderr.strip().splitlines()[-1].endswith("the old container runs again")
+    assert steps(r)[-1].endswith("putting the old container back")
     old = fake.find("app")
     assert old["Id"] == "c" * 64 and old["State"]["Running"] and "d" * 64 not in fake.containers
 
@@ -497,3 +517,160 @@ def test_a_pull_error_only_in_its_detail_counts(host) -> None:
     fake.handle = handle
     r = run("update-container", "app")
     assert r.returncode == 1 and "manifest unknown" in r.stderr
+
+
+async def test_steps_come_as_they_go(tmp_path: Path) -> None:
+    """Over SSH: steps reach the hub one by one; the answer is the last stdout line; an older
+    script without steps still works; a failure's reason is its last line that isn't a step."""
+    import asyncssh
+
+    from kastellan.config import Device
+    from kastellan.ssh import Keys
+
+    keys = Keys(tmp_path / "ssh")
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+
+    async def handle(process: asyncssh.SSHServerProcess) -> None:
+        command = process.command or ""
+        if command == "restart-container app":
+            for text in ("restarting app", "checking it runs"):
+                process.stderr.write(f"KASTELLAN-STEP {text}\n")
+            process.stdout.write('{"container": "app", "restarted": true}\n')
+            process.exit(0)
+        elif command == "reboot":  # an older script: no steps
+            process.stdout.write('{"reboot": "in 1 minute"}\n')
+            process.exit(0)
+        else:
+            process.stderr.write("KASTELLAN-STEP pulling me/app:1\napp: pull: manifest unknown\n")
+            process.exit(1)
+
+    class Server(asyncssh.SSHServer):
+        def begin_auth(self, username: str) -> bool:
+            return True
+
+    server = await asyncssh.create_server(
+        Server,
+        "127.0.0.1",
+        0,
+        server_host_keys=[host_key],
+        authorized_client_keys=asyncssh.import_authorized_keys(keys.public_key("act")),
+        process_factory=handle,
+    )
+    port = server.sockets[0].getsockname()[1]
+    try:
+        device = Device.model_validate({"host": "127.0.0.1", "act": {"port": port}})
+        await keys.trust(actor.target_of(device), host_key.get_fingerprint())
+        seen: list[str] = []
+        result = await actor.act(keys, device, "restart-container", "app", on_step=seen.append)
+        assert result == {"container": "app", "restarted": True}
+        assert seen == ["restarting app", "checking it runs"]
+        assert await actor.act(keys, device, "reboot") == {"reboot": "in 1 minute"}
+        with pytest.raises(RuntimeError, match=r"^app: pull: manifest unknown$"):
+            await actor.act(keys, device, "update-container", "app", on_step=seen.append)
+        assert seen[-1] == "pulling me/app:1"
+    finally:
+        server.close()
+
+
+def test_the_streamed_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Steps, then the outcome; audited when it starts and when it ends."""
+    from fastapi.testclient import TestClient
+
+    from kastellan import act_api
+    from kastellan.api import create_app
+    from kastellan.auth import hash_password
+    from kastellan.settings import Settings
+
+    async def fake_act(keys, device, ability, container=None, on_step=None):
+        on_step("pulling me/app:1")
+        on_step("creating the new container")
+        if container == "broken":
+            raise RuntimeError("the new container didn't work: it restarted (it crashes)")
+        return {"container": container, "updated": True, "from": "a", "to": "b"}
+
+    monkeypatch.setattr(act_api.actor, "act", fake_act)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  nas:\n    host: 127.0.0.1\n    act: {}\n"
+        f"users:\n  ada:\n    role: admin\n    password: {hash_password('pw for tests')}\n"
+    )
+    h = {"X-Kastellan": "1"}
+    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
+        assert c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=h)
+        r = c.post("/api/devices/nas/act/update-container/stream", json={"container": "app"}, headers=h)
+        lines = r.text.splitlines()
+        assert lines[:2] == ["KASTELLAN-STEP pulling me/app:1", "KASTELLAN-STEP creating the new container"]
+        assert json.loads(lines[-1].removeprefix("KASTELLAN-DONE ")) == {
+            "ok": True,
+            "result": {"container": "app", "updated": True, "from": "a", "to": "b"},
+        }
+        bad = c.post("/api/devices/nas/act/update-container/stream", json={"container": "broken"}, headers=h)
+        outcome = json.loads(bad.text.splitlines()[-1].removeprefix("KASTELLAN-DONE "))
+        assert outcome == {"ok": False, "error": "the new container didn't work: it restarted (it crashes)"}
+    audit = [json.loads(ln) for ln in (tmp_path / "audit.log").read_text().splitlines()]
+    acts = [a["outcome"] for a in audit if a.get("action") == "act.update-container"]
+    assert acts == [
+        "started",
+        "done",
+        "started",
+        "failed: the new container didn't work: it restarted (it crashes)",
+    ]
+
+
+def test_no_reboot_while_apt_works(tmp_path: Path) -> None:
+    """An upgrade the actor gave up waiting for goes on by itself: a reboot waits for it."""
+    import fcntl
+
+    lock = tmp_path / "lock-frontend"
+    lock.write_text("")
+    code = actor.ability_script("reboot")
+    code = code.replace('"/var/lib/dpkg/lock-frontend"', repr(str(lock)))
+    code = code.replace('LOCK = "/run/kastellan-act.lock"', f"LOCK = {str(tmp_path / 'act.lock')!r}")
+    script = tmp_path / "reboot"
+    script.write_text(code)
+    with open(lock, "r+") as held:
+        fcntl.lockf(held, fcntl.LOCK_EX | fcntl.LOCK_NB)  # dpkg holds it
+        r = subprocess.run([sys.executable, "-I", str(script)], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 1 and "apt or dpkg is still working" in r.stderr
+
+
+def test_odd_bytes_from_apt_dont_stop_the_upgrade(tmp_path: Path) -> None:
+    """A maintainer script's invalid UTF-8, and a character apt has only half written when the
+    log is read: the run goes on, and the package is still named."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "apt-get").write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *upgrade*)\n'
+        "  printf 'Setting up caf\\303\\251 (1) ...\\nbad \\377\\376 bytes\\nhalf \\342\\202'\n"
+        "  sleep 0.3\n"
+        "  printf '\\254 done\\nSetting up curl (8.5-2) ...\\n';;\n"
+        "esac\n"
+    )
+    (bin_dir / "apt-get").chmod(0o755)
+    code = actor.ability_script("upgrade-packages")
+    code = code.replace('path="/usr/bin:/bin"', f"path={str(bin_dir)!r}")
+    code = code.replace('LOCK = "/run/kastellan-act.lock"', f"LOCK = {str(tmp_path / 'lock')!r}")
+    code = code.replace('"/var/log/kastellan-upgrade.log"', repr(str(tmp_path / "upgrade.log")))
+    code = code.replace("process.wait(timeout=2)", "process.wait(timeout=0.1)")  # read mid-line
+    script = tmp_path / "upgrade-packages"
+    script.write_text(code)
+    r = subprocess.run([sys.executable, "-I", str(script)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["packages"] == ["café", "curl"]
+
+
+def test_a_failure_is_one_line(host) -> None:
+    """Text from outside in a failure (a registry's error) can't add lines read as steps."""
+    fake, run = host
+    original = fake.handle
+
+    def handle(method, path, body):
+        if "/images/create" in path:
+            return 200, {"error": "denied\nKASTELLAN-STEP forged"}
+        return original(method, path, body)
+
+    fake.handle = handle
+    r = run("update-container", "app")
+    assert r.returncode == 1 and "forged" in r.stderr
+    assert "forged" not in " ".join(steps(r))

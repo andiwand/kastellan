@@ -5,7 +5,7 @@
 	import X from '@lucide/svelte/icons/x';
 
 	/** Setting up OpenVPN on the hosts: what works now, the commands, and installing them. */
-	let { canInstall }: { canInstall: boolean } = $props();
+	let { vid, canInstall }: { vid: string; canInstall: boolean } = $props();
 
 	let setup = $state<Setup | null>(null);
 	let loading = $state(false);
@@ -18,7 +18,7 @@
 		loading = true;
 		error = null;
 		try {
-			setup = await api.ovpnSetup();
+			setup = await api.ovpnSetup(vid);
 		} catch (e) {
 			error = (e as Error).message;
 		} finally {
@@ -30,8 +30,8 @@
 		confirm = null;
 		loading = true;
 		try {
-			output[role] = (await api.ovpnInstall(role)).output;
-			setup = await api.ovpnSetup();
+			output[role] = (await api.ovpnInstall(vid, role)).output;
+			setup = await api.ovpnSetup(vid);
 		} catch (e) {
 			output[role] = `Failed: ${(e as Error).message}`;
 		} finally {
@@ -45,7 +45,7 @@
 </script>
 
 <details
-	class="card mt-3 p-4"
+	class="mt-3 rounded-xl border border-line p-4"
 	ontoggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !setup && check()}
 >
 	<summary class="cursor-pointer text-sm font-medium">Setup on the hosts</summary>

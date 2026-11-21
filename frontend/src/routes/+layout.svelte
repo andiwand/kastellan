@@ -7,14 +7,15 @@
 	import Logo from '#lib/components/Logo.svelte';
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
 	import MonitorSmartphone from '@lucide/svelte/icons/monitor-smartphone';
-	import Layers from '@lucide/svelte/icons/layers';
+	import Group from '@lucide/svelte/icons/group';
 	import AppWindow from '@lucide/svelte/icons/app-window';
-	import KeyRound from '@lucide/svelte/icons/key-round';
+	import GlobeLock from '@lucide/svelte/icons/globe-lock';
 	import LockKeyhole from '@lucide/svelte/icons/lock-keyhole';
 	import FileCog from '@lucide/svelte/icons/file-cog';
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
 	import CircleArrowUp from '@lucide/svelte/icons/circle-arrow-up';
 	import { updatesOf } from '#lib/updates.js';
+	import { runner } from '#lib/runner.svelte.js';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import Bell from '@lucide/svelte/icons/bell';
@@ -30,14 +31,14 @@
 	const nav = [
 		{ href: '/', label: 'Overview', icon: LayoutDashboard },
 		{ href: '/devices', label: 'Devices', icon: MonitorSmartphone },
-		{ href: '/groups', label: 'Groups', icon: Layers },
+		{ href: '/groups', label: 'Groups', icon: Group },
 		{ href: '/services', label: 'Services', icon: AppWindow },
-		{ href: '/vpn', label: 'VPN', icon: KeyRound },
+		{ href: '/vpn', label: 'VPN', icon: GlobeLock },
 		{ href: '/updates', label: 'Updates', icon: CircleArrowUp },
 		{ href: '/access', label: 'Access', icon: ShieldCheck },
 		{ href: '/keys', label: 'Keys', icon: LockKeyhole },
 		{ href: '/config', label: 'Config', icon: FileCog }
-	] as { href: string; label: string; short?: string; icon: typeof Layers }[];
+	] as { href: string; label: string; short?: string; icon: typeof Group }[];
 	// Config, access and groups are for admins (password hashes, keys, Wi-Fi settings).
 	const shownNav = $derived(
 		nav.filter(
@@ -100,6 +101,16 @@
 								style:color="var(--critical-text)"
 							>
 								{attention}
+							</span>
+						{:else if item.href === '/updates' && runner.working}
+							<span
+								class="tabular ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-accent"
+								title="Updates running"
+							>
+								<span
+									class="size-2.5 animate-spin rounded-full border-2 border-line border-t-accent"
+								></span>
+								{runner.progress.done + runner.progress.failed}/{runner.progress.total}
 							</span>
 						{:else if item.href === '/updates' && waiting}
 							<span
@@ -313,6 +324,11 @@
 						<span
 							class="absolute top-2 left-1/2 ml-2 size-2 rounded-full"
 							style:background="var(--critical)"
+						></span>
+					{:else if item.href === '/updates' && runner.working}
+						<span
+							class="absolute top-2 left-1/2 ml-2 size-2.5 animate-spin rounded-full border-2 border-line border-t-accent"
+							title="Updates running"
 						></span>
 					{/if}
 				</a>

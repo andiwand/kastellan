@@ -34,7 +34,7 @@ import ipaddress
 import re
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Self
+from typing import Annotated, Any, ClassVar, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -423,9 +423,13 @@ class VulnSettings(BaseModel):
 class WireGuardSource(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["wireguard"] = "wireguard"
+    name: str = Field(default="", max_length=60)  # shown; the id when empty
     wg_easy: str = Field(pattern=r"^https?://[^\s]+$")  # wg-easy's address, e.g. http://sv1:51821
     user: str = "admin"
-    password_secret: str = "wg-easy"  # data/secrets/<name> (kastellan secret set wg-easy)
+    # Its login's password, a secret (the key ring, or data/secrets/<name>); one per VPN made in
+    # the app (wg-easy-<id>), "wg-easy" for the one from before there could be several.
+    password_secret: str = Field(default="wg-easy", pattern=r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
 
 class OpenVpnSource(BaseModel):
@@ -438,6 +442,8 @@ class OpenVpnSource(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["openvpn"] = "openvpn"
+    name: str = Field(default="", max_length=60)  # shown; the id when empty
     mode: Literal["restricted", "direct"] = "restricted"
     pki: str  # the device with the easy-rsa PKI
     server: str | None = None  # the OpenVPN server's device (receives the CRL)
@@ -455,6 +461,9 @@ class OpenVpnSource(BaseModel):
     # On the OpenVPN server
     crl_path: str = Field(default="/etc/openvpn/crl.pem", pattern=r"^/[\w./-]+$")
     ca_path: str = Field(default="/etc/openvpn/ca.crt", pattern=r"^/[\w./-]+$")
+    # Which of the server device's OpenVPN servers this is (a uci section, or a file in
+    # /etc/openvpn), for who is connected; needed only when the device runs several.
+    instance: str | None = Field(default=None, pattern=r"^[\w.-]{1,64}$")
 
     @model_validator(mode="after")
     def _reserved_names(self) -> Self:
@@ -464,11 +473,9 @@ class OpenVpnSource(BaseModel):
         return self
 
 
-class VpnSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    wireguard: WireGuardSource | None = None
-    openvpn: OpenVpnSource | None = None
+# One VPN Kastellan manages the clients of; `vpns:` has any number, of either kind.
+Vpn = Annotated[WireGuardSource | OpenVpnSource, Field(discriminator="kind")]
+VPN_NAMES = {"wireguard": "WireGuard", "openvpn": "OpenVPN"}
 
 
 class GroupSettings(BaseModel):
@@ -554,7 +561,7 @@ class Config(BaseModel):
     alarms: AlarmSettings = Field(default_factory=AlarmSettings)
     notify: list[NotifyChannel] = Field(default_factory=list)
     vulns: VulnSettings = Field(default_factory=VulnSettings)
-    vpn: VpnSettings = Field(default_factory=VpnSettings)
+    vpns: dict[str, Vpn] = Field(default_factory=dict)
     # A URL Kastellan calls every minute (a dead man's switch, e.g. healthchecks.io): when the
     # calls stop, that service tells you the hub (or its host, or the internet line) is gone.
     heartbeat: str | None = Field(default=None, pattern=r"^https://[^\s]+$")
@@ -608,17 +615,54 @@ class Config(BaseModel):
             raise ValueError("networks: internet is built in; give your network another id")
         return self
 
+    @model_validator(mode="before")
+    @classmethod
+    def _old_vpn(cls, data: Any) -> Any:
+        """`vpn: {wireguard: ..., openvpn: ...}` (one of each, before 0.8) reads as `vpns:` with
+        those two ids; the app writes `vpns:` when it changes them."""
+        if not isinstance(data, dict) or "vpn" not in data:
+            return data
+        data = dict(data)
+        old = data.pop("vpn") or {}
+        if not isinstance(old, dict):
+            raise ValueError("vpn: is wireguard: and openvpn: (or use vpns:)")
+        if data.get("vpns") and any(old.values()):
+            raise ValueError("vpn: and vpns: both: move vpn: into vpns:")
+        vpns = dict(data.get("vpns") or {})
+        for kind in ("wireguard", "openvpn"):
+            if isinstance(old.get(kind), dict):
+                vpns[kind] = {"kind": kind, "name": VPN_NAMES[kind], **old[kind]}
+        data["vpns"] = vpns
+        return data
+
     @model_validator(mode="after")
-    def _vpn_devices(self) -> Self:
-        ovpn = self.vpn.openvpn
-        for role, id in (("pki", ovpn.pki if ovpn else None), ("server", ovpn.server if ovpn else None)):
-            if id is None:
+    def _vpns(self) -> Self:
+        used: dict[tuple[str, str], str] = {}  # (device, restricted login) -> the VPN using it
+        for vid, vpn in self.vpns.items():
+            if not ID.match(vid) or len(vid) > 40:
+                raise ValueError(f"vpns: {vid!r}: ids are lowercase letters, digits, - and _")
+            if vpn.kind != "openvpn":
                 continue
-            if id not in self.devices:
-                raise ValueError(f"vpn.openvpn.{role}: {id!r} is not a device")
-            if ovpn and ovpn.mode == "direct" and self.devices[id].ssh is None:
-                raise ValueError(f"vpn.openvpn.{role}: {id!r} needs ssh: (its login) in direct mode")
+            roles = [("pki", vpn.pki, vpn.pki_user)]
+            if vpn.server:
+                roles.append(("server", vpn.server, vpn.server_user))
+            for role, id, user in roles:
+                if id not in self.devices:
+                    raise ValueError(f"vpns.{vid}.{role}: {id!r} is not a device")
+                if vpn.mode == "direct" and self.devices[id].ssh is None:
+                    raise ValueError(f"vpns.{vid}.{role}: {id!r} needs ssh: (its login) in direct mode")
+                if vpn.mode != "restricted":
+                    continue
+                # One VPN key, bound to one script per login: two VPNs can't share a login there.
+                other = used.get((id, user), vid)
+                if other != vid:
+                    raise ValueError(f"vpns.{vid}.{role}: {user} on {id} is {other}'s; give it its own user")
+                used[(id, user)] = vid
         return self
+
+    def vpn_name(self, vid: str) -> str:
+        vpn = self.vpns[vid]
+        return vpn.name or vid
 
     @model_validator(mode="after")
     def _ids_and_parents(self) -> Self:

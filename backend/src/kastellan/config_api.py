@@ -74,7 +74,6 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "alarms": ("alarms",),
     "notify": ("notify",),
     "vulns": ("vulns",),
-    "vpn": ("vpn",),
     "networks": ("networks",),
     "groups": ("groups",),
     "sites": ("sites",),
@@ -84,6 +83,17 @@ SECTIONS: dict[str, tuple[str, ...]] = {
 
 class SecretBody(BaseModel):
     value: str = Field(min_length=1, max_length=4096)
+
+
+class VpnBody(BaseModel):
+    vpn: dict[str, Any]  # kind, name and that kind's settings
+    new: bool = False  # adding: refused if the id is taken
+    version: str  # from GET /api/settings or /api/config
+
+
+def wg_secrets(config) -> set[str]:
+    """The secret names VPN forms may set: each wg-easy login's password."""
+    return {"wg-easy"} | {v.password_secret for v in config.vpns.values() if v.kind == "wireguard"}
 
 
 class SectionBody(BaseModel):
@@ -261,8 +271,7 @@ def router(hub: Hub) -> APIRouter:
             config = hub.check(text)
         except ConfigProblem as e:
             raise HTTPException(409, f"config.yaml has a problem; fix it in the file: {e.message}") from e
-        names = {"wg-easy"} | ({config.vpn.wireguard.password_secret} if config.vpn.wireguard else set())
-        secrets = {name: has_secret(name) for name in names}
+        secrets = {name: has_secret(name) for name in wg_secrets(config)}
         return {"version": config_edit.version_of(text), "sections": _masked(config), "secrets": secrets}
 
     def _unmask(section: str, value: dict[str, Any], old_config) -> dict[str, Any]:
@@ -325,7 +334,6 @@ def router(hub: Hub) -> APIRouter:
             GroupSettings,
             NetworkSettings,
             NotifyChannel,
-            VpnSettings,
             VulnSettings,
         )
 
@@ -342,8 +350,6 @@ def router(hub: Hub) -> APIRouter:
                 return {"alarms": dump(AlarmSettings, value.get("alarms") or {}) or None}
             if section == "vulns":
                 return {"vulns": dump(VulnSettings, value.get("vulns") or {}) or None}
-            if section == "vpn":
-                return {"vpn": dump(VpnSettings, value.get("vpn") or {}) or None}
             if section == "notify":
                 return {"notify": [dump(NotifyChannel, c) for c in value.get("notify") or []] or None}
             if section == "networks":
@@ -397,13 +403,10 @@ def router(hub: Hub) -> APIRouter:
     async def put_secret(name: str, body: SecretBody, request: Request) -> dict[str, Any]:
         """A secret (a password Kastellan uses, e.g. wg-easy's), written only: never shown."""
         w = guard(request)
-        wg = hub.config.vpn.wireguard
-        # Kastellan's own: OpenWrt logins and the group fingerprints' key. The VPN form names the
+        # Kastellan's own: OpenWrt logins and the group fingerprints' key. A VPN's form names its
         # wg-easy secret, so that name alone must not let a form overwrite one of these.
         own = {"group-fingerprints", *(hub.openwrt_secret(id) for id in hub.config.devices)}
-        if name not in {"wg-easy", *((wg.password_secret,) if wg else ())} or (
-            name in own or name.startswith("openwrt-")
-        ):
+        if name not in wg_secrets(hub.config) or name in own or name.startswith("openwrt-"):
             raise HTTPException(403, "that secret isn't set from here")
         try:
             hub.secrets.set(name, body.value)
@@ -411,6 +414,83 @@ def router(hub: Hub) -> APIRouter:
             raise HTTPException(400, str(e)) from e
         hub.audit.record("secret.set", w.user, client_address(request.scope), secret=name)
         return {"set": True}
+
+    # --- VPNs: any number, of either kind (vpns:) -----------------------------------------------
+
+    def vpns_now(text: str) -> dict[str, dict[str, Any]]:
+        """The VPNs as config.yaml says them (an old `vpn:` read as `vpns:`), defaults left out."""
+        from .hub import ConfigProblem
+
+        try:
+            config = hub.check(text)
+        except ConfigProblem as e:
+            raise HTTPException(409, f"config.yaml has a problem; fix it in the file: {e.message}") from e
+        return {
+            vid: {"kind": v.kind, **v.model_dump(mode="json", exclude_defaults=True)}
+            for vid, v in config.vpns.items()
+        }
+
+    def write_vpns(request: Request, w: Who, old: str, vpns: dict[str, Any], what: str, vid: str) -> str:
+        try:
+            text = config_edit.set_top(old, "vpn", None)  # the one-of-each form goes: vpns: now
+            text = config_edit.set_top(text, "vpns", vpns or None)
+        except YAMLError as e:
+            raise HTTPException(400, f"config.yaml can't be read: {yaml_problem(e)}") from e
+        return save(request, w, old, text, what, vpn=vid)
+
+    @api.put("/vpns/{vid}")
+    async def put_vpn(vid: str, body: VpnBody, request: Request) -> dict[str, Any]:
+        """Add a VPN, or change one: its kind's settings (secrets stay secrets: set apart)."""
+        from .config import ID, OpenVpnSource, WireGuardSource
+
+        w = guard(request)
+        if not ID.match(vid) or len(vid) > 40:
+            raise HTTPException(400, "ids are lowercase letters, digits, - and _ (up to 40)")
+        old = current()
+        if body.version != config_edit.version_of(old):
+            raise HTTPException(409, "config.yaml changed since you opened it; reload, then change it again")
+        vpns = vpns_now(old)
+        was = vpns.get(vid)
+        if body.new and was is not None:
+            raise HTTPException(400, f"there is a VPN {vid!r} already")
+        if not body.new and was is None:
+            raise HTTPException(404, "no such VPN")
+        # A change carries the form's fields only: the rest stays as the file has it now (not as
+        # the page last saw it), so an edit made elsewhere meanwhile isn't undone.
+        value = {**(was or {}), **body.vpn}
+        kind = value.get("kind") or (was or {}).get("kind")
+        if was is not None and kind != was["kind"]:
+            raise HTTPException(400, "a VPN keeps its kind; add another for the other kind")
+        if kind == "wireguard" and "password_secret" not in value:
+            # Its own secret: a new one gets wg-easy-<id>; a changed one keeps what it had.
+            default = "wg-easy" if was else f"wg-easy-{vid}"
+            value["password_secret"] = (was or {}).get("password_secret", default)
+        model = {"wireguard": WireGuardSource, "openvpn": OpenVpnSource}.get(kind or "")
+        if model is None:
+            raise HTTPException(400, "kind: wireguard or openvpn")
+        try:
+            entry = model.model_validate({**value, "kind": kind}).model_dump(
+                mode="json", exclude_defaults=True
+            )
+        except ValueError as e:
+            raise HTTPException(400, _first_problem(e)) from e
+        vpns[vid] = {"kind": kind, **entry}
+        return {
+            "id": vid,
+            "version": write_vpns(request, w, old, vpns, "vpn.add" if body.new else "vpn.change", vid),
+        }
+
+    @api.delete("/vpns/{vid}")
+    async def delete_vpn(vid: str, request: Request, version: str | None = None) -> dict[str, Any]:
+        """Kastellan stops managing this VPN's clients (the VPN itself and its clients stay)."""
+        w = guard(request)
+        old = current()
+        if version is not None and version != config_edit.version_of(old):
+            raise HTTPException(409, "config.yaml changed since you opened it; reload, then change it again")
+        vpns = vpns_now(old)
+        if vpns.pop(vid, None) is None:
+            raise HTTPException(404, "no such VPN")
+        return {"version": write_vpns(request, w, old, vpns, "vpn.remove", vid)}
 
     @api.post("/devices")
     async def add_device(body: NewDevice, request: Request) -> dict[str, Any]:

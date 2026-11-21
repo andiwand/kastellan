@@ -17,6 +17,7 @@ from .access import USER, hub_address, setup_script
 from .auth_api import client_address, require_admin, require_signin
 from .setup_run import Login, reason
 from .ssh import ChangedHost, Target, UnknownHost
+from .terminal_api import ssh_port
 
 if TYPE_CHECKING:
     from .hub import Hub
@@ -48,17 +49,22 @@ def router(hub: Hub) -> APIRouter:
     async def access(id: str, request: Request) -> dict[str, Any]:
         require_admin(request)
         device = device_of(id)
-        port = device.ssh.port if device.ssh else 22
+        port = ssh_port(device) or 22
         user = device.ssh.user if device.ssh else "kastellan"
         hub_ip = await asyncio.to_thread(hub_address, device.host, port)
         key = hub.keys.public_key()
         checks: list[dict[str, Any]] = []
+        # The host key, for the card to trust (an unknown one) or forget (a changed one) right there.
+        host_key: dict[str, Any] = {"state": "unreachable", "fingerprint": None}
 
         def note(name: str, ok: bool, detail: str = "") -> None:
             checks.append({"name": name, "ok": ok, "detail": detail})
 
         try:
-            await hub.keys.check_host(Target(device.host, port, user))
+            host_key = {
+                "state": "trusted",
+                "fingerprint": await hub.keys.check_host(Target(device.host, port, user)),
+            }
             note("Host key trusted", True)
             if device.ssh:
                 try:
@@ -81,9 +87,11 @@ def router(hub: Hub) -> APIRouter:
             else:
                 note("A login in config.yaml", False, "add ssh: to the device once access is set up")
         except UnknownHost as e:
-            note("Host key trusted", False, f"trust {e.fingerprint} on the terminal page first")
+            host_key = {"state": "unknown", "fingerprint": e.fingerprint}
+            note("Host key trusted", False, "not yet: compare it below, then trust it")
         except ChangedHost as e:
-            note("Host key trusted", False, str(e))
+            host_key = {"state": "changed", "fingerprint": e.fingerprint}
+            note("Host key trusted", False, "it changed since it was trusted: see below")
         except Exception as e:
             note("Host key trusted", False, f"can't reach {device.host}: {reason(e)}")
         return {
@@ -92,6 +100,7 @@ def router(hub: Hub) -> APIRouter:
             "hub_ip": hub_ip,
             "key": key,
             "checks": checks,
+            "host_key": host_key,
             "scripts": {
                 # One login for everything: Kastellan's key for an existing user.
                 "existing": script_or_none(user, key, hub_ip, create=False, sudo=False),

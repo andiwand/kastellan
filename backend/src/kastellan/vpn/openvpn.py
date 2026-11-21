@@ -4,7 +4,7 @@
   ever touches client certificates; the CA key and the server's key can't be reached through it.
 - `kastellan-crl` on the OpenVPN server (e.g. OpenWrt): checks a new CRL and puts it in place.
 
-Two ways to run them (`vpn.openvpn.mode`):
+Two ways to run them (a VPN's `mode` under `vpns:`):
 
 - restricted: installed on the hosts; the hub's VPN key is bound to them with `command=` in
   authorized_keys, so it can do these things and nothing else there. The safest way.
@@ -97,6 +97,19 @@ def _when(text: str) -> str | None:
     return None
 
 
+def split_status(text: str) -> tuple[dict[str, str], bool]:
+    """The openvpn-status script's output by server instance (`== <uci section or file>`), and
+    whether it found no server at all."""
+    parts: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in text.splitlines()[:20000]:
+        if line.startswith("== "):
+            current = parts.setdefault(line[3:].strip()[:64], [])
+        elif current is not None:
+            current.append(line)
+    return {k: "\n".join(v) for k, v in parts.items()}, "!no-servers" in text.splitlines()
+
+
 def parse_status(text: str) -> list[Connection]:
     """The client lines of OpenVPN status files (status-version 1, 2 or 3), as the device's
     openvpn-status script prints them; untrusted, so anything odd is dropped."""
@@ -148,10 +161,11 @@ def parse_status(text: str) -> list[Connection]:
 
 class Seen:
     """When each OpenVPN client was last seen connected (status files only list who is connected
-    now): <data>/vpn/openvpn-seen.json, name -> ISO time."""
+    now): <data>/vpn/openvpn-seen[-<vpn>].json, name -> ISO time; one per OpenVPN VPN."""
 
-    def __init__(self, folder: Path) -> None:
-        self.path = folder / "openvpn-seen.json"
+    def __init__(self, folder: Path, vid: str = "openvpn") -> None:
+        # "openvpn": the one from before there could be several keeps its file.
+        self.path = folder / ("openvpn-seen.json" if vid == "openvpn" else f"openvpn-seen-{vid}.json")
         try:
             data = json.loads(self.path.read_text())
             self.last = {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
@@ -169,10 +183,10 @@ class Seen:
         os.replace(temp, self.path)
 
 
-def pki_conf(s: OpenVpnSource, restricted: bool = False) -> str:
+def pki_conf(s: OpenVpnSource, restricted: bool = False, vid: str = "openvpn") -> str:
     """The script's settings. Installed (restricted), the TLS key is the copy its user can read."""
     q = shlex.quote
-    tls = (TLS_COPY if restricted else s.tls_key) if s.tls_key else ""
+    tls = (tls_copy(vid) if restricted else s.tls_key) if s.tls_key else ""
     return (
         f"EASYRSA_DIR={q(s.easyrsa_dir)}\n"
         f"TEMPLATE={q(s.template_path)}\n"
@@ -204,11 +218,34 @@ def direct_command(script_name: str, conf: str, command: str) -> str:
     )
 
 
-PKI_COMMAND = 'command="/usr/local/bin/kastellan-pki /etc/kastellan-pki.conf"'
-CRL_COMMAND = 'command="/usr/bin/kastellan-crl /etc/kastellan-crl.conf"'
 # dropbear (OpenWrt) knows neither `restrict` nor `from=`; these are what it has.
 DROPBEAR_LIMITS = "no-port-forwarding,no-agent-forwarding,no-pty,no-X11-forwarding"
-TLS_COPY = "/etc/kastellan-pki/tls.key"
+
+
+def _own(vid: str, path: str, ext: str) -> str:
+    """A VPN's own file on a host (several VPNs can share one); "openvpn", the one from before
+    there could be several, keeps the plain name."""
+    return f"{path}{ext}" if vid == "openvpn" else f"{path}-{vid}{ext}"
+
+
+def pki_conf_path(vid: str) -> str:
+    return _own(vid, "/etc/kastellan-pki", ".conf")
+
+
+def crl_conf_path(vid: str) -> str:
+    return _own(vid, "/etc/kastellan-crl", ".conf")
+
+
+def tls_copy(vid: str) -> str:
+    return _own(vid, "/etc/kastellan-pki/tls", ".key")
+
+
+def pki_command(vid: str) -> str:
+    return f'command="/usr/local/bin/kastellan-pki {pki_conf_path(vid)}"'
+
+
+def crl_command(vid: str) -> str:
+    return f'command="/usr/bin/kastellan-crl {crl_conf_path(vid)}"'
 
 
 def key_lines(command: str, key: str, hub_ip: str | None) -> tuple[str, str]:
@@ -219,10 +256,13 @@ def key_lines(command: str, key: str, hub_ip: str | None) -> tuple[str, str]:
     )
 
 
-def install_script(role: str, s: OpenVpnSource, vpn_public_key: str, hub_ip: str | None = None) -> str:
-    """Shell commands (run as root) that set up restricted mode on the PKI host ("pki") or the
-    OpenVPN server ("server"). Shown for copying; also what "Install for me" runs."""
+def install_script(
+    role: str, s: OpenVpnSource, vpn_public_key: str, hub_ip: str | None = None, vid: str = "openvpn"
+) -> str:
+    """Shell commands (run as root) that set up restricted mode for VPN `vid` on its PKI host
+    ("pki") or its OpenVPN server ("server"). Shown for copying; also what "Install for me" runs."""
     q = shlex.quote
+    pki_path, crl_path, tls = pki_conf_path(vid), crl_conf_path(vid), tls_copy(vid)
     lines = ["set -eu", "umask 022"]
     if role == "pki":
         u = s.pki_user
@@ -240,13 +280,13 @@ def install_script(role: str, s: OpenVpnSource, vpn_public_key: str, hub_ip: str
             _heredoc("/usr/local/bin/kastellan-pki", script("kastellan-pki")).rstrip("\n"),
             "chmod 755 /usr/local/bin/kastellan-pki",
             "mkdir -p /etc/kastellan-pki",
-            _heredoc("/etc/kastellan-pki.conf", pki_conf(s, restricted=True)).rstrip("\n"),
-            "chmod 644 /etc/kastellan-pki.conf",
+            _heredoc(pki_path, pki_conf(s, restricted=True, vid=vid)).rstrip("\n"),
+            f"chmod 644 {pki_path}",
         ]
         if s.tls_key:
             lines += [
                 f"# A copy of the TLS key {u} can read (run this again if that key changes).",
-                f"cp {q(s.tls_key)} {TLS_COPY} && chown {u}: {TLS_COPY} && chmod 600 {TLS_COPY}",
+                f"cp {q(s.tls_key)} {tls} && chown {u}: {tls} && chmod 600 {tls}",
             ]
         if s.client_template:
             lines += [
@@ -255,7 +295,11 @@ def install_script(role: str, s: OpenVpnSource, vpn_public_key: str, hub_ip: str
                 f"chmod 644 {q(s.template_path)}",
             ]
         lines.append("# Kastellan's VPN key may run this script, and nothing else.")
-        lines += authorize(u, *key_lines(PKI_COMMAND, vpn_public_key, hub_ip))
+        lines += authorize(
+            u,
+            *key_lines(pki_command(vid), vpn_public_key, hub_ip),
+            replace=("/usr/local/bin/kastellan-pki", vpn_public_key.split()[1]),
+        )
         lines.append("echo kastellan-pki installed")
     else:
         u = s.server_user
@@ -265,8 +309,8 @@ def install_script(role: str, s: OpenVpnSource, vpn_public_key: str, hub_ip: str
             "  || true",
             _heredoc("/usr/bin/kastellan-crl", script("kastellan-crl")).rstrip("\n"),
             "chmod 755 /usr/bin/kastellan-crl",
-            _heredoc("/etc/kastellan-crl.conf", crl_conf(s)).rstrip("\n"),
-            "chmod 644 /etc/kastellan-crl.conf",
+            _heredoc(crl_path, crl_conf(s)).rstrip("\n"),
+            f"chmod 644 {crl_path}",
         ]
         if u != "root":
             folder = s.crl_path.rsplit("/", 1)[0] or "/"
@@ -276,7 +320,11 @@ def install_script(role: str, s: OpenVpnSource, vpn_public_key: str, hub_ip: str
                 f"echo 'Note: {u} must be able to write {folder}' >&2",
             ]
         lines.append("# Kastellan's VPN key may run this script, and nothing else.")
-        lines += authorize(u, *key_lines(CRL_COMMAND, vpn_public_key, hub_ip))
+        lines += authorize(
+            u,
+            *key_lines(crl_command(vid), vpn_public_key, hub_ip),
+            replace=("/usr/bin/kastellan-crl", vpn_public_key.split()[1]),
+        )
         lines += [
             f"grep -rqs {q('crl-verify ' + s.crl_path)} /etc/openvpn /etc/config/openvpn "
             f"|| echo 'Note: add \"crl-verify {s.crl_path}\" to the OpenVPN server config.'",
@@ -345,7 +393,7 @@ class OpenVpn:
             await self._pki("renew-crl")
         crl = await self._pki("crl")
         if self.server_device is None:
-            raise RuntimeError("no vpn.openvpn.server: the CRL can't reach the server")
+            raise RuntimeError("no server: for this VPN: the CRL can't reach the server")
         await self._run(
             self.server_device, self.s.server_user, "kastellan-crl", crl_conf(self.s), "install", crl
         )

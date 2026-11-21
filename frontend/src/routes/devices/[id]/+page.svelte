@@ -1,4 +1,5 @@
 <script lang="ts">
+	const HOSTS = ['server', 'pc', 'laptop', 'other'];
 	import { page } from '$app/state';
 	import { api, type Change, type Series } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
@@ -46,13 +47,6 @@
 		goto(t === 'status' ? '?' : `?tab=${t}`, { replaceState: true });
 	}
 	/** One action through the host's actor; what happened, in words. */
-	async function actOn(ability: 'update-container' | 'restart-container', name: string) {
-		const r = await api.act(id, ability, name);
-		if (ability === 'restart-container') return 'Restarted.';
-		return r.updated
-			? `Updated (${r.from} → ${r.to}).`
-			: `Nothing to do: ${r.why ?? 'already the newest'}.`;
-	}
 	// Through the hub on its own name (webproxy.py) for signed-in admins when web: is set: the
 	// hub hands out a one-time ticket and sends the browser there; else the device directly.
 	const webUi = $derived.by(() => {
@@ -177,7 +171,7 @@
 			</div>
 		</div>
 		<div class="flex shrink-0 flex-wrap gap-2 self-start">
-			{#if device.ssh && store.me?.role === 'admin' && store.me.user}
+			{#if device.ssh_port && store.me?.role === 'admin' && store.me.user}
 				<a
 					href="/devices/{device.id}/terminal"
 					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
@@ -297,19 +291,8 @@
 				report={device.host_report}
 				checked={device.host_checked ?? null}
 				error={device.host_error ?? null}
-				reboot={device.act && store.me?.role === 'admin' && store.me.user
-					? async () => {
-							await api.act(id, 'reboot');
-							return 'Rebooting in a minute (cancel on the host: shutdown -c).';
-						}
-					: null}
-				upgrade={device.act && store.me?.role === 'admin' && store.me.user
-					? async () => {
-							const r = await api.act(id, 'upgrade-packages');
-							const n = r.upgraded ?? 0;
-							return `${n} ${n === 1 ? 'package' : 'packages'} updated${r.reboot ? '; it wants a reboot now' : ''}.`;
-						}
-					: null}
+				device={device.id}
+				canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
 			/>
 		{:else if device.collect && device.host_error}
 			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
@@ -341,8 +324,12 @@
 							allowedServices={device.router?.services_allowed ?? []}
 						/>
 					{/if}
-					{#if !device.openwrt}
+					<!-- Linux hosts only (a router or a camera has its own way, or none); shown elsewhere
+					     only when set up already, so it can be removed. -->
+					{#if device.collect || (!device.openwrt && HOSTS.includes(device.kind))}
 						<CollectorSetup device={device.id} canInstall={!!store.me.user} />
+					{/if}
+					{#if device.act || (!device.openwrt && HOSTS.includes(device.kind))}
 						<ActorSetup
 							device={device.id}
 							containers={(device.containers ?? []).map((c) => c.name)}
@@ -385,9 +372,10 @@
 				</p>
 			</div>
 			{#if device.containers}<ContainersTable
+					device={device.id}
 					containers={device.containers}
 					stale={!!device.containers_error}
-					act={device.act && store.me?.role === 'admin' && store.me.user ? actOn : null}
+					canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
 				/>{/if}
 		{/if}
 

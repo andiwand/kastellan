@@ -41,7 +41,7 @@ import stat
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -211,6 +211,8 @@ class Entry:
     created: float
     changed: float
     public: str  # an SSH key's public half; "" otherwise
+    # A login's devices: the only ones a terminal may send it to (sealed with user and notes).
+    devices: list[str] = field(default_factory=list)
 
     def view(self) -> dict[str, Any]:
         return {
@@ -223,6 +225,7 @@ class Entry:
             "created": self.created,
             "changed": self.changed,
             "public": self.public,
+            "devices": self.devices,
         }
 
 
@@ -476,6 +479,17 @@ class Vault:
                     stale.append(rid)
         return stale
 
+    def has_slot(self, rid: str, user: str, tag: str) -> bool:
+        """Whether this admin has a password slot of their own in this ring, made with the
+        password they have now (`tag`: auth.password_tag of its hash). Using a login there needs
+        one: an admin without it doesn't use the ring's logins only because someone opened it."""
+        with self._lock:
+            ring = self._read()["rings"].get(rid)
+            return any(
+                s["way"] == "password" and s.get("user") == user and s.get("tag") == tag
+                for s in (ring["slots"] if ring else [])
+            )
+
     def opens_with(self, rid: str, user: str, password: str) -> bool:
         """Whether this admin's own password slot opens this ring (a second check before showing
         one of its secrets)."""
@@ -665,16 +679,19 @@ class Vault:
                 return rid, ring["entries"][id]
         return None
 
-    def _about(self, rid: str, id: str, e: dict[str, Any]) -> tuple[str, str]:
-        """A login's user name and notes: sealed with the ring's key; ("", "") while it is locked."""
+    def _about(self, rid: str, id: str, e: dict[str, Any]) -> tuple[str, str, list[str]]:
+        """A login's user name, notes and devices: sealed with the ring's key (so they can't be
+        changed in the file unnoticed); empty while it is locked."""
         key = self._keys.get(rid)
         if key is None or "about" not in e:
-            return "", ""
+            return "", "", []
         try:
             about = json.loads(_open(key, e["about"], _aad(id, rid, e["kind"], "about")))
         except (InvalidTag, ValueError):
-            return "", ""
-        return str(about.get("user", "")), str(about.get("notes", ""))
+            return "", "", []
+        devices = about.get("devices")
+        devices = [str(d) for d in devices] if isinstance(devices, list) else []
+        return str(about.get("user", "")), str(about.get("notes", "")), devices
 
     def entries(self) -> list[Entry]:
         if not self.exists:
@@ -682,7 +699,7 @@ class Vault:
         out = []
         for rid, ring in self._read()["rings"].items():
             for id, e in ring["entries"].items():
-                user, notes = self._about(rid, id, e)
+                user, notes, devices = self._about(rid, id, e)
                 out.append(
                     Entry(
                         id,
@@ -694,6 +711,7 @@ class Vault:
                         e.get("created", 0),
                         e.get("changed", 0),
                         e.get("public", ""),
+                        devices,
                     )
                 )
         return sorted(out, key=lambda e: (e.ring, e.name.lower() or e.id))
@@ -733,6 +751,7 @@ class Vault:
         user: str = "",
         notes: str = "",
         public: str = "",
+        devices: list[str] | None = None,
     ) -> None:
         """Add or change an entry (a new one goes into `ring`, Kastellan's by default; an
         existing one stays where it is: `move` moves it). `secret` None keeps the one it has."""
@@ -752,7 +771,9 @@ class Vault:
                 if old["kind"] != kind:  # re-sealed: the kind is bound in
                     secret = _open(key, old["secret"], _aad(id, rid, old["kind"])).decode()
             now = time.time()
-            about = json.dumps({"user": user, "notes": notes}).encode()
+            if devices is None:  # kept as they were
+                devices = self._about(rid, id, old)[2] if old else []
+            about = json.dumps({"user": user, "notes": notes, "devices": sorted(set(devices))}).encode()
             doc["rings"][rid]["entries"][id] = {
                 "kind": kind,
                 "name": name,

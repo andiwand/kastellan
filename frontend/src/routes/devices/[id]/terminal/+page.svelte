@@ -12,9 +12,18 @@
 	import type { Terminal } from '@xterm/xterm';
 
 	/** What the page shows besides the terminal: why it can't connect, and what to do. */
+	type Stored = { id: string; name: string; user: string };
 	type Problem =
-		| { kind: 'unknown-host'; fingerprint: string }
-		| { kind: 'changed-host'; fingerprint: string }
+		| { kind: 'unknown-host'; fingerprint: string; port: number }
+		| { kind: 'changed-host'; fingerprint: string; port: number }
+		| {
+				kind: 'login';
+				why: string;
+				vault: boolean;
+				ringOpen: boolean;
+				stored: Stored[];
+				failed: string | null;
+		  }
 		| { kind: 'no-key'; message: string; publicKey: string | null }
 		| { kind: 'error'; message: string }
 		| { kind: 'exit'; status: number | null }
@@ -27,6 +36,11 @@
 	let problem = $state<Problem | null>(null);
 	let connected = $state(false);
 	let busy = $state(false);
+	let note = $state<string | null>(null);
+	// A login typed here: used for this connection only, unless it is to be stored.
+	let user = $state('');
+	let password = $state('');
+	let store_ = $state(false);
 
 	let term: Terminal | null = null;
 	let socket: WebSocket | null = null;
@@ -79,15 +93,33 @@
 		);
 		ws.binaryType = 'arraybuffer';
 		socket = ws;
-		ws.onopen = () => (connected = true);
 		ws.onmessage = async (e) => {
 			if (e.data instanceof ArrayBuffer) {
+				if (!connected) {
+					connected = true;
+					if (problem?.kind === 'login') problem = null;
+				}
 				term?.write(new Uint8Array(e.data));
 				return;
 			}
 			const m = JSON.parse(e.data);
 			if (m.type === 'unknown-host' || m.type === 'changed-host') {
-				problem = { kind: m.type, fingerprint: m.fingerprint };
+				problem = { kind: m.type, fingerprint: m.fingerprint, port: m.port };
+			} else if (m.type === 'login-needed') {
+				user ||= m.user ?? '';
+				problem = {
+					kind: 'login',
+					why: m.why,
+					vault: m.vault,
+					ringOpen: m.ring_open,
+					stored: m.stored ?? [],
+					failed: null
+				};
+			} else if (m.type === 'login-failed' && problem?.kind === 'login') {
+				problem.failed = m.message;
+				busy = false;
+			} else if (m.type === 'note') {
+				note = m.message;
 			} else if (m.type === 'exit') {
 				problem = { kind: 'exit', status: m.status };
 			} else if (m.type === 'error' && /does not accept the hub's key/.test(m.message)) {
@@ -134,10 +166,19 @@
 		term = null;
 	}
 
-	async function trust(fingerprint: string) {
+	/** Log in: typed (the password goes to the hub for this connection only) or a stored one. */
+	function logIn(how: { entry: string } | { user: string; password: string; store: boolean }) {
+		if (socket?.readyState !== WebSocket.OPEN || problem?.kind !== 'login') return;
+		problem.failed = null;
+		busy = true;
+		socket.send(JSON.stringify({ type: 'login', ...how }));
+		password = '';
+	}
+
+	async function trust(fingerprint: string, port: number) {
 		busy = true;
 		try {
-			await api.trustHost(id, fingerprint);
+			await api.trustHost(id, fingerprint, port);
 			await open();
 		} catch (e) {
 			problem = { kind: 'error', message: (e as Error).message };
@@ -146,10 +187,10 @@
 		}
 	}
 
-	async function forget() {
+	async function forget(port: number) {
 		busy = true;
 		try {
-			await api.forgetHost(id);
+			await api.forgetHost(id, port);
 			await open();
 		} catch (e) {
 			problem = { kind: 'error', message: (e as Error).message };
@@ -161,7 +202,7 @@
 	// Open once the device is known and the page has its element.
 	let started = false;
 	$effect(() => {
-		if (!started && host && device?.ssh) {
+		if (!started && host && device?.ssh_port) {
 			started = true;
 			open();
 		}
@@ -185,9 +226,9 @@
 		</a>
 		<h1 class="truncate text-lg font-semibold tracking-tight">
 			{device?.name ?? id}
-			{#if device?.ssh}
+			{#if device}
 				<span class="ml-1 font-mono text-sm font-normal text-muted">
-					{device.ssh.user}@{device.host}
+					{device.ssh ? `${device.ssh.user}@` : ''}{device.host}
 				</span>
 			{/if}
 		</h1>
@@ -212,12 +253,13 @@
 
 {#if store.devices && !device}
 	<p class="card mt-4 px-5 py-8 text-center text-sm text-muted">No device {id}.</p>
-{:else if device && !device.ssh}
+{:else if device && !device.ssh_port}
 	<div class="card mt-4 px-6 py-8 text-sm leading-relaxed text-muted">
-		<p class="font-medium text-text">This device has no SSH access set up.</p>
-		<p class="mt-2">Add it to the device in config.yaml:</p>
-		<pre class="mt-3 rounded-lg bg-surface-2 p-3 font-mono text-[13px] text-text">ssh:
-  user: root</pre>
+		<p class="font-medium text-text">Nothing says this device has SSH.</p>
+		<p class="mt-2">
+			Give it an SSH service (a port check named ssh, or on port 22) on its page, or set up
+			Kastellan's key there (<a class="underline" href="/devices/{id}#setup">SSH access</a>).
+		</p>
 	</div>
 {:else}
 	{#if problem}
@@ -240,14 +282,23 @@
 								ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 							</code>) before you trust it:
 						</p>
+						<p class="mt-1 text-xs text-muted">
+							On OpenWrt: <code class="font-mono">
+								dropbearkey -y -f /etc/dropbear/dropbear_ed25519_host_key
+							</code>
+						</p>
 						<p class="mt-2 font-mono text-xs break-all text-text">{problem.fingerprint}</p>
-						<button
-							disabled={busy}
-							onclick={() => problem?.kind === 'unknown-host' && trust(problem.fingerprint)}
-							class="mt-3 h-8 rounded-lg bg-accent px-3 text-sm font-medium text-accent-ink hover:opacity-90 disabled:opacity-60"
-						>
-							Trust this key and connect
-						</button>
+						<div class="mt-3 flex flex-wrap gap-2">
+							<button
+								disabled={busy}
+								onclick={() =>
+									problem?.kind === 'unknown-host' && trust(problem.fingerprint, problem.port)}
+								class="btn btn-sm btn-primary"
+							>
+								Trust this key and connect
+							</button>
+							<a class="btn btn-sm" href="/devices/{id}">Don't trust it</a>
+						</div>
 					</div>
 				</div>
 			{:else if problem.kind === 'changed-host'}
@@ -262,13 +313,70 @@
 						<p class="mt-2 font-mono text-xs break-all text-text">{problem.fingerprint}</p>
 						<button
 							disabled={busy}
-							onclick={forget}
-							class="mt-3 h-8 rounded-lg border border-line px-3 text-sm font-medium hover:border-line-strong disabled:opacity-60"
+							onclick={() => problem?.kind === 'changed-host' && forget(problem.port)}
+							class="btn btn-sm mt-3"
 						>
 							It was reinstalled: forget the old key
 						</button>
 					</div>
 				</div>
+			{:else if problem.kind === 'login'}
+				{@const p = problem}
+				<p class="font-medium">Log in to {device?.host}</p>
+				<p class="mt-1 text-muted">
+					{p.why}. Log in yourself, or
+					<a class="underline" href="/devices/{id}#setup">set up Kastellan's own key</a> so it can.
+				</p>
+				{#if p.stored.length}
+					<div class="mt-3 flex flex-wrap items-center gap-2">
+						<span class="text-xs text-muted">Stored logins:</span>
+						{#each p.stored as s (s.id)}
+							<button class="btn btn-sm" disabled={busy} onclick={() => logIn({ entry: s.id })}>
+								{s.name}{s.user ? ` · ${s.user}` : ''}
+							</button>
+						{/each}
+					</div>
+				{/if}
+				<form
+					class="mt-3 flex flex-wrap items-end gap-2"
+					onsubmit={(e) => {
+						e.preventDefault();
+						logIn({ user: user.trim(), password, store: store_ });
+					}}
+				>
+					<label class="field">
+						User
+						<input class="input w-40" bind:value={user} autocomplete="username" required />
+					</label>
+					<label class="field">
+						Password
+						<input
+							class="input w-52"
+							type="password"
+							bind:value={password}
+							autocomplete="current-password"
+							required
+						/>
+					</label>
+					<button class="btn btn-primary" disabled={busy || !user.trim() || !password}>
+						Log in
+					</button>
+				</form>
+				{#if p.vault && p.ringOpen}
+					<label class="choice mt-2 text-xs">
+						<input type="checkbox" bind:checked={store_} />
+						<span>Store this login in the People ring (for this terminal next time)</span>
+					</label>
+				{:else}
+					<p class="mt-2 text-xs text-faint">
+						Used for this connection only. {p.vault
+							? 'Unlock the People ring on Keys to use or store saved logins.'
+							: 'Make the key rings on Keys to store logins.'}
+					</p>
+				{/if}
+				{#if p.failed}
+					<p class="mt-2 text-xs" style:color="var(--critical-text)">{p.failed}</p>
+				{/if}
 			{:else if problem.kind === 'no-key'}
 				<p class="font-medium">{problem.message}</p>
 				{#if problem.publicKey}
@@ -288,6 +396,7 @@
 		</div>
 	{/if}
 
+	{#if note}<p class="mt-2 text-xs" style:color="var(--good-text)">{note}</p>{/if}
 	<div
 		class="mt-4 overflow-hidden rounded-xl border border-line p-2 shadow-card"
 		style:background="var(--terminal-bg)"

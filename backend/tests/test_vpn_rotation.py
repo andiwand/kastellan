@@ -271,3 +271,24 @@ async def test_forgetting_a_host_finishes_with_a_warning(hosts) -> None:
     assert rot.stage == "done" and rot.devices["server"].forgotten
     assert "may still be trusted" in (rot.devices["server"].error or "")
     assert keys.side_key("old", "vpn") is None
+
+
+def test_a_rotation_from_before_several_vpns_carries_on(tmp_path: Path) -> None:
+    """Its hosts were "pki" and "server": now those of the VPN `openvpn`, so the end runs there."""
+    import json
+
+    keys = Keys(tmp_path)
+    rotator = VpnRotator(keys)
+    rotator.path.parent.mkdir(parents=True, exist_ok=True)
+    rotator.path.write_text(
+        json.dumps(
+            {
+                "started": "2026-11-21T09:00:00+00:00",
+                "stage": "removing",
+                "devices": {"pki": {"added": True}, "server": {"added": True}},
+            }
+        )
+    )
+    rotator.rename_hosts({"pki": "openvpn:pki", "server": "openvpn:server"})
+    rot = VpnRotator(keys).state()
+    assert rot is not None and set(rot.devices) == {"openvpn:pki", "openvpn:server"}

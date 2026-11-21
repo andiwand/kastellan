@@ -44,7 +44,7 @@ from .ssh import Keys
 from .terminals import Terminals
 from .vault import AUTO, KASTELLAN, Damaged, Vault, WrongKey, policy
 from .versions import Versions
-from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status
+from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status, split_status
 from .vuln_policy import assess, auto_update_reason
 
 log = logging.getLogger(__name__)
@@ -109,12 +109,13 @@ class Hub:
         self.vault.policy = lambda ring: policy(self.config.vault, ring)
         self.keys = Keys(settings.data / "ssh", self.vault)
         self.secrets = Secrets(settings.data / "secrets", self.vault)
-        # The OpenVPN CRL as last pushed: {"pushed": iso, "next_update": iso, "error": str}
-        self.crl_state: dict[str, Any] = {}
-        # Who is connected to the OpenVPN server (read through its OpenWrt login), and when each
-        # client was last seen: {"checked": iso, "connected": [...], "error": str | None}
-        self.ovpn_status: dict[str, Any] = {}
-        self.ovpn_seen = Seen(settings.data / "vpn")
+        # Per OpenVPN VPN (its id under vpns:): the CRL as last pushed ({"pushed": iso,
+        # "next_update": iso, "error": str}); who is connected to its server (read through the
+        # server's OpenWrt login: {"checked": iso, "connected": [...], "error": str | None});
+        # when each client was last seen.
+        self.crl_state: dict[str, dict[str, Any]] = {}
+        self.ovpn_status: dict[str, dict[str, Any]] = {}
+        self._seen: dict[str, Seen] = {}
         self.terminals = Terminals()
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)
@@ -570,9 +571,9 @@ class Hub:
                 except Exception as e:  # what it said last stays, marked by its time
                     status.router_error = _brief(e)
                     log.info("%s: %s", id, status.router_error)
-                    ovpn = self.config.vpn.openvpn
-                    if ovpn and ovpn.server == id:  # nobody is known to be connected now
-                        self.ovpn_status = {**self.ovpn_status, "connected": [], "error": status.router_error}
+                    for vid in self.openvpns_on(id):  # nobody is known to be connected now
+                        was = self.ovpn_status.get(vid, {})
+                        self.ovpn_status[vid] = {**was, "connected": [], "error": status.router_error}
                     return
                 status.router, status.router_checked, status.router_error = report, datetime.now(UTC), None
                 board = report["board"]
@@ -586,9 +587,8 @@ class Hub:
                 status.info_checked = datetime.now(UTC)
                 if firmware:
                     self._note_firmware(id, f"OpenWrt {firmware}", datetime.now(UTC))
-                ovpn = self.config.vpn.openvpn
-                if ovpn and ovpn.server == id:
-                    await self._read_openvpn(id, ubus)
+                if vids := self.openvpns_on(id):
+                    await self._read_openvpn(vids, id, ubus)
 
         while True:
             if self.demo:  # the made-up network's made-up access points
@@ -600,30 +600,55 @@ class Hub:
                 await asyncio.gather(*(one(id, d) for id, d in routers), return_exceptions=True)
             await asyncio.sleep(ROUTER_EVERY)
 
-    async def _read_openvpn(self, id: str, ubus: Ubus) -> None:
-        """Who is connected to the OpenVPN server now (its OpenWrt login's `openvpn` ability)."""
+    def openvpns_on(self, device: str) -> list[str]:
+        """The OpenVPN VPNs whose server is this device."""
+        return [v for v, s in self.config.vpns.items() if s.kind == "openvpn" and s.server == device]
+
+    def seen(self, vid: str) -> Seen:
+        """When each client of an OpenVPN VPN was last seen connected."""
+        if vid not in self._seen:
+            self._seen[vid] = Seen(self.settings.data / "vpn", vid)
+        return self._seen[vid]
+
+    async def _read_openvpn(self, vids: list[str], id: str, ubus: Ubus) -> None:
+        """Who is connected to the OpenVPN servers on this router now (its OpenWrt login's
+        `openvpn` ability), read once and split by server: each VPN gets only its own server's
+        clients (its `instance:`, or the one server there is), so last seen stays per VPN."""
         now = datetime.now(UTC)
         try:
             text = await openwrt_client.openvpn_status(ubus)
         except Exception as e:  # not granted (set up its login again), or it doesn't answer
-            self.ovpn_status = {**self.ovpn_status, "connected": [], "error": _brief(e)}
+            for vid in vids:
+                was = self.ovpn_status.get(vid, {})
+                self.ovpn_status[vid] = {**was, "connected": [], "error": _brief(e)}
             return
-        connected = parse_status(text)
-        error = None
-        if not connected:  # nothing to read there: say why, not "not seen yet"
-            markers = {ln for ln in text.splitlines() if ln.startswith("!")}
-            if "!no-servers" in markers:
+        servers, none = split_status(text)
+        for vid in vids:
+            s = self.config.vpns.get(vid)
+            instance = getattr(s, "instance", None)
+            connected: list = []
+            error = None
+            if none or not servers:
                 error = f"no OpenVPN server found on {id}"
-            elif "!no-status" in markers:
-                error = f"the OpenVPN server on {id} keeps no status file (`status` in its config)"
-            elif "!unreadable" in markers:
-                error = f"the OpenVPN status file on {id} can't be read"
-        self.ovpn_seen.note(connected, now)
-        self.ovpn_status = {
-            "checked": now.isoformat(timespec="seconds"),
-            "connected": [asdict(c) for c in connected],
-            "error": error,
-        }
+            elif instance is None and len(servers) > 1:
+                there = ", ".join(sorted(servers))
+                error = f"several OpenVPN servers on {id} ({there}): choose its instance in Settings"
+            elif instance is not None and instance not in servers:
+                error = f"no OpenVPN server {instance!r} on {id} (there: {', '.join(sorted(servers))})"
+            else:
+                part = servers[instance or next(iter(servers))]
+                connected = parse_status(part)
+                markers = {ln for ln in part.splitlines() if ln.startswith("!")}
+                if not connected and "!no-status" in markers:
+                    error = f"the OpenVPN server on {id} keeps no status file (`status` in its config)"
+                elif not connected and "!unreadable" in markers:
+                    error = f"the OpenVPN status file on {id} can't be read"
+                self.seen(vid).note(connected, now)  # only what was read: no guessing
+            self.ovpn_status[vid] = {
+                "checked": now.isoformat(timespec="seconds"),
+                "connected": [asdict(c) for c in connected],
+                "error": error,
+            }
 
     async def _heartbeat(self) -> None:
         """Call the heartbeat URL every minute while the hub runs (a dead man's switch)."""
@@ -1021,14 +1046,21 @@ class Hub:
         # Through the outbox, like every alarm: retried when a channel can't be reached.
         await self._send([Message(severity, title, f"because of {reason}", id)], datetime.now(UTC))
 
-    async def push_crl(self, ovpn: OpenVpn, renew: bool = False) -> None:
-        """Bring the CRL to the OpenVPN server and note when it expires."""
+    def openvpn(self, vid: str) -> OpenVpn:
+        """An OpenVPN VPN's client (its PKI host and server)."""
+        s = self.config.vpns[vid]
+        assert s.kind == "openvpn"
+        devices = self.config.devices
+        return OpenVpn(self.keys, s, devices[s.pki], devices[s.server] if s.server else None)
+
+    async def push_crl(self, vid: str, renew: bool = False) -> None:
+        """Bring a VPN's CRL to its OpenVPN server and note when it expires."""
         try:
-            pem = await ovpn.push_crl(renew)
+            pem = await self.openvpn(vid).push_crl(renew)
         except Exception as e:
-            self.crl_state = {**self.crl_state, "error": f"{type(e).__name__}: {e}"}
+            self.crl_state[vid] = {**self.crl_state.get(vid, {}), "error": f"{type(e).__name__}: {e}"}
             raise
-        self.crl_state = {
+        self.crl_state[vid] = {
             "pushed": datetime.now(UTC).isoformat(timespec="seconds"),
             "next_update": crl_next_update(pem),
             "error": None,
@@ -1039,19 +1071,20 @@ class Hub:
         every client once its CRL has expired."""
         await asyncio.sleep(CRL_FIRST)
         while True:
-            ovpn = self.config.vpn.openvpn
-            if ovpn and ovpn.server and not self.demo:
-                devices = self.config.devices
-                client = OpenVpn(self.keys, ovpn, devices[ovpn.pki], devices[ovpn.server])
+            for vid, s in list(self.config.vpns.items()):
+                # One VPN's trouble (or its removal meanwhile) never stops the others' renewal.
+                if vid not in self.config.vpns or s.kind != "openvpn" or not s.server or self.demo:
+                    continue
                 try:
-                    await self.push_crl(client, renew=True)
-                    self.audit.record("vpn.openvpn.crl", None, None, outcome="renewed daily")
+                    await self.push_crl(vid, renew=True)
+                    self.audit.record("vpn.openvpn.crl", None, None, vpn=vid, outcome="renewed daily")
                 except Exception as e:
-                    log.warning("renewing the OpenVPN CRL failed: %s", e)
-                    await self._send(
-                        [Message(Severity.WARNING, "OpenVPN: the CRL couldn't be renewed", str(e)[:200])],
-                        datetime.now(UTC),
-                    )
+                    log.warning("renewing the CRL of %s failed: %s", vid, e)
+                    if vid not in self.config.vpns:
+                        continue  # removed while it ran
+                    title = f"{s.name or vid}: the CRL couldn't be renewed"
+                    with contextlib.suppress(Exception):
+                        await self._send([Message(Severity.WARNING, title, str(e)[:200])], datetime.now(UTC))
             await asyncio.sleep(86400)
 
     async def _expire_tickets(self) -> None:

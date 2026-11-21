@@ -52,3 +52,15 @@ sites: # optional names for the sites devices are at
 # *.<domain> in your DNS, pointing at the hub). Only signed-in admins get through.
 # web:
 #   domain: kastellan.home.arpa
+
+# VPNs whose clients Kastellan manages (any number, of either kind; the VPN page adds them).
+# vpns:
+#   home:
+#     kind: wireguard
+#     name: Home
+#     wg_easy: http://nas.lan:51821 # its login's password: set on the VPN page (a secret)
+#   office:
+#     kind: openvpn
+#     name: Office
+#     pki: nas # the device with the easy-rsa PKI
+#     server: router # the OpenVPN server (gets the revocation list)

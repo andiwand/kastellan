@@ -608,3 +608,25 @@ def test_a_way_whose_key_is_missing_now_keeps_its_slot(tmp_path: Path) -> None:
     chosen = settings(kastellan={"unlock": ["password", {"env": "RING"}]})
     v.policy = lambda r: policy(chosen, r)
     assert v.unlock_by_itself({"RING": key}, {}) == [KASTELLAN]
+
+
+def test_where_a_login_may_go_needs_the_password(tmp_path: Path) -> None:
+    """A login's devices decide which hosts a terminal sends it to: changing them needs the
+    admin's password typed again; only real devices; sealed with the login."""
+    with TestClient(create_app(Settings(config=config(tmp_path), data=tmp_path))) as c:
+        signin(c, "ada", ADA)
+        c.post("/api/vault/create", json={"password": ADA}, headers=H)
+        form = {"name": "Box root", "ring": PEOPLE, "user": "root", "secret": "box pw"}
+        assert c.post("/api/vault/entries", json=form, headers=H).status_code == 200
+        url = "/api/vault/entries/box-root"
+        assert c.put(url, json=form | {"secret": None, "devices": ["box"]}, headers=H).status_code == 403
+        bad = form | {"secret": None, "devices": ["nope"], "password": ADA}
+        assert c.put(url, json=bad, headers=H).status_code == 400
+        ok = form | {"secret": None, "devices": ["box"], "password": ADA}
+        assert c.put(url, json=ok, headers=H).status_code == 200
+        hub = c.app.state.hub
+        assert hub.vault.entry("box-root").devices == ["box"]
+        # A later change of its name keeps where it may go.
+        assert c.put(url, json=form | {"secret": None, "name": "Box"}, headers=H).status_code == 200
+        assert hub.vault.entry("box-root").devices == ["box"]
+        assert '"devices"' not in (tmp_path / "vault.json").read_text()  # sealed with user and notes

@@ -77,6 +77,10 @@ class EntryForm(BaseModel):
     user: str = Field(default="", max_length=200)
     notes: str = Field(default="", max_length=2000)
     secret: str | None = Field(default=None, max_length=16384)  # None on a change: kept
+    # A login's devices (a terminal sends it only there); None on a change: kept. Changing them
+    # needs the admin's password typed again: it decides where a password may go.
+    devices: list[str] | None = Field(default=None, max_length=200)
+    password: str | None = Field(default=None, max_length=1024)
 
 
 def own(id: str) -> bool:
@@ -120,9 +124,9 @@ def router(hub: Hub) -> APIRouter:
         for dev, device in hub.config.devices.items():
             if device.openwrt is not None and hub.openwrt_secret(dev) == id:
                 out.append(f"{dev}: its OpenWrt login")
-        wg = hub.config.vpn.wireguard
-        if wg is not None and wg.password_secret == id:
-            out.append("the VPN: wg-easy")
+        for vid, vpn in hub.config.vpns.items():
+            if vpn.kind == "wireguard" and vpn.password_secret == id:
+                out.append(f"{hub.config.vpn_name(vid)}: its wg-easy login")
         return out
 
     def ring_view(ring: dict[str, Any]) -> dict[str, Any]:
@@ -355,7 +359,21 @@ def router(hub: Hub) -> APIRouter:
 
     def form_of(body: EntryForm, secret: str | None) -> dict[str, Any]:
         return {"kind": body.kind, "name": body.name.strip(), "user": body.user.strip(),
-                "notes": body.notes, "secret": secret}  # fmt: skip
+                "notes": body.notes, "secret": secret, "devices": body.devices}  # fmt: skip
+
+    async def check_devices(w: Who, body: EntryForm, before: list[str]) -> None:
+        """New devices for a login: real ones, and the admin's password typed again (with their
+        own way into its ring)."""
+        if body.devices is None or sorted(set(body.devices)) == sorted(before):
+            return
+        unknown = [d for d in body.devices if d not in hub.config.devices]
+        if unknown:
+            raise HTTPException(400, f"no such device: {', '.join(unknown)}")
+        if not body.password:
+            raise HTTPException(403, "type your password again to change where a login may go")
+        await check_password(w, body.password)
+        if not await asyncio.to_thread(hub.vault.opens_with, body.ring, w.user or "", body.password):
+            raise HTTPException(403, "your password doesn't open this ring (sign in again to get a slot)")
 
     @api.post("/entries")
     async def add(body: EntryForm, request: Request) -> dict[str, str]:
@@ -369,6 +387,7 @@ def router(hub: Hub) -> APIRouter:
             raise HTTPException(400, f"no ring {body.ring!r}")
         if not body.secret:
             raise HTTPException(400, "the secret is missing")
+        await check_devices(w, body, [])
         f = form_of(body, body.secret)
         try:
             hub.vault.put(id, f.pop("secret"), ring=body.ring, **f)
@@ -391,6 +410,7 @@ def router(hub: Hub) -> APIRouter:
                 raise HTTPException(400, f"no ring {body.ring!r}")
             if used_by(id) and not hub.vault.policy(body.ring).background:
                 raise HTTPException(400, "Kastellan uses it by itself: it stays in a ring Kastellan may use")
+        await check_devices(w, body, old.devices)
         f = form_of(body, body.secret or None)
         try:
             hub.vault.put(id, f.pop("secret"), **f)
@@ -398,7 +418,15 @@ def router(hub: Hub) -> APIRouter:
                 hub.vault.move(id, body.ring)
         except Locked as e:
             raise HTTPException(423, str(e)) from e
-        audit("change", w, request, entry=id, secret_changed=bool(body.secret), ring=body.ring)
+        audit(
+            "change",
+            w,
+            request,
+            entry=id,
+            secret_changed=bool(body.secret),
+            ring=body.ring,
+            **({"devices": sorted(set(body.devices))} if body.devices is not None else {}),
+        )
         return {"id": id}
 
     @api.delete("/entries/{id:path}")

@@ -31,6 +31,18 @@ _ADD = (
 )
 
 
+# Run as the file's owner: $0 the file, $1 the line about to be added, $2 a script path, $3 a
+# key's data. Removes the lines that bind that key to that script with other options (a VPN set
+# up again on the same login: the first matching line counts, so an old one would win).
+_DEDUPE = (
+    '[ -f "$0" ] || exit 0; '
+    'awk -v s="command=\\"$2" -v k=" $3" -v l="$1" \''
+    '{ i = index($0, s); c = i ? substr($0, i + length(s), 1) : ""; '
+    'if (i && (c == " " || c == "\\"") && index($0, k) && $0 != l) next; print }'
+    '\' "$0" > "$0.k" && cat "$0.k" > "$0"; rm -f "$0.k"'
+)
+
+
 def hub_address(host: str, port: int = 22) -> str | None:
     """The hub's own address as the device will see it (the route to it); no packet is sent."""
     try:
@@ -54,11 +66,17 @@ def openssh_options(hub_ip: str | None, *more: str) -> str:
     return ",".join(options) + " " if options else ""
 
 
-def authorize(user: str, openssh_line: str, dropbear_line: str) -> list[str]:
-    """Shell lines adding a key for `user` (run as root, or as that user)."""
+def authorize(
+    user: str, openssh_line: str, dropbear_line: str, replace: tuple[str, str] | None = None
+) -> list[str]:
+    """Shell lines adding a key for `user` (run as root, or as that user). With `replace`
+    (script path, key data): lines binding that key to that script otherwise go first."""
     q = shlex.quote
+    script, data = replace or ("", "")
+    dedupe = q(_DEDUPE) if replace else ""
     return [
         f"user={q(check_user(user))}",
+        f"script={q(script)}; keydata={q(data)}; dedupe={dedupe or chr(39) * 2}",
         "if [ -f /etc/openwrt_release ]; then line="
         + q(dropbear_line)
         + "; else line="
@@ -66,6 +84,7 @@ def authorize(user: str, openssh_line: str, dropbear_line: str) -> list[str]:
         + "; fi",
         'if [ -f /etc/openwrt_release ] && [ "$user" = root ]; then',
         "  keys=/etc/dropbear/authorized_keys",
+        '  [ -z "$dedupe" ] || sh -c "$dedupe" "$keys" "$line" "$script" "$keydata"',
         '  grep -qxF "$line" "$keys" 2>/dev/null || printf \'%s\\n\' "$line" >> "$keys"',
         '  chmod 600 "$keys"',
         "else",
@@ -76,8 +95,14 @@ def authorize(user: str, openssh_line: str, dropbear_line: str) -> list[str]:
         "  fi",
         "  # Written as $user: a symlink in their home can't send root's write anywhere.",
         f"  add={q(_ADD)}",
-        '  if [ "$(id -un)" = "$user" ]; then sh -c "$add" "$home/.ssh/authorized_keys" "$line"',
-        '  else su -s /bin/sh "$user" -c "$add" "$home/.ssh/authorized_keys" "$line"; fi',
+        '  f="$home/.ssh/authorized_keys"',
+        '  if [ "$(id -un)" = "$user" ]; then',
+        '    [ -z "$dedupe" ] || sh -c "$dedupe" "$f" "$line" "$script" "$keydata"',
+        '    sh -c "$add" "$f" "$line"',
+        "  else",
+        '    [ -z "$dedupe" ] || su -s /bin/sh "$user" -c "$dedupe" "$f" "$line" "$script" "$keydata"',
+        '    su -s /bin/sh "$user" -c "$add" "$f" "$line"',
+        "  fi",
         "fi",
     ]
 

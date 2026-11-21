@@ -156,6 +156,7 @@ old = exact(name)
 if old is None:
     fail(f"no container called {name}")
 ref = old["Config"]["Image"]
+step(f"checking {name} ({ref})")
 if "@" in ref:
     fail("pinned to a digest: nothing to update")
 if old["HostConfig"].get("AutoRemove"):
@@ -179,6 +180,7 @@ mine = docker("GET", f"/images/{before}/json")
 # someone publishes under the same name.
 if not any(d.split("@", 1)[0] and repo_of(d) == repo_of(ref) for d in mine.get("RepoDigests") or []):
     fail(f"{ref} wasn't pulled from its registry (built here?): not replaced from there")
+step(f"pulling {ref}")
 try:
     signal.alarm(900)  # the pull, all of it
     pull(ref)
@@ -187,6 +189,7 @@ try:
 except Exception as e:
     signal.alarm(0)
     fail(f"{ref}: {e}")
+step("comparing the pulled image with the running one")
 if after == before:
     done({"container": name, "image": ref, "updated": False, "why": "already the newest image"})
 
@@ -195,19 +198,25 @@ was_running = bool(old["State"].get("Running"))
 temp, keep = f"{name}-kastellan-new", f"{name}-kastellan-old"
 new_id = None
 try:
+    step("creating the new container")
     new_id = docker("POST", f"/containers/create?name={quote(temp)}", body)["Id"]
     for net, ep in others.items():
         docker("POST", f"/networks/{quote(net)}/connect", {"Container": new_id, "EndpointConfig": ep})
+    step("stopping the old container")
     docker("POST", f"/containers/{old['Id']}/stop?t=30", timeout=90)
     docker("POST", f"/containers/{old['Id']}/rename?name={quote(keep)}")
     docker("POST", f"/containers/{new_id}/rename?name={quote(name)}")
     if was_running:
+        step("starting the new container")
         docker("POST", f"/containers/{new_id}/start")
-        problem = runs_steadily(new_id, has_healthcheck(body))
+        healthcheck = has_healthcheck(body)
+        step(f"waiting until it runs steadily (up to {600 if healthcheck else 30} s)")
+        problem = runs_steadily(new_id, healthcheck)
         if problem:
             raise RuntimeError(f"the new container didn't work: {problem}")
 except Exception as e:
     # Back to how it was: the new one goes, the old one gets its name and runs again.
+    step(f"{e}: putting the old container back")
     try:
         if new_id:
             docker("DELETE", f"/containers/{new_id}?force=1", ok=(204, 404))
@@ -219,5 +228,6 @@ except Exception as e:
     except Exception as e2:
         fail(f"{e}; and putting the old one back failed: {e2} (it is called {keep})")
     fail(f"{e}; the old container runs again")
+step("removing the old container")
 docker("DELETE", f"/containers/{old['Id']}", ok=(204, 404))
 done({"container": name, "image": ref, "updated": True, "from": before[7:19], "to": after[7:19]})

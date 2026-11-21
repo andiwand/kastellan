@@ -4,6 +4,32 @@ import subprocess
 if len(sys.argv) != 1:
     fail("wrong arguments", 2)
 lock = one_at_a_time()  # not in the middle of an upgrade or a container swap
+
+# Nor while apt or dpkg works (an upgrade the actor gave up waiting for goes on by itself, as
+# do unattended-upgrades): a reboot then can leave packages half set up.
+PACKAGE_LOCKS = ("/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock", "/var/lib/apt/lists/lock")
+
+
+def package_work():
+    import fcntl
+
+    for path in PACKAGE_LOCKS:
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        except OSError:
+            continue  # not there (no apt here), or not a plain file: nothing holds it
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return path
+        finally:
+            os.close(fd)  # closing gives the lock back at once
+    return None
+
+
+if busy := package_work():
+    fail(f"apt or dpkg is still working ({busy} is held): not rebooting now; try again later")
+step("scheduling the reboot")
 r = subprocess.run(
     ["/sbin/shutdown", "-r", "+1", "Kastellan: reboot asked for (cancel with: shutdown -c)"],
     capture_output=True,

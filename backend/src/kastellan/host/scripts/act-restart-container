@@ -7,7 +7,9 @@ try:
         fail(f"no container called {name}")
     if found["HostConfig"].get("AutoRemove"):
         fail("started with --rm: a restart would remove it")
+    step(f"restarting {name}")
     docker("POST", f"/containers/{found['Id']}/restart?t=30", timeout=90)
+    step("checking it runs")
     state = docker("GET", f"/containers/{found['Id']}/json")["State"]
 except Exception as e:
     fail(str(e))
