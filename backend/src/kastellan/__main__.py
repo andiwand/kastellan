@@ -123,7 +123,7 @@ def restore_command(source: str, version: str | None, force: bool, only_list: bo
         why = f"the backup is damaged or not this passphrase's ({type(e).__name__})"
         raise SystemExit(f"Not restored: {why}") from e
     print(f"Restored {done['files']} files into {settings.data} (and {settings.config}).")
-    print("Start the hub and sign in as before; the key rings open with your password.")
+    print("Start the hub, sign in, and create a new backup passphrase to resume scheduled backups.")
 
 
 SHORT = 10  # under this, a password is easy to guess; allowed, after a warning

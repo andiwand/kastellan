@@ -226,8 +226,9 @@ docker compose up -d
 ```
 
 The command prompts for the passphrase. For folders, `--list` lists versions and `--version ID`
-selects one. `--force` replaces existing state, including sessions and old secrets. External
-unlock keys are not included. Central logs are optional; backups currently allow 128 MiB per
+selects one. `--force` replaces existing state, including sessions and old secrets. After
+restoring, create a new backup passphrase to resume scheduled hub backups. External unlock
+keys are not included. Central logs are optional; backups currently allow 128 MiB per
 file and 512 MiB total. Unreadable or changing state fails the backup instead of silently omitting files.
 
 Backups from the first hub-backup implementation have unsigned folder indexes. Download a
