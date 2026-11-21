@@ -216,7 +216,7 @@ INFO = {
 }
 
 
-def _c(name, image, tag, update_to=None, unchecked=None, state="running", previous=None):
+def _c(name, image, tag, update_to=None, unchecked=None, state="running", previous=None, within=None):
     return {
         "key": name,
         "wud_id": name,
@@ -231,6 +231,7 @@ def _c(name, image, tag, update_to=None, unchecked=None, state="running", previo
         "unchecked": unchecked,
         "registry": "hub",
         "previous": previous,
+        "update_within": within,
     }
 
 
@@ -238,6 +239,7 @@ def _c(name, image, tag, update_to=None, unchecked=None, state="running", previo
 CONTAINERS = {
     "nas": [
         _c("jellyfin", "jellyfin/jellyfin", "10.10.7", update_to="10.11.0"),
+        _c("postgres", "library/postgres", "16.4", update_to="17.2", within="16.6"),
         _c("immich-server", "immich-app/immich-server", "v1.135.3"),
         _c("paperless", "paperless-ngx/paperless-ngx", "2.14", previous="8d41e07c5a92"),
         _c("sonarr", "linuxserver/sonarr", "latest", unchecked="Unsupported Registry unknown"),
@@ -252,6 +254,7 @@ CONTAINERS = {
             unchecked="only newer tags are checked, not new builds of :2",
         ),
         _c("zigbee2mqtt", "koenkk/zigbee2mqtt", "latest", update_to="newer build"),
+        _c("wg-easy", "wg-easy/wg-easy", "15.1.0"),
         _c(
             "wud",
             "getwud/wud",
@@ -604,6 +607,167 @@ def _router(hostname: str, model: str, version: str, clients: list[tuple[str, in
         "errors": {},
     }
 
+
+# The OpenVPN servers on the made-up router (its `openvpn` ability), as the hub keeps them.
+VPN_SERVERS = {
+    "repeater-living": {
+        "error": None,
+        "servers": {
+            "home_udp": {
+                "port": 1194,
+                "proto": "udp",
+                "dev": "tun",
+                "running": True,
+                "age": 20,
+                "connected": [
+                    {"name": "phone", "address": "198.51.100.7:51544", "since": "2026-11-21T07:10:00+00:00"}
+                ],
+            },
+            "home_tcp": {
+                "port": 443,
+                "proto": "tcp-server",
+                "dev": "tun",
+                "running": True,
+                "age": 15,
+                "connected": [],
+            },
+            "old_tap": {
+                "port": 1195,
+                "proto": "udp",
+                "dev": "tap",
+                "running": False,
+                "age": None,
+                "connected": [],
+            },
+        },
+    }
+}
+
+# nlbwmon's counters and usteer's view on the made-up access points, as the hub keeps them.
+BANDWIDTH = {
+    "repeater-living": {
+        "error": None,
+        "clients": {
+            "3c:22:fb:10:aa:01": {
+                "name": "Living room TV",
+                "rx": 48_200_000_000,
+                "tx": 900_000_000,
+                "rx_rate": 23_400_000,
+                "tx_rate": 410_000,
+            },
+            "3c:22:fb:10:aa:02": {
+                "name": "Pixel 9",
+                "rx": 6_100_000_000,
+                "tx": 1_200_000_000,
+                "rx_rate": 1_200_000,
+                "tx_rate": 300_000,
+            },
+            "3c:22:fb:10:aa:03": {
+                "name": "Laptop",
+                "rx": 21_000_000_000,
+                "tx": 7_400_000_000,
+                "rx_rate": 80_000,
+                "tx_rate": 20_000,
+            },
+        },
+    }
+}
+ROAMING = {
+    "repeater-living": {
+        "error": None,
+        "nodes": [
+            {
+                "node": "hostapd.phy0-ap0",
+                "own": True,
+                "host": None,
+                "iface": "phy0-ap0",
+                "bssid": "02:00:00:00:01:01",
+                "ssid": "Castle",
+                "freq": 2437,
+                "clients": 3,
+                "load": 12,
+                "roam_source": 4,
+                "roam_target": 2,
+            },
+            {
+                "node": "hostapd.phy1-ap0",
+                "own": True,
+                "host": None,
+                "iface": "phy1-ap0",
+                "bssid": "02:00:00:00:01:02",
+                "ssid": "Castle",
+                "freq": 5180,
+                "clients": 5,
+                "load": 20,
+                "roam_source": 1,
+                "roam_target": 6,
+            },
+            {
+                "node": "192.168.178.4#hostapd.phy1-ap0",
+                "own": False,
+                "host": "192.168.178.4",
+                "iface": "phy1-ap0",
+                "bssid": "02:00:00:00:02:02",
+                "ssid": "Castle",
+                "freq": 5500,
+                "clients": 2,
+                "load": 8,
+                "roam_source": 3,
+                "roam_target": 2,
+            },
+        ],
+        "clients": [
+            {
+                "mac": "3c:22:fb:10:aa:01",
+                "node": "hostapd.phy1-ap0",
+                "signal": -58,
+                "snr": 34,
+                "connected": 7_200_000,
+            },
+            {
+                "mac": "3c:22:fb:10:aa:02",
+                "node": "hostapd.phy1-ap0",
+                "signal": -71,
+                "snr": 21,
+                "connected": 900_000,
+            },
+        ],
+        "config": {"min_snr": 0, "roam_scan_snr": 15, "roam_trigger_snr": 20, "signal_diff_threshold": 12},
+    },
+    "repeater-attic": {
+        "error": None,
+        "nodes": [
+            {
+                "node": "hostapd.phy1-ap0",
+                "own": True,
+                "host": None,
+                "iface": "phy1-ap0",
+                "bssid": "02:00:00:00:02:02",
+                "ssid": "Castle",
+                "freq": 5500,
+                "clients": 2,
+                "load": 8,
+                "roam_source": 3,
+                "roam_target": 2,
+            },
+            {
+                "node": "192.168.178.3#hostapd.phy1-ap0",
+                "own": False,
+                "host": "192.168.178.3",
+                "iface": "phy1-ap0",
+                "bssid": "02:00:00:00:01:02",
+                "ssid": "Castle",
+                "freq": 5180,
+                "clients": 5,
+                "load": 20,
+                "roam_source": 1,
+                "roam_target": 6,
+            },
+        ],
+        "clients": [],
+        "config": {"min_snr": 0, "roam_scan_snr": 15, "roam_trigger_snr": 25, "signal_diff_threshold": 12},
+    },
+}
 
 ROUTER = {
     "repeater-living": _router(

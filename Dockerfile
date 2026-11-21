@@ -23,7 +23,7 @@ RUN uv sync --locked --no-dev --no-editable
 
 # 3. The runtime.
 FROM python:3.13-slim
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tzdata iperf3 && rm -rf /var/lib/apt/lists/*
 COPY --from=app /app/.venv /app/.venv
 ENV PATH=/app/.venv/bin:$PATH \
     KASTELLAN_CONFIG=/config/config.yaml \

@@ -55,7 +55,8 @@
 	type Open =
 		| { kind: 'network'; group: string; ssid: string }
 		| { kind: 'mesh'; group: string; survey: GroupSurvey; existing: boolean }
-		| { kind: 'root'; group: string };
+		| { kind: 'root'; group: string }
+		| { kind: 'roaming'; group: string; survey: GroupSurvey };
 	let open = $state<Open | null>(null);
 
 	// The forms' fields (one dialog at a time).
@@ -322,6 +323,58 @@
 						{/each}
 					</ul>
 
+					{#if s.roaming}
+						{@const r = s.roaming}
+						<h3 class="mt-5 text-xs font-medium text-muted">Roaming</h3>
+						<p class="mt-1 text-xs text-muted">
+							The access points decide (usteer, 802.11r/k/v); Kastellan checks they work together.
+						</p>
+						<ul class="mt-2 space-y-1 text-sm">
+							{#each r.findings as f, i (i)}
+								<li>
+									<span
+										class="text-xs font-medium"
+										style:color={f.level === 'warning'
+											? 'var(--warning-text)'
+											: 'var(--text-muted)'}
+									>
+										{f.level === 'warning' ? '!' : 'i'}
+									</span>
+									{f.text}
+									{#if f.fix}<span class="block pl-3 text-xs text-muted">{f.fix}</span>{/if}
+								</li>
+							{:else}
+								<li class="text-xs" style:color="var(--good-text)">
+									No issues found in the available readings.
+								</li>
+							{/each}
+						</ul>
+						<div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+							{#each Object.entries(r.members) as [id, m] (id)}
+								<span>
+									{name(id)}: usteer
+									<span
+										style:color={m.usteer === 'running'
+											? 'var(--good-text)'
+											: m.usteer === 'unknown'
+												? undefined
+												: 'var(--warning-text)'}
+									>
+										{m.usteer}
+									</span>{#if m.sees.length}, sees {m.sees.map(name).join(', ')}{/if}
+								</span>
+							{/each}
+						</div>
+						{#if setup && canChange && Object.keys(r.changes).length}
+							<button
+								class="{small} mt-2"
+								onclick={() => show({ kind: 'roaming', group: g.id, survey: s })}
+							>
+								Roaming assistance…
+							</button>
+						{/if}
+					{/if}
+
 					{#if setup && canChange}
 						<div class="mt-5 flex items-center justify-between border-t border-line pt-4 text-sm">
 							<span>
@@ -352,6 +405,32 @@
 			load();
 		}}
 	/>
+{/if}
+
+{#if open?.kind === 'roaming'}
+	{@const o = open}
+	<JobDialog
+		title="Roaming assistance"
+		path="/groups/{encodeURIComponent(o.group)}/roaming"
+		action="Set it up"
+		body={() => ({})}
+		onclose={close}
+		ondone={() => survey(o.group)}
+	>
+		<p class="text-xs text-muted">
+			Enable 802.11r/k/v on shared personal networks with matching passwords and encryption. Changes
+			run one access point at a time, with rollback if it stops responding. Clients may reconnect.
+		</p>
+		<ul class="mt-2 text-xs">
+			{#each Object.entries(o.survey.roaming?.changes ?? {}) as [id, sections] (id)}
+				<li>{name(id)}: {Object.keys(sections).join(', ')}</li>
+			{/each}
+		</ul>
+		<p class="mt-2 text-xs text-muted">
+			usteer itself is installed on the devices (opkg or apk: usteer); Kastellan doesn't install
+			packages.
+		</p>
+	</JobDialog>
 {/if}
 
 {#if open?.kind === 'network'}

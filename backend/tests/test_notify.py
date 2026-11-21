@@ -15,6 +15,32 @@ NOW = datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
 DOWN = Message(Severity.CRITICAL, "NAS is down", "no reply", "nas")
 
 
+async def test_invalid_secret_does_not_stop_other_channels_or_leak(caplog) -> None:
+    bad = NotifyChannel(ntfy="secret:topic")
+    good = NotifyChannel(ntfy="https://ntfy.test/good")
+    seen = []
+
+    def handle(request):
+        seen.append(str(request.url))
+        return httpx.Response(200)
+
+    for secret in ("private invalid URL", "secret:another", "https://[private"):
+        failed = await notify.send(
+            [bad, good], [DOWN], NOW, transport=httpx.MockTransport(handle), secrets=lambda _, s=secret: s
+        )
+        assert failed == [(bad, DOWN)]
+        assert secret not in caplog.text
+    assert seen == ["https://ntfy.test/good"] * 3
+
+
+def test_internal_keys_cannot_be_used_as_notification_credentials() -> None:
+    from kastellan.config import Config
+
+    for key in ("hub-backup-key", "device-backups", "group-fingerprints", "syslog-ca-key"):
+        with pytest.raises(ValueError, match="encryption or fingerprint key"):
+            Config.model_validate({"notify": [{"telegram": 1, "token": f"secret:{key}"}]})
+
+
 def channel(**kw) -> NotifyChannel:
     return NotifyChannel.model_validate(kw)
 
@@ -102,3 +128,51 @@ async def test_email(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_channel_config(kw: dict, error: str) -> None:
     with pytest.raises(ValueError, match=error):
         NotifyChannel.model_validate(kw)
+
+
+async def test_channels_may_name_secrets_instead_of_holding_them() -> None:
+    from datetime import UTC, datetime
+
+    import httpx
+
+    from kastellan import notify
+    from kastellan.alarms import Message, Severity
+    from kastellan.config import NotifyChannel
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("authorization")))
+        return httpx.Response(200)
+
+    channel = NotifyChannel.model_validate({"ntfy": "secret:ntfy-url", "token": "secret:ntfy-token"})
+    assert channel.secret_refs() == {"ntfy": "ntfy-url", "token": "ntfy-token"}
+    values = {"ntfy-url": "https://ntfy.example/topic", "ntfy-token": "tk_1"}
+    message = Message(Severity.CRITICAL, "down", "", None)
+    failed = await notify.send(
+        [channel], [message], datetime.now(UTC), httpx.MockTransport(handler), secrets=values.__getitem__
+    )
+    assert not failed and seen == [("https://ntfy.example/topic", "Bearer tk_1")]
+    assert channel.token == "secret:ntfy-token"  # the value never goes back into the config
+    failed = await notify.send([channel], [message], datetime.now(UTC), httpx.MockTransport(handler))
+    assert failed  # no secrets to resolve with: retried later, not sent to "secret:..."
+    tg = NotifyChannel.model_validate({"telegram": 123, "token": "secret:bot"})
+    assert tg.secret_refs() == {"token": "bot"}
+
+
+async def test_what_each_secret_is_used_for(tmp_path) -> None:
+    from kastellan import credentials
+    from kastellan.hub import Hub
+    from kastellan.settings import Settings
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  ap:\n    host: 192.168.1.2\n    openwrt: {}\n"
+        "notify:\n  - ntfy: https://ntfy.example/x\n    token: secret:ntfy-token\n"
+    )
+    hub = Hub(Settings(config=config, data=tmp_path))
+    hub.reload()
+    hub.secrets.set("openwrt-ap", "pw")
+    rows = {r["name"]: r for r in credentials.view(hub)}
+    assert rows["openwrt-ap"]["set"] and rows["openwrt-ap"]["used_by"] == ["ap: Kastellan's OpenWrt login"]
+    assert rows["ntfy-token"]["missing"] and rows["ntfy-token"]["used_by"] == ["notify #1 (ntfy): token"]

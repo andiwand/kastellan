@@ -225,3 +225,12 @@ def test_signing_in_elsewhere_doesnt_wipe_the_guesses(client: TestClient) -> Non
     assert signin(client, "obi", "observer password") == 200  # a login of one's own
     assert signin(client, "ada", "nope") == 401
     assert signin(client, "ada", "admin password") == 429  # still five guesses at ada
+
+
+def test_only_the_hubs_own_page_may_ask(client: TestClient) -> None:
+    r = client.get("/api/health", headers={"Sec-Fetch-Site": "same-site"})
+    assert r.status_code == 403  # a device page on a sibling name
+    r = client.get("/api/health", headers={"Sec-Fetch-Site": "same-origin"})
+    assert r.status_code == 200
+    assert r.headers["x-frame-options"] == "DENY" and r.headers["origin-agent-cluster"] == "?1"
+    assert r.headers["cross-origin-opener-policy"] == "same-origin"

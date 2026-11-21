@@ -189,6 +189,20 @@ class LogStore:
         out.sort(key=lambda r: (r["ts"], r["id"]), reverse=True)
         return out
 
+    def matching(self, since: float, likes: list[str], limit: int = 20000) -> list[dict[str, Any]]:
+        """The newest matching lines since `since`, returned oldest first for sign-in readers."""
+        if not likes:
+            return []
+        cond = " OR ".join("msg LIKE ?" for _ in likes)
+        sql = (
+            "SELECT id, ts, device, source, program, level, msg, verified FROM lines"
+            f" WHERE ts >= ? AND ({cond}) ORDER BY ts DESC, id DESC LIMIT ?"
+        )
+        with self._lock:
+            rows = self._db.execute(sql, [since, *likes, max(1, min(limit, 100000))]).fetchall()
+        keys = ("id", "ts", "device", "source", "program", "level", "msg", "verified")
+        return [dict(zip(keys, r, strict=True)) for r in reversed(rows)]
+
     def facets(self, since: float) -> dict[str, Any]:
         """What there is to filter by (lines since `since`): devices, sources, programs."""
         with self._lock:

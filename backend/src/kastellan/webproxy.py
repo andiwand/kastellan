@@ -12,8 +12,11 @@ Device pages share one site (siblings under the domain): a request one device's 
 another's (Sec-Fetch-Site same-site/cross-site, or an Origin not its own) is refused, so a
 compromised device can't use the admin's access to another. Nothing of Kastellan's reaches the
 device (its cookies and the X-Kastellan header are taken out), and a device can't set cookies
-beyond its own name. The user signs in to the device as usual: Kastellan stores no device
-logins. Devices' certificates aren't verified (self-signed at home, as for the checks).
+beyond its own name. Each device page gets its own agent cluster and browsing context group
+(ISOLATION), and the hub's own API refuses requests from sibling names (auth_api.Guard). The
+user signs in to the device as usual, or has the hub do it with a stored login (weblogin.py:
+the password stays on the hub). Devices' certificates aren't verified (self-signed at home, as
+for the checks).
 """
 
 from __future__ import annotations
@@ -48,6 +51,15 @@ if TYPE_CHECKING:
     from .hub import Hub
 
 log = logging.getLogger(__name__)
+
+# On every device page: its own agent cluster and browsing context group (another device's page
+# on a sibling name can't script it through an opener or document.domain), and only its own
+# name may embed its resources.
+ISOLATION = {
+    "origin-agent-cluster": "?1",
+    "cross-origin-opener-policy": "same-origin-allow-popups",
+    "cross-origin-resource-policy": "same-origin",
+}
 
 ENTER = "/.kastellan/enter"  # on a device's name: trades a ticket for its cookie
 WEB_COOKIE = "kastellan_web"
@@ -172,6 +184,9 @@ class _Ticket:
     session: str  # the hub session's token (in memory only)
     name: str  # the device's name under the domain
     expires: float
+    cookies: list[str] | None = None  # the device's own, from a sign-in for the admin (weblogin.py)
+    basic: str | None = None  # an Authorization header the hub adds (weblogin.py), never the browser
+    target: str | None = None  # the upstream at issuance; credentials must never follow a config change
 
 
 class Access:
@@ -180,34 +195,55 @@ class Access:
 
     def __init__(self) -> None:
         self._tickets: dict[str, _Ticket] = {}
-        self._entries: dict[str, tuple[str, str]] = {}  # cookie -> (hub session token, name)
+        self._entries: dict[str, tuple[str, str, str | None]] = {}  # cookie -> (session, name, target)
+        self._basic: dict[str, str] = {}  # cookie -> Authorization the hub adds for that page
 
-    def ticket(self, session: str, name: str) -> str:
+    def ticket(
+        self,
+        session: str,
+        name: str,
+        cookies: list[str] | None = None,
+        basic: str | None = None,
+        target: str | None = None,
+    ) -> str:
         now = time.monotonic()
         self._tickets = {k: t for k, t in self._tickets.items() if t.expires > now}
         while len(self._tickets) >= 1000:
             del self._tickets[next(iter(self._tickets))]
         key = secrets.token_urlsafe(24)
-        self._tickets[key] = _Ticket(session, name, now + TICKET_SECONDS)
+        self._tickets[key] = _Ticket(session, name, now + TICKET_SECONDS, cookies, basic, target)
         return key
 
-    def enter(self, key: str, name: str) -> str | None:
-        """A new cookie value for the ticket, once; None if unknown, used, old or another name's."""
+    def enter(self, key: str, name: str) -> tuple[str, list[str]] | None:
+        """A new cookie value for the ticket, once, and the device's cookies to set with it;
+        None if unknown, used, old or another name's."""
         t = self._tickets.pop(key, None)
         if t is None or t.expires < time.monotonic() or t.name != name:
             return None
         while len(self._entries) >= MAX_ENTRIES:
-            del self._entries[next(iter(self._entries))]
+            gone = next(iter(self._entries))
+            del self._entries[gone]
+            self._basic.pop(gone, None)
         value = secrets.token_urlsafe(32)
-        self._entries[value] = (t.session, name)
-        return value
+        self._entries[value] = (t.session, name, t.target)
+        if t.basic:
+            self._basic[value] = t.basic
+        return value, list(t.cookies or [])
+
+    def basic(self, value: str | None) -> str | None:
+        return self._basic.get(value or "")
 
     def session(self, value: str | None, name: str) -> str | None:
         entry = self._entries.get(value or "")
         return entry[0] if entry and entry[1] == name else None
 
+    def matches(self, value: str | None, target: str | None) -> bool:
+        entry = self._entries.get(value or "")
+        return bool(entry and target and (entry[2] is None or entry[2] == target))
+
     def forget(self, value: str | None) -> None:
         self._entries.pop(value or "", None)
+        self._basic.pop(value or "", None)
 
 
 def router(hub: Hub, access: Access) -> APIRouter:
@@ -220,7 +256,7 @@ def router(hub: Hub, access: Access) -> APIRouter:
         web, device = hub.config.web, hub.config.devices.get(id)
         if web is None or device is None or upstream(device) is None:
             raise HTTPException(404, "no web interface for that device through Kastellan")
-        key = access.ticket(request.cookies.get(SESSION_COOKIE) or "", label(id))
+        key = access.ticket(request.cookies.get(SESSION_COOKIE) or "", label(id), target=upstream(device))
         headers = {k.lower(): v for k, v in request.headers.items()}
         where = f"{_scheme(request.scope, headers)}://{label(id)}.{web.domain}{_port(headers)}"
         hub.audit.record("web.open", w.user, client_address(request.scope), device=id)
@@ -242,7 +278,9 @@ class WebProxy:
         """The cookie still stands for a signed-in admin's session, for this device's name."""
         token = self.access.session(value, name)
         w = session_who(self.hub, token) if token else None
-        return w is not None and w.is_admin
+        device = next((d for id, d in self.hub.config.devices.items() if label(id) == name), None)
+        target = upstream(device) if device else None
+        return w is not None and w.is_admin and self.access.matches(value, target)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         web = self.hub.config.web
@@ -287,6 +325,9 @@ class WebProxy:
         def still() -> bool:
             return self.allowed(value, name)
 
+        if (basic := self.access.basic(value)) and "authorization" not in headers:
+            headers["authorization"] = basic  # signed in for the admin: the hub adds it
+
         if scope["type"] == "websocket":
             await self._websocket(scope, receive, send, target, headers, here, still)
         else:
@@ -294,11 +335,16 @@ class WebProxy:
 
     async def _enter(self, scope: Scope, send: Send, name: str, here: str, back: str) -> None:
         query = parse_qs((scope.get("query_string") or b"").decode(errors="replace"))
-        value = self.access.enter((query.get("ticket") or [""])[0], name)
-        if value is None:
+        entered = self.access.enter((query.get("ticket") or [""])[0], name)
+        if entered is None:
             await _deny(
                 scope, send, 401, f"That link is used or too old; open the page from Kastellan: {back}"
             )
+            return
+        value, device_cookies = entered
+        if not self.allowed(value, name):
+            self.access.forget(value)
+            await _deny(scope, send, 401, f"Access changed; open the page from Kastellan: {back}")
             return
         secure = "; Secure" if here.startswith("https:") else ""
         cookie = f"{WEB_COOKIE}={value}; Path=/; HttpOnly; SameSite=Strict{secure}"
@@ -318,6 +364,7 @@ class WebProxy:
                     (b"cache-control", b"no-store"),
                     (b"referrer-policy", b"no-referrer"),
                     (b"set-cookie", cookie.encode()),
+                    *((b"set-cookie", c.encode()) for c in device_cookies),
                 ],
             }
         )
@@ -403,7 +450,10 @@ class WebProxy:
                     if kept is None:
                         continue
                     v = kept
+                if key in ISOLATION:
+                    continue  # ours instead: a device can't loosen them
                 out.append((key.encode(), v.encode()))
+            out += [(k.encode(), v.encode()) for k, v in ISOLATION.items()]
             started = True
             await send({"type": "http.response.start", "status": response.status_code, "headers": out})
             async for chunk in response.aiter_raw():

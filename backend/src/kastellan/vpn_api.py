@@ -19,6 +19,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from . import vpn_servers
 from .access import hub_address
 from .auth_api import client_address, require_admin, require_signin, who
 from .setup_run import reason
@@ -150,7 +151,18 @@ def router(hub: Hub) -> APIRouter:
             return out
 
         vpns = await asyncio.gather(*(one(vid, v) for vid, v in hub.config.vpns.items()))
-        return {"vpns": list(vpns)}
+        servers = vpn_servers.collect(hub, admin)
+        # A managed WireGuard's clients come from wg-easy: shown on its server too.
+        by_id = {v["id"]: v for v in vpns}
+        for s in servers:
+            v = by_id.get(s.get("vpn") or "")
+            if s["kind"] == "wireguard" and v is not None and s.get("clients") is None:
+                s["clients"] = [
+                    {"name": c["name"], "since": c.get("last_handshake"), "active": c.get("enabled")}
+                    for c in v["clients"]
+                    if _recent(c.get("last_handshake"))
+                ]
+        return {"vpns": list(vpns), "servers": servers}
 
     def has_secret(name: str) -> bool:
         try:
@@ -506,6 +518,19 @@ def router(hub: Hub) -> APIRouter:
 
 
 _private = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+
+def _recent(when: str | None, seconds: int = 180) -> bool:
+    """A WireGuard handshake within the last few minutes: that client is connected now."""
+    if not when:
+        return False
+    try:
+        at = datetime.fromisoformat(when.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return 0 <= (datetime.now(UTC) - at).total_seconds() < seconds
 
 
 def _download(text: str, filename: str) -> Response:

@@ -137,6 +137,10 @@ def router(hub: Hub) -> APIRouter:
         for vid, vpn in hub.config.vpns.items():
             if vpn.kind == "wireguard" and vpn.password_secret == id:
                 out.append(f"{hub.config.vpn_name(vid)}: its wg-easy login")
+        for i, c in enumerate(hub.config.notify):  # `secret:<name>` in a notification channel
+            for field, name in c.secret_refs().items():
+                if name == id:
+                    out.append(f"notification #{i + 1} ({c.kind}): its {field}")
         return out
 
     def ring_view(ring: dict[str, Any]) -> dict[str, Any]:

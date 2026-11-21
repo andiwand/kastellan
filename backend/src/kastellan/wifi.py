@@ -500,3 +500,44 @@ def _enc(e: str | None) -> str:
         "None": "open",
         "owe": "OWE",
     }.get(e or "", e or "?")
+
+
+# --- Clients and settings ----------------------------------------------------------------------
+
+WEAK = -75  # dBm: below, the link is slow and drops
+POOR_SNR = 20
+SLOW_MBIT = 30
+
+
+def diagnose(c: dict[str, Any]) -> list[str]:
+    """What is off about one client's radio link (short phrases, worst first)."""
+    out = []
+    signal = c.get("signal")
+    if c.get("kind") == "fritzbox":  # the FRITZ!Box says percent
+        if isinstance(signal, int) and signal < 30:
+            out.append("weak signal")
+        if isinstance(c.get("speed"), int) and 0 < c["speed"] < SLOW_MBIT:
+            out.append(f"slow ({c['speed']} Mbit/s)")
+        return out
+    if isinstance(signal, int) and signal < WEAK:
+        out.append(f"weak signal ({signal} dBm)")
+    snr = c.get("snr")
+    if isinstance(snr, int) and snr < POOR_SNR and not (isinstance(signal, int) and signal < WEAK):
+        out.append(f"noisy ({snr} dB above the noise)")
+    tx = (c.get("tx") or {}).get("mbit")
+    if isinstance(tx, int | float) and 0 < tx < SLOW_MBIT:
+        out.append(f"slow ({tx:g} Mbit/s to it)")
+    if c.get("band") == "2g" and isinstance(signal, int) and signal > -55:
+        out.append("on 2.4 GHz while close (5 GHz would be faster)")
+    return out
+
+
+def country_note(countries: list[str], radios: list[dict[str, Any]]) -> str | None:
+    """Whether the radios' regulatory country is set and the same everywhere."""
+    if any(r.get("country") in (None, "", "00") for r in radios if r.get("country") is not None) or (
+        "00" in countries
+    ):
+        return "a radio has no country set (00: the world's rules, fewer channels and less power)"
+    if len(countries) > 1:
+        return f"the radios have different countries ({', '.join(countries)}): set one for all"
+    return None

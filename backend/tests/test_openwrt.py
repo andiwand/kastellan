@@ -317,9 +317,13 @@ async def test_reading_needs_only_the_read_group(tmp_path: Path) -> None:
         == "dropbear restart"
     )
     (radio,) = report["radios"]
-    assert radio["interfaces"][0]["clients"] == [
-        {"mac": "aa:bb:cc:00:11:22", "name": "phone", "signal": -55, "inactive": None}
-    ]
+    [client] = radio["interfaces"][0]["clients"]
+    assert {k: client[k] for k in ("mac", "name", "signal", "inactive")} == {
+        "mac": "aa:bb:cc:00:11:22",
+        "name": "phone",
+        "signal": -55,
+        "inactive": None,
+    }
     assert await ow.upgradable(ubus(tmp_path, rpcd)) == ["curl - 8.1 - 8.2"]
     # Without the reboot group, the device refuses.
     with pytest.raises(ow.UbusError) as e:
@@ -332,6 +336,17 @@ async def test_reading_needs_only_the_read_group(tmp_path: Path) -> None:
 async def test_a_wrong_password_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ow.LoginRefused):
         await ow.read(ubus(tmp_path, FakeRpcd([]), password="nope"))
+
+
+async def test_roaming_refuses_a_replaced_network_before_staging(tmp_path: Path) -> None:
+    rpcd = FakeRpcd(["kastellan-wifi"])
+    with pytest.raises(ValueError, match="network changed"):
+        await ow.change_wifi(
+            ubus(tmp_path, rpcd),
+            {"default_radio0": {"ieee80211r": "1"}},
+            expected_ssids={"default_radio0": "a network that used to be here"},
+        )
+    assert not any(o == "uci" and m in {"set", "apply"} for o, m, _ in rpcd.calls)
 
 
 async def test_wifi_with_rollback_and_keys_hidden(tmp_path: Path) -> None:
@@ -759,7 +774,16 @@ def test_the_openvpn_status_script(tmp_path: Path) -> None:
         ).replace("OPENVPN_DIR=/etc/openvpn", f"OPENVPN_DIR={folder}")
         return subprocess.run(["sh", "-c", script], capture_output=True, text=True).stdout.splitlines()
 
-    out = run(bin_dir, etc)
+    full = run(bin_dir, etc)
+    out = [ln for ln in full if not ln.startswith("!")]
+    # How each server is set up, before its clients (the port from its own file).
+    assert full[full.index("== other") + 1] == "!port 1195"
+    assert "!running no" in full and any(ln.startswith("!age ") for ln in full)
+    from kastellan.vpn.openvpn import server_meta, split_status
+
+    parts, none = split_status("\n".join(full))
+    assert not none and server_meta(parts["other"])["port"] == 1195
+    assert server_meta(parts["server"])["running"] is False
     assert out == [
         "== server",
         v2.read_text().splitlines()[2],
@@ -831,3 +855,45 @@ async def test_radios_on_openwrt_25_through_iwinfo(tmp_path: Path) -> None:
     rpcd.status_refused = True
     await ow.change_wifi(ubus(tmp_path, rpcd), {"default_radio0": {"ssid": "home2"}}, confirm_after=0)
     assert rpcd.wireless["default_radio0"]["ssid"] == "home2"
+
+
+def test_nlbwmon_and_usteer_are_read() -> None:
+    import json
+
+    import pytest
+
+    from kastellan.openwrt.client import parse_nlbw, parse_roaming
+
+    out = {
+        "columns": ["mac", "conns", "rx_bytes", "rx_pkts", "tx_bytes", "tx_pkts"],
+        "data": [
+            ["AA:BB:CC:DD:EE:01", 3, 1000, 1, 200, 1],
+            ["aa:bb:cc:dd:ee:01", 1, 5, 1, 5, 1],
+            ["x", 1, 1, 1, 1, 1],
+        ],
+    }
+    assert parse_nlbw(json.dumps(out)) == {"aa:bb:cc:dd:ee:01": {"rx": 1005, "tx": 205}}
+    with pytest.raises(ValueError, match="not installed"):
+        parse_nlbw('{"error":"nlbwmon is not installed"}')
+    with pytest.raises(ValueError):
+        parse_nlbw("{}")
+    local = {
+        "hostapd.phy0-ap0": {
+            "bssid": "AA:00:00:00:00:01",
+            "freq": 2437,
+            "n_assoc": 2,
+            "roam_events": {"source": 4, "target": 1},
+        }
+    }
+    remote = {
+        "192.168.1.3#hostapd.phy1-ap0": {"bssid": "aa:00:00:00:00:02", "freq": 5180, "n_assoc": 1},
+        "bad": 3,
+    }
+    connected = {"hostapd.phy0-ap0": {"11:22:33:44:55:66": {"signal": -61, "connected_time": 3000}}}
+    r = parse_roaming(local, remote, connected, {"min_snr": 10, "roam_trigger_snr": 20, "secret": "x"})
+    assert [(n["iface"], n["own"], n["host"]) for n in r["nodes"]] == [
+        ("phy0-ap0", True, None),
+        ("phy1-ap0", False, "192.168.1.3"),
+    ]
+    assert r["nodes"][0]["roam_source"] == 4 and r["clients"][0]["signal"] == -61
+    assert r["config"] == {"min_snr": 10, "roam_trigger_snr": 20}

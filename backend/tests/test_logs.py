@@ -69,6 +69,7 @@ def test_store_filters_and_prunes(tmp_path: Path) -> None:
     assert [r["ts"] for r in store.query(text="50%")] == [103]  # % and _ are plain characters
     assert store.query(text="done_ok")[0]["verified"] is False
     assert [r["ts"] for r in store.query(since=101.5)] == [103, 102]
+    assert [r["ts"] for r in store.matching(0, ["%"], limit=2)] == [102, 103]
     first = store.query(limit=2)
     assert [r["ts"] for r in store.query(before_id=first[-1]["id"])] == [101, 100]
     assert [r["ts"] for r in store.query(after_id=first[-1]["id"])] == [103]
@@ -149,6 +150,7 @@ async def test_wireguard_presence_from_handshakes(tmp_path: Path, monkeypatch) -
         config=config,
         logs=LogStore(tmp_path / "logs.db"),
         secrets=SimpleNamespace(get=lambda name: "pw"),
+        vpn_addresses={},
         resolver=SimpleNamespace(address=lambda h: None),
     )
     await logs_poll.wireguard(hub)

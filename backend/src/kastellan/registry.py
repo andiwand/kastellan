@@ -85,15 +85,17 @@ class Update:
     update_to: str | None  # a newer version tag, or "newer build"
     unchecked: str | None  # why it can't be told
     digest: str = ""  # the tag's digest now (short)
+    within: str | None = None  # when update_to is a new major version: the newest of this one
 
 
 def _key(parts: str) -> tuple:
     return tuple(int(x) for x in parts.split("."))
 
 
-def newer_tag(tag: str, tags: list[str]) -> str | None:
+def newer_tag(tag: str, tags: list[str], same_major: bool = False) -> str | None:
     """The greatest tag of the same shape as `tag` and greater, or None. Dates (20250108) are
-    not versions: they never count as newer than a version like 3."""
+    not versions: they never count as newer than a version like 3. With same_major, only tags
+    whose first number is the same (2.9.4 for 2.8.1, not 3.0.0)."""
     m = VERSION.match(tag)
     if not m:
         return None
@@ -106,6 +108,8 @@ def newer_tag(tag: str, tags: list[str]) -> str | None:
         k = _key(o["nums"])
         if best_key[0] < 1000 <= k[0]:
             continue  # a date or a build number, not the next version
+        if same_major and (k[0] != _key(m["nums"])[0] or len(k) < 2):
+            continue
         if k > best_key:
             best, best_key = t, k
     return best
@@ -199,11 +203,13 @@ class Registries:
                 raise ValueError(f"manifest: {status}")
             remote = headers.get("docker-content-digest", "")
             mine = [d.split("@", 1)[1] for d in digests if "@" in d and same_repo(ref, d)]
-            newer = None
+            newer = within = None
             if VERSION.match(ref.tag):
-                newer = newer_tag(ref.tag, await self._tags(client, ref))
+                tags = await self._tags(client, ref)
+                newer = newer_tag(ref.tag, tags)
+                within = newer_tag(ref.tag, tags, same_major=True)
             if newer:
-                return Update(True, newer, None, remote[7:19])
+                return Update(True, newer, None, remote[7:19], within if within != newer else None)
             if not mine:
                 return Update(
                     False, None, "the image wasn't pulled from this registry (no digest to compare)"

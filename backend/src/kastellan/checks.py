@@ -226,7 +226,15 @@ async def _http(check: Check) -> Result:
                     address = str(stream.get_extra_info("server_addr")[0])
                 status = response.status_code
                 up = status == check.expect if check.expect is not None else status < 500
-                result = Result(up, latency, f"HTTP {status}", await _software(response) if up else None)
+                detail = f"HTTP {status}"
+                html = "html" in response.headers.get("content-type", "")
+                body = b""
+                if up and (check.contains is not None or html):
+                    body = await _read(response, CONTAINS_LIMIT if check.contains is not None else 20000)
+                if up and check.contains is not None and not _contains(response, body, check.contains):
+                    up = False
+                    detail += f", without {check.contains!r}"
+                result = Result(up, latency, detail, _software(response, body[:20000]) if up else None)
         except httpx.HTTPError as e:
             result = Result(False, detail=f"{type(e).__name__}: {e}".rstrip(": "))
     if _is_address(host):
@@ -234,6 +242,32 @@ async def _http(check: Check) -> Result:
     elif address is None:
         address = await _resolve(host, port)
     return dataclasses.replace(result, cert=await _cert_of(cert) if cert else None, address=address)
+
+
+CONTAINS_LIMIT = 256 * 1024
+
+
+async def _read(response: httpx.Response, limit: int) -> bytes:
+    """The start of the page, at most `limit` bytes (never all of an endless stream)."""
+    body = bytearray()
+    try:
+        async for chunk in response.aiter_bytes(chunk_size=min(limit, 16384)):
+            body += chunk
+            if len(body) >= limit:
+                break
+    except httpx.HTTPError:
+        pass  # what came is what there is
+    return bytes(body[:limit])
+
+
+def _contains(response: httpx.Response, data: bytes, text: str) -> bool:
+    """Whether the page's start holds `text` (as UTF-8, or in the page's own charset)."""
+    if text.encode() in data:
+        return True
+    try:
+        return text in data.decode(response.encoding or "utf-8", errors="replace")
+    except LookupError:
+        return False
 
 
 async def _cert_of(task: asyncio.Task[tls.Cert | None]) -> tls.Cert | None:
@@ -262,20 +296,15 @@ async def _resolve(host: str, port: int) -> str | None:
     return str(infos[0][4][0]) if infos else None
 
 
-async def _software(response: httpx.Response) -> Software | None:
+def _software(response: httpx.Response, head: bytes) -> Software | None:
     """What the page says it is. Only from answers that work (an error page names the proxy in
-    front, not the service), reading at most 20 kB, and never failing the check over it."""
+    front, not the service), from at most 20 kB of an HTML page, never failing the check over it."""
     if not (200 <= response.status_code < 300 or response.status_code == 401):
         return None
     try:
         body = ""
         if "html" in response.headers.get("content-type", ""):
-            head = bytearray()
-            async for chunk in response.aiter_bytes():
-                head += chunk
-                if len(head) >= 20000:
-                    break
-            body = bytes(head[:20000]).decode(response.encoding or "utf-8", errors="replace")
+            body = head[:20000].decode(response.encoding or "utf-8", errors="replace")
         return from_http(dict(response.headers), body)
     except Exception:  # a wrong charset name, or anything else odd about the page
         return None

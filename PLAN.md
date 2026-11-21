@@ -18,81 +18,62 @@ Implementation details and release history belong in [AGENTS.md](AGENTS.md) and
 - **Controlled updates.** Suggestions by default; automatic container updates require opt-in,
   whole-device exposure, a confirmed serious vulnerability and an eligible update.
 - **Script replacement needs privileged access.** Restricted helper keys cannot install code.
-  Collector and actor versions are checked; VPN and OpenWrt helper versions are still missing.
+  Collector, actor, OpenWrt helper and VPN script versions are checked.
 
-## Implemented in main
+## Done
 
-- Checks: ping, TCP, HTTP, DNS; history, uptime, latency, software and certificate tracking.
-- Overview, services, devices, network map, sites and simulated demo data.
-- Dependency-aware alarms, UPS power alarms, host health, backup reports and vulnerability findings;
-  notification channels, browser push, quiet hours, mute, maintenance windows,
-  acknowledgement, reminders and heartbeat.
-- Sign-in, admin/observer roles, audit log, encrypted key rings and stored human logins.
-- Browser SSH, RDP/VNC and device web proxy; SSH key rotation and group key/known-host sync.
-- Linux collector and actor: host health, disk-full forecasts, apt updates, containers, libvirt
-  VMs and UPSes.
-- Container and VM lifecycle controls, container rollback, container and service logs;
-  update queues with progress;
-  collector/actor renewal notices.
-- FRITZ!Box identification; OpenWrt monitoring, Wi-Fi, services and firmware; group configuration.
-- Multiple WireGuard and OpenVPN instances, client management, last seen and VPN key rotation.
-- Config forms and YAML editing; separate Status, Setup and Config views.
-- Notice of a newer Kastellan release.
-- Central logs: routers, Linux journals, Docker, VPN presence and UDP/TLS syslog.
-- Encrypted device configuration backups with deduplicated versions and masked diffs.
-- FRITZ!Box accounts, Wi-Fi, mesh and WireGuard; internet health and speed tests; Wi-Fi scans
-  and channel suggestions; DHCP checks and pools; key-ring hub backups.
+- Checks (ping, TCP, HTTP, DNS, DHCP), history, uptime, latency, certificates, software.
+- Overview, services, devices and groups, network map, sites, demo data.
+- Alarms with dependencies, notifications, push, quiet hours, mute, maintenance, heartbeat.
+- Sign-in, roles, audit log, key rings, stored logins.
+- Browser SSH, RDP/VNC, device web proxy; SSH key rotation and sync.
+- Linux collector and actor: health, forecasts, updates, containers, VMs, UPSes, logs.
+- OpenWrt: monitoring, Wi-Fi, services, firmware, logs, backups, scans.
+- FRITZ!Box: status, clients, Wi-Fi, mesh, WireGuard, DHCP, backups.
+- VPNs: WireGuard and OpenVPN clients, last seen, key rotation.
+- Central logs with UDP and TLS syslog.
+- Device configuration backups; Kastellan's own backup and `kastellan restore`.
+- Internet health and speed tests; Wi-Fi page, scans and channel plans.
+- Config forms and YAML; release notices.
+- Sign-ins page; VPN servers; discovery of unknown devices on the network.
+- Logs by group with alarms and events among the lines.
+- Internet: provider hops, line trouble, iperf3, bandwidth per device (nlbwmon).
+- Wi-Fi: client diagnostics, country, scan after a channel plan; roaming checks and assistance.
+- Helper version checks (OpenWrt, VPN scripts); same-major container updates.
+- HTTP checks with expected text; credential references; isolation of device pages;
+  "Open signed in" for device pages (LuCI, HTTP Basic).
 
 Published images may lag behind `main`; see the changelog's Unreleased section.
 
 ## Next
 
-- [ ] Version checks and renewal notices for VPN and OpenWrt helpers.
-- [ ] Same-major container update candidates even when a newer major exists.
-- [ ] Consistent DNS + HTTPS setup for the hub and proxied device pages.
-- [ ] Credential references for service accounts, notification tokens and API keys; show usage.
-- [ ] Stronger isolation for proxied device pages (separate origins and request guards exist;
-      the names still share a browser site).
-- [ ] HTTP checks with expected response text.
-- [ ] **Logs:** group filters, links to device events and alarms on matching lines.
-      WireGuard handshakes indicate presence, not a login.
-- [ ] **Access page:** correlate VPN, SSH, hub and router login events. Show account, source,
-      destination and outcome; flag repeated failures and new outside addresses. Correlations
-      suggest paths, not identities. Keep address lookups local by default.
-- [ ] **Internet:** client bandwidth, provider-hop checks and iperf3 support. Current speed
-      tests use HTTP transfers; scheduled tests defer while the line is busy.
-- [ ] **FRITZ!Box:** line-error and reconnect alarms, and discovery from its client list.
-      Current support includes pinned TR-064 access, line and Wi-Fi status, clients, port
-      forwards, events, configuration exports, device actions, Wi-Fi neighbours, FRITZ!Mesh,
-      WireGuard connections, DHCP pool and leases.
-- [ ] **Wi-Fi:** roaming, client radio diagnostics, country settings,
-      and a scan after applying a channel plan. OpenWrt changes use rollback; FRITZ!Box changes
-      do not. Channel suggestions require reported allowed channels.
-- [ ] **Wi-Fi roaming in groups:** Kastellan watches and lines up roaming; the access points
-      decide (usteer, 802.11r/k/v), so Wi-Fi never depends on the hub. In order:
-  - Consistency checks per group: 802.11r on with the same mobility domain, fixed channels that
-    don't overlap (2.4 GHz 1/6/11, 5 GHz apart), usteer running on every member and every
-    member seeing the others. Findings on the group page, with what to change.
-  - Roaming on the device page: clients per access point with signal, handovers and steering
-    kicks, from usteer over the OpenWrt API (a new read-only rpcd ability). Shows whether the
-    thresholds suit the home, or kick too often.
-  - Alarms: usteer stopped, a member missing from the others' view, a client kicked over and
-    over; memory warnings for small devices (32 MB) before they run out.
-  - Set up from the group ("roaming assistance"): the same usteer settings and 802.11k/v
-    where the device's wpad supports them, applied member by member with a check after each.
-    Last: installing on small devices can exhaust memory (install from the package file,
-    without package lists, and lower usteer's OOM priority there).
+- [ ] **DNS + HTTPS for a site:** each site gets its own zone (Moosbrunn: `moos.stefl.at`,
+      delegated from easyname to BIND on the server). Let's Encrypt via DNS-01 into that zone
+      (RFC2136, a key that may only write `_acme-challenge` TXT); nginx-proxy terminates TLS.
+      Done in Kastellan: `web.zone` and `web.dns`, the check of names (no split DNS), the
+      proxy's certificates and the routers' rebind exception and forward, with the commands.
+      Open:
+  - Applying the router DNS lines from Kastellan (a narrow `dns` ability), not only showing them.
+  - Checks from outside: the delegation answering, port 53 answering only for the zone,
+    private names refused from outside (needs the external probe under Later).
+  - Optional, per device: Let's Encrypt certificates issued on the server, pushed over SSH
+    (OpenWrt: uhttpd) with the pin updated in the same step; never the wildcard's key. Only for
+    opening device pages directly; through the hub's proxy the pinned self-signed ones suffice.
+- [ ] **Roaming:** usteer installation from the group (memory-safe on 32 MB devices); clients
+      kicked over and over, from usteer's events.
+- [ ] **Sign-ins:** router web logins on OpenWrt (rpcd/LuCI log lines), and the paths
+      for OpenVPN clients (their addresses inside the VPN).
+- [ ] **FRITZ!Box:** assisted login to its pages (its session id lives in the page, not a cookie).
 
 ## Proposed priorities
 
 These are suggestions, not implemented features or release commitments.
 
 1. **Hub recovery, the rest:** restore from the web app on a fresh hub, S3/WebDAV targets.
-   (Done: Kastellan's own backup, `kastellan restore`, passphrase and recovery-key checks.)
 2. **MFA:** passkeys or TOTP, recovery codes and step-up authentication for secret reveals and
    destructive actions. VPN access does not replace stronger hub authentication.
-3. **Discovery before an agent:** suggest devices from router clients, ARP and mDNS; require
-   approval before adding them. Unknown-device alerts need this inventory first.
+3. **Discovery, the rest:** ARP and mDNS besides the routers' client lists (done: suggested
+   from FRITZ!Box hosts, OpenWrt leases and Wi-Fi clients, added only by an admin).
 4. **SNMPv3 monitoring:** read switch ports, printer consumables and network UPS status on
    devices that cannot run the Linux collector. Keep initial support read-only.
 
@@ -103,4 +84,3 @@ These are suggestions, not implemented features or release commitments.
 - [ ] Topology from LLDP or router mesh data.
 - [ ] External checks through a probe outside the home network.
 - [ ] Short-lived SSH certificates.
-- [ ] Assisted login to proxied device pages, after credential references and isolation.

@@ -176,7 +176,7 @@ def _check_node(check: dict[str, Any]) -> Any:
         target = None
     default_name = kind if kind in ("ping", "dhcp") else f"{kind}:{target}"
     extras: dict[str, Any] = {}
-    for key in ("name", "expect", "server", "verify", "tls", "interval", "timeout", "exposed"):
+    for key in ("name", "expect", "contains", "server", "verify", "tls", "interval", "timeout", "exposed"):
         value = check.get(key)
         if value in (None, "", []) or (key in ("verify", "exposed") and value is False):
             continue

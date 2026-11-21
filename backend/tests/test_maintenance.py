@@ -200,6 +200,7 @@ async def test_maintenance_suppresses_notifications_already_waiting_to_retry(
     from kastellan.config import NotifyChannel
     from kastellan.hub import Hub
     from kastellan.push import Push
+    from kastellan.secrets import Secrets
 
     hub = object.__new__(Hub)
     hub.config = config()
@@ -208,6 +209,7 @@ async def test_maintenance_suppresses_notifications_already_waiting_to_retry(
     hub.alarms = Alarms(tmp_path)
     hub.alarms.start_maintenance("nas", NOW + timedelta(hours=1), "patching", "ada")
     hub.push = Push(tmp_path)
+    hub.secrets = Secrets(tmp_path / "secrets")
     message = Message(Severity.CRITICAL, "nas is down", "", "nas")
     hub._outbox = [(channel, message, NOW - timedelta(minutes=5), NOW - timedelta(minutes=5), 1)]
     sent = []

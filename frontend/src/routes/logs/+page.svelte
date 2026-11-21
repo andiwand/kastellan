@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { more, type LogFacets, type LogLine, type LogSources } from '#lib/api.js';
+	import {
+		api,
+		more,
+		type LogFacets,
+		type LogLine,
+		type LogMark,
+		type LogSources
+	} from '#lib/api.js';
+	import { onMount } from 'svelte';
 	import { store } from '#lib/state.svelte.js';
 	import { ago } from '#lib/format.js';
 	import Search from '@lucide/svelte/icons/search';
@@ -25,6 +33,20 @@
 	const NAMES = ['emerg', 'alert', 'crit', 'error', 'warning', 'notice', 'info', 'debug'];
 
 	let devices = $state<string[]>(page.url.searchParams.getAll('device'));
+	let groups = $state<string[]>(page.url.searchParams.getAll('group'));
+	let groupList = $state<{ id: string; name: string; devices: string[] }[]>([]);
+	let marks = $state<LogMark[]>([]);
+	onMount(async () => {
+		try {
+			groupList = (await api.groups()).map((g) => ({
+				id: g.id,
+				name: g.name || g.id,
+				devices: g.devices
+			}));
+		} catch {
+			// no groups to offer
+		}
+	});
 	let sources = $state<string[]>([]);
 	let programs = $state<string[]>(page.url.searchParams.getAll('program'));
 	let level = $state(Number(page.url.searchParams.get('level') ?? 7));
@@ -43,6 +65,7 @@
 
 	const filter = $derived({
 		device: devices,
+		group: groups,
 		source: sources,
 		program: programs,
 		level,
@@ -57,6 +80,7 @@
 			const res = await more.logs({ ...filter, limit: 300 });
 			if (mine !== generation) return;
 			lines = res.lines;
+			marks = res.marks ?? [];
 			more_ = res.lines.length === 300;
 			error = null;
 		} catch (e) {
@@ -77,6 +101,11 @@
 			lines = [...lines, ...res.lines.filter((line) => !seen.has(line.id))].sort(
 				(a, b) => b.ts - a.ts || b.id - a.id
 			);
+			const known = new Set(marks.map((m) => `${m.ts}:${m.key}:${m.what}`));
+			marks = [
+				...marks,
+				...(res.marks ?? []).filter((m) => !known.has(`${m.ts}:${m.key}:${m.what}`))
+			];
 			more_ = res.lines.length === 300;
 		} catch (e) {
 			if (mine === generation) error = (e as Error).message;
@@ -93,6 +122,11 @@
 			lines = [...res.lines.filter((l) => !seen.has(l.id)), ...lines]
 				.sort((a, b) => b.ts - a.ts || b.id - a.id)
 				.slice(0, 2000);
+			const known = new Set(marks.map((m) => `${m.ts}:${m.key}:${m.what}`));
+			marks = [
+				...marks,
+				...(res.marks ?? []).filter((m) => !known.has(`${m.ts}:${m.key}:${m.what}`))
+			].filter((m) => m.ts >= lines[lines.length - 1].ts);
 		} catch {
 			// the next round tries again
 		}
@@ -138,6 +172,20 @@
 			d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 		);
 	};
+	// Lines and the alarms and events between them, newest first.
+	type Row = { line: LogLine; mark?: undefined } | { mark: LogMark; line?: undefined };
+	const rows = $derived.by((): Row[] => {
+		const out: Row[] = lines.map((line) => ({ line }));
+		if (!lines.length) return out;
+		const oldest = lines[lines.length - 1].ts;
+		for (const mark of marks) if (mark.ts >= oldest) out.push({ mark });
+		return out.sort((a, b) => (b.line?.ts ?? b.mark!.ts) - (a.line?.ts ?? a.mark!.ts));
+	});
+	const MARK = {
+		opened: { text: 'Alarm', color: 'var(--critical-text)' },
+		resolved: { text: 'Resolved', color: 'var(--good-text)' },
+		event: { text: 'Event', color: 'var(--accent)' }
+	} as const;
 	const tone = (l: number) =>
 		l <= 3 ? 'var(--critical-text)' : l === 4 ? 'var(--warning-text)' : undefined;
 	const deviceList = $derived(
@@ -270,11 +318,26 @@
 			{/each}
 		</div>
 	{/if}
-	{#if devices.length || sources.length || programs.length || level < 7 || query}
+	{#if groupList.length}
+		<div class="flex flex-wrap items-center gap-1.5">
+			<span class="mr-1 w-16 text-xs text-faint">Groups</span>
+			{#each groupList as g (g.id)}
+				<button
+					class={chip(groups.includes(g.id))}
+					title={g.devices.map(name).join(', ')}
+					onclick={() => (groups = toggle(groups, g.id))}
+				>
+					{g.name}
+				</button>
+			{/each}
+		</div>
+	{/if}
+	{#if devices.length || groups.length || sources.length || programs.length || level < 7 || query}
 		<button
 			class="self-start text-xs text-muted underline hover:text-text"
 			onclick={() => {
 				devices = [];
+				groups = [];
 				sources = [];
 				programs = [];
 				level = 7;
@@ -301,38 +364,66 @@
 		</p>
 	{:else}
 		<ol class="divide-y divide-line font-mono text-[12px] leading-relaxed">
-			{#each lines as l (l.id)}
-				<li
-					class="grid grid-cols-[auto_1fr] gap-x-3 px-4 py-1.5 sm:grid-cols-[8.5rem_9rem_8rem_1fr]"
-				>
-					<span class="tabular text-faint" title={new Date(l.ts * 1000).toLocaleString()}>
-						{time(l.ts)}
-					</span>
-					<a
-						class="truncate font-sans text-xs font-medium text-muted hover:text-text hover:underline"
-						href="/devices/{l.device}"
+			{#each rows as row, i (row.line ? `l${row.line.id}` : `m${i}`)}
+				{#if row.mark}
+					{@const m = row.mark}
+					<li
+						class="grid grid-cols-[auto_1fr] gap-x-3 bg-surface-2 px-4 py-1.5 font-sans sm:grid-cols-[8.5rem_9rem_8rem_1fr]"
 					>
-						{name(l.device)}
-					</a>
-					<button
-						class="hidden truncate text-left text-muted hover:text-text sm:block"
-						title="Only {l.program}"
-						onclick={() => (programs = [l.program])}
-					>
-						{l.program || '–'}
-					</button>
-					<span class="col-span-2 min-w-0 break-words sm:col-span-1" style:color={tone(l.level)}>
-						{#if l.level <= 4}<span class="mr-1 font-sans text-[10px] font-semibold uppercase">
-								{NAMES[l.level]}
-							</span>{/if}{l.msg}
-						{#if !l.verified}<span
-								class="ml-1 inline-flex align-[-2px] text-faint"
-								title="Came in on the open syslog port: could be forged"
+						<span class="tabular font-mono text-faint">{time(m.ts)}</span>
+						{#if m.device}
+							<a
+								class="truncate text-xs font-medium text-muted hover:underline"
+								href="/devices/{m.device}"
 							>
-								<ShieldQuestion class="size-3.5" />
-							</span>{/if}
-					</span>
-				</li>
+								{name(m.device)}
+							</a>
+						{:else}<span class="text-xs text-muted">Kastellan</span>{/if}
+						<span class="hidden text-xs font-semibold sm:block" style:color={MARK[m.what].color}>
+							{MARK[m.what].text}
+						</span>
+						<a
+							class="col-span-2 text-xs hover:underline sm:col-span-1"
+							href={m.device ? `/devices/${m.device}` : '/'}
+							style:color={MARK[m.what].color}
+						>
+							{m.title}
+						</a>
+					</li>
+				{:else}
+					{@const l = row.line!}
+					<li
+						class="grid grid-cols-[auto_1fr] gap-x-3 px-4 py-1.5 sm:grid-cols-[8.5rem_9rem_8rem_1fr]"
+					>
+						<span class="tabular text-faint" title={new Date(l.ts * 1000).toLocaleString()}>
+							{time(l.ts)}
+						</span>
+						<a
+							class="truncate font-sans text-xs font-medium text-muted hover:text-text hover:underline"
+							href="/devices/{l.device}"
+						>
+							{name(l.device)}
+						</a>
+						<button
+							class="hidden truncate text-left text-muted hover:text-text sm:block"
+							title="Only {l.program}"
+							onclick={() => (programs = [l.program])}
+						>
+							{l.program || '–'}
+						</button>
+						<span class="col-span-2 min-w-0 break-words sm:col-span-1" style:color={tone(l.level)}>
+							{#if l.level <= 4}<span class="mr-1 font-sans text-[10px] font-semibold uppercase">
+									{NAMES[l.level]}
+								</span>{/if}{l.msg}
+							{#if !l.verified}<span
+									class="ml-1 inline-flex align-[-2px] text-faint"
+									title="Came in on the open syslog port: could be forged"
+								>
+									<ShieldQuestion class="size-3.5" />
+								</span>{/if}
+						</span>
+					</li>
+				{/if}
 			{/each}
 		</ol>
 		{#if more_}

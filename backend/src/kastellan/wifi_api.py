@@ -6,6 +6,7 @@ passwords."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from datetime import datetime
@@ -60,6 +61,7 @@ class RadioChange(BaseModel):
     channel: str | None = Field(default=None, max_length=8)  # "auto" or a number
     htmode: str | None = Field(default=None, max_length=10)
     txpower: int | None = Field(default=None, ge=0, le=36)
+    country: str | None = Field(default=None, pattern=r"^([A-Z]{2}|00)$")
 
 
 class PlanApply(BaseModel):
@@ -119,6 +121,7 @@ def router(hub: Hub) -> APIRouter:
                             "clients": sum(len(i.get("clients") or []) for i in r.get("interfaces") or []),
                             "up": r.get("up"),
                             "disabled": r.get("disabled"),
+                            "country": r.get("country"),
                         }
                         for r in radios
                     ]
@@ -248,10 +251,15 @@ def router(hub: Hub) -> APIRouter:
                     "busy": busy,
                     "scanned": scan.get("t"),
                     "allowed": r.allowed,
+                    "country": st.get("country"),
                 }
             )
+        countries = sorted({r["country"] for r in radio_rows if r.get("country")})
         return {
             "networks": wifi.lineup(survey, fritz, keys),
+            "clients": clients_view(),
+            "countries": countries,
+            "country_note": wifi.country_note(countries, [r for r in radio_rows if r["kind"] == "openwrt"]),
             "radios": radio_rows,
             "errors": survey.get("errors") or {},
             "scans": {k: _scan_view(v) for k, v in newest.items()},
@@ -380,7 +388,7 @@ def router(hub: Hub) -> APIRouter:
         if d is None:
             raise ValueError("no such device")
         if d.fritzbox is not None and r.radio.startswith("wlan"):
-            if r.channel is None or r.htmode is not None or r.txpower is not None:
+            if r.channel is None or r.htmode is not None or r.txpower is not None or r.country:
                 raise ValueError("FRITZ!Box: only its channel can be changed here")
             channel = 0 if r.channel == "auto" else int(r.channel)
             await fb.change_wifi(hub.fritz(r.device), int(r.radio[4:]), {"channel": channel})
@@ -389,7 +397,12 @@ def router(hub: Hub) -> APIRouter:
             raise ValueError("no OpenWrt or FRITZ!Box login")
         values = {
             k: v
-            for k, v in (("channel", r.channel), ("htmode", r.htmode), ("txpower", r.txpower))
+            for k, v in (
+                ("channel", r.channel),
+                ("htmode", r.htmode),
+                ("txpower", r.txpower),
+                ("country", r.country),
+            )
             if v is not None
         }
         await ow.change_wifi(hub.ubus(r.device), {r.radio: values})
@@ -431,6 +444,43 @@ def router(hub: Hub) -> APIRouter:
         result["scanned"] = bool(scans.all(time.time() - 7 * 86400))
         return result
 
+    def clients_view() -> list[dict[str, Any]]:
+        """Every Wi-Fi client with how its radio link is (wifi.diagnose): weak, slow, on 2.4 GHz
+        where 5 GHz is near, ..."""
+        out = []
+        for id in openwrt_ids():
+            st = hub.monitor.status.get(id)
+            for r in ((st.router or {}).get("radios") or []) if st else []:
+                for i in r.get("interfaces") or []:
+                    for c in i.get("clients") or []:
+                        out.append(
+                            {
+                                **c,
+                                "device": id,
+                                "radio": r.get("name"),
+                                "band": r.get("band"),
+                                "ssid": i.get("ssid"),
+                                "kind": "openwrt",
+                            }
+                        )
+        for id, nets in fritz_networks().items():
+            for n in nets:
+                for c in n.get("associated") or []:
+                    out.append(
+                        {
+                            **c,
+                            "device": id,
+                            "radio": f"wlan{n.get('index')}",
+                            "band": n.get("band"),
+                            "ssid": n.get("ssid"),
+                            "kind": "fritzbox",
+                        }
+                    )
+        for c in out:
+            c["issues"] = wifi.diagnose(c)
+        out.sort(key=lambda c: (-len(c["issues"]), c.get("signal") or 0))
+        return out[:300]
+
     @api.post("/plan/apply")
     async def apply(body: PlanApply, request: Request) -> StreamingResponse:
         """The chosen radios to their suggested channels, one access point after the other."""
@@ -455,6 +505,17 @@ def router(hub: Hub) -> APIRouter:
                     "outcome": outcome,
                 }
             )
+            if any(v == "done" for v in outcome.values()):
+                say("A scan follows in two minutes, to see how the air turned out.")
+
+                async def scan_later() -> None:
+                    await asyncio.sleep(120)
+                    with contextlib.suppress(Exception):
+                        await scan_all(hub)
+
+                task = asyncio.create_task(scan_later())
+                hub._background.add(task)
+                task.add_done_callback(hub._background.discard)
             return {"outcome": outcome}
 
         return job("plan", request, w, work, radios=[r.model_dump() for r in body.radios])

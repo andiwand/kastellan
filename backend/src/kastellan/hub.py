@@ -26,6 +26,7 @@ from . import (
     demo,
     demo_more,
     devbackups,
+    discovery,
     docker,
     hubbackup,
     internet_api,
@@ -33,7 +34,10 @@ from . import (
     maintenance,
     notify,
     releases,
+    roaming,
+    signins_api,
     vulns,
+    web_setup,
     wifi_api,
 )
 from . import config as config_mod
@@ -58,6 +62,7 @@ from .logs import LogStore
 from .monitor import DeviceStatus, Monitor, run_check
 from .networks import Resolver, default_gateway
 from .openwrt import client as openwrt_client
+from .openwrt import setup as openwrt_setup
 from .openwrt.client import Pins, Ubus
 from .openwrt.firmware import Releases, advise
 from .push import Push
@@ -69,7 +74,7 @@ from .syslog_tls import Authority
 from .terminals import Terminals
 from .vault import AUTO, KASTELLAN, Damaged, Vault, WrongKey, policy
 from .versions import Versions
-from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status, split_status
+from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status, server_meta, split_status
 from .vuln_policy import assess, auto_update_reason
 from .wifi import Scans
 
@@ -142,6 +147,22 @@ class Hub:
         # when each client was last seen.
         self.crl_state: dict[str, dict[str, Any]] = {}
         self.ovpn_status: dict[str, dict[str, Any]] = {}
+        # Every OpenVPN server on the OpenWrt routers (their `openvpn` ability), by device.
+        self.vpn_servers: dict[str, dict[str, Any]] = {}
+        # Addresses VPNs gave their clients (address -> "client (VPN)"): the Access page's paths.
+        self.vpn_addresses: dict[str, str] = {}
+        # OpenVPN helper scripts older than this hub's, by VPN ("pki", "crl"): Updates says so.
+        self.vpn_outdated: dict[str, list[str]] = {}
+        # nlbwmon's bytes per device, by router (the `bandwidth` ability), with rates.
+        self.bandwidth: dict[str, dict[str, Any]] = {}
+        # usteer's view per access point (the `roaming` ability): wifi.py's roaming.
+        self.roaming: dict[str, dict[str, Any]] = {}
+        self.discovery_ignored = discovery.Ignored(data / "discovery-ignored.json")
+        # Names, certificates and routers' DNS for web.domain (web_setup.py), and when looked.
+        self.web_state: dict[str, Any] = {}
+        self.web_state_t = 0.0
+        # Outside addresses whose first success is new (signins_api.run): told once as an event.
+        self.signin_flags: list[dict[str, Any]] = []
         self._seen: dict[str, Seen] = {}
         self.terminals = Terminals()
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
@@ -386,6 +407,9 @@ class Hub:
             asyncio.create_task(hubbackup.run(self), name="Kastellan's own backup"),
             asyncio.create_task(internet_api.run(self), name="internet connection"),
             asyncio.create_task(wifi_api.run(self), name="scheduled Wi-Fi scans"),
+            asyncio.create_task(signins_api.run(self), name="sign-ins"),
+            asyncio.create_task(self._check_vpn_helpers(), name="VPN helper versions"),
+            asyncio.create_task(web_setup.run(self), name="names and certificates"),
         ]
 
     async def stop(self) -> None:
@@ -673,6 +697,13 @@ class Hub:
                         status.router_abilities = sorted(
                             g.removeprefix("kastellan-") for g in groups if g.startswith("kastellan-")
                         )
+                    if status.router_abilities is not None:
+                        try:
+                            versions = await ubus.call("file", "read", {"path": openwrt_setup.VERSIONS})
+                            text = str(versions.get("data") or "")
+                        except Exception:  # set up before versions were kept (or not readable)
+                            text = None
+                        status.router_outdated = openwrt_setup.outdated(text)
                     old = status.router or {}
                     report["packages"] = old.get("packages")
                     report["packages_checked"] = old.get("packages_checked")
@@ -707,14 +738,23 @@ class Hub:
                 status.info_checked = datetime.now(UTC)
                 if firmware:
                     self._note_firmware(id, f"OpenWrt {firmware}", datetime.now(UTC))
-                if vids := self.openvpns_on(id):
+                vids = self.openvpns_on(id)
+                if vids or "openvpn" in (status.router_abilities or []):
                     await self._read_openvpn(vids, id, ubus)
+                if "bandwidth" in (status.router_abilities or []):
+                    await self._read_bandwidth(id, ubus)
+                if "roaming" in (status.router_abilities or []):
+                    await self._read_roaming(id, ubus)
 
         while True:
             if self.demo:  # the made-up network's made-up access points
                 for id, report in demo.ROUTER.items():
                     if status := self.monitor.status.get(id):
                         status.router, status.router_checked = report, datetime.now(UTC)
+                checked = datetime.now(UTC).isoformat(timespec="seconds")
+                self.vpn_servers = {id: {**v, "checked": checked} for id, v in demo.VPN_SERVERS.items()}
+                self.bandwidth = {id: {**v, "checked": checked} for id, v in demo.BANDWIDTH.items()}
+                self.roaming = {id: {**v, "checked": checked} for id, v in demo.ROAMING.items()}
             else:
                 routers = [(id, d) for id, d in list(self.config.devices.items()) if d.openwrt]
                 await asyncio.gather(*(one(id, d) for id, d in routers), return_exceptions=True)
@@ -813,6 +853,43 @@ class Hub:
             self._seen[vid] = Seen(self.settings.data / "vpn", vid)
         return self._seen[vid]
 
+    async def _read_bandwidth(self, id: str, ubus: Ubus) -> None:
+        """Bytes per device on this router (nlbwmon) and the rates since the last read."""
+        now = time.time()
+        was = self.bandwidth.get(id) or {}
+        try:
+            counts = await openwrt_client.bandwidth(ubus)
+        except Exception as e:
+            self.bandwidth[id] = {**was, "error": _brief(e)}
+            return
+        before, then = was.get("clients") or {}, was.get("t")
+        clients = {}
+        for mac, c in counts.items():
+            entry: dict[str, Any] = {"rx": c["rx"], "tx": c["tx"], "rx_rate": None, "tx_rate": None}
+            old = before.get(mac)
+            if old and then and now > then:
+                for k in ("rx", "tx"):
+                    delta = c[k] - old[k]
+                    entry[f"{k}_rate"] = round(delta * 8 / (now - then)) if delta >= 0 else None
+            clients[mac] = entry
+        self.bandwidth[id] = {
+            "t": now,
+            "checked": datetime.now(UTC).isoformat(timespec="seconds"),
+            "clients": clients,
+            "error": None,
+        }
+
+    async def _read_roaming(self, id: str, ubus: Ubus) -> None:
+        """What usteer on this access point knows: its own clients, the other nodes (roaming)."""
+        try:
+            self.roaming[id] = {
+                **await openwrt_client.roaming(ubus),
+                "checked": datetime.now(UTC).isoformat(timespec="seconds"),
+                "error": None,
+            }
+        except Exception as e:
+            self.roaming[id] = {**(self.roaming.get(id) or {}), "error": _brief(e)}
+
     async def _read_openvpn(self, vids: list[str], id: str, ubus: Ubus) -> None:
         """Who is connected to the OpenVPN servers on this router now (its OpenWrt login's
         `openvpn` ability), read once and split by server: each VPN gets only its own server's
@@ -821,11 +898,20 @@ class Hub:
         try:
             text = await openwrt_client.openvpn_status(ubus)
         except Exception as e:  # not granted (set up its login again), or it doesn't answer
+            self.vpn_servers[id] = {"checked": now.isoformat(timespec="seconds"), "error": _brief(e)}
             for vid in vids:
                 was = self.ovpn_status.get(vid, {})
                 self.ovpn_status[vid] = {**was, "connected": [], "error": _brief(e)}
             return
         servers, none = split_status(text)
+        self.vpn_servers[id] = {
+            "checked": now.isoformat(timespec="seconds"),
+            "error": None,
+            "servers": {
+                name: {**server_meta(part), "connected": [asdict(c) for c in parse_status(part)]}
+                for name, part in servers.items()
+            },
+        }
         for vid in vids:
             s = self.config.vpns.get(vid)
             instance = getattr(s, "instance", None)
@@ -841,6 +927,10 @@ class Hub:
             else:
                 part = servers[instance or next(iter(servers))]
                 connected = parse_status(part)
+                meta = server_meta(part)
+                if meta["running"] is False or (meta["age"] is not None and meta["age"] > 300):
+                    connected = []
+                    error = f"the OpenVPN server on {id} is stopped or its status is stale"
                 markers = {ln for ln in part.splitlines() if ln.startswith("!")}
                 if not connected and "!no-status" in markers:
                     error = f"the OpenVPN server on {id} keeps no status file (`status` in its config)"
@@ -983,6 +1073,8 @@ class Hub:
                 problems += self._dhcp_problems()
                 problems += hubbackup.problems(self, time.time())
                 problems += internet_api.problems(self)
+                problems += roaming.problems(self)
+                problems += web_setup.problems(self)
                 problems += self.alarms.carry(self._vuln_keys_unknown())
                 problems += self.alarms.carry(unjudged)
                 # Muted or removed devices: their alarms end without a "back up".
@@ -1005,7 +1097,9 @@ class Hub:
         """Send, and keep what failed for _retry_outbox."""
         quiet = self._quiet_notifications(now)
         messages = [m for m in messages if m.device not in quiet]
-        failed = await notify.send(self.config.notify, messages, now, push=self.push)
+        failed = await notify.send(
+            self.config.notify, messages, now, push=self.push, secrets=self.secrets.get
+        )
         self._outbox.extend((c, m, now, now, 1) for c, m in failed)
 
     def _quiet_notifications(self, now: datetime) -> set[str]:
@@ -1039,7 +1133,7 @@ class Hub:
             return
 
         async def one(channel: NotifyChannel, message: Message) -> bool:
-            return not await notify.send([channel], [message], now, push=self.push)
+            return not await notify.send([channel], [message], now, push=self.push, secrets=self.secrets.get)
 
         try:
             async with asyncio.timeout(20):
@@ -1072,6 +1166,16 @@ class Hub:
         """Info events: container updates that appeared, software and firmware that changed.
         On the first look after starting, they are only remembered: they aren't news."""
         out: list[Message] = []
+        # A sign-in from an outside address that never succeeded before (signins_api.run).
+        for src in self.signin_flags:
+            who = ", ".join(src.get("users") or []) or "someone"
+            where = ", ".join(
+                self.config.label(d) for d in src.get("devices") or [] if d in self.config.devices
+            )
+            title = f"Sign-in from a new outside address: {src['address']}"
+            body = f"{who} · {', '.join(src.get('services') or [])}" + (f" on {where}" if where else "")
+            if m := self.alarms.event(f"signin-new:{src['address']}", title, body, None, now, send):
+                out.append(m)
         for id, status in self.monitor.status.items():
             device = self.config.devices.get(id)
             if device is None:
@@ -1426,6 +1530,36 @@ class Hub:
         assert s.kind == "openvpn"
         devices = self.config.devices
         return OpenVpn(self.keys, s, devices[s.pki], devices[s.server] if s.server else None)
+
+    async def _check_vpn_helpers(self) -> None:
+        """Twice a day: whether the scripts Kastellan's VPN key runs are this hub's versions."""
+        await asyncio.sleep(120)
+        while True:
+            if not self.demo:
+                for vid, s in list(self.config.vpns.items()):
+                    if s.kind != "openvpn":
+                        continue
+                    try:
+                        self.vpn_outdated[vid] = await self.openvpn(vid).outdated_helpers(
+                            self.vpn_outdated.get(vid)
+                        )
+                    except Exception as e:  # its devices are gone from the config: next time
+                        log.info("VPN helpers of %s: %s", vid, _brief(e))
+                self.vpn_outdated = {v: o for v, o in self.vpn_outdated.items() if v in self.config.vpns}
+            await asyncio.sleep(12 * 3600)
+
+    def vpn_outdated_on(self, device: str) -> list[str]:
+        """The VPN helper scripts on this device older than this hub's ("vpn-pki", "vpn-crl")."""
+        out = []
+        for vid, names in self.vpn_outdated.items():
+            s = self.config.vpns.get(vid)
+            if s is None:
+                continue
+            if "pki" in names and s.pki == device and "vpn-pki" not in out:
+                out.append("vpn-pki")
+            if "crl" in names and s.server == device and "vpn-crl" not in out:
+                out.append("vpn-crl")
+        return out
 
     async def push_crl(self, vid: str, renew: bool = False) -> None:
         """Bring a VPN's CRL to its OpenVPN server and note when it expires."""

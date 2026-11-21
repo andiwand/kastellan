@@ -108,3 +108,29 @@ async def test_dns(monkeypatch) -> None:
     dropped = await checks.run("x", Check.model_validate({"dns": "router.example"}))
     assert dropped.up and dropped.detail == "192.0.2.1" and dropped.latency_ms < 100
     assert time.perf_counter() - started < 2  # AAAA got a moment, not the time limit
+
+
+async def test_http_page_must_contain_a_text() -> None:
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        body = b"<html><title>Home Assistant</title>Bad gateway</html>"
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nServer: nginx/1.24.0\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/"
+    async with server:
+        ok = await checks.run("127.0.0.1", Check.model_validate({"http": url, "contains": "Home Assistant"}))
+        bad = await checks.run("127.0.0.1", Check.model_validate({"http": url, "contains": "Welcome"}))
+    assert ok.up and str(ok.software).startswith("nginx")
+    assert not bad.up and bad.detail == "HTTP 200, without 'Welcome'"
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Check.model_validate({"tcp": 22, "contains": "x"})

@@ -325,6 +325,7 @@ export interface Settings {
 					every_hours?: number;
 					booked_down?: number | null;
 					booked_up?: number | null;
+					iperf3?: string | null;
 				};
 			} | null;
 		};
@@ -396,6 +397,7 @@ export interface GroupSurvey {
 		missing: string[];
 		same_key: boolean;
 	}[];
+	roaming?: GroupRoaming;
 }
 
 export interface CollectSetup {
@@ -486,6 +488,8 @@ export interface Container {
 	state: string;
 	update: boolean;
 	update_to: string | null;
+	/** When update_to is a new major version: the newest tag within the running one. */
+	update_within?: string | null;
 	unchecked: string | null;
 	previous?: string | null; // the image kept from before its last update (actor), short id
 }
@@ -669,6 +673,70 @@ export interface Vpn {
 	};
 }
 
+/** A sign-in or an attempt (signins.py), from the logs or the hub's audit log. */
+export interface SignIn {
+	verified: boolean;
+	ts: number;
+	device: string;
+	service: 'ssh' | 'vpn' | 'router' | 'hub';
+	program: string;
+	outcome: 'ok' | 'failed' | 'attempt';
+	user: string | null;
+	address: string | null;
+	outside: boolean;
+	via: string | null;
+	line: number | null;
+	own: boolean;
+}
+export interface SignInSource {
+	address: string;
+	outside: boolean;
+	ok: number;
+	failed: number;
+	attempts: number;
+	first: number;
+	last: number;
+	users: string[];
+	services: string[];
+	devices: string[];
+	via: string | null;
+	flags: ('repeated' | 'outside-ok' | 'new-outside')[];
+}
+export interface SignIns {
+	hours: number;
+	own: string[];
+	summary: {
+		by_service: Record<string, { ok: number; failed: number; attempt: number }>;
+		outside_addresses: number;
+		outside_ok: number;
+	};
+	sources: SignInSource[];
+	events: SignIn[];
+	total: number;
+}
+
+/** A VPN server Kastellan sees (vpn_servers.py): on a router, a FRITZ!Box or in a container. */
+export interface VpnServer {
+	device: string | null;
+	source: 'openwrt' | 'fritzbox' | 'container' | 'wg-easy';
+	kind: string; // openvpn, wireguard, ipsec, tailscale, ...
+	name: string | null;
+	port?: number | null;
+	proto?: string | null;
+	dev?: string | null;
+	running: boolean | null;
+	stale?: boolean;
+	state?: string;
+	image?: string;
+	where?: string | null;
+	addresses?: string[] | null;
+	uptime?: number | null;
+	clients: { name: string; since: string | null; address?: string; active?: unknown }[] | null;
+	vpn: string | null; // the managed VPN it serves
+	error?: string | null;
+	checked: string | null;
+}
+
 export interface SetupHost {
 	role: 'pki' | 'server';
 	device: string;
@@ -810,6 +878,7 @@ export interface CheckForm {
 	target: string | number | null;
 	name: string;
 	expect?: number | string[] | null; // http: a status; dns: addresses among the answers
+	contains?: string | null; // http: text the page must show
 	server?: string | null; // dns: the resolver to ask
 	verify?: boolean;
 	tls?: boolean | null;
@@ -1026,8 +1095,19 @@ export interface LogLine {
 	verified: boolean; // false: came in on the open syslog port
 }
 
+/** An alarm opened or resolved, or an info event, among the log lines (alarms.log). */
+export interface LogMark {
+	ts: number;
+	what: 'opened' | 'resolved' | 'event';
+	device: string | null;
+	title: string;
+	severity: string | null;
+	key: string | null;
+}
+
 export interface LogFilter {
 	device?: string[];
+	group?: string[];
 	source?: string[];
 	program?: string[];
 	level?: number;
@@ -1246,6 +1326,8 @@ export interface InternetSample {
 	v6_loss: number | null;
 	v6_ms: number | null;
 	dns_ms: number | null;
+	hop_ms?: number | null;
+	hop_loss?: number | null;
 	down: number | null;
 	up: number | null;
 	note: string | null;
@@ -1308,10 +1390,29 @@ export interface InternetView {
 		booked_down: number | null;
 		booked_up: number | null;
 		server: string;
+		how?: 'http' | 'iperf3';
 		testing: boolean;
 		error: string | null;
 	};
 	targets: string[];
+	/** Who uses the line (nlbwmon on OpenWrt routers with the bandwidth ability). */
+	clients?: {
+		routers: string[];
+		errors: Record<string, string>;
+		rows: {
+			router: string;
+			mac: string;
+			name: string | null;
+			rx: number;
+			tx: number;
+			rx_rate: number | null;
+			tx_rate: number | null;
+		}[];
+	};
+	/** The way out (traceroute, hourly) and the provider's first routers that answer. */
+	route?: { distance: number; address: string; ms: number }[];
+	hops?: string[];
+	route_checked?: number | null;
 }
 
 // --- Wi-Fi (wifi.py) ------------------------------------------------------------------------
@@ -1354,6 +1455,75 @@ export interface WifiRadio {
 	busy: number | null;
 	scanned: number | null;
 	allowed: number[] | null;
+	country?: string | null;
+}
+
+/** A Wi-Fi client and how its radio link is (wifi.diagnose). */
+export interface WifiClient {
+	device: string;
+	radio: string;
+	band: string | null;
+	ssid: string | null;
+	kind: 'openwrt' | 'fritzbox';
+	mac: string | null;
+	name?: string | null;
+	address?: string | null;
+	signal: number | null; // dBm (OpenWrt) or percent (FRITZ!Box)
+	snr?: number | null;
+	speed?: number | null; // FRITZ!Box: Mbit/s
+	rx?: { mbit: number; mhz: number | null; std: string | null; nss: number | null } | null;
+	tx?: { mbit: number; mhz: number | null; std: string | null; nss: number | null } | null;
+	expected?: number | null;
+	issues: string[];
+}
+
+/** What usteer on an access point knows (GET /api/devices/{id}/roaming). */
+export interface RoamingView {
+	read: boolean;
+	why?: string;
+	checked?: string;
+	error?: string | null;
+	nodes?: {
+		node: string;
+		own: boolean;
+		host: string | null;
+		device: string | null;
+		iface: string;
+		bssid: string | null;
+		ssid: string | null;
+		freq: number | null;
+		clients: number | null;
+		load: number | null;
+		roam_source: number | null;
+		roam_target: number | null;
+	}[];
+	clients?: {
+		mac: string;
+		name: string | null;
+		node: string;
+		signal: number | null;
+		snr: number | null;
+		connected: number | null;
+	}[];
+	config?: Record<string, number | boolean>;
+}
+
+/** A group's roaming check (roaming.py). */
+export interface GroupRoaming {
+	findings: { level: 'info' | 'warning'; text: string; fix: string; devices: string[] }[];
+	members: Record<
+		string,
+		{
+			usteer: 'running' | 'stopped' | 'missing' | 'unknown';
+			sees: string[];
+			misses: string[];
+			clients: number;
+			error: string | null;
+			memory: number | null;
+			free: number | null;
+		}
+	>;
+	changes: Record<string, Record<string, Record<string, string>>>;
 }
 
 export interface WifiScanView {
@@ -1378,6 +1548,9 @@ export interface WifiOverview {
 	}[];
 	scanning: string[];
 	scan_at: string | null; // the daily scan's local time, or null (only on request)
+	clients?: WifiClient[];
+	countries?: string[];
+	country_note?: string | null;
 }
 
 export interface ChannelPlan {
@@ -1413,9 +1586,63 @@ function logQuery(f: LogFilter): string {
 
 const dev = (id: string) => `/devices/${encodeURIComponent(id)}`;
 
+/** A device the routers see that Kastellan doesn't know (discovery.py). */
+export interface Discovered {
+	mac: string;
+	name: string | null;
+	address: string | null;
+	routers: string[];
+	wifi: boolean;
+	via: string | null;
+}
+
+/** DNS and HTTPS for the site (web_setup.py). */
+export interface WebSetupView {
+	domain: string | null;
+	zone?: string;
+	dns_server?: string | null;
+	address?: string | null;
+	names?: {
+		name: string;
+		what: string;
+		answers: string[];
+		public: string[];
+		same: boolean | null;
+		ok: boolean;
+	}[];
+	certificates?: {
+		name: string;
+		certificate: {
+			valid: boolean;
+			error: string | null;
+			expires: string | null;
+			days_left: number | null;
+			issuer: string | null;
+		} | null;
+	}[];
+	routers?: {
+		device: string;
+		error?: string;
+		dnsmasq?: boolean;
+		rebind_ok?: boolean | null;
+		forward_ok?: boolean | null;
+		forwards?: string[];
+		local?: string[];
+	}[];
+	commands?: string;
+	checked: string | null;
+}
+
 export const more = {
+	webSetup: (again = false) => get<WebSetupView>('/web/setup', again ? { again: 'true' } : {}),
+	secrets: () =>
+		get<{ name: string; set: boolean; used_by: string[]; missing: boolean }[]>('/secrets'),
+	discovered: () => get<Discovered[]>('/discovered'),
+	ignoreDiscovered: (mac: string) =>
+		call<{ ok: boolean }>('POST', `/discovered/${encodeURIComponent(mac)}/ignore`),
+	signins: (hours = 24) => get<SignIns>('/signins', { hours }),
 	logs: (f: LogFilter) =>
-		call<{ lines: LogLine[]; levels: string[] }>('GET', `/logs${logQuery(f)}`),
+		call<{ lines: LogLine[]; levels: string[]; marks?: LogMark[] }>('GET', `/logs${logQuery(f)}`),
 	logFacets: (hours = 24) => get<LogFacets>('/logs/facets', { hours }),
 	logSources: () => get<LogSources>('/logs/sources'),
 	notNeeded: (id: string, kind: 'actor' | 'openwrt') =>
@@ -1477,7 +1704,9 @@ export const more = {
 		channel?: string;
 		htmode?: string;
 		txpower?: number;
-	}) => call<{ done: boolean }>('PUT', '/wifi/radios', body)
+		country?: string;
+	}) => call<{ done: boolean }>('PUT', '/wifi/radios', body),
+	deviceRoaming: (id: string) => get<RoamingView>(`/devices/${encodeURIComponent(id)}/roaming`)
 };
 
 export const api = {
@@ -1489,7 +1718,7 @@ export const api = {
 		get<Change[]>('/changes', { hours, device, limit }),
 	me: () => get<Me>('/auth/me'),
 	alarms: () => get<Alarms>('/alarms'),
-	vpn: () => get<{ vpns: Vpn[] }>('/vpn'),
+	vpn: () => get<{ vpns: Vpn[]; servers: VpnServer[] }>('/vpn'),
 	putVpn: (vid: string, vpn: Partial<VpnSettings>, version: string, isNew: boolean) =>
 		call<{ id: string; version: string }>('PUT', `/vpns/${vid}`, { vpn, version, new: isNew }),
 	deleteVpn: (vid: string, version: string) =>

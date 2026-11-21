@@ -365,6 +365,22 @@ LOG_STORY = [
     ("nas", "syslog", "sshd", 6, "Accepted publickey for admin from 192.168.178.41 port 50122 ssh2"),
     ("nas", "syslog", "sshd", 4, "Failed password for invalid user test from 192.168.178.66 port 41022 ssh2"),
     ("nas", "syslog", "openvpn", 6, "phone/198.51.100.7:51544 Peer Connection Initiated"),
+    ("nas", "syslog", "sshd", 5, "Invalid user pi from 203.0.113.77 port 51234"),
+    (
+        "nas",
+        "syslog",
+        "sshd",
+        6,
+        "Connection closed by authenticating user root 203.0.113.77 port 40112 [preauth]",
+    ),
+    (
+        "repeater-living",
+        "syslog",
+        "openvpn(home_tcp)",
+        4,
+        "tcp4-server:198.51.100.200:40000 TLS Error: cannot locate HMAC in incoming packet from "
+        "[AF_INET]198.51.100.200:40000",
+    ),
     ("nas", "syslog", "kernel", 3, "ata2.00: failed command: READ FPDMA QUEUED"),
 ]
 
@@ -453,7 +469,7 @@ def sample(t: float) -> internet.Sample:
     day = datetime.fromtimestamp(t).astimezone().date()
     today = datetime.now().astimezone().date()
     if (today - day).days == 2 and 3.2 <= hour < 3.45:
-        return internet.Sample(t, "down", "internet", router_ms=0.6, line=True, loss=1.0)
+        return internet.Sample(t, "down", "provider", router_ms=0.6, line=True, loss=1.0, hop_loss=1.0)
     ms = 11.5 * evening * rng.uniform(0.9, 1.2)
     loss = 0.0 if rng.random() > 0.05 else 0.02
     down = 8e6 + 40e6 * (evening - 1) * rng.uniform(0.3, 1.3) + rng.uniform(0, 6e6)
@@ -469,6 +485,8 @@ def sample(t: float) -> internet.Sample:
         v6_loss=0.0,
         v6_ms=round(ms * 0.95, 1),
         dns_ms=round(rng.uniform(4, 16), 1),
+        hop_ms=round(ms * 0.55, 1),
+        hop_loss=0.0,
         down=round(down),
         up=round(down * 0.08),
     )
@@ -488,6 +506,13 @@ LINE = {
 def seed_internet(net: internet.Internet, now: float) -> None:
     """A week of looks every five minutes (the samples' story above), a reconnect, speed tests."""
     net.router = "fritzbox"
+    net.route = [
+        {"distance": 1, "address": "192.168.178.1", "ms": 0.6},
+        {"distance": 2, "address": "100.70.12.1", "ms": 6.4},
+        {"distance": 3, "address": "62.155.240.17", "ms": 7.9},
+        {"distance": 4, "address": "1.1.1.1", "ms": 11.2},
+    ]
+    net.hops, net.route_checked = ["100.70.12.1", "62.155.240.17"], now
     t = now - 7 * 86400
     while t < now:
         s = sample(t)

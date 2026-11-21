@@ -35,6 +35,9 @@ UPGRADABLE = "/usr/libexec/kastellan/upgradable"
 SERVICE = "/usr/libexec/kastellan/service"
 SERVICES_ALLOW = "/etc/kastellan/services.allow"
 OPENVPN_STATUS = "/usr/libexec/kastellan/openvpn-status"
+# What setup installed (name=digest per script and the access list): renewal notices.
+VERSIONS = "/usr/libexec/kastellan/versions"
+BANDWIDTH = "/usr/libexec/kastellan/bandwidth"
 SERVICE_NAME = r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
 # Kastellan's own way in: these may be restarted, never stopped or disabled.
 # (and what stopping would open up or cut off: the firewall, the network).
@@ -53,6 +56,10 @@ ABILITIES = {
     "backup": "Download its configuration backup (every password and key on it; kept encrypted)",
     "scan": "Scan for neighbouring Wi-Fi networks and channel use (for the Wi-Fi page's channel"
     " plan; clients may notice a moment's pause)",
+    "bandwidth": "See how much each device sends and receives through it (nlbwmon's counters, for"
+    " the Internet page; nlbwmon must be installed)",
+    "roaming": "See how Wi-Fi clients roam between access points (usteer's view: clients, signal,"
+    " the other access points it knows)",
 }
 
 # The one command the services group may run: an action on a service in the allow list.
@@ -88,18 +95,28 @@ exit 0
 # file, where /etc/config/openvpn (or the server's own config file) says it is. No input: the
 # paths come from the device's config, never from Kastellan; only client lines are printed.
 _OPENVPN_STATUS_SCRIPT = r"""#!/bin/sh
-# Kastellan: who is connected to this device's OpenVPN servers. No input, client lines only.
+# Kastellan: who is connected to this device's OpenVPN servers, and how each server is set up
+# (port, protocol, tun/tap, whether it runs, how fresh its status file is). No input.
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 OPENVPN_DIR=/etc/openvpn
 seen=" "
-# The status file named by a config file (`status <file> [seconds]`).
-status_of() { sed -n 's/^[[:space:]]*status[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p' "$1" | head -n 1; }
+# An option's first value in a config file (`status <file> [seconds]`, `port 1194`, ...).
+opt() { [ -r "$2" ] && sed -n "s/^[[:space:]]*$1[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p" "$2" | head -n 1; }
+status_of() { opt status "$1"; }
+meta() {
+  [ -n "$1" ] && echo "!port $1"
+  [ -n "$2" ] && echo "!proto $2"
+  [ -n "$3" ] && echo "!dev $3"
+}
 show() {
   echo "== $1"
+  meta "$3" "$4" "$5"
+  [ -n "$6" ] && echo "!running $6"
   [ -n "$2" ] || { echo "!no-status"; return; }
   case "$seen" in *" $2 "*) return ;; esac
   seen="$seen$2 "
   [ -r "$2" ] || { echo "!unreadable"; return; }
+  echo "!age $(( $(date +%s) - $(date -r "$2" +%s 2>/dev/null || date +%s) ))"
   head -c 1048576 "$2" | awk '
     /^(HEADER[,\t])?CLIENT_LIST[,\t]/ { print; next }
     /^Common Name,Real Address/ { v1 = 1; print; next }
@@ -107,13 +124,22 @@ show() {
     v1 { print }'
 }
 found=0
+procs=$(ps w 2>/dev/null)
 for s in $(uci -q show openvpn | sed -n "s/^openvpn\.\([A-Za-z0-9_]*\)=openvpn$/\1/p"); do
   case "$(uci -q get "openvpn.$s.enabled")" in 1|true|yes|on) ;; *) continue ;; esac
+  conf=$(uci -q get "openvpn.$s.config")
+  # Only servers: a client's section has `client` (uci) or its file says so.
+  case "$(uci -q get "openvpn.$s.client")" in 1|true|yes|on) continue ;; esac
+  is_client='^[[:space:]]*(client|remote)([[:space:]]|$)'
+  [ -n "$conf" ] && [ -r "$conf" ] && grep -Eq "$is_client" "$conf" && continue
   found=1
   f=$(uci -q get "openvpn.$s.status" | cut -d' ' -f1)
-  conf=$(uci -q get "openvpn.$s.config")
-  if [ -z "$f" ] && [ -n "$conf" ] && [ -r "$conf" ]; then f=$(status_of "$conf"); fi
-  show "$s" "$f"
+  [ -z "$f" ] && [ -n "$conf" ] && f=$(status_of "$conf")
+  port=$(uci -q get "openvpn.$s.port"); [ -z "$port" ] && port=$(opt port "$conf")
+  proto=$(uci -q get "openvpn.$s.proto"); [ -z "$proto" ] && proto=$(opt proto "$conf")
+  dev=$(uci -q get "openvpn.$s.dev"); [ -z "$dev" ] && dev=$(opt dev "$conf")
+  case "$procs" in *"openvpn($s) "*) run=yes ;; *) run=no ;; esac
+  show "$s" "$f" "$port" "$proto" "$dev" "$run"
 done
 # Servers started from their own files (OpenWrt's init also runs /etc/openvpn/*.conf).
 for conf in "$OPENVPN_DIR"/*.conf; do
@@ -121,10 +147,20 @@ for conf in "$OPENVPN_DIR"/*.conf; do
   is_server='^[[:space:]]*(server|server-bridge|mode[[:space:]]+server)([[:space:]]|$)'
   [ -r "$conf" ] && grep -Eq "$is_server" "$conf" || continue
   found=1
-  show "${conf##*/}" "$(status_of "$conf")"
+  show "${conf##*/}" "$(status_of "$conf")" \
+    "$(opt port "$conf")" "$(opt proto "$conf")" "$(opt dev "$conf")" ""
 done
 [ "$found" = 1 ] || echo "!no-servers"
 exit 0
+"""
+
+
+# The one command the bandwidth group may run: nlbwmon's counters per device. No input.
+_BANDWIDTH_SCRIPT = r"""#!/bin/sh
+# Kastellan: bytes per device this accounting period (nlbwmon). No input, nothing else.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+command -v nlbw >/dev/null 2>&1 || { echo '{"error":"nlbwmon is not installed"}'; exit 0; }
+exec nlbw -c json -g mac 2>/dev/null
 """
 
 
@@ -174,7 +210,7 @@ def acl() -> dict:
                     "uci": ["get"],  # with the uci scope below: the DHCP pools only
                 },
                 "uci": ["dhcp"],
-                "file": {UPGRADABLE: ["exec"], SERVICES_ALLOW: ["read"]},
+                "file": {UPGRADABLE: ["exec"], SERVICES_ALLOW: ["read"], VERSIONS: ["read"]},
             },
         },
         "kastellan-reboot": {
@@ -196,6 +232,25 @@ def acl() -> dict:
         "kastellan-openvpn": {
             "description": "Kastellan: who is connected to its OpenVPN servers (through one script)",
             "read": {"ubus": {"file": ["exec"]}, "file": {OPENVPN_STATUS: ["exec"]}},
+        },
+        "kastellan-bandwidth": {
+            "description": "Kastellan: bytes per device (nlbwmon, through one script)",
+            "read": {"ubus": {"file": ["exec"]}, "file": {BANDWIDTH: ["exec"]}},
+        },
+        "kastellan-roaming": {
+            "description": "Kastellan: how Wi-Fi clients roam (usteer, read only)",
+            "read": {
+                "ubus": {
+                    "usteer": [
+                        "local_info",
+                        "remote_info",
+                        "remote_hosts",
+                        "connected_clients",
+                        "get_clients",
+                        "get_config",
+                    ]
+                }
+            },
         },
         "kastellan-logs": {
             "description": "Kastellan: read the system log",
@@ -223,6 +278,29 @@ def acl() -> dict:
             },
         },
     }
+
+
+def helper_digests() -> dict[str, str]:
+    """What this hub's setup installs, by name: a short digest of each script and of the access
+    list. The device keeps the same in VERSIONS; a difference means setting up again renews it."""
+
+    def d(text: str) -> str:
+        return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+    return {
+        "acl": d(json.dumps(acl(), sort_keys=True)),
+        "upgradable": d(_UPGRADABLE_SCRIPT),
+        "service": d(_SERVICE_SCRIPT),
+        "openvpn-status": d(_OPENVPN_STATUS_SCRIPT),
+        "bandwidth": d(_BANDWIDTH_SCRIPT),
+    }
+
+
+def outdated(text: str | None) -> list[str]:
+    """Which of setup's parts on the device are older than this hub's (VERSIONS' content; None
+    when it can't be read: set up before versions were kept, so all of them)."""
+    have = dict(ln.split("=", 1) for ln in (text or "").splitlines() if "=" in ln)
+    return [k for k, v in helper_digests().items() if have.get(k) != v]
 
 
 def md5crypt(password: str, salt: str | None = None) -> str:
@@ -314,6 +392,15 @@ def install_script(chosen: set[str], password_hash: str, services: list[str] | N
         _OPENVPN_STATUS_SCRIPT.rstrip("\n"),
         "KASTELLAN_OVPN_EOF",
         f"chmod 755 {OPENVPN_STATUS}.new && mv {OPENVPN_STATUS}.new {OPENVPN_STATUS}",
+        f"cat > {BANDWIDTH}.new <<'KASTELLAN_BW_EOF'",
+        _BANDWIDTH_SCRIPT.rstrip("\n"),
+        "KASTELLAN_BW_EOF",
+        f"chmod 755 {BANDWIDTH}.new && mv {BANDWIDTH}.new {BANDWIDTH}",
+        "# What was installed, for Kastellan to tell when setting up again renews it.",
+        f"cat > {VERSIONS}.new <<'KASTELLAN_VER_EOF'",
+        *(f"{k}={v}" for k, v in helper_digests().items()),
+        "KASTELLAN_VER_EOF",
+        f"chmod 644 {VERSIONS}.new && mv {VERSIONS}.new {VERSIONS}",
         *(_RPCSYS if chosen & {"firmware", "password"} else []),
         *(_CGI_IO if chosen & {"firmware", "backup"} else []),
         *_CERT,

@@ -639,6 +639,41 @@ class Alarms:
         except OSError as e:
             log.warning("cannot save the alarms: %s", e)
 
+    def log_between(
+        self, since: float, until: float, devices: set[str] | None = None, limit: int = 300
+    ) -> list[dict[str, Any]]:
+        """Alarms opened and resolved and info events between two times (the alarm log's newest
+        20 000 entries), for the Logs page to put among the lines. Oldest first."""
+        from collections import deque
+
+        try:
+            with self.log_path.open() as f:
+                tail = deque(f, maxlen=20000)
+        except OSError:
+            return []
+        out = []
+        for raw in tail:
+            try:
+                e = json.loads(raw)
+                at = datetime.fromisoformat(e["time"]).timestamp()
+            except (ValueError, KeyError, TypeError):
+                continue
+            if not since <= at <= until or e.get("what") not in ("opened", "resolved", "event"):
+                continue
+            if devices is not None and e.get("device") not in devices:
+                continue
+            out.append(
+                {
+                    "ts": at,
+                    "what": e["what"],
+                    "device": e.get("device"),
+                    "title": str(e.get("title") or "")[:200],
+                    "severity": e.get("severity"),
+                    "key": e.get("key"),
+                }
+            )
+        return out[-limit:]
+
     def _log(self, entry: dict[str, Any]) -> None:
         try:
             with self.log_path.open("a") as f:

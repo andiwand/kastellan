@@ -35,11 +35,12 @@ class FileBody(BaseModel):
 
 
 class CheckForm(BaseModel):
-    type: Literal["ping", "tcp", "http", "dns"]
+    type: Literal["ping", "tcp", "http", "dns", "dhcp"]
     target: str | int | None = None
     name: str = Field(default="", max_length=80)
     # http: a status (100 to 599); dns: the addresses that must be among the answers.
     expect: int | list[str] | None = Field(default=None)
+    contains: str | None = Field(default=None, min_length=1, max_length=200)
     server: str | None = Field(default=None, max_length=45)  # dns: the resolver to ask
 
     @model_validator(mode="after")
@@ -659,6 +660,7 @@ def router(hub: Hub) -> APIRouter:
                     # Only a name the file gives: a default one follows the target.
                     "name": item.get("name", "") if isinstance(item, dict) else "",
                     "expect": c.expect,
+                    "contains": c.contains,
                     "server": c.server,
                     "verify": c.verify,
                     "tls": c.tls,

@@ -103,7 +103,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     framing; lines verified) and the opt-in UDP syslog port
     (`logs.syslog`, off by default; only from known devices' addresses, `verified = False`).
     `hub.log_status` says per device how fetching went. Reading: signed-in admins (demo excepted); a search is audited
-    (filters only, never lines; `X-Kastellan-Auto` follow requests aren't).
+    (filters only, never lines; `X-Kastellan-Auto` follow requests aren't). `group=` filters by a
+    group's members; answers carry `marks`: alarms opened/resolved and info events of the same
+    devices in the same time (`Alarms.log_between`), shown among the lines.
   - `devbackups.py` + `devbackups_api.py`: device configuration backups (OpenWrt `sysupgrade -b`
     via cgi-io's `cgi-backup`, the `backup` ability; FRITZ!Box export with the secret
     `fritzbox-export-<id>`). Files content-addressed in `<data>/device-backups/objects`,
@@ -149,7 +151,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     with Digest (tests/test_fritzbox.py).
   - `internet.py` + `internet_api.py`: a look every `internet.every` s: router ping, the line as
     the router says (`line_from`: FRITZ!Box connection, OpenWrt WAN interface), outside targets
-    (v4, v6 when the hub has it), DNS; `look` places a failure at router → line → internet → dns.
+    (v4, v6 when the hub has it), DNS, the provider's first routers (`hops`, found hourly by
+    traceroute, `provider_hops`); `look` places a failure at router → line → provider → internet
+    → dns. Line trouble (`Internet.trouble`): 3 reconnects in 24 h, DSL errored seconds over 60
+    an hour, little noise margin (warnings). Speed tests by HTTP transfers or `speedtest.iperf3`
+    (the image has iperf3). Who uses the line: nlbwmon on OpenWrt (`bandwidth` ability,
+    `hub._read_bandwidth`, `clients_view`).
     Samples per day in `<data>/internet/*.jsonl` (31 days), day sums in `state.json` (3 years),
     outages/events/speed tests as JSON lines. `internet:down` (critical, two looks) and
     `internet:slow` (three tests below half the booked speed). The router: `internet.router`,
@@ -164,6 +171,46 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     Changes go as streamed jobs; OpenWrt uses rollback, FRITZ!Box does not. `wifi_api.run`: a daily scan at
     `wifi.scan_at` (local time, default 04:00; null: only on request), marked done per day in
     `<data>/wifi/last-scheduled`, skipped if the hub starts more than two hours after it.
+    Applying a channel plan scans again two minutes later. Clients with their radio link
+    (`openwrt.client.assoc_client`: signal, SNR, rates both ways; FRITZ!Box: percent and speed)
+    and what is off (`wifi.diagnose`); radios' regulatory `country` (one for all: `country_note`).
+  - `roaming.py`: roaming in groups. `check` (group page): 802.11r with one mobility domain and
+    k/v per shared network, channels apart (not for meshed radios), usteer on every member and
+    each seeing the others (usteer `remote_info` hosts vs. the members' addresses), memory.
+    `assistance` → `POST /api/groups/{id}/roaming` sets 802.11r/k/v member by member (rollback
+    each). `problems`: usteer stopped where it ran, a member out of view, a small device low on
+    memory. usteer's view per AP (`roaming` ability: local/remote_info, connected_clients,
+    get_config) in `hub.roaming`, shown on the device page (`GET /api/devices/{id}/roaming`).
+  - `signins.py` + `signins_api.py`: the Sign-ins page. SSH (OpenSSH, dropbear), OpenVPN,
+    WireGuard presence, FRITZ!Box logins from the logs (`LogStore.matching` with `LIKES`), the
+    hub's own from the audit log; per address with flags (`repeated`, `outside-ok`,
+    `new-outside`: first success from that outside address this week, `<logs> state
+    signins:known-ok`, told once as an info event). Kastellan's own SSH checks (the hub's
+    address, attempts) are left out. Paths: a VPN client's address (`hub.vpn_addresses`, from
+    wg-easy) marks logins from it as "via".
+    The page requires a signed-in admin (except demo); unverified syslog remains labelled and
+    cannot establish a successful-login alert. Bounded reads keep the newest matching lines.
+  - `vpn_servers.py`: every VPN server seen (OpenVPN instances and WireGuard interfaces on OpenWrt,
+    a FRITZ!Box's WireGuard, VPN containers by image), linked to the managed VPN it serves; the
+    openvpn-status script also prints `!port/!proto/!dev/!running/!age` per server.
+  - `discovery.py`: clients the routers report (FRITZ!Box hosts, OpenWrt leases and Wi-Fi
+    clients) that match no device; Devices page "Found on the network", set aside by MAC
+    (`<data>/discovery-ignored.json`).
+  - `credentials.py`: which secret is used where (`GET /api/secrets`); notification channels may
+    name `secret:<name>` for URLs, tokens and SMTP logins (`notify.resolved` at send time).
+  - `web_setup.py`: DNS and HTTPS for a site (TLS ends at a proxy in front, never in the hub):
+    `web.domain` (the hub), `*.web.domain` (device pages), `web.zone` (default: the domain's
+    parent), `web.dns` (the site's DNS server). Checks names (also against a public resolver:
+    no split DNS), the proxy's certificates, and the OpenWrt routers' dnsmasq (`rebind_domain`,
+    `server=/zone/dns`, read through the read login's `dhcp` scope); every 6 h, warnings for a
+    certificate under 14 days and names that don't resolve. `GET /api/web/setup?again=`.
+  - `weblogin.py`: "Open signed in": the hub signs in to a device page with a stored People login
+    (LuCI form, HTTP Basic); the device's session cookie (LuCI) goes with the ticket, Basic stays
+    on the hub (`webproxy.Access.basic`). Tickets and sessions are bound to the configured
+    upstream; changing it invalidates access. The password never reaches the browser.
+  - Helper versions: OpenWrt setup writes `/usr/libexec/kastellan/versions` (`helper_digests`),
+    read each poll (`router_outdated`); the VPN scripts answer `version` (`OpenVpn.outdated_helpers`,
+    twice a day). Both show as outdated scripts on Updates.
   - `releases.py`: GitHub’s highest published version (including 0.x prereleases), daily (`hub._check_releases`, not in demo mode, off
     with `check_releases: false`); `/api/health` `newer`, and an info event once per version.
   - Alarms only from fresh results (after `hub.started`, not overdue); folding to the top-most

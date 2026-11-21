@@ -129,6 +129,12 @@
 					{#if c.update}
 						<ArrowUpCircle class="size-3.5 shrink-0 text-accent" />
 						<span class="font-medium text-accent">{c.update_to ?? 'newer image'}</span>
+						{#if c.update_within}<span
+								class="text-muted"
+								title="The newest within the major version it runs"
+							>
+								or {c.update_within}
+							</span>{/if}
 					{:else if c.unchecked === 'not checked yet'}
 						<span class="text-muted" title="Its registry is being asked; it shows in a minute">
 							checking…

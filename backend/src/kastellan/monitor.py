@@ -61,6 +61,7 @@ class DeviceStatus:
     fritz_error: str | None = None
     actor_abilities: list[str] | None = None  # what the actor there may do (host/actor.py)
     router_abilities: list[str] | None = None  # what the OpenWrt login there may do
+    router_outdated: list[str] | None = None  # setup's parts there older than this hub's
     actor_outdated: list[str] | None = None  # the actor's scripts older than the hub's (host/actor.py)
 
     @property

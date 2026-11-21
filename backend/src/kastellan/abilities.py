@@ -16,7 +16,7 @@ from pathlib import Path
 
 ADDED = {
     "actor": ("rollback-container", "container-logs", "unit-logs", "journal", "docker-logs"),
-    "openwrt": ("logs", "backup", "scan"),
+    "openwrt": ("logs", "backup", "scan", "bandwidth", "roaming"),
 }
 
 

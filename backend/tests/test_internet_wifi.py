@@ -9,6 +9,62 @@ from kastellan import internet, wifi
 from kastellan.internet import Internet, Probe, Sample
 
 
+async def test_traceroute_uses_supported_icmplib_arguments(monkeypatch) -> None:
+    import icmplib
+
+    def trace(address, **kwargs):
+        # traceroute forwards extra kwargs into ICMPRequest, not into its raw socket.
+        icmplib.ICMPRequest(
+            destination=address,
+            id=1,
+            sequence=1,
+            **{k: v for k, v in kwargs.items() if k not in {"count", "interval", "timeout", "max_hops"}},
+        )
+        return []
+
+    monkeypatch.setattr(icmplib, "traceroute", trace)
+    assert await internet.route("1.1.1.1") == []
+
+
+async def test_cancelled_iperf_is_killed_and_reaped(monkeypatch) -> None:
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    begun = asyncio.Event()
+
+    async def communicate():
+        begun.set()
+        await asyncio.Event().wait()
+
+    process = Mock(returncode=None, communicate=communicate, wait=AsyncMock())
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/iperf3")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    task = asyncio.create_task(internet._iperf3("example.org", False))
+    await begun.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    process.kill.assert_called_once()
+    process.wait.assert_awaited_once()
+
+
+def test_stale_bandwidth_is_not_shown_as_current() -> None:
+    from types import SimpleNamespace
+
+    from kastellan.internet_api import clients_view
+
+    bw = {"t": time.time(), "clients": {"aa": {"rx": 100, "tx": 200, "rx_rate": 8, "tx_rate": 16}}}
+    hub = SimpleNamespace(
+        config=SimpleNamespace(devices={"gw": None}), monitor=SimpleNamespace(status={}), bandwidth={"gw": bw}
+    )
+    assert clients_view(hub)["rows"][0]["rx_rate"] == 8
+    bw["error"] = "unreachable"
+    assert clients_view(hub)["rows"][0]["rx_rate"] is None
+    del bw["error"]
+    bw["t"] -= 301
+    assert clients_view(hub)["rows"][0]["rx_rate"] is None
+
+
 async def test_wifi_cache_respects_config_reload_and_locked_keys(tmp_path, monkeypatch):
     from starlette.requests import Request
 
@@ -262,3 +318,192 @@ async def test_speedtest_sends_exact_size_and_download_has_a_deadline(monkeypatc
     ) as client:
         with pytest.raises(TimeoutError):
             await internet._download(client, "https://test.invalid/down")
+
+
+def test_provider_hops_are_after_the_home_network() -> None:
+    from kastellan import internet
+
+    route = [
+        {"distance": 1, "address": "192.168.1.1"},
+        {"distance": 2, "address": "10.0.0.1"},
+        {"distance": 3, "address": "100.70.0.1"},
+        {"distance": 4, "address": "62.155.240.17"},
+        {"distance": 5, "address": "80.1.1.1"},
+    ]
+    assert internet.provider_hops(route, "192.168.1.1") == ["100.70.0.1", "62.155.240.17"]
+    assert internet.provider_hops([], None) == []
+
+
+async def test_an_outage_at_the_provider_is_told_apart(monkeypatch) -> None:
+    from kastellan import internet
+
+    async def pings(address, count=4):
+        return (count, count, [1.0] * count) if address == "192.168.1.1" else (count, 0, [])
+
+    async def resolve(name):
+        return None
+
+    monkeypatch.setattr(internet, "_pings", pings)
+    monkeypatch.setattr(internet, "_resolve", resolve)
+    p = internet.Probe("192.168.1.1", True, None, ["1.1.1.1"], [], ["example.com"], hops=["100.70.0.1"])
+    s = await internet.look(p, now=1.0)
+    assert (s.state, s.step) == ("down", "provider") and s.hop_loss == 1.0
+    p.hops = []
+    assert (await internet.look(p, now=1.0)).step == "internet"
+
+
+def test_iperf3_results_are_read() -> None:
+    import json
+
+    import pytest
+
+    from kastellan import internet
+    from kastellan.config import SpeedTest
+
+    out = {"end": {"sum_received": {"bits_per_second": 93_500_000.5}, "sum_sent": {}}}
+    assert internet.iperf3_rate(json.dumps(out)) == 93_500_000
+    with pytest.raises(RuntimeError, match="busy"):
+        internet.iperf3_rate(json.dumps({"error": "the server is busy running a test"}))
+    assert SpeedTest(iperf3="iperf.example.net:5202").iperf3
+    with pytest.raises(ValueError):
+        SpeedTest(iperf3="-x evil")
+
+
+def test_line_trouble(tmp_path) -> None:
+    from kastellan import internet
+
+    net = internet.Internet(tmp_path)
+    for i in range(3):
+        net._append("events.jsonl", {"t": 1000.0 + i, "kind": "reconnect", "text": "x"})
+    net.note_errors(0, {"crc": 10, "errored_seconds": 100})
+    net.note_errors(1800, {"crc": 50, "errored_seconds": 200})
+    keys = [k for k, _, _ in net.trouble(2000, {"snr_down": 45})]
+    assert keys == ["internet:reconnects", "internet:errors", "internet:margin"]
+    net.note_errors(1900, {"crc": 1, "errored_seconds": 1})  # a resync: counted anew
+    assert [k for k, _, _ in net.trouble(90000 + 2000, {"snr_down": 90})] == []
+
+
+def test_wifi_clients_are_diagnosed() -> None:
+    from kastellan import wifi
+    from kastellan.openwrt.client import assoc_client
+
+    c = assoc_client(
+        {
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "signal": -80,
+            "noise": -95,
+            "rx": {"rate": 6500, "mhz": 20, "mcs": 0, "ht": True},
+            "tx": {"rate": 13000, "mhz": 20, "he": True, "nss": 1},
+            "expected_throughput": 8000,
+        },
+        {"aa:bb:cc:dd:ee:ff": "phone"},
+    )
+    assert (
+        c["name"] == "phone"
+        and c["snr"] == 15
+        and c["tx"] == {"mbit": 13.0, "mhz": 20, "mcs": None, "nss": 1, "std": "he"}
+    )
+    assert wifi.diagnose(c | {"band": "5g"}) == ["weak signal (-80 dBm)", "slow (13 Mbit/s to it)"]
+    near = {"signal": -45, "band": "2g", "tx": {"mbit": 144.0}}
+    assert wifi.diagnose(near) == ["on 2.4 GHz while close (5 GHz would be faster)"]
+    assert wifi.diagnose({"kind": "fritzbox", "signal": 20, "speed": 6}) == ["weak signal", "slow (6 Mbit/s)"]
+    assert wifi.country_note(["DE"], [{"country": "DE"}]) is None
+    assert "different" in wifi.country_note(["AT", "DE"], [{"country": "AT"}, {"country": "DE"}])
+    assert "no country" in wifi.country_note(["00"], [{"country": "00"}])
+
+
+def test_roaming_in_a_group() -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from kastellan import roaming
+    from kastellan.config import Config
+
+    config = Config.model_validate(
+        {
+            "devices": {
+                "a": {"host": "192.168.1.2", "openwrt": {}},
+                "b": {"host": "192.168.1.3", "openwrt": {}},
+            },
+            "groups": {"aps": {"devices": ["a", "b"]}},
+        }
+    )
+
+    def entry(d, ft=True, md="ab12", k=True, v=True):
+        return {
+            "device": d,
+            "section": "default_radio0",
+            "radio": "radio0",
+            "encryption": "psk2",
+            "ft": ft,
+            "mobility_domain": md,
+            "k": k,
+            "v": v,
+        }
+
+    survey = {
+        "networks": [
+            {
+                "ssid": "Castle",
+                "devices": ["a", "b"],
+                "on": [entry("a"), entry("b", ft=False, md=None)],
+                "same_key": True,
+                "same_encryption": True,
+            }
+        ],
+        "radios": {
+            "a": [{"section": "radio0", "band": "2g", "channel": "6"}],
+            "b": [{"section": "radio0", "band": "2g", "channel": "6"}],
+        },
+        "mesh": [],
+    }
+    status = {
+        "a": SimpleNamespace(
+            router={
+                "services": [{"name": "usteer", "running": True}],
+                "system": {"memory": {"total": 128 * 2**20}},
+            }
+        ),
+        "b": SimpleNamespace(
+            router={
+                "services": [{"name": "usteer", "running": False}],
+                "system": {"memory": {"total": 32 * 2**20, "available": 4 * 2**20}},
+            }
+        ),
+    }
+    hub = SimpleNamespace(
+        config=config,
+        monitor=SimpleNamespace(status=status),
+        resolver=SimpleNamespace(address=lambda h: None),
+        roaming={
+            "a": {"nodes": [{"own": True}], "clients": [], "config": {"roam_trigger_snr": 20}},
+            "b": {
+                "nodes": [{"own": True}, {"own": False, "host": "192.168.1.2"}],
+                "config": {"roam_trigger_snr": 25},
+            },
+        },
+    )
+    for s in status.values():
+        s.router_checked, s.router_error = datetime.now(UTC), None
+    out = roaming.check(hub, ["a", "b"], survey)
+    texts = " | ".join(f["text"] for f in out["findings"])
+    assert "802.11r) is off on b" in texts and "share channel 6" in texts
+    assert "usteer isn't running on b" in texts and "a doesn't see b" in texts and "32 MB" in texts
+    assert "roam trigger differs" in texts
+    assert out["members"]["b"]["sees"] == ["a"]
+    assert roaming.assistance(survey) == {
+        "b": {"default_radio0": {**roaming.FT_OPTIONS, "mobility_domain": "ab12"}}
+    }
+    keys = {p.key for p in roaming.problems(hub)}
+    assert keys == {"roaming:aps:b:usteer", "roaming:aps:a:view", "roaming:aps:b:memory"}
+    survey["networks"][0]["same_key"] = False
+    assert roaming.assistance(survey) == {}
+    status["b"].router["system"]["memory"]["available"] = 0
+    assert roaming.check(hub, ["a", "b"], None)["members"]["b"]["free"] == 0
+    for s in status.values():
+        s.router_checked = None
+    assert roaming.problems(hub) == []
+    assert (
+        roaming.mobility_domain("Castle") == roaming.mobility_domain("Castle")
+        and len(roaming.mobility_domain("x")) == 4
+    )

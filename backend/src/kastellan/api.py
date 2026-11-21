@@ -18,13 +18,15 @@ from . import ups as upsmod
 from .access_api import router as access_router
 from .act_api import router as act_router
 from .alarms_api import router as alarms_router
-from .auth_api import Guard, client_address, require_admin
+from .auth_api import Guard, HubHeaders, client_address, require_admin
 from .auth_api import router as auth_router
 from .backups_api import router as backups_router
 from .config import Check, Device, Kind
 from .config_api import router as config_router
+from .credentials import router as credentials_router
 from .desktop_api import router as desktop_router
 from .devbackups_api import router as devbackups_router
+from .discovery import router as discovery_router
 from .fritzbox_api import router as fritzbox_router
 from .groups_api import router as groups_router
 from .host import collector
@@ -39,6 +41,7 @@ from .networks import Hub as NetHub
 from .openwrt_api import router as openwrt_router
 from .push_api import router as push_router
 from .settings import Settings
+from .signins_api import router as signins_router
 from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
 from .terminal_api import ssh_port
@@ -46,6 +49,8 @@ from .tls import public_name
 from .vault import Damaged, Locked, NotForKastellan
 from .vault_api import router as vault_router
 from .vpn_api import router as vpn_router
+from .web_setup import router as web_setup_router
+from .weblogin import router as weblogin_router
 from .webproxy import Access as WebAccess
 from .webproxy import WebProxy
 from .webproxy import router as web_router
@@ -63,13 +68,16 @@ def version_event(e: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "version", **{k: e[k] for k in ("time", "device", "check", "from", "to")}}
 
 
-def outdated_scripts(device: Device, status: DeviceStatus | None) -> list[str]:
+def outdated_scripts(device: Device, status: DeviceStatus | None, vpn: list[str] | None = None) -> list[str]:
     """Kastellan's scripts on the host that are older than this hub's: set up again to renew."""
     out = []
     if status and device.collect is not None and collector.outdated(status.host):
         out.append("collector")
     if status and status.actor_outdated:
         out.append("actor")
+    if status and device.openwrt is not None and status.router_outdated:
+        out.append("openwrt")
+    out += vpn or []
     return out
 
 
@@ -112,11 +120,13 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         return JSONResponse({"detail": f"{exc} (see the Keys page)"}, status_code=409)
 
     app.add_middleware(Guard, hub=hub)
+    app.add_middleware(HubHeaders)  # outside the Guard: its refusals carry them too
     web_access = WebAccess()
     app.add_middleware(
         WebProxy, hub=hub, access=web_access
     )  # outermost: a device's name never reaches the hub's routes
     app.include_router(web_router(hub, web_access))
+    app.include_router(weblogin_router(hub, web_access))
     app.include_router(auth_router(hub))
     app.include_router(vault_router(hub))
     app.include_router(terminal_router(hub))
@@ -129,6 +139,10 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(fritzbox_router(hub))
     app.include_router(internet_router(hub))
     app.include_router(wifi_router(hub))
+    app.include_router(signins_router(hub))
+    app.include_router(discovery_router(hub))
+    app.include_router(credentials_router(hub))
+    app.include_router(web_setup_router(hub))
     app.include_router(push_router(hub))
     app.include_router(vpn_router(hub))
     app.include_router(access_router(hub))
@@ -329,7 +343,9 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     **ups_view(id, device),
                     "host_checked": status.host_checked if status else None,
                     "host_error": status.host_error if status else None,
-                    "outdated_scripts": [] if hub.demo else outdated_scripts(device, status),
+                    "outdated_scripts": []
+                    if hub.demo
+                    else outdated_scripts(device, status, hub.vpn_outdated_on(id)),
                     "new_abilities": {
                         kind: new
                         for kind, configured, installed in (

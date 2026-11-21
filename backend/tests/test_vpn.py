@@ -167,6 +167,7 @@ async def test_the_hub_says_why_nobody_is_seen(tmp_path: Path, monkeypatch, text
     me = SimpleNamespace(
         seen=lambda vid: seen,
         ovpn_status={"office": {"connected": [{"name": "old"}]}},
+        vpn_servers={},
         config=SimpleNamespace(vpns={"office": SimpleNamespace(instance=None)}),
     )
     await hub_module.Hub._read_openvpn(me, ["office"], "gw", None)  # type: ignore[arg-type]
@@ -277,10 +278,142 @@ async def test_several_openvpn_servers_on_one_router_are_kept_apart(tmp_path: Pa
         "b": SimpleNamespace(instance="lab.conf"),
         "c": SimpleNamespace(instance=None),
     }
-    me = SimpleNamespace(seen=lambda v: seen[v], ovpn_status={}, config=SimpleNamespace(vpns=vpns))
+    me = SimpleNamespace(
+        seen=lambda v: seen[v], ovpn_status={}, vpn_servers={}, config=SimpleNamespace(vpns=vpns)
+    )
     await hub_module.Hub._read_openvpn(me, ["a", "b", "c"], "gw", None)  # type: ignore[arg-type]
     a, b, c = (me.ovpn_status[v] for v in ("a", "b", "c"))
     assert [x["name"] for x in a["connected"]] == ["laptop"] and a["error"] is None
     assert b["connected"] == [] and "can't be read" in b["error"]  # its own error only
     assert c["connected"] == [] and "choose its instance" in c["error"]
     assert "laptop" in seen["a"].last and not seen["b"].last and not seen["c"].last
+
+
+def test_vpn_servers_are_listed_from_what_the_hub_has() -> None:
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from kastellan import vpn_servers
+    from kastellan.config import Config
+
+    config = Config.model_validate(
+        {
+            "devices": {
+                "gw": {"host": "192.168.1.1", "kind": "router"},
+                "sv": {"host": "192.168.1.10", "kind": "server"},
+            },
+            "vpns": {
+                "home": {"kind": "openvpn", "pki": "sv", "server": "gw", "instance": "home_udp"},
+                "wg": {"kind": "wireguard", "wg_easy": "http://192.168.1.10:51821"},
+            },
+        }
+    )
+    now = datetime.now(UTC)
+    status = {
+        "gw": SimpleNamespace(
+            router={"interfaces": [{"name": "wg0", "proto": "wireguard", "up": True, "ipv4": ["10.0.0.1"]}]},
+            router_checked=now,
+            fritz=None,
+            containers=None,
+            containers_checked=None,
+        ),
+        "sv": SimpleNamespace(
+            router=None,
+            fritz=None,
+            containers=[
+                {"name": "wg-easy", "image": "wg-easy/wg-easy", "tag": "15", "state": "running"},
+                {"name": "web", "image": "library/nginx", "tag": "1", "state": "running"},
+            ],
+            containers_checked=now,
+        ),
+    }
+    hub = SimpleNamespace(
+        config=config,
+        monitor=SimpleNamespace(status=status),
+        vpn_servers={
+            "gw": {
+                "checked": "x",
+                "servers": {
+                    "home_udp": {
+                        "port": 1194,
+                        "running": True,
+                        "age": 10,
+                        "connected": [{"name": "phone", "address": "198.51.100.7:1", "since": None}],
+                    },
+                    "old.conf": {"port": None, "running": None, "age": 9999, "connected": []},
+                },
+            }
+        },
+    )
+    servers = vpn_servers.collect(hub, admin=False)  # type: ignore[arg-type]
+    by = {(s["device"], s["name"]): s for s in servers}
+    home = by[("gw", "home_udp")]
+    assert home["vpn"] == "home" and home["running"] and home["clients"] == [{"name": "phone", "since": None}]
+    assert by[("gw", "old.conf")]["running"] is False and by[("gw", "old.conf")]["stale"]
+    assert by[("gw", "old.conf")]["clients"] is None
+    assert by[("gw", "wg0")]["kind"] == "wireguard" and by[("gw", "wg0")]["addresses"] is None
+    assert by[("sv", "wg-easy")]["vpn"] == "wg" and ("sv", "web") not in by
+    admin = vpn_servers.collect(hub, admin=True)  # type: ignore[arg-type]
+    assert next(s for s in admin if s["name"] == "home_udp")["clients"][0]["address"] == "198.51.100.7:1"
+    config.vpns["wg"].wg_easy = "http://localhost:51821"
+    assert next(s for s in vpn_servers.collect(hub, True) if s.get("device") == "sv")["vpn"] is None
+
+
+def test_openwrt_helpers_tell_when_they_are_older() -> None:
+    from kastellan.openwrt import setup
+
+    current = "\n".join(f"{k}={v}" for k, v in setup.helper_digests().items())
+    assert setup.outdated(current) == []
+    assert setup.outdated(None) == list(setup.helper_digests())
+    assert setup.outdated(current.replace("openvpn-status=", "openvpn-status=x")) == ["openvpn-status"]
+    script = setup.install_script({"openvpn"}, setup.md5crypt("x"), [])
+    assert setup.VERSIONS in script and f"acl={setup.helper_digests()['acl']}" in script
+
+
+async def test_vpn_helpers_tell_when_they_are_older(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from kastellan.vpn import openvpn
+
+    me = openvpn.OpenVpn.__new__(openvpn.OpenVpn)
+    me.s = SimpleNamespace(mode="restricted", pki_user="k", server_user="root", crl_path="/etc/crl.pem")
+    me.pki_device, me.server_device = object(), object()
+    monkeypatch.setattr(openvpn, "pki_conf", lambda s: "")
+    monkeypatch.setattr(openvpn, "crl_conf", lambda s: "")
+    answers = {
+        "kastellan-pki": openvpn.helper_digest("kastellan-pki") + "\n",
+        "kastellan-crl": RuntimeError("kastellan-crl: only 'install' (and add-key / keep-key)"),
+    }
+
+    async def run(device, user, name, conf, command, input=None):
+        assert command == "version"
+        a = answers[name]
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    me._run = run
+    assert await me.outdated_helpers() == ["crl"]
+    answers["kastellan-crl"] = OSError("unreachable")
+    assert await me.outdated_helpers() == []
+    assert await me.outdated_helpers(["crl"]) == ["crl"]
+    me.s.mode = "direct"
+    assert await me.outdated_helpers() == []
+
+
+def test_vpn_helpers_say_their_own_digest() -> None:
+    import shutil
+    import subprocess
+
+    from kastellan.vpn import openvpn
+
+    if shutil.which("sha256sum") and shutil.which("bash"):  # the scripts say their own digest
+        for name, shell in (("kastellan-crl", "sh"), ("kastellan-pki", "bash")):
+            path = openvpn.SCRIPTS / name
+            out = subprocess.run(
+                [shell, str(path), "/nonexistent.conf"],
+                env={"SSH_ORIGINAL_COMMAND": "version", "PATH": "/usr/bin:/bin:/sbin"},
+                capture_output=True,
+                text=True,
+            )
+            assert out.stdout.strip() == openvpn.helper_digest(name), out.stderr

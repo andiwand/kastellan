@@ -26,6 +26,7 @@ def router(hub: Hub) -> APIRouter:
         request: Request,
         response: Response,
         device: Annotated[list[str] | None, Query()] = None,
+        group: Annotated[list[str] | None, Query()] = None,
         source: Annotated[list[str] | None, Query()] = None,
         program: Annotated[list[str] | None, Query()] = None,
         level: int = Query(default=7, ge=0, le=7),
@@ -39,6 +40,11 @@ def router(hub: Hub) -> APIRouter:
         w = access(request)
         response.headers["Cache-Control"] = "no-store"
         device, source, program = device or [], source or [], program or []
+        for gid in (group or [])[:20]:  # a group's members, as if each was chosen
+            g = hub.config.groups.get(gid)
+            if g is None:
+                raise HTTPException(404, f"no group {gid!r}")
+            device = [*device, *(d for d in g.devices if d not in device)]
         if len(device) > 100 or len(source) > 20 or len(program) > 100:
             raise HTTPException(400, "too many filters")
         rows = await asyncio.to_thread(
@@ -67,7 +73,14 @@ def router(hub: Hub) -> APIRouter:
                 since=since,
                 until=until,
             )
-        return {"lines": rows, "levels": LEVELS}
+        # Alarms and events of the same devices in the same time: among the lines on the page.
+        marks: list[dict[str, Any]] = []
+        if rows:
+            lo, hi = min(r["ts"] for r in rows), max(r["ts"] for r in rows)
+            if before is None and until is None:
+                hi = max(hi, time.time())
+            marks = await asyncio.to_thread(hub.alarms.log_between, lo, hi, set(device) if device else None)
+        return {"lines": rows, "levels": LEVELS, "marks": marks}
 
     @api.get("/facets")
     async def facets(request: Request, hours: int = Query(default=24, ge=1, le=24 * 365)) -> dict[str, Any]:

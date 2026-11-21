@@ -21,6 +21,7 @@
 	import Workflow from '@lucide/svelte/icons/workflow';
 	import Plus from '@lucide/svelte/icons/plus';
 	import DeviceEditor from '#lib/components/DeviceEditor.svelte';
+	import Discovered from '#lib/components/Discovered.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 
@@ -301,4 +302,5 @@
 			</ul>
 		</div>
 	{/if}
+	{#if store.me?.role === 'admin'}<Discovered />{/if}
 {/if}

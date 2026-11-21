@@ -93,6 +93,9 @@ class Check(BaseModel):
     # http: this status, else any status below 500 counts as up. dns: an address (or several)
     # that must be among the answers.
     expect: int | str | list[str] | None = None
+    # http: text the page must contain (in its first 256 KB) to count as up: a page that answers
+    # but shows an error ("Bad gateway", a login loop) is down.
+    contains: str | None = Field(default=None, min_length=1, max_length=200)
     server: str | None = None  # dns: the resolver to ask (an address); default: the system's
     # https: alarm when the certificate is not valid or ends soon. Default: for names on the
     # internet (not addresses, not .lan, .local, .home.arpa, ...) and checks with verify: true.
@@ -137,6 +140,8 @@ class Check(BaseModel):
                     raise ValueError(f"dns: {address!r} is not an address") from e
         elif isinstance(self.expect, str | list):
             raise ValueError("expect: a status code for http, addresses for dns")
+        if self.contains is not None and self.type is not CheckType.HTTP:
+            raise ValueError("contains: is for http checks")
         if self.server and self.type is not CheckType.DNS:
             raise ValueError("server: is for dns checks")
         if self.type is CheckType.DHCP and self.target is not None:
@@ -497,6 +502,11 @@ class SpeedTest(BaseModel):
     )
     upload: str | None = Field(default="https://speed.cloudflare.com/__up", pattern=r"^https?://\S+$")
     upload_bytes: int = Field(default=10_000_000, ge=1_000_000, le=200_000_000)
+    # An iperf3 server ("host" or "host:port") to measure against instead of the HTTP transfers:
+    # one of your own outside, or a public one. Needs iperf3 where the hub runs (the image has it).
+    iperf3: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9.-]+(:\d{1,5})?$|^\[[0-9A-Fa-f:]+\](:\d{1,5})?$"
+    )
     # What the contract says (Mbit/s): a test far below for a while raises a warning.
     booked_down: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     booked_up: float | None = Field(default=None, gt=0, allow_inf_nan=False)
@@ -532,21 +542,27 @@ class WifiSettings(BaseModel):
     scan_at: str | None = Field(default="04:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
+SECRET_REF = re.compile(r"^secret:([a-z0-9][a-z0-9_.-]{0,63})$")
+URL_OR_SECRET = r"^(https?://[^\s]+|secret:[a-z0-9][a-z0-9_.-]{0,63})$"
+
+
 class NotifyChannel(BaseModel):
     """Where alarms go (notify.py): exactly one of ntfy, webhook, gotify, telegram, email or push."""
 
     model_config = ConfigDict(extra="forbid")
 
-    ntfy: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")
-    webhook: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")
-    gotify: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")  # the server
+    # Any of the URLs, the token and the SMTP login may be `secret:<name>`: a secret Kastellan
+    # keeps (the key ring), so config.yaml holds no credentials.
+    ntfy: str | None = Field(default=None, pattern=URL_OR_SECRET)
+    webhook: str | None = Field(default=None, pattern=URL_OR_SECRET)
+    gotify: str | None = Field(default=None, pattern=URL_OR_SECRET)  # the server
     telegram: str | int | None = None  # the chat id (a bot's token in `token`)
     email: str | None = Field(default=None, pattern=r"^[^@\s,]+@[^@\s,]+$")  # to whom
     push: str | None = Field(
         default=None, pattern=r"^(\*|[\w.-]{1,64})$"
     )  # a user's browsers (push.py), * all
     # smtp://user:password@host:587 (STARTTLS) or smtps://...:465 (TLS); for email.
-    smtp: str | None = Field(default=None, pattern=r"^smtps?://[^\s]+$")
+    smtp: str | None = Field(default=None, pattern=r"^(smtps?://[^\s]+|secret:[a-z0-9][a-z0-9_.-]{0,63})$")
     sender: str | None = Field(default=None, pattern=r"^[^@\s,]+@[^@\s,]+$")  # email: From
     token: str | None = None  # ntfy access token, Gotify app token, Telegram bot token
     min: Literal["info", "warning", "critical"] = "warning"
@@ -558,6 +574,14 @@ class NotifyChannel(BaseModel):
     def kind(self) -> str:
         return next(k for k in self.KINDS if getattr(self, k) is not None)
 
+    def secret_refs(self) -> dict[str, str]:
+        """field -> the secret it names (`secret:<name>`)."""
+        return {
+            f: m.group(1)
+            for f in ("ntfy", "webhook", "gotify", "smtp", "token")
+            if isinstance(getattr(self, f), str) and (m := SECRET_REF.match(getattr(self, f)))
+        }
+
     @model_validator(mode="after")
     def _one_target(self) -> Self:
         if sum(getattr(self, k) is not None for k in self.KINDS) != 1:
@@ -567,7 +591,7 @@ class NotifyChannel(BaseModel):
         if self.gotify is not None and not self.token:
             raise ValueError("gotify: needs token: (an application token from Gotify)")
         if self.telegram is not None:
-            if not self.token or not re.match(r"^\d+:[\w-]+$", self.token):
+            if not self.token or not (re.match(r"^\d+:[\w-]+$", self.token) or SECRET_REF.match(self.token)):
                 raise ValueError("telegram: needs token: (the bot's, like 123456:ABC-...)")
             if not re.match(r"^-?\d+$|^@\w+$", str(self.telegram)):
                 raise ValueError("telegram: is the chat id (a number, or @channelname)")
@@ -680,15 +704,35 @@ class GroupSettings(BaseModel):
     devices: list[str] = Field(min_length=1, max_length=64)
 
 
+DOMAIN = r"^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+
+
 class WebSettings(BaseModel):
     """Device web pages through the hub (webproxy.py): the hub answers at `domain`, and a device
-    at `<device id>.<domain>` (one wildcard DNS entry for both)."""
+    at `<device id>.<domain>` (one wildcard DNS entry for both). TLS ends at a proxy in front
+    (nginx-proxy, Let's Encrypt via DNS-01 into the site's zone); web_setup.py checks names,
+    certificates and the routers' DNS."""
 
     model_config = ConfigDict(extra="forbid")
 
-    domain: str = Field(
-        max_length=200, pattern=r"^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
-    )
+    domain: str = Field(max_length=200, pattern=DOMAIN)
+    # The site's DNS zone (default: `domain` without its first label) and its DNS server, which
+    # the routers forward the zone to (and allow private answers from: rebind protection).
+    zone: str | None = Field(default=None, max_length=200, pattern=DOMAIN)
+    dns: str | None = Field(default=None, max_length=45)
+
+    @property
+    def the_zone(self) -> str:
+        return self.zone or (self.domain.split(".", 1)[1] if "." in self.domain else self.domain)
+
+    @model_validator(mode="after")
+    def _dns_is_an_address(self) -> Self:
+        if self.dns is not None:
+            try:
+                ipaddress.ip_address(self.dns)
+            except ValueError as e:
+                raise ValueError(f"web.dns: {self.dns!r} is not an address") from e
+        return self
 
 
 class RingSettings(BaseModel):
@@ -904,14 +948,18 @@ class Config(BaseModel):
     def _device_secret_names(self) -> Self:
         accesses = [a for d in self.devices.values() for a in (d.openwrt, d.fritzbox) if a]
         accesses += [v for v in self.vpns.values() if v.kind == "wireguard"]
-        for access in accesses:
-            if access.password_secret in {
+        names = {access.password_secret for access in accesses}
+        names.update(name for channel in self.notify for name in channel.secret_refs().values())
+        for name in names:
+            if name in {
                 "device-backups",
                 "group-fingerprints",
                 "syslog-ca-key",
                 "hub-backup-key",
             }:
-                raise ValueError("a device login cannot use Kastellan's encryption or fingerprint key")
+                raise ValueError(
+                    "a login or notification cannot use Kastellan's encryption or fingerprint key"
+                )
         return self
 
     @model_validator(mode="after")

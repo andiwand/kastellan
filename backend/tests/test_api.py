@@ -68,7 +68,7 @@ def test_demo_logs_backups_internet_wifi(tmp_path: Path) -> None:
         )
         net = client.get("/api/internet", params={"hours": 168}).json()
         assert net["router"] == "fritzbox" and len(net["series"]) == 84
-        assert any(o["step"] == "internet" for o in net["outages"]) and net["speedtests"]
+        assert any(o["step"] == "provider" for o in net["outages"]) and net["speedtests"]
         w = client.get("/api/wifi").json()
         castle = next(n for n in w["networks"] if n["ssid"] == "Castle")
         assert set(castle["devices"]) == {"fritzbox", "repeater-attic", "repeater-living"}
@@ -85,3 +85,36 @@ def test_demo_ability_dismissals_stay_in_the_demo(tmp_path: Path) -> None:
         assert response.status_code == 200, response.text
         assert client.app.state.hub.offered.path.exists()
     assert not (tmp_path / "abilities-offered.json").exists()
+
+
+def test_logs_by_group_with_alarms_among_them(tmp_path: Path) -> None:
+    import json
+    import time
+    from datetime import UTC, datetime
+
+    from kastellan.auth import hash_password
+    from kastellan.hub import Hub
+    from kastellan.logs import Line
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  a:\n    host: 127.0.0.1\n  b:\n    host: 127.0.0.2\n  c:\n    host: 127.0.0.3\n"
+        "groups:\n  g:\n    devices: [a, b]\n"
+        f"users:\n  ada:\n    role: admin\n    password: {hash_password('pw')}\n"
+    )
+    settings = Settings(config=config, data=tmp_path)
+    hub = Hub(settings)
+    now = time.time()
+    hub.logs.add([Line(now - 300 + i, d, "syslog", "x", 6, "hi", True) for i, d in enumerate("abcabc")])
+    at = datetime.fromtimestamp(now - 120, UTC).isoformat(timespec="seconds")
+    with (tmp_path / "alarms.log").open("a") as f:
+        f.write(json.dumps({"time": at, "what": "opened", "device": "a", "title": "down"}) + "\n")
+        f.write(json.dumps({"time": at, "what": "opened", "device": "c", "title": "disk"}) + "\n")
+    with TestClient(create_app(settings, hub)) as client:
+        client.post("/api/auth/login", json={"user": "ada", "password": "pw"}, headers={"X-Kastellan": "1"})
+        r = client.get("/api/logs", params={"group": "g"})
+        body = r.json()
+        assert r.status_code == 200, body
+        assert {ln["device"] for ln in body["lines"]} == {"a", "b"}
+        assert [m["title"] for m in body["marks"]] == ["down"]
+        assert client.get("/api/logs", params={"group": "nope"}).status_code == 404

@@ -40,9 +40,13 @@ KEEP_DAYS = 3 * 366
 STEPS = {
     "router": "the router doesn't answer",
     "line": "the router has no internet connection",
-    "internet": "nothing outside answers (the provider's network)",
+    "provider": "the provider's first routers don't answer (its network)",
+    "internet": "nothing outside answers (beyond the provider)",
     "dns": "names can't be resolved",
 }
+RECONNECTS = 3  # in 24 hours: a warning
+ERRORED_PER_HOUR = 60  # DSL errored seconds
+LOW_MARGIN = 60  # 0.1 dB: 6 dB downstream noise margin
 DEGRADED_LOSS = 0.1
 DEGRADED_MS = 150.0
 
@@ -60,6 +64,8 @@ class Sample:
     v6_loss: float | None = None
     v6_ms: float | None = None
     dns_ms: float | None = None
+    hop_ms: float | None = None  # the provider's first router(s) that answer pings
+    hop_loss: float | None = None
     down: float | None = None  # bit/s through the line now (router counters)
     up: float | None = None
     note: str | None = None
@@ -75,6 +81,7 @@ class Probe:
     targets: list[str]
     targets_v6: list[str]  # empty: the hub has no IPv6
     names: list[str]
+    hops: list[str] = field(default_factory=list)  # the provider's first routers (that answer)
 
 
 async def _pings(address: str, count: int = 4) -> tuple[int, int, list[float]]:
@@ -122,11 +129,12 @@ async def look(p: Probe, now: float | None = None) -> Sample:
     """One look at the connection."""
     now = time.time() if now is None else now
     try:
-        router, v4, v6, dns = await asyncio.gather(
+        router, v4, v6, dns, hops = await asyncio.gather(
             _pings(p.router, 3) if p.router else asyncio.sleep(0, None),
             asyncio.gather(*(_pings(t) for t in p.targets)),
             asyncio.gather(*(_pings(t) for t in p.targets_v6)),
             asyncio.gather(*(_resolve(n) for n in p.names)),
+            asyncio.gather(*(_pings(h, 3) for h in p.hops)),
         )
     except SocketPermissionError:
         return Sample(now, "unknown", note="the hub may not ping (see README)")
@@ -138,6 +146,9 @@ async def look(p: Probe, now: float | None = None) -> Sample:
         router_ok = router[1] > 0
         s.router_ms = round(statistics.median(router[2]), 2) if router[2] else None
     s.loss, s.ms, s.jitter, v4_ok = _summary(list(v4))
+    hop_ok = None
+    if p.hops:
+        s.hop_loss, s.hop_ms, _, hop_ok = _summary(list(hops))
     v6_ok = False
     if p.targets_v6:
         s.v6_loss, s.v6_ms, _, v6_ok = _summary(list(v6))
@@ -149,6 +160,8 @@ async def look(p: Probe, now: float | None = None) -> Sample:
         s.state, s.step = "down", "router"
     elif not outside_ok and p.line is False:
         s.state, s.step = "down", "line"
+    elif not outside_ok and hop_ok is False:
+        s.state, s.step = "down", "provider"
     elif not v4_ok and not v6_ok:
         s.state, s.step = "down", "internet"
     elif not dns_ok:
@@ -160,6 +173,43 @@ async def look(p: Probe, now: float | None = None) -> Sample:
     ):
         s.state = "degraded"
     return s
+
+
+def provider_hops(route: list[dict[str, Any]], router: str | None) -> list[str]:
+    """From a route outward, the provider's first routers: after the home network (private
+    addresses, the router), the first two that answered. CGNAT (100.64/10) counts as the
+    provider's."""
+    import ipaddress
+
+    out = []
+    for hop in route:
+        address = hop.get("address")
+        try:
+            a = ipaddress.ip_address(address)
+        except (TypeError, ValueError):
+            continue
+        cgnat = a.version == 4 and a in ipaddress.ip_network("100.64.0.0/10")
+        if address == router or (a.is_private and not cgnat) or a.is_loopback:
+            continue
+        out.append(str(a))
+        if len(out) == 2:
+            break
+    return out
+
+
+async def route(target: str, max_hops: int = 8) -> list[dict[str, Any]]:
+    """The route to `target`; icmplib needs a raw socket, so return [] without permission."""
+    from icmplib import traceroute
+
+    def run() -> list[dict[str, Any]]:
+        hops = traceroute(target, count=2, interval=0.05, timeout=1, max_hops=max_hops)
+        return [{"distance": h.distance, "address": h.address, "ms": round(h.avg_rtt, 2)} for h in hops]
+
+    try:
+        return await asyncio.to_thread(run)
+    except (ICMPLibError, OSError):
+        pass
+    return []
 
 
 def line_from(
@@ -238,6 +288,12 @@ class Internet:
         self.testing = False
         self.speed_error: str | None = None
         self.speed_tried = 0.0
+        # The way out (traceroute, hourly) and the provider's first routers that answer pings.
+        self.route: list[dict[str, Any]] = []
+        self.hops: list[str] = []
+        self.route_checked = 0.0
+        # The line's error counters over the last hours (t, crc, errored seconds): their growth.
+        self.errors: list[tuple[float, int | None, int | None]] = []
         self._load()
 
     def _path(self, name: str) -> Path:
@@ -424,6 +480,62 @@ class Internet:
             out.append(self.state.outage.view())
         return list(reversed(out))[:n]
 
+    def note_errors(self, t: float, dsl: dict[str, Any] | None) -> None:
+        """The DSL error counters now; a counter that went back (a resync) starts over."""
+        if not dsl:
+            return
+        crc, es = dsl.get("crc"), dsl.get("errored_seconds")
+        if self.errors:
+            _, crc0, es0 = self.errors[-1]
+            if (crc is not None and crc0 is not None and crc < crc0) or (
+                es is not None and es0 is not None and es < es0
+            ):
+                self.errors = []
+        self.errors.append((t, crc, es))
+        self.errors = [e for e in self.errors if t - e[0] <= 3 * 3600]
+
+    def trouble(self, now: float, dsl: dict[str, Any] | None) -> list[tuple[str, str, str]]:
+        """What is wrong with the line itself (key, title, detail): reconnects, errors, little
+        noise margin. Warnings: the line still works, but not well."""
+        out = []
+        reconnects = [
+            e for e in self.events(200) if e.get("kind") == "reconnect" and now - e.get("t", 0) < 86400
+        ]
+        if len(reconnects) >= RECONNECTS:
+            out.append(
+                (
+                    "internet:reconnects",
+                    f"The line reconnected {len(reconnects)} times in 24 h",
+                    "the router's connection dropped and came back",
+                )
+            )
+        hour = [e for e in self.errors if now - e[0] <= 3600]
+        if len(hour) >= 2 and hour[-1][0] - hour[0][0] >= 900:
+            first, last = hour[0], hour[-1]
+            span = (last[0] - first[0]) / 3600
+            if (
+                first[2] is not None
+                and last[2] is not None
+                and (last[2] - first[2]) / span > ERRORED_PER_HOUR
+            ):
+                out.append(
+                    (
+                        "internet:errors",
+                        "The line has many errors",
+                        f"{round((last[2] - first[2]) / span)} errored seconds an hour (DSL)",
+                    )
+                )
+        margin = (dsl or {}).get("snr_down")
+        if isinstance(margin, int) and 0 < margin < LOW_MARGIN:
+            out.append(
+                (
+                    "internet:margin",
+                    "The line has little noise margin",
+                    f"{margin / 10:g} dB downstream: it may drop or sync slower",
+                )
+            )
+        return out
+
     def events(self, n: int = 50) -> list[dict[str, Any]]:
         return list(reversed(self._read("events.jsonl", n)))
 
@@ -460,8 +572,10 @@ async def speedtest(
     upload_bytes: int,
     ping_target: str,
     client: httpx.AsyncClient | None = None,
+    iperf3: str | None = None,
 ) -> dict[str, Any]:
-    """Measure download and upload (bit/s) and latency idle and under load (ms)."""
+    """Measure download and upload (bit/s) and latency idle and under load (ms): by HTTP
+    transfers, or against an iperf3 server."""
     own = client is None
     client = client or httpx.AsyncClient(timeout=30, follow_redirects=True)
     try:
@@ -470,8 +584,12 @@ async def speedtest(
         stop = asyncio.Event()
         watcher = asyncio.create_task(_watch(ping_target, loaded, stop))
         try:
-            down = await _download(client, download)
-            up = await _upload(client, upload, upload_bytes) if upload else None
+            if iperf3:
+                down = await _iperf3(iperf3, reverse=True)
+                up = await _iperf3(iperf3, reverse=False)
+            else:
+                down = await _download(client, download)
+                up = await _upload(client, upload, upload_bytes) if upload else None
         finally:
             stop.set()
             await watcher
@@ -484,8 +602,51 @@ async def speedtest(
         "up": up,
         "ms_idle": idle,
         "ms_loaded": round(statistics.median(loaded), 1) if loaded else None,
-        "server": httpx.URL(download).host,
+        "server": iperf3 or httpx.URL(download).host,
+        "how": "iperf3" if iperf3 else "http",
     }
+
+
+def iperf3_rate(output: str) -> float:
+    """bit/s from iperf3's JSON (-J): what the receiving side got."""
+    data = json.loads(output)
+    if data.get("error"):
+        raise RuntimeError(f"iperf3: {str(data['error'])[:200]}")
+    end = data.get("end") or {}
+    part = end.get("sum_received") or end.get("sum") or {}
+    rate = part.get("bits_per_second")
+    if not isinstance(rate, int | float) or rate <= 0:
+        raise RuntimeError("iperf3 gave no rate")
+    return round(rate)
+
+
+async def _iperf3(server: str, reverse: bool) -> float:
+    """One direction against an iperf3 server (reverse: it sends, the hub receives)."""
+    import shutil
+
+    exe = shutil.which("iperf3")
+    if exe is None:
+        raise RuntimeError("iperf3 isn't installed where the hub runs")
+    host, port = server, "5201"
+    if server.startswith("["):
+        host, _, rest = server[1:].partition("]")
+        port = rest.lstrip(":") or port
+    elif server.count(":") == 1:
+        host, port = server.split(":")
+    args = [exe, "-c", host, "-p", port, "-J", "-t", "8", "-P", "4", *(["-R"] if reverse else [])]
+    proc = await asyncio.create_subprocess_exec(
+        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), 30)
+    except TimeoutError:
+        raise RuntimeError("iperf3 took too long") from None
+    finally:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+    return iperf3_rate(out.decode(errors="replace"))
 
 
 async def _latency(target: str, count: int) -> float | None:

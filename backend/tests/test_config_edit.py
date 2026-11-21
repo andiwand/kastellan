@@ -226,6 +226,23 @@ def test_device_forms(hub_client) -> None:
     assert c.delete("/api/devices/printer", headers=H).status_code == 404
 
 
+def test_form_saves_and_preserves_http_text_condition(hub_client) -> None:
+    c, config, _ = hub_client
+    signin(c)
+    f = c.get("/api/devices/router/form").json()
+    del f["id"]
+    f["checks"][1]["contains"] = "Ready for requests"
+    f["checks"].append({"type": "dhcp"})
+    assert c.put("/api/devices/router", json=f, headers=H).status_code == 200
+    f = c.get("/api/devices/router/form").json()
+    assert f["checks"][1]["contains"] == "Ready for requests"
+    assert f["checks"][2]["type"] == "dhcp"
+    del f["id"]
+    f["name"] = "A new name"
+    assert c.put("/api/devices/router", json=f, headers=H).status_code == 200
+    assert "contains: Ready for requests" in config.read_text()
+
+
 def test_not_while_signin_is_off(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text("devices:\n  box:\n    host: 127.0.0.1\n")

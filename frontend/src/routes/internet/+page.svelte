@@ -50,6 +50,9 @@
 		}
 	}
 
+	const name = (id: string) => store.devices?.find((d) => d.id === id)?.name ?? id;
+	const gb = (bytes: number) =>
+		bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
 	const mbit = (b: number | null | undefined) =>
 		b == null
 			? '–'
@@ -153,11 +156,11 @@
 				</dd>
 			</div>
 			<div>
-				<dt class="text-xs text-muted">Router · DNS</dt>
+				<dt class="text-xs text-muted">Router · provider · DNS</dt>
 				<dd class="tabular">
-					{now?.router_ms != null ? `${now.router_ms} ms` : '–'} · {now?.dns_ms != null
-						? `${now.dns_ms} ms`
-						: '–'}
+					{now?.router_ms != null ? `${now.router_ms} ms` : '–'} · {now?.hop_ms != null
+						? `${now.hop_ms} ms`
+						: '–'} · {now?.dns_ms != null ? `${now.dns_ms} ms` : '–'}
 				</dd>
 			</div>
 			<div>
@@ -171,6 +174,22 @@
 				</dd>
 			</div>
 		</dl>
+		{#if view.route?.length}
+			<p class="mt-3 text-xs text-muted">
+				The way out:
+				{#each view.route as h, i (i)}
+					{#if i}<span class="text-faint"> → </span>{/if}<span
+						class="font-mono"
+						style:color={view.hops?.includes(h.address) ? 'var(--text)' : undefined}
+						title="{h.ms} ms{view.hops?.includes(h.address)
+							? ' · the provider’s, checked with every look'
+							: ''}"
+					>
+						{h.address}
+					</span>
+				{/each}
+			</p>
+		{/if}
 		{#if view.line.connected_for || view.line.dsl}
 			<p class="mt-3 text-xs text-muted">
 				{#if view.line.access}{view.line.access}{/if}
@@ -281,6 +300,43 @@
 		</section>
 	</div>
 
+	<!-- Who uses the line -->
+	{#if view.clients && (view.clients.rows.length || view.clients.routers.length)}
+		<section class="card mt-6 p-5">
+			<h2 class="text-sm font-semibold">Who uses the line</h2>
+			<p class="mt-1 text-xs text-muted">
+				From nlbwmon on {view.clients.routers.map(name).join(', ')}: now (since its last read) and
+				this accounting period.
+			</p>
+			{#each Object.entries(view.clients.errors) as [rid, e] (rid)}
+				<p class="mt-1 text-xs" style:color="var(--warning-text)">{name(rid)}: {e}</p>
+			{/each}
+			{#if view.clients.rows.length}
+				<table class="mt-3 w-full text-sm">
+					<thead class="text-left text-xs text-muted">
+						<tr>
+							<th class="font-medium">Device</th>
+							<th class="font-medium">Now ↓ · ↑</th>
+							<th class="font-medium">Period ↓ · ↑</th>
+						</tr>
+					</thead>
+					<tbody class="tabular">
+						{#each view.clients.rows.slice(0, 15) as c (c.router + c.mac)}
+							<tr class="border-t border-line">
+								<td class="py-1">
+									{c.name ?? c.mac}
+									{#if c.name}<span class="font-mono text-xs text-faint">{c.mac}</span>{/if}
+								</td>
+								<td>{mbit(c.rx_rate)} · {mbit(c.tx_rate)}</td>
+								<td>{gb(c.rx)} · {gb(c.tx)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{/if}
+		</section>
+	{/if}
+
 	<!-- Speed -->
 	<section class="card mt-6 p-5">
 		<div class="flex flex-wrap items-baseline justify-between gap-2">
@@ -293,8 +349,10 @@
 			{/if}
 		</div>
 		<p class="mt-1 text-xs text-muted">
-			A test downloads and uploads for up to 15 seconds each from {view.speedtest.server} and measures
-			the latency meanwhile (bufferbloat).
+			{#if view.speedtest.how === 'iperf3'}A test measures against the iperf3 server {view.speedtest
+					.server} for 8 seconds each way and the latency meanwhile (bufferbloat).{:else}A test
+				downloads and uploads for up to 15 seconds each from {view.speedtest.server} and measures the
+				latency meanwhile (bufferbloat).{/if}
 			{view.speedtest.enabled
 				? `On its own every ${view.speedtest.every_hours} h, never while the line is busy.`
 				: 'Only when asked (turn on regular tests under internet: speedtest in config.yaml).'}

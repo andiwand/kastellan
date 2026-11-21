@@ -5,8 +5,9 @@
 	/** A device's web login from the People key ring, next to "Open web interface": the logins
 	 * stored for this device; "Copy password" asks for your own password again (as revealing a
 	 * secret on Keys does), puts it on the clipboard and never shows it; a new one can be stored
-	 * here, for this device only. Filling it into the device's page comes later (plan). */
-	let { device }: { device: string } = $props();
+	 * here, for this device only. Through the hub's device pages, "Open signed in" has the hub sign
+	 * in itself (LuCI, HTTP Basic): the password never reaches the browser. */
+	let { device, proxied = false }: { device: string; proxied?: boolean } = $props();
 
 	type Stored = { id: string; name: string; user: string };
 	let open = $state(false);
@@ -14,6 +15,7 @@
 	let ring = $state<{ vault: boolean; ring_open: boolean } | null>(null);
 	let mine = $state('');
 	let copying = $state<string | null>(null);
+	let signing = $state<string | null>(null); // "open signed in" with this login
 	let note = $state<{ ok: boolean; text: string } | null>(null);
 	let adding = $state(false);
 	let form = $state({ name: '', user: '', secret: '' });
@@ -22,6 +24,7 @@
 		open = adding = false;
 		mine = '';
 		copying = note = ring = null;
+		signing = null;
 		logins = [];
 		form = { name: '', user: '', secret: '' };
 	}
@@ -62,6 +65,32 @@
 		} finally {
 			mine = '';
 			busy = false;
+		}
+	}
+	async function signIn(id: string) {
+		if (busy) return;
+		busy = true;
+		const tab = window.open('about:blank', '_blank');
+		if (tab) tab.opener = null;
+		note = null;
+		try {
+			const { url } = await json<{ url: string }>(
+				await fetch(`/api/devices/${encodeURIComponent(device)}/web/sign-in`, {
+					method: 'POST',
+					headers: H,
+					body: JSON.stringify({ entry: id, password: mine })
+				})
+			);
+			if (tab && !tab.closed) tab.location.href = url;
+			else window.location.href = url;
+			note = { ok: true, text: 'Opened, signed in. The password stayed on the hub.' };
+			signing = null;
+		} catch (e) {
+			tab?.close();
+			note = { ok: false, text: (e as Error).message };
+		} finally {
+			busy = false;
+			mine = '';
 		}
 	}
 	async function add(e: SubmitEvent) {
@@ -130,26 +159,46 @@
 				<p class="text-xs text-muted">The People key ring is locked: sign in again to open it.</p>
 			{:else}
 				{#each logins as l (l.id)}
-					<div class="flex items-center justify-between gap-2 py-1">
+					<div class="flex flex-wrap items-center justify-between gap-2 py-1">
 						<span class="min-w-0 truncate">
 							{l.name} <span class="text-xs text-muted">· {l.user}</span>
 						</span>
-						<button class="text-xs underline" onclick={() => ((copying = l.id), (adding = false))}>
+						<button
+							class="text-xs underline"
+							disabled={busy}
+							onclick={() => ((copying = l.id), (signing = null), (adding = false), (mine = ''))}
+						>
 							Copy password
 						</button>
+						{#if proxied}
+							<button
+								class="text-xs underline"
+								disabled={busy}
+								onclick={() => ((signing = l.id), (copying = null), (adding = false), (mine = ''))}
+							>
+								Open signed in
+							</button>
+						{/if}
 					</div>
 				{:else}
 					<p class="text-xs text-muted">No login stored for this device.</p>
 				{/each}
-				{#if copying}
-					<form class="mt-2 flex gap-2" onsubmit={(e) => (e.preventDefault(), copy(copying!))}>
+				{#if copying || signing}
+					<form
+						class="mt-2 flex gap-2"
+						onsubmit={(e) => {
+							e.preventDefault();
+							if (signing) signIn(signing);
+							else if (copying) copy(copying);
+						}}
+					>
 						<input
 							class={input}
 							type="password"
 							placeholder="Your password, again"
 							bind:value={mine}
 						/>
-						<button class="btn btn-sm" disabled={busy || !mine}>Copy</button>
+						<button class="btn btn-sm" disabled={busy || !mine}>{signing ? 'Open' : 'Copy'}</button>
 					</form>
 				{/if}
 				{#if adding}
@@ -176,7 +225,8 @@
 				{:else}
 					<button
 						class="mt-2 text-xs text-muted underline"
-						onclick={() => ((adding = true), (copying = null))}
+						disabled={busy}
+						onclick={() => ((adding = true), (copying = signing = null), (mine = ''))}
 					>
 						Store a web login…
 					</button>

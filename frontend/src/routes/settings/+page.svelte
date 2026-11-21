@@ -6,13 +6,14 @@
 	import SettingsForms from '#lib/components/SettingsForms.svelte';
 	import ConfigFile from '#lib/components/ConfigFile.svelte';
 	import AccessPanel from '#lib/components/AccessPanel.svelte';
+	import WebSetup from '#lib/components/WebSetup.svelte';
 	import Tabs from '#lib/components/Tabs.svelte';
 
 	/** Kastellan's settings: as forms, its own SSH key (Access), or config.yaml itself. */
-	type Tab = 'settings' | 'access' | 'file';
+	type Tab = 'settings' | 'access' | 'web' | 'file';
 	const tab = $derived.by((): Tab => {
 		const t = page.url.searchParams.get('tab');
-		return t === 'file' || t === 'access' ? t : 'settings';
+		return t === 'file' || t === 'access' || t === 'web' ? t : 'settings';
 	});
 
 	function show(t: Tab) {
@@ -33,6 +34,7 @@
 		tabs={[
 			{ id: 'settings', label: 'Settings' },
 			{ id: 'access', label: 'Access' },
+			{ id: 'web', label: 'Names & HTTPS' },
 			{ id: 'file', label: 'config.yaml', mono: true }
 		]}
 		current={tab}
@@ -42,6 +44,8 @@
 
 {#if tab === 'access'}
 	<AccessPanel />
+{:else if tab === 'web'}
+	<WebSetup />
 {:else if store.editBlocked !== null}
 	<div class="card mt-6 p-5 text-sm text-muted">
 		The config can't be changed from here: {store.editBlocked}.

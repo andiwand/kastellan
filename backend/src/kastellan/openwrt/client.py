@@ -376,15 +376,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
                         for c in (await ubus.call("iwinfo", "assoclist", {"device": ifname})).get(
                             "results", []
                         ):
-                            mac = (c.get("mac") or "").lower()
-                            clients.append(
-                                {
-                                    "mac": mac,
-                                    "name": leases.get(mac),
-                                    "signal": c.get("signal"),
-                                    "inactive": c.get("inactive"),
-                                }
-                            )
+                            clients.append(assoc_client(c, leases))
                 ifaces.append(
                     {
                         "section": iface.get("section"),
@@ -403,6 +395,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
                     "band": cfg.get("band") or HWMODE.get(str(cfg.get("hwmode") or ""), cfg.get("hwmode")),
                     "channel": cfg.get("channel"),
                     "htmode": cfg.get("htmode"),
+                    "country": cfg.get("country"),
                     "interfaces": ifaces,
                 }
             )
@@ -442,15 +435,7 @@ async def _clients(ubus: Ubus, ifname: str, leases: dict[str, str]) -> list[dict
     clients = []
     with contextlib.suppress(Exception):
         for c in (await ubus.call("iwinfo", "assoclist", {"device": ifname})).get("results", []):
-            mac = (c.get("mac") or "").lower()
-            clients.append(
-                {
-                    "mac": mac,
-                    "name": leases.get(mac),
-                    "signal": c.get("signal"),
-                    "inactive": c.get("inactive"),
-                }
-            )
+            clients.append(assoc_client(c, leases))
     return clients
 
 
@@ -477,6 +462,7 @@ async def _radios_from_iwinfo(ubus: Ubus, leases: dict[str, str]) -> list[dict[s
                 "band": _band(info),
                 "channel": info.get("channel"),
                 "htmode": info.get("htmode"),
+                "country": info.get("country"),
                 "interfaces": [],
             },
         )
@@ -576,6 +562,162 @@ async def openvpn_status(ubus: Ubus) -> str:
 
     res = await ubus.call("file", "exec", {"command": OPENVPN_STATUS, "params": []}, timeout=20)
     return str(res.get("stdout", ""))[:1048576]
+
+
+async def bandwidth(ubus: Ubus) -> dict[str, dict[str, int]]:
+    """Bytes per device (MAC) this accounting period, from nlbwmon (the `bandwidth` ability):
+    rx is what the device received (its download), tx what it sent. ValueError when nlbwmon
+    isn't there."""
+    from .setup import BANDWIDTH
+
+    res = await ubus.call("file", "exec", {"command": BANDWIDTH, "params": []}, timeout=20)
+    return parse_nlbw(str(res.get("stdout", ""))[:4_000_000])
+
+
+def parse_nlbw(text: str) -> dict[str, dict[str, int]]:
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise ValueError("nlbwmon gave nothing readable") from e
+    if not isinstance(data, dict):
+        raise ValueError("nlbwmon gave nothing readable")
+    if data.get("error"):
+        raise ValueError(str(data["error"])[:200])
+    columns = data.get("columns") or []
+    try:
+        mac, rx, tx = columns.index("mac"), columns.index("rx_bytes"), columns.index("tx_bytes")
+    except ValueError as e:
+        raise ValueError("nlbwmon's columns are not as expected") from e
+    out: dict[str, dict[str, int]] = {}
+    for row in (data.get("data") or [])[:5000]:
+        if not isinstance(row, list) or len(row) <= max(mac, rx, tx):
+            continue
+        m = str(row[mac]).lower()
+        if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", m):
+            continue
+        try:
+            got = out.setdefault(m, {"rx": 0, "tx": 0})
+            got["rx"] += int(row[rx])
+            got["tx"] += int(row[tx])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+ROAMING_CONFIG = (
+    "min_snr",
+    "min_connect_snr",
+    "roam_scan_snr",
+    "roam_trigger_snr",
+    "signal_diff_threshold",
+    "band_steering_threshold",
+    "load_kick_enabled",
+    "assoc_steering",
+    "probe_steering",
+)
+
+
+async def roaming(ubus: Ubus) -> dict[str, Any]:
+    """What usteer on this access point knows (the `roaming` ability): its own nodes (one per
+    radio's network) and the other access points' it hears of, the clients connected here, and
+    a part of its settings. Raises when usteer isn't running."""
+    local = await ubus.call("usteer", "local_info", {}, timeout=10)
+    remote = await ubus.call("usteer", "remote_info", {}, timeout=10)
+    connected: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        connected = await ubus.call("usteer", "connected_clients", {}, timeout=10)
+    config: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        config = await ubus.call("usteer", "get_config", {}, timeout=10)
+    return parse_roaming(local, remote, connected, config)
+
+
+def parse_roaming(local: Any, remote: Any, connected: Any, config: Any) -> dict[str, Any]:
+    def node(name: str, info: Any, own: bool) -> dict[str, Any] | None:
+        if not isinstance(info, dict):
+            return None
+        roam = info.get("roam_events") if isinstance(info.get("roam_events"), dict) else {}
+        host, _, iface = name.rpartition("#")
+        return {
+            "node": name[:120],
+            "own": own,
+            "host": host or None,
+            "iface": iface.removeprefix("hostapd.")[:40],
+            "bssid": str(info.get("bssid") or "").lower()[:17] or None,
+            "ssid": str(info.get("ssid") or "")[:64] or None,
+            "freq": info.get("freq") if isinstance(info.get("freq"), int) else None,
+            "clients": info.get("n_assoc") if isinstance(info.get("n_assoc"), int) else None,
+            "load": info.get("load") if isinstance(info.get("load"), int) else None,
+            "roam_source": roam.get("source") if isinstance(roam.get("source"), int) else None,
+            "roam_target": roam.get("target") if isinstance(roam.get("target"), int) else None,
+        }
+
+    nodes = [
+        n
+        for own, part in ((True, local), (False, remote))
+        if isinstance(part, dict)
+        for name, info in list(part.items())[:64]
+        if (n := node(str(name), info, own))
+    ]
+    clients = []
+    for name, macs in connected.items() if isinstance(connected, dict) else []:
+        if not isinstance(macs, dict):
+            continue
+        for mac, c in list(macs.items())[:512]:
+            if not isinstance(c, dict) or not re.fullmatch(r"[0-9a-f:]{17}", str(mac).lower()):
+                continue
+            clients.append(
+                {
+                    "mac": str(mac).lower(),
+                    "node": str(name)[:120],
+                    "signal": c.get("signal") if isinstance(c.get("signal"), int) else None,
+                    "snr": c.get("snr") if isinstance(c.get("snr"), int) else None,
+                    "connected": c.get("connected_time")
+                    if isinstance(c.get("connected_time"), int)
+                    else None,
+                }
+            )
+    settings = {
+        k: config.get(k)
+        for k in ROAMING_CONFIG
+        if isinstance(config, dict) and isinstance(config.get(k), int | bool)
+    }
+    return {"nodes": nodes, "clients": clients, "config": settings}
+
+
+def assoc_client(c: dict[str, Any], leases: dict[str, str]) -> dict[str, Any]:
+    """A Wi-Fi client as iwinfo's assoclist tells it: signal and noise (dBm), the rates both ways
+    (Mbit/s) with their width and standard, and what it may expect to get through."""
+    mac = str(c.get("mac") or "").lower()
+
+    def num(v: Any) -> int | None:
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+    def rate(d: Any) -> dict[str, Any] | None:
+        if not isinstance(d, dict) or num(d.get("rate")) is None:
+            return None
+        std = "he" if d.get("he") else "vht" if d.get("vht") else "ht" if d.get("ht") else None
+        return {
+            "mbit": round(d["rate"] / 1000, 1),  # iwinfo: kbit/s
+            "mhz": num(d.get("mhz")) or (40 if d.get("40mhz") else None),
+            "mcs": num(d.get("mcs")),
+            "nss": num(d.get("nss")),
+            "std": std,
+        }
+
+    signal, noise = num(c.get("signal")), num(c.get("noise"))
+    expected = num(c.get("expected_throughput"))
+    return {
+        "mac": mac,
+        "name": leases.get(mac),
+        "signal": signal,
+        "inactive": c.get("inactive"),
+        "snr": signal - noise if signal is not None and noise not in (None, 0) else None,
+        "rx": rate(c.get("rx")),  # from the client
+        "tx": rate(c.get("tx")),  # to the client
+        "expected": round(expected / 1000, 1) if expected else None,  # Mbit/s
+        "connected": num(c.get("connected_time")),
+    }
 
 
 async def reboot(ubus: Ubus) -> None:
@@ -698,7 +840,21 @@ async def freqlist(ubus: Ubus, ifname: str) -> list[dict[str, Any]]:
 
 # What the page may change, per kind of section; nothing else in `wireless` is touched.
 RADIO_FIELDS = ("channel", "htmode", "txpower", "disabled", "country")
-IFACE_FIELDS = ("ssid", "key", "encryption", "disabled", "hidden", "mesh_id")
+IFACE_FIELDS = (
+    "ssid",
+    "key",
+    "encryption",
+    "disabled",
+    "hidden",
+    "mesh_id",
+    # roaming (roaming.py)
+    "ieee80211r",
+    "mobility_domain",
+    "ft_over_ds",
+    "ft_psk_generate_local",
+    "ieee80211k",
+    "bss_transition",
+)
 ENCRYPTIONS = {
     "none",
     "owe",
@@ -734,6 +890,11 @@ def check_value(key: str, value: Any) -> str:
         "htmode": lambda v: bool(HTMODES.match(v)),
         "txpower": lambda v: v.isdigit() and int(v) <= 36,
         "country": lambda v: bool(re.fullmatch(r"[A-Z]{2}|00", v)),
+        "mobility_domain": lambda v: bool(re.fullmatch(r"[0-9a-fA-F]{4}", v)),
+        **{
+            k: (lambda v: v in ("0", "1"))
+            for k in ("ieee80211r", "ft_over_ds", "ft_psk_generate_local", "ieee80211k", "bss_transition")
+        },
     }.get(key)
     if ok is None or not ok(value):
         raise ValueError(f"{key}: not a value it can have")
@@ -784,6 +945,7 @@ async def change_wifi(
     confirm_after: float | None = None,
     *,
     expected_ssid: str | None = None,
+    expected_ssids: dict[str, str] | None = None,
 ) -> None:
     """Set wireless options and apply them with a rollback (see apply_with_rollback)."""
     async with ubus.changing:
@@ -791,6 +953,12 @@ async def change_wifi(
         current = (await ubus.call("uci", "get", {"config": "wireless"}, session=s)).get("values", {})
         if expected_ssid is not None and any(
             current.get(section, {}).get("ssid") != expected_ssid for section in changes
+        ):
+            raise ValueError("the network changed; refresh before applying")
+        if expected_ssids is not None and any(
+            current.get(section, {}).get("ssid") != expected_ssids.get(section)
+            or current.get(section, {}).get("mode", "ap") != "ap"
+            for section in changes
         ):
             raise ValueError("the network changed; refresh before applying")
         clean = _clean(current, changes)

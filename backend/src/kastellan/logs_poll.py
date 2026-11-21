@@ -233,6 +233,9 @@ async def wireguard(hub: Hub) -> None:
         now_on: dict[str, bool] = {}
         lines = []
         for c in clients:
+            if c.address:
+                for a in c.address.split(","):
+                    hub.vpn_addresses[a.strip().split("/")[0]] = f"{c.name} ({vpn.name or vid})"
             last = (
                 datetime.fromisoformat(c.last_handshake.replace("Z", "+00:00")).timestamp()
                 if c.last_handshake

@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Upgrading
+
+- OpenWrt logins: set them up again (Updates says which) for the new helper scripts and two new
+  abilities: bandwidth per device (needs nlbwmon on the router) and Wi-Fi roaming (usteer).
+  From now on Updates also says when a router's helpers are older than the hub's.
+- OpenVPN in restricted mode: install the PKI and CRL scripts again (VPN → Setup) once; they
+  now tell their version, and Updates says when they are older.
+- Device pages behind a proxy: `web:` takes `zone` and `dns` (the site's DNS server) for the
+  new check under Settings → Names & HTTPS.
+
+### Added
+
+- Sign-ins: SSH, VPN, router and hub events grouped by source address, with repeated failures
+  and new outside successes flagged. Known WireGuard client addresses suggest VPN paths.
+- VPN: every server on the network (OpenVPN instances and WireGuard on OpenWrt, a FRITZ!Box's
+  WireGuard, VPN containers), whether it runs, how it listens and who is connected.
+- Logs: filter by group; alarms and events of the same devices show among the lines.
+- Internet: the provider's first routers are checked with every look (an outage there is the
+  provider's); reconnects, DSL errors and little noise margin raise warnings; speed tests can
+  use an iperf3 server; who uses the line, from nlbwmon on OpenWrt.
+- Wi-Fi: clients with signal, noise and rates and what is off about each link; the radios'
+  country; a scan two minutes after a channel plan is applied.
+- Group roaming checks: 802.11r/k/v, channels, usteer peers and memory. Assistance aligns shared
+  personal networks with matching credentials. Alarms flag stopped usteer and missing peers.
+- Devices found on the network (router client lists) that Kastellan doesn't know: add them or
+  set them aside.
+- Container updates: the newest version within the running major one when a new major is out.
+- HTTP checks can require a text on the page (`contains:`).
+- Notification channels may name `secret:<name>` for URLs, tokens and SMTP logins; Keys lists
+  secrets that are named but not set.
+- Device pages: "Open signed in" with a stored login (LuCI, HTTP Basic): the hub signs in, the
+  password never reaches the browser.
+- Settings → Names & HTTPS: the hub's and device pages' names (the same as on the internet), the
+  proxy's certificates, the routers' rebind exception and forward for the zone; warnings when a
+  certificate nears its end or names stop resolving.
+
+### Fixed
+
+- The hub's answers carry isolation headers, and its API refuses requests from device pages on
+  sibling names; device pages get their own agent cluster.
+- Device forms preserve HTTP text conditions and accept DHCP checks.
+- Stored web sessions stop when the configured device address changes. Notification references
+  cannot expose internal encryption keys; invalid references leave other channels working.
+- Sign-in reports retain the newest events and flag unverified syslog. Only verified successes
+  trigger outside-login alerts; reading sign-ins requires an admin login outside demo mode.
+- Traceroute uses the supported library arguments; cancelled speed tests stop their iperf3 process.
+- Roaming changes check network identity before applying. Stale readings cannot raise roaming
+  alarms or show current bandwidth; failed VPN checks retain known renewal notices.
+- Demo discovery preferences stay in temporary storage.
+
 ## 0.11.0 (2026-11-21)
 
 FRITZ!Box Wi-Fi, mesh and WireGuard, DHCP monitoring, logins kept in the key rings, and

@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import {
 		api,
+		more,
 		type Ring,
 		type RingChoice,
 		type UnlockItem,
@@ -21,6 +22,15 @@
 	 * config.yaml) and closed again as its policy says. Nothing in them is shown unless asked
 	 * for, with the password typed again. */
 	let vault = $state<Vault | null>(null);
+	// Secrets config.yaml names that aren't set (a notification token, a device login).
+	let missing = $state<{ name: string; used_by: string[] }[]>([]);
+	onMount(async () => {
+		try {
+			missing = (await more.secrets()).filter((x) => x.missing && x.used_by.length);
+		} catch {
+			// shown nowhere: the rest of the page says what is wrong
+		}
+	});
 	let error = $state<string | null>(null);
 	let notes = $state<string[]>([]);
 	let busy = $state(false);
@@ -605,6 +615,23 @@
 					</p>
 				</form>
 			{/if}
+		{/if}
+
+		{#if missing.length}
+			<section class="card mt-6 p-4 text-sm">
+				<h2 class="text-sm font-semibold" style:color="var(--warning-text)">Named but not set</h2>
+				<ul class="mt-1 text-xs">
+					{#each missing as m (m.name)}
+						<li>
+							<span class="font-mono">{m.name}</span>
+							<span class="text-muted">· {m.used_by.join(', ')}</span>
+						</li>
+					{/each}
+				</ul>
+				<p class="mt-1 text-xs text-muted">
+					config.yaml names these secrets; add each to Kastellan's ring with that id.
+				</p>
+			</section>
 		{/if}
 
 		<!-- The entries, by ring -->

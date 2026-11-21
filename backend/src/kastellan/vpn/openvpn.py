@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
+from typing import Any
 
 import asyncssh
 
@@ -40,6 +41,13 @@ SCRIPTS = files("kastellan.vpn") / "scripts"
 
 def script(name: str) -> str:
     return (SCRIPTS / name).read_text()
+
+
+def helper_digest(name: str) -> str:
+    """The digest the installed script reports (`version`): of the file as setup writes it."""
+    import hashlib
+
+    return hashlib.sha256((script(name).rstrip("\n") + "\n").encode()).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -108,6 +116,26 @@ def split_status(text: str) -> tuple[dict[str, str], bool]:
         elif current is not None:
             current.append(line)
     return {k: "\n".join(v) for k, v in parts.items()}, "!no-servers" in text.splitlines()
+
+
+def server_meta(part: str) -> dict[str, Any]:
+    """How one server is set up and whether it runs, from the `!` lines the openvpn-status
+    script prints before its clients (newer scripts only; older ones show none of it)."""
+    out: dict[str, Any] = {"port": None, "proto": None, "dev": None, "running": None, "age": None}
+    for line in part.splitlines()[:20]:
+        key, _, value = line.removeprefix("!").partition(" ")
+        if not line.startswith("!") or not value:
+            continue
+        value = value.strip()[:40]
+        if key == "port" and value.isdigit():
+            out["port"] = int(value)
+        elif key in ("proto", "dev") and re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+            out[key] = value
+        elif key == "running":
+            out["running"] = value == "yes"
+        elif key == "age" and re.fullmatch(r"-?\d{1,10}", value):
+            out["age"] = max(0, int(value))
+    return out
 
 
 def parse_status(text: str) -> list[Connection]:
@@ -371,6 +399,36 @@ class OpenVpn:
 
     async def _pki(self, command: str) -> str:
         return await self._run(self.pki_device, self.s.pki_user, "kastellan-pki", pki_conf(self.s), command)
+
+    async def outdated_helpers(self, known: list[str] | None = None) -> list[str]:
+        """Which of the scripts Kastellan's VPN key runs ("pki", "crl") are older than this
+        hub's. Direct mode brings the script each time: never. A script too old to know
+        `version` counts as older; a host that can't be reached says nothing."""
+        if self.s.mode != "restricted":
+            return []
+        out = []
+        parts = [("pki", self.pki_device, self.s.pki_user, "kastellan-pki", pki_conf(self.s))]
+        if self.server_device is not None:
+            parts.append(("crl", self.server_device, self.s.server_user, "kastellan-crl", crl_conf(self.s)))
+        for what, device, user, name, conf in parts:
+            try:
+                have = (await self._run(device, user, name, conf, "version")).strip()
+            except RuntimeError as e:  # the script answered: it doesn't know `version`
+                if (
+                    what in (known or [])
+                    or name in str(e)
+                    or "only 'install'" in str(e)
+                    or "unknown" in str(e)
+                ):
+                    out.append(what)
+                continue
+            except Exception:  # not reachable now: next time
+                if what in (known or []):
+                    out.append(what)
+                continue
+            if have != helper_digest(name):
+                out.append(what)
+        return out
 
     async def clients(self) -> list[OvpnClient]:
         return parse_list(await self._pki("list"))

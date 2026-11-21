@@ -2,6 +2,7 @@
 	const HOSTS = ['server', 'pc', 'laptop', 'other'];
 	import { page } from '$app/state';
 	import { api, more, type Change, type Series } from '#lib/api.js';
+	import { scriptName } from '#lib/updates.js';
 	import { store } from '#lib/state.svelte.js';
 	import { statusColor, statusOf, upsLabel, upsStatus } from '#lib/status.js';
 	import { ago, dayClock } from '#lib/format.js';
@@ -296,7 +297,7 @@
 				</a>
 			{/if}
 			{#if webUi && store.me?.role === 'admin' && store.me.user}
-				{#key device.id}<WebLogin device={device.id} />{/key}
+				{#key device.id}<WebLogin device={device.id} proxied={!!store.health?.web_domain} />{/key}
 			{/if}
 			{#if device.fritzbox && device.fritz && store.me?.role === 'admin' && store.me.user}
 				<RouterReboot device={device.id} kind="fritzbox" />
@@ -420,11 +421,13 @@
 			</p>
 			{#if device.outdated_scripts.length}
 				<p class="mb-3 text-sm" style:color="var(--warning-text)">
-					Kastellan's {device.outdated_scripts.join(' and ')} here {device.outdated_scripts
-						.length === 1
+					Kastellan's {device.outdated_scripts.map(scriptName).join(' and ')} here {device
+						.outdated_scripts.length === 1
 						? 'is'
-						: 'are'} older than this Kastellan: Renew below (it takes your login once; Kastellan's own
-					keys may run these scripts, never replace them).
+						: 'are'} outdated. Renew the host or OpenWrt setup below.
+					{#if device.outdated_scripts.some((n) => n.startsWith('vpn-'))}
+						Renew VPN helpers in <a class="underline" href="/vpn?tab=setup">VPN → Setup</a>.
+					{/if}
 				</p>
 			{/if}
 			{@const hostLike = !device.openwrt && HOSTS.includes(device.kind)}

@@ -11,6 +11,7 @@
 	import ServerCog from '@lucide/svelte/icons/server-cog';
 	import AppWindow from '@lucide/svelte/icons/app-window';
 	import GlobeLock from '@lucide/svelte/icons/globe-lock';
+	import ShieldCheck from '@lucide/svelte/icons/shield-check';
 	import LockKeyhole from '@lucide/svelte/icons/lock-keyhole';
 	import Settings from '@lucide/svelte/icons/settings';
 	import ScrollText from '@lucide/svelte/icons/scroll-text';
@@ -48,6 +49,7 @@
 		{ href: '/vms', label: 'Virtual machines', short: 'VMs', icon: ServerCog },
 		{ href: '/services', label: 'Services', icon: AppWindow },
 		{ href: '/vpn', label: 'VPN', icon: GlobeLock },
+		{ href: '/signins', label: 'Sign-ins', icon: ShieldCheck, admin: true },
 		{ href: '/logs', label: 'Logs', icon: ScrollText, admin: true },
 		{ href: '/backups', label: 'Backups', icon: DatabaseBackup, admin: true },
 		{ href: '/updates', label: 'Updates', icon: CircleArrowUp },

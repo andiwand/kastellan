@@ -187,6 +187,33 @@ def router(hub: Hub) -> APIRouter:
         audit(outcome="done")
         return {"output": out}
 
+    @api.get("/{id}/roaming")
+    async def roaming_view(id: str, request: Request) -> dict[str, Any]:
+        """How clients roam at this access point (usteer, the `roaming` ability): its nodes and
+        the others it hears of, its clients (named from the DHCP leases), its thresholds."""
+        require_admin(request)
+        device_of(id)
+        r = hub.roaming.get(id)
+        if r is None:
+            status = hub.monitor.status.get(id)
+            able = "roaming" in ((status.router_abilities if status else None) or [])
+            return {"read": False, "why": "not read yet" if able else "needs the roaming ability"}
+        names: dict[str, str] = {}
+        for st in hub.monitor.status.values():
+            for lease in (((st.router or {}).get("dhcp") or {}).get("leases") or []) if st else []:
+                if lease.get("mac") and lease.get("name"):
+                    names[lease["mac"]] = lease["name"]
+        hosts = {}
+        for other, d in hub.config.devices.items():
+            if d.host:
+                hosts[hub.resolver.address(d.host) or d.host] = other
+        return {
+            "read": True,
+            **r,
+            "nodes": [n | {"device": hosts.get(n.get("host") or "")} for n in r.get("nodes") or []],
+            "clients": [c | {"name": names.get(c["mac"])} for c in r.get("clients") or []],
+        }
+
     @api.get("/{id}/openwrt/wifi")
     async def wifi(id: str, request: Request) -> dict[str, Any]:
         require_admin(request)

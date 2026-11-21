@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import setup_run, sshkeys, sshsync
+from . import roaming, setup_run, sshkeys, sshsync
 from .auth_api import client_address, require_admin, require_signin
 from .config import Device
 from .openwrt import client as ow
@@ -144,9 +144,49 @@ def router(hub: Hub) -> APIRouter:
         if hub.demo:
             from .demo import GROUP
 
-            return {"id": gid, "name": group.name, **GROUP}
-        found = await sync.survey(members(gid), salt())
-        return {"id": gid, "name": group.name, **found}
+            found = GROUP
+        else:
+            found = await sync.survey(members(gid), salt())
+        ids = [id for id in group.devices if (d := hub.config.devices.get(id)) and d.openwrt]
+        return {
+            "id": gid,
+            "name": group.name,
+            **found,
+            "roaming": roaming.check(hub, ids, found) | {"changes": roaming.assistance(found)},
+        }
+
+    @api.post("/{gid}/roaming")
+    async def roaming_assistance(gid: str, request: Request) -> StreamingResponse:
+        """Roaming assistance: 802.11r with one mobility domain, 802.11k and v on every network
+        that is on several members; member by member, each with its rollback."""
+        signed_in(request)
+        ubus = reachable(gid)
+        found = await sync.survey(ubus, salt())
+        changes = roaming.assistance(found)
+        if not changes:
+            raise HTTPException(409, "the networks are set up for roaming already")
+
+        async def work(say):
+            outcome = {}
+            for id, sections in changes.items():
+                say(f"{id}: {', '.join(sections)}")
+                try:
+                    expected = {
+                        e["section"]: n["ssid"]
+                        for n in found["networks"]
+                        for e in n["on"]
+                        if e["device"] == id and e["section"] in sections
+                    }
+                    await ow.change_wifi(ubus[id], sections, expected_ssids=expected)
+                    outcome[id] = "done"
+                except Exception as e:
+                    outcome[id] = f"failed: {str(e)[:160]}"
+                    say(f"{id}: {outcome[id]} (the others are left as they are)")
+                    break
+                say(f"{id}: done; it answers again")
+            return outcome
+
+        return job(gid, "group.roaming", request, work, devices=sorted(changes))
 
     @api.post("/{gid}/network")
     async def network(gid: str, body: NetworkChange, request: Request) -> StreamingResponse:

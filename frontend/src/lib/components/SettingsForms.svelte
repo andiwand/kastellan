@@ -108,7 +108,8 @@
 		speed: false,
 		every_hours: 24,
 		booked_down: '' as string | number,
-		booked_up: '' as string | number
+		booked_up: '' as string | number,
+		iperf3: ''
 	});
 
 	// What was loaded, to tell what changed (as JSON).
@@ -203,7 +204,8 @@
 				speed: i.speedtest?.enabled ?? false,
 				every_hours: i.speedtest?.every_hours ?? 24,
 				booked_down: i.speedtest?.booked_down ?? '',
-				booked_up: i.speedtest?.booked_up ?? ''
+				booked_up: i.speedtest?.booked_up ?? '',
+				iperf3: i.speedtest?.iperf3 ?? ''
 			};
 			next.internet = json(net);
 		}
@@ -347,7 +349,8 @@
 							enabled: net.speed,
 							every_hours: net.every_hours,
 							booked_down: net.booked_down === '' ? null : Number(net.booked_down),
-							booked_up: net.booked_up === '' ? null : Number(net.booked_up)
+							booked_up: net.booked_up === '' ? null : Number(net.booked_up),
+							iperf3: net.iperf3.trim() || null
 						}
 					}
 				})}
@@ -388,6 +391,10 @@
 					<input class="input" type="number" min="1" bind:value={net.booked_up} />
 				</label>
 			</div>
+			<label class="field">
+				iperf3 server (instead of the HTTP test; host or host:port)
+				<input class="input" placeholder="none" bind:value={net.iperf3} />
+			</label>
 		</SettingsCard>
 
 		<SettingsCard

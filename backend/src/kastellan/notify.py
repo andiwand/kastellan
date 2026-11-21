@@ -28,6 +28,7 @@ import base64
 import logging
 import smtplib
 import ssl
+from collections.abc import Callable
 from datetime import datetime, time
 from email.message import EmailMessage
 from urllib.parse import unquote, urlsplit
@@ -66,6 +67,7 @@ async def send(
     now: datetime,
     transport: httpx.AsyncBaseTransport | None = None,  # tests
     push: Push | None = None,  # the hub's browsers, for push: channels
+    secrets: Callable[[str], str] | None = None,  # `secret:<name>` in a channel: its value
 ) -> list[tuple[NotifyChannel, Message]]:
     """Send each message to each channel that wants it; returns what failed (to retry)."""
     if not channels or not messages:
@@ -77,14 +79,42 @@ async def send(
     async def bounded(client: httpx.AsyncClient, c: NotifyChannel, m: Message) -> bool:
         # All at once, each within a limit: one slow channel never holds the others back.
         try:
+            c = resolved(c, secrets)
+        except Exception as e:  # the secret isn't set, or its key ring is locked: retried later
+            log.warning("notify: %s: %s", c.kind, type(e).__name__)
+            return False
+        try:
             return await asyncio.wait_for(_send_one(client, c, m, push), JOB_LIMIT)
         except TimeoutError:
             log.warning("notify: %s took too long", _where(c))
+            return False
+        except Exception as e:
+            log.warning("notify: %s: %s", c.kind, type(e).__name__)
             return False
 
     async with httpx.AsyncClient(timeout=10, transport=transport) as client:
         results = await asyncio.gather(*(bounded(client, c, m) for c, m in jobs))
     return [job for job, ok in zip(jobs, results, strict=True) if not ok]
+
+
+def resolved(channel: NotifyChannel, secrets: Callable[[str], str] | None) -> NotifyChannel:
+    """The channel with its `secret:<name>` references replaced by the secrets' values (a copy:
+    the values never go back into the config)."""
+    refs = channel.secret_refs()
+    if not refs:
+        return channel
+    if secrets is None:
+        raise KeyError("no secrets to resolve references with")
+    values = channel.model_dump() | {field: secrets(name) for field, name in refs.items()}
+    result = NotifyChannel.model_validate(values)
+    for field in ("ntfy", "webhook", "gotify", "smtp"):
+        if raw := getattr(result, field):
+            url = urlsplit(raw)
+            if not url.hostname or url.port == 0:
+                raise ValueError("a notification URL needs a valid host and port")
+    if result.secret_refs():
+        raise ValueError("a notification secret cannot contain another secret reference")
+    return result
 
 
 def _where(channel: NotifyChannel) -> str:
@@ -96,7 +126,10 @@ def _where(channel: NotifyChannel) -> str:
         return f"email via {urlsplit(channel.smtp or '').hostname}"
     if kind == "push":
         return f"push to {channel.push}"
-    url = httpx.URL(channel.ntfy or channel.webhook or channel.gotify or "")
+    raw = channel.ntfy or channel.webhook or channel.gotify or ""
+    if raw.startswith("secret:"):
+        return f"{kind} ({raw})"
+    url = httpx.URL(raw)
     return f"{kind} at {url.host}"
 
 

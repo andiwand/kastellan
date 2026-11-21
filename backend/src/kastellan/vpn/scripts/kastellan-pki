@@ -22,6 +22,7 @@
 #   revoke NAME          revoke it and renew the CRL (again, if it was revoked already)
 #   renew-crl            renew the CRL (it expires; the hub does this daily)
 #   crl                  the current CRL (PEM)
+#   version              this script's digest (the hub tells when it is older than its own)
 #   export NAME          the client's .ovpn, with its certificate and key inline
 #   add-key OLD NEW      rotating the VPN key: NEW (ed25519) may do what OLD may here
 #   keep-key KEY         ...then only KEY stays bound to this script (every other line goes)
@@ -40,6 +41,8 @@ CONF=${1:-/etc/kastellan-pki.conf}
 
 read -r -a args <<< "${SSH_ORIGINAL_COMMAND:-}"
 command=${args[0]:-}
+# Which version of this script is installed (the hub compares it with its own).
+if [ "$command" = version ]; then sha256sum "$0" | cut -c1-16; exit 0; fi
 name=${args[1]:-}
 days=${args[2]:-}
 

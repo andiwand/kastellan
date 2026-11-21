@@ -55,7 +55,11 @@
 <SetupCard
 	title="OpenWrt login"
 	about="Kastellan's own login on the router: its state, Wi-Fi, services and firmware, ability by ability."
-	stage={dev?.openwrt ? 'set' : 'available'}
+	stage={!dev?.openwrt
+		? 'available'
+		: dev.outdated_scripts.includes('openwrt')
+			? 'outdated'
+			: 'set'}
 	onopen={() => {
 		if (!opened) {
 			opened = true;

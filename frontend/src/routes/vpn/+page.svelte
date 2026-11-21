@@ -5,7 +5,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import Tabs from '#lib/components/Tabs.svelte';
-	import { api, type OvpnClient, type Vpn, type WgClient } from '#lib/api.js';
+	import { api, type OvpnClient, type Vpn, type VpnServer, type WgClient } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { ago } from '#lib/format.js';
 	import Download from '@lucide/svelte/icons/download';
@@ -14,10 +14,12 @@
 	import VpnSetup from '#lib/components/VpnSetup.svelte';
 	import VpnForm from '#lib/components/VpnForm.svelte';
 	import VpnKey from '#lib/components/VpnKey.svelte';
+	import VpnServers from '#lib/components/VpnServers.svelte';
 
 	/** The VPNs whose clients Kastellan manages (any number, of either kind): a card each, with
 	 * its clients, giving and taking access, its settings and its setup; and adding another. */
 	let vpns = $state<Vpn[] | null>(null);
+	let servers = $state<VpnServer[] | null>(null);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 	let adding = $state<Vpn['kind'] | 'choose' | null>(null);
@@ -60,7 +62,9 @@
 
 	async function load() {
 		try {
-			vpns = (await api.vpn()).vpns;
+			const d = await api.vpn();
+			vpns = d.vpns;
+			servers = d.servers ?? [];
 			error = null;
 		} catch (e) {
 			error = (e as Error).message;
@@ -130,6 +134,8 @@
 	Who can reach the network from outside, and how. Kastellan manages each VPN's clients; it doesn't
 	run the VPN itself.
 </p>
+
+{#if servers}<VpnServers {servers} {names} />{/if}
 
 {#each (store.devices ?? []).filter((d) => d.fritz?.wireguard) as d (d.id)}
 	<section class="card mt-5 p-4">
@@ -231,7 +237,7 @@
 {/if}
 
 {#each vpns ?? [] as v (v.id)}
-	<section class="card mt-6 p-5">
+	<section class="card mt-6 scroll-mt-4 p-5" id="vpn-{v.id}">
 		<div class="flex flex-wrap items-baseline justify-between gap-2">
 			<h2 class="text-base font-semibold">
 				{v.name}

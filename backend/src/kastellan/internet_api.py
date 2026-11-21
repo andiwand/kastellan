@@ -93,8 +93,30 @@ async def probe(hub: Hub, rid: str | None, counters: Counters) -> tuple[internet
         targets=list(cfg.targets),
         targets_v6=list(cfg.targets_v6) if hub.own_v6 else [],
         names=list(cfg.dns),
+        hops=list(hub.internet.hops),
     )
     return p, info
+
+
+ROUTE_EVERY = 3600
+
+
+async def find_hops(hub: Hub, router: str | None) -> None:
+    """The way out and the provider's first routers that answer pings (hourly): an outage
+    beyond them is the internet's, before them the provider's."""
+    net = hub.internet
+    net.route_checked = time.time()
+    target = hub.config.internet.targets[0]
+    route = await internet.route(target)
+    if not route:
+        return  # can't trace from here: keep what was found before
+    net.route = route
+    answering = []
+    for h in internet.provider_hops([h for h in route if h["address"] != target], router):
+        _sent, got, _ = await internet._pings(h, 2)
+        if got:
+            answering.append(h)
+    net.hops = answering
 
 
 def busy(hub: Hub) -> bool:
@@ -118,7 +140,7 @@ async def run_speedtest(hub: Hub, by: str | None = None) -> dict[str, Any]:
     hub.internet.speed_tried = time.time()
     try:
         result = await internet.speedtest(
-            cfg.download, cfg.upload, cfg.upload_bytes, hub.config.internet.targets[0]
+            cfg.download, cfg.upload, cfg.upload_bytes, hub.config.internet.targets[0], iperf3=cfg.iperf3
         )
         result["by"] = by
         hub.internet.note_speedtest(result)
@@ -158,8 +180,12 @@ async def run(hub: Hub) -> None:
                     counters, last_router = Counters(), rid
                 hub.internet.router = rid
                 p, info = await probe(hub, rid, counters)
+                if time.time() - hub.internet.route_checked > ROUTE_EVERY:
+                    await find_hops(hub, p.router)
+                    p.hops = list(hub.internet.hops)
                 sample = await internet.look(p)
                 await asyncio.to_thread(hub.internet.note, sample, info, cfg.every)
+                hub.internet.note_errors(sample.t, info.get("dsl"))
             except Exception:
                 log.exception("looking at the internet connection failed")
         if not hub.demo:
@@ -212,6 +238,8 @@ def problems(hub: Hub) -> list[Problem]:
                 f"through {label}",
             )
         )
+    for key, title, detail in hub.internet.trouble(time.time(), (hub.internet.line or {}).get("dsl")):
+        out.append(Problem(key, Severity.WARNING, rid, "the internet line", title, detail))
     booked = hub.config.internet.speedtest.booked_down
     if internet.slow(hub.internet.speedtests(3), booked, time.time()):
         out.append(
@@ -225,6 +253,30 @@ def problems(hub: Hub) -> list[Problem]:
             )
         )
     return out
+
+
+def clients_view(hub: Hub) -> dict[str, Any]:
+    """Who uses the line: bytes per device from the routers' nlbwmon (the `bandwidth` ability),
+    named from their DHCP leases. Rates are since the router's last read (about a minute)."""
+    names: dict[str, str] = {}
+    for status in hub.monitor.status.values():
+        dhcp = ((status.router or {}).get("dhcp") or (status.fritz or {}).get("dhcp") or {}) if status else {}
+        for lease in dhcp.get("leases") or []:
+            if lease.get("mac") and lease.get("name"):
+                names[str(lease["mac"]).lower()] = str(lease["name"])[:64]
+    rows, errors, routers = [], {}, []
+    for rid, bw in hub.bandwidth.items():
+        if rid not in hub.config.devices:
+            continue
+        routers.append(rid)
+        if bw.get("error"):
+            errors[rid] = bw["error"]
+        fresh = not bw.get("error") and time.time() - bw.get("t", 0) < 300
+        for mac, c in (bw.get("clients") or {}).items():
+            rates = {} if fresh else {"rx_rate": None, "tx_rate": None}
+            rows.append({"router": rid, "mac": mac, **c, **rates, "name": c.get("name") or names.get(mac)})
+    rows.sort(key=lambda r: (-((r.get("rx_rate") or 0) + (r.get("tx_rate") or 0)), -(r["rx"] + r["tx"])))
+    return {"routers": routers, "errors": errors, "rows": rows[:50]}
 
 
 def router(hub: Hub) -> APIRouter:
@@ -255,11 +307,16 @@ def router(hub: Hub) -> APIRouter:
                 "every_hours": cfg.speedtest.every_hours,
                 "booked_down": cfg.speedtest.booked_down,
                 "booked_up": cfg.speedtest.booked_up,
-                "server": httpx.URL(cfg.speedtest.download).host,
+                "server": cfg.speedtest.iperf3 or httpx.URL(cfg.speedtest.download).host,
+                "how": "iperf3" if cfg.speedtest.iperf3 else "http",
                 "testing": net.testing,
                 "error": net.speed_error,
             },
             "targets": cfg.targets,
+            "clients": clients_view(hub),
+            "route": net.route,
+            "hops": net.hops,
+            "route_checked": net.route_checked or None,
         }
 
     @api.post("/speedtest")

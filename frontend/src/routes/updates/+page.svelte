@@ -8,10 +8,12 @@
 		'docker-logs': 'every container’s log for Logs',
 		logs: 'its system log for Logs',
 		backup: 'configuration backups',
-		scan: 'Wi-Fi scans'
+		scan: 'Wi-Fi scans',
+		bandwidth: 'bandwidth per device',
+		roaming: 'Wi-Fi roaming'
 	};
 	import { store } from '#lib/state.svelte.js';
-	import { updatesOf, type Update } from '#lib/updates.js';
+	import { scriptName, updatesOf, type Update } from '#lib/updates.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import FirmwareDialog from '#lib/components/FirmwareDialog.svelte';
 	import Check from '@lucide/svelte/icons/check';
@@ -247,6 +249,12 @@
 							<span class="font-mono text-xs">{u.from}</span> →
 							<span class="font-mono text-xs">{u.to}</span>
 						</span>
+						{#if u.within}<span
+								class="text-xs text-muted"
+								title="{u.to} is a new major version; {u.within} is the newest of the one it runs"
+							>
+								· or <span class="font-mono">{u.within}</span> within its major version
+							</span>{/if}
 					{:else if u.kind === 'packages'}
 						{u.count} system {u.count === 1 ? 'package' : 'packages'}
 						{#if u.security}<span class="text-xs" style:color="var(--warning-text)">
@@ -263,7 +271,7 @@
 								· gets no more security fixes
 							</span>{/if}
 					{:else if u.kind === 'scripts'}
-						Kastellan's {u.names.join(' and ')} there
+						Kastellan's {u.names.map(scriptName).join(' and ')} there
 						<span class="text-xs text-muted">· older than this Kastellan</span>
 					{:else if u.kind === 'abilities'}
 						New for its {u.login === 'actor' ? 'actor' : 'OpenWrt login'}:
@@ -319,7 +327,23 @@
 						</div>
 					{/if}
 				{:else if u.kind === 'scripts'}
-					{#if admin}
+					{#if admin && u.names.some((n) => n.startsWith('vpn-'))}
+						<a
+							class="btn btn-sm"
+							href="/vpn?tab=setup"
+							title="The VPN's Setup installs this Kastellan's scripts on its hosts"
+						>
+							Set up again
+						</a>
+					{:else if admin && u.names.includes('openwrt')}
+						<a
+							class="btn btn-sm"
+							href="/devices/{u.device.id}?tab=setup"
+							title="Setting up the OpenWrt login again installs this Kastellan's scripts and access list, keeping what you tick"
+						>
+							Set up again
+						</a>
+					{:else if admin}
 						<button
 							class="btn btn-sm"
 							title="Kastellan's keys may only run these scripts, not replace them: renewing takes a login on the host"

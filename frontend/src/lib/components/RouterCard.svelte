@@ -1,5 +1,6 @@
 <script lang="ts">
 	import DhcpPool from './DhcpPool.svelte';
+	import RoamingInfo from './RoamingInfo.svelte';
 	import { api, type RouterReport } from '#lib/api.js';
 	import { ago, duration } from '#lib/format.js';
 	import { store } from '#lib/state.svelte.js';
@@ -146,6 +147,8 @@
 		<h3 class="mt-5 text-xs font-medium text-muted">DHCP</h3>
 		<DhcpPool pool={report.dhcp} />
 	{/if}
+
+	{#if store.me?.role === 'admin'}<RoamingInfo {device} />{/if}
 
 	{#if services.length}
 		<h3 class="mt-5 text-xs font-medium text-muted">Services</h3>

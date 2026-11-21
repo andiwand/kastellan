@@ -108,6 +108,11 @@ def test_forwards_to_the_device_for_admins(client: TestClient, device) -> None:
     # The device's cookies stay on its own name; it can't set Kastellan's.
     cookies = r.headers.get_list("set-cookie")
     assert cookies == ["sid=abc; Path=/; HttpOnly", "device_login=private; Path=/; HttpOnly"]
+    assert (
+        r.headers["origin-agent-cluster"] == "?1"
+        and r.headers["cross-origin-resource-policy"] == "same-origin"
+    )
+    assert "x-frame-options" not in r.headers  # the hub's own headers stay on the hub
     r = client.get("http://nas-box.kastellan.test/go", follow_redirects=False)
     assert r.headers["location"] == "http://nas-box.kastellan.test/home"
     # Opening is audited when it's opened from the hub, not per request.
@@ -375,3 +380,105 @@ def test_a_device_that_never_answers_doesnt_hold_on(tmp_path: Path, monkeypatch:
 
     with TestClient(hub_app, base_url=HUB):
         asyncio.run(run())
+
+
+async def test_signing_in_for_the_admin_keeps_the_password_on_the_hub() -> None:
+    import httpx
+    import pytest
+
+    from kastellan import weblogin
+
+    def luci(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(403, text='<input name="luci_password">')
+        form = dict(x.split("=") for x in request.content.decode().split("&"))
+        if form == {"luci_username": "root", "luci_password": "pw"}:
+            return httpx.Response(
+                302, headers={"set-cookie": "sysauth_https=abc; path=/cgi-bin/luci/; HttpOnly"}
+            )
+        return httpx.Response(403, text='<input name="luci_password">')
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(luci)) as client:
+        s = await weblogin.sign_in(client, "https://ap", "root", "pw")
+        assert s.how == "luci" and s.cookies == ["sysauth_https=abc; path=/cgi-bin/luci/; HttpOnly"]
+        with pytest.raises(ValueError, match="refused"):
+            await weblogin.sign_in(client, "https://ap", "root", "wrong")
+
+    def basic(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/cgi-bin"):
+            return httpx.Response(404)
+        if request.headers.get("authorization") == "Basic YWRtaW46cHc=":
+            return httpx.Response(200, text="printer")
+        return httpx.Response(401, headers={"www-authenticate": 'Basic realm="printer"'})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(basic)) as client:
+        s = await weblogin.sign_in(client, "http://printer", "admin", "pw")
+        assert s.how == "basic" and s.basic == "Basic YWRtaW46cHc=" and not s.cookies
+
+    access = webproxy.Access()
+    key = access.ticket("session", "printer", cookies=["sid=1; Path=/"], basic="Basic x")
+    value, cookies = access.enter(key, "printer")
+    assert cookies == ["sid=1; Path=/"] and access.basic(value) == "Basic x"
+    assert access.enter(key, "printer") is None  # once
+    access.forget(value)
+    assert access.basic(value) is None
+
+
+def test_proxy_credentials_do_not_follow_an_upstream_change(client, device) -> None:
+    signin(client)
+    enter(client)
+    assert client.get("http://nas-box.kastellan.test/").status_code == 200
+    device.clear()
+    client.app.state.hub.config.devices["nas_box"].web = "http://10.9.9.7"
+    assert client.get("http://nas-box.kastellan.test/").status_code == 401
+    assert not device
+
+
+def test_ticket_is_refused_if_target_changes_before_opening(client, device) -> None:
+    signin(client)
+    link = client.get(f"{HUB}/api/devices/nas_box/web", follow_redirects=False).headers["location"]
+    client.app.state.hub.config.devices["nas_box"].web = "http://10.9.9.7"
+    assert client.get(link).status_code == 401
+    assert not device
+
+
+def test_web_login_requires_an_own_people_entry_and_keeps_credentials_on_target(client, device, monkeypatch):
+    from kastellan import weblogin
+    from kastellan.auth import password_tag
+
+    signin(client)
+    hub = client.app.state.hub
+    hub.vault.create("ada", "admin password", password_tag(hub.config.users["ada"].password))
+    for entry, ring, devices in [
+        ("mine", "people", ["nas_box"]),
+        ("other", "people", ["printer"]),
+        ("internal", "kastellan", ["nas_box"]),
+    ]:
+        hub.vault.put(entry, "device-password", ring=ring, user="root", devices=devices)
+    called = []
+
+    async def sign_in(client, target, user, password):
+        called.append((target, user, password))
+        return weblogin.Session("basic", basic="Basic private-credentials")
+
+    monkeypatch.setattr(weblogin, "sign_in", sign_in)
+    url = f"{HUB}/api/devices/nas_box/web/sign-in"
+    for entry, password, status in [
+        ("mine", "wrong", 403),
+        ("other", "admin password", 404),
+        ("internal", "admin password", 404),
+    ]:
+        assert client.post(url, json={"entry": entry, "password": password}, headers=H).status_code == status
+    assert not called
+    r = client.post(url, json={"entry": "mine", "password": "admin password"}, headers=H)
+    assert r.status_code == 200 and "private-credentials" not in r.text
+    assert called == [("http://10.9.9.9:8080", "root", "device-password")]
+    assert client.get(r.json()["url"]).status_code == 200
+    assert client.get("http://nas-box.kastellan.test/").status_code == 200
+    assert device[-1].headers["authorization"] == "Basic private-credentials"
+    device.clear()
+    hub.config.devices["nas_box"].web = "http://10.9.9.7"
+    assert client.get("http://nas-box.kastellan.test/").status_code == 401
+    assert not device
+    log = hub.audit.path.read_text()
+    assert "device-password" not in log and "private-credentials" not in log

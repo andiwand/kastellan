@@ -4,7 +4,14 @@ import type { Device } from '#lib/api.js';
  * containers (registries), system packages (the collector), reboots after updates, OpenWrt
  * firmware and packages, and Kastellan's own scripts on hosts (set up again to renew them). */
 export type Update =
-	| { kind: 'container'; device: Device; name: string; from: string; to: string }
+	| {
+			kind: 'container';
+			device: Device;
+			name: string;
+			from: string;
+			to: string;
+			within?: string | null;
+	  }
 	| { kind: 'packages'; device: Device; count: number; security: number }
 	| { kind: 'reboot'; device: Device; why: string[] }
 	| {
@@ -28,7 +35,8 @@ export function updatesOf(devices: Device[]): Update[] {
 					device: d,
 					name: c.name,
 					from: c.tag,
-					to: c.update_to ?? 'newer'
+					to: c.update_to ?? 'newer',
+					within: c.update_within ?? null
 				});
 		}
 		const u = d.host_report?.updates;
@@ -61,3 +69,13 @@ export function updatesOf(devices: Device[]): Update[] {
 		(u.kind === 'reboot' ? 1 : 0);
 	return out.sort((a, b) => weight(b) - weight(a) || a.device.name.localeCompare(b.device.name));
 }
+
+/** What a script on Updates and the device page is called (api.py outdated_scripts). */
+export const SCRIPT_NAMES: Record<string, string> = {
+	collector: 'collector',
+	actor: 'actor',
+	openwrt: 'OpenWrt helpers',
+	'vpn-pki': 'OpenVPN PKI script',
+	'vpn-crl': 'OpenVPN CRL script'
+};
+export const scriptName = (n: string) => SCRIPT_NAMES[n] ?? n;

@@ -43,6 +43,8 @@
 	let targets = $state<Set<string>>(new Set());
 	let channel = $state('auto');
 	let htmode = $state('');
+	let country = $state('');
+	let showAllClients = $state(false);
 
 	async function load() {
 		try {
@@ -75,7 +77,8 @@
 				device: r.device,
 				radio: r.radio,
 				channel,
-				...(htmode ? { htmode } : {})
+				...(htmode ? { htmode } : {}),
+				...(country ? { country } : {})
 			});
 			editing = null;
 			radioNote = `${name(r.device)}: changed (the list updates within two minutes).`;
@@ -239,6 +242,13 @@
 		{/if}
 	</div>
 	{#if radioNote}<p class="mb-2 text-xs text-muted">{radioNote}</p>{/if}
+	{#if data.country_note}
+		<p class="mb-2 text-xs" style:color="var(--warning-text)">
+			Country: {data.country_note}. It decides which channels and how much power are allowed.
+		</p>
+	{:else if data.countries?.length}
+		<p class="mb-2 text-xs text-muted">Country: {data.countries.join(', ')}.</p>
+	{/if}
 	<div class="card overflow-x-auto">
 		<table class="w-full min-w-[40rem] text-sm">
 			<thead class="text-left text-xs text-muted">
@@ -281,6 +291,7 @@
 										editing = key;
 										channel = String(r.channel ?? 'auto');
 										htmode = '';
+										country = '';
 									}}
 								>
 									change
@@ -310,6 +321,18 @@
 											</select>
 										</label>
 									{/if}
+									{#if r.kind === 'openwrt'}
+										<label class={label}>
+											Country
+											<input
+												class="{input} w-20 uppercase"
+												maxlength="2"
+												placeholder={r.country ?? '–'}
+												bind:value={country}
+												oninput={() => (country = country.toUpperCase())}
+											/>
+										</label>
+									{/if}
 									<button class="btn btn-primary btn-sm" onclick={() => saveRadio(r)}>Apply</button>
 									<button class="btn btn-sm" onclick={() => (editing = null)}>Cancel</button>
 									<span class="text-xs text-muted">
@@ -325,6 +348,72 @@
 			</tbody>
 		</table>
 	</div>
+
+	<!-- Clients -->
+	{#if data.clients?.length}
+		{@const troubled = data.clients.filter((c) => c.issues.length)}
+		<div class="mt-10 mb-3 flex flex-wrap items-baseline justify-between gap-2">
+			<h2 class="text-sm font-semibold">Clients</h2>
+			<span class="text-xs text-muted">
+				{data.clients.length} connected · {troubled.length} with a weak or slow link
+			</span>
+		</div>
+		<div class="card overflow-x-auto">
+			<table class="w-full min-w-[40rem] text-sm">
+				<thead class="text-left text-xs text-muted">
+					<tr class="border-b border-line">
+						<th class="px-4 py-2 font-medium">Client</th>
+						<th class="font-medium">At</th>
+						<th class="font-medium">Signal</th>
+						<th class="font-medium">Rate to · from it</th>
+						<th class="pr-4 font-medium">Worth a look</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each showAllClients ? data.clients : data.clients.slice(0, 12) as c, i (i)}
+						<tr class="border-b border-line last:border-0">
+							<td class="px-4 py-1.5">
+								{c.name ?? c.mac ?? '?'}
+								{#if c.name}<span class="font-mono text-xs text-faint">{c.mac}</span>{/if}
+							</td>
+							<td class="text-xs">
+								{name(c.device)}
+								<span class="text-faint">{c.band ? BAND[c.band as '2g'] : c.radio}</span>
+							</td>
+							<td class="tabular text-xs">
+								{#if c.signal == null}–{:else if c.kind === 'fritzbox'}{c.signal} %{:else}{c.signal}
+									dBm{#if c.snr != null}<span class="text-faint"> · SNR {c.snr}</span>{/if}{/if}
+							</td>
+							<td class="tabular text-xs">
+								{#if c.kind === 'fritzbox'}{c.speed ?? '–'} Mbit/s{:else}
+									{#if c.tx || c.rx}{c.tx?.mbit ?? '–'} · {c.rx?.mbit ?? '–'} Mbit/s{:else}–{/if}
+									{#if c.tx?.std}<span class="text-faint">
+											{c.tx.std.toUpperCase()}{c.tx.mhz ? ` ${c.tx.mhz} MHz` : ''}{c.tx.nss
+												? ` ${c.tx.nss}×`
+												: ''}
+										</span>{/if}
+								{/if}
+							</td>
+							<td
+								class="pr-4 text-xs"
+								style:color={c.issues.length ? 'var(--warning-text)' : undefined}
+							>
+								{c.issues.join('; ') || '–'}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+			{#if data.clients.length > 12}
+				<button
+					class="w-full border-t border-line py-2 text-xs text-muted hover:text-text"
+					onclick={() => (showAllClients = !showAllClients)}
+				>
+					{showAllClients ? 'Fewer' : `All ${data.clients.length}`}
+				</button>
+			{/if}
+		</div>
+	{/if}
 
 	<!-- What the radios hear -->
 	{#if Object.keys(data.scans).length}

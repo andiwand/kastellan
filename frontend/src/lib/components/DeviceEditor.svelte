@@ -11,9 +11,11 @@
 	 * up at once; `onclose` follows a save or Cancel. */
 	let {
 		id = null,
+		initial = null,
 		onclose
 	}: {
 		id?: string | null; // null: a new device
+		initial?: { name?: string; host?: string } | null; // a new one's start (one found on the network)
 		onclose: () => void;
 	} = $props();
 
@@ -83,8 +85,8 @@
 				tags = form.tags.join(', ');
 			} else {
 				form = {
-					name: '',
-					host: '',
+					name: initial?.name ?? '',
+					host: initial?.host ?? '',
 					kind: 'other',
 					site: '',
 					tags: [],
@@ -466,6 +468,19 @@
 											max="599"
 											placeholder="< 500"
 											bind:value={check.expect}
+										/>
+									</label>
+									<label
+										class="flex items-center gap-1.5"
+										title="Up only when the page shows this text (in its first 256 KB)"
+									>
+										Page shows
+										<input
+											class="h-7 w-44 rounded-md border border-line bg-surface px-2 text-xs"
+											maxlength="200"
+											placeholder="any page"
+											value={check.contains ?? ''}
+											oninput={(e) => (check.contains = e.currentTarget.value || null)}
 										/>
 									</label>
 									<label class="flex items-center gap-1.5">

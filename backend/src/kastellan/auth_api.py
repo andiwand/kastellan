@@ -133,6 +133,42 @@ def session_who(hub: Hub, token: str | None) -> Who | None:
     return Who(user, users[user].role)
 
 
+# Sent with every answer of the hub itself (not the device pages behind it): no framing, its own
+# browsing context group and agent cluster (a device page on a sibling name can't reach into it).
+HUB_HEADERS = [
+    (b"x-frame-options", b"DENY"),
+    (b"content-security-policy", b"frame-ancestors 'none'"),
+    (b"cross-origin-opener-policy", b"same-origin"),
+    (b"cross-origin-resource-policy", b"same-origin"),
+    (b"origin-agent-cluster", b"?1"),
+    (b"referrer-policy", b"same-origin"),
+    (b"x-content-type-options", b"nosniff"),
+]
+
+
+class HubHeaders:
+    """ASGI middleware: HUB_HEADERS on the hub's own answers, where the answer has none of its own."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def with_headers(message) -> None:
+            if message["type"] == "http.response.start":
+                have = {k.lower() for k, _ in message.get("headers", [])}
+                message["headers"] = [
+                    *message.get("headers", []),
+                    *(h for h in HUB_HEADERS if h[0] not in have),
+                ]
+            await send(message)
+
+        await self.app(scope, receive, with_headers)
+
+
 class Guard:
     """ASGI middleware: who is asking, and may they."""
 
@@ -157,6 +193,12 @@ class Guard:
         if self.hub.locked and scope["path"] != "/api/health":
             # config.yaml was broken at start: refuse everything rather than run without sign-in.
             await _deny(scope, send, 503, "locked until config.yaml is fixed (see /api/health)")
+            return
+        if scope["type"] == "http" and headers.get("sec-fetch-site") in ("same-site", "cross-site"):
+            # Another page asked (a device's page on a sibling name shares the site): the hub's
+            # API answers only its own page. Its cookie is SameSite=Strict, which a sibling's
+            # requests still carry; this is what keeps them out.
+            await _deny(scope, send, 403, "only the hub's own page may ask this")
             return
         if scope["type"] == "websocket" and not same_origin(headers):
             # A page on another site (or a sibling host on the same site) must not open a

@@ -59,6 +59,11 @@ async def survey(members: dict[str, ow.Ubus | Exception], salt: bytes) -> dict[s
                 "encryption": sec.get("encryption"),
                 "key": _fp(sec.get("key"), salt),
                 "disabled": sec.get("disabled") == "1",
+                # roaming (roaming.py): 802.11r with its mobility domain, 802.11k and v
+                "ft": sec.get("ieee80211r") == "1",
+                "mobility_domain": sec.get("mobility_domain"),
+                "k": sec.get("ieee80211k") == "1",
+                "v": sec.get("bss_transition") == "1",
             }
             if sec.get("mode") == "mesh":
                 mesh.setdefault(sec.get("mesh_id") or "", []).append(entry)
@@ -72,7 +77,12 @@ async def survey(members: dict[str, ow.Ubus | Exception], salt: bytes) -> dict[s
         net["same_encryption"] = len({e["encryption"] for e in on}) == 1
     radios = {
         id: [
-            {"section": n, "band": sec.get("band"), "channel": sec.get("channel")}
+            {
+                "section": n,
+                "band": sec.get("band"),
+                "channel": sec.get("channel"),
+                "htmode": sec.get("htmode"),
+            }
             for n, sec in values.items()
             if sec.get(".type") == "wifi-device"
         ]

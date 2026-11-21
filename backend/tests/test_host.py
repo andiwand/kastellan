@@ -316,3 +316,14 @@ def test_reading_a_host_again(tmp_path: Path, monkeypatch) -> None:
         assert r.status_code == 200 and r.json()["checked"] and "127.0.0.1" in asked
         assert c.post("/api/devices/nas/collect/now", headers=h).status_code == 429  # just read
         assert c.post("/api/devices/cam/collect/now", headers=h).status_code == 409
+
+
+def test_newest_within_the_same_major() -> None:
+    from kastellan.registry import newer_tag
+
+    tags = ["16.4", "16.6", "16.10", "17.0", "17.2", "15.9", "16.6-alpine", "20250101"]
+    assert newer_tag("16.4", tags) == "17.2"
+    assert newer_tag("16.4", tags, same_major=True) == "16.10"
+    assert newer_tag("16.10", tags, same_major=True) is None
+    assert newer_tag("v2.8.1", ["v2.9.4", "v3.0.0"], same_major=True) == "v2.9.4"
+    assert newer_tag("15", ["16", "15"], same_major=True) is None  # one number: no "within"

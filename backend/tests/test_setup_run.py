@@ -203,7 +203,7 @@ def test_new_abilities_until_set_up_or_not_needed(tmp_path) -> None:
     assert offered.new("sv1", "actor", ["journal"]) == ["docker-logs"]
     offered.passed("sv1", "actor", ["docker-logs"])
     assert offered.new("sv1", "actor", []) == ["journal"]  # removed again: offered again
-    assert offered.new("ap", "openwrt", ["logs"]) == ["backup", "scan"]
+    assert offered.new("ap", "openwrt", ["logs"]) == ["backup", "scan", "bandwidth", "roaming"]
 
 
 def test_a_stored_login_only_for_its_device(tmp_path) -> None:
