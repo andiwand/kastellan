@@ -23,6 +23,7 @@ from .auth_api import client_address, require_admin, require_signin, who
 from .setup_run import reason
 from .ssh import ChangedHost, Target, UnknownHost
 from .vpn.openvpn import NAME, OpenVpn, install_script
+from .vpn.rotation import VpnRotator
 from .vpn.wireguard import WgEasy
 
 if TYPE_CHECKING:
@@ -32,6 +33,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+class Finish(BaseModel):
+    anyway: bool = False  # switch even if the new key isn't on every host yet
+
+
 class NewClient(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     days: int | None = Field(default=None, ge=1, le=3650)  # None: wg-easy never; OpenVPN: the default
@@ -39,6 +44,7 @@ class NewClient(BaseModel):
 
 def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api/vpn")
+    rotator = VpnRotator(hub.keys)
 
     def wireguard() -> WgEasy:
         wg = hub.config.vpn.wireguard
@@ -118,7 +124,26 @@ def router(hub: Hub) -> APIRouter:
                 out["openvpn"]["clients"] = [asdict(c) for c in await openvpn().clients()]
             except Exception as e:
                 out["openvpn"]["error"] = say(e, "The PKI host")
+            out["openvpn"]["seen"] = seen_view()
+            connected = {c["name"]: c for c in hub.ovpn_status.get("connected") or []}
+            for c in out["openvpn"]["clients"]:
+                c["connected"] = connected.get(c["name"])
+                c["last_seen"] = hub.ovpn_seen.last.get(c["name"])
         return out
+
+    def seen_view() -> dict[str, Any]:
+        """Whether Kastellan can see who is connected to the OpenVPN server, and if not, why."""
+        ovpn = hub.config.vpn.openvpn
+        server = hub.config.devices.get(ovpn.server) if ovpn and ovpn.server else None
+        if server is None or server.openwrt is None:
+            return {"how": "no-openwrt", "checked": None, "error": None}
+        error = hub.ovpn_status.get("error")
+        return {
+            "how": "not-allowed" if error and "not allowed" in error else "openwrt",
+            "device": ovpn.server if ovpn else None,
+            "checked": hub.ovpn_status.get("checked"),
+            "error": error,
+        }
 
     # --- WireGuard -------------------------------------------------------------------------------
 
@@ -203,6 +228,69 @@ def router(hub: Hub) -> APIRouter:
         require_signin(request)
         text = await attempt(request, "vpn.openvpn.download", openvpn().export(name), client=name)
         return _download(text, f"{name}.ovpn")
+
+    # --- Rotating the VPN key (restricted mode) -------------------------------------------------
+
+    def key_hosts() -> dict[str, Target]:
+        """The restricted logins the VPN key is bound to: role -> where."""
+        ovpn = hub.config.vpn.openvpn
+        if ovpn is None:
+            raise HTTPException(404, "no vpn: openvpn: in config.yaml")
+        if ovpn.mode != "restricted":
+            raise HTTPException(409, "direct mode uses the hub's key: rotate that on the Access page")
+        out = {}
+        for role, id, user in roles():
+            device = hub.config.devices[id]
+            out[role] = Target(device.host, device.ssh.port if device.ssh else 22, user)
+        return out
+
+    def key_view() -> dict[str, Any]:
+        rot = rotator.state()
+        key = hub.keys.hub_key("vpn")
+        nxt = hub.keys.side_key("next", "vpn")
+        return {
+            "fingerprint": key.get_fingerprint(),
+            "next": nxt.get_fingerprint() if nxt else None,
+            "rotation": None if rot is None else asdict(rot),
+        }
+
+    @api.get("/key")
+    def vpn_key(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        return key_view()
+
+    async def rotate(request: Request, what: str, work: Any) -> dict[str, Any]:
+        """One step of the rotation (work: hosts -> awaitable), audited."""
+        w = require_signin(request)
+        try:
+            rot = await work(key_hosts())
+        except (ValueError, FileNotFoundError) as e:
+            hub.audit.record(f"vpn.key.rotate.{what}", w.user, client_address(request.scope), outcome=str(e))
+            raise HTTPException(409, str(e)) from e
+        steps = {
+            r: "removed the old key" if s.removed else "has the new key" if s.added else s.error
+            for r, s in (rot.devices.items() if rot else [])
+        }
+        hub.audit.record(
+            f"vpn.key.rotate.{what}",
+            w.user,
+            client_address(request.scope),
+            stage=rot.stage if rot else None,
+            hosts=steps,
+        )
+        return key_view()
+
+    @api.post("/key/rotate/start")
+    async def rotate_start(request: Request) -> dict[str, Any]:
+        return await rotate(request, "start", rotator.start)
+
+    @api.post("/key/rotate/finish")
+    async def rotate_finish(body: Finish, request: Request) -> dict[str, Any]:
+        return await rotate(request, "finish", lambda hosts: rotator.finish(hosts, anyway=body.anyway))
+
+    @api.post("/key/rotate/cancel")
+    async def rotate_cancel(request: Request) -> dict[str, Any]:
+        return await rotate(request, "cancel", rotator.cancel)
 
     # --- Setting up OpenVPN on the hosts --------------------------------------------------------
 

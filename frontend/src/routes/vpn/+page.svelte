@@ -9,6 +9,7 @@
 	import X from '@lucide/svelte/icons/x';
 	import VpnSetup from '#lib/components/VpnSetup.svelte';
 	import VpnSettings from '#lib/components/VpnSettings.svelte';
+	import VpnKey from '#lib/components/VpnKey.svelte';
 
 	let vpn = $state<Vpn | null>(null);
 	let settingsOpen = $state(false);
@@ -121,8 +122,9 @@
 						<p class="truncate font-medium">{c.name}</p>
 						<p class="tabular text-xs text-muted">
 							{c.address ?? ''}
-							{#if c.last_handshake}
-								· seen {ago(c.last_handshake, store.now)}{:else}
+							{#if c.last_handshake && store.now - Date.parse(c.last_handshake) < 180_000}
+								· <span style:color="var(--good-text)">connected</span>{:else if c.last_handshake}
+								· last seen {ago(c.last_handshake, store.now)}{:else}
 								· never connected{/if}
 							{#if c.rx != null}
 								· ↓ {bytes(c.rx)} ↑ {bytes(c.tx)}{/if}
@@ -246,6 +248,22 @@
 				{/if}
 			</div>
 		{/if}
+		{#if canManage && vpn.openvpn.seen?.how === 'not-allowed'}
+			<p class="mb-3 text-xs text-muted">
+				Who is connected isn't known: Kastellan's login on
+				<a class="underline" href="/devices/{vpn.openvpn.seen.device}">the OpenVPN server</a> may not
+				read it. Set that login up again there with “See who is connected to its OpenVPN server” ticked.
+			</p>
+		{:else if canManage && vpn.openvpn.seen?.how === 'no-openwrt' && vpn.openvpn.crl_to_server}
+			<p class="mb-3 text-xs text-muted">
+				Who is connected is read from an OpenVPN server on OpenWrt, through Kastellan's login there;
+				this server has none.
+			</p>
+		{:else if canManage && vpn.openvpn.seen?.error}
+			<p class="mb-3 text-xs" style:color="var(--warning-text)">
+				Who is connected can't be read right now: {vpn.openvpn.seen.error}
+			</p>
+		{/if}
 		<ul class="card divide-y divide-line">
 			{#each vpn.openvpn.clients as c (c.name + c.serial)}
 				<li
@@ -258,7 +276,22 @@
 					></span>
 					<div class="min-w-0 flex-1">
 						<p class="truncate font-medium">{c.name}</p>
-						<p class="text-xs text-muted">{c.status}{c.expires ? ` · until ${c.expires}` : ''}</p>
+						<p class="tabular text-xs text-muted">
+							{c.status}{c.expires ? ` · until ${c.expires}` : ''}
+							{#if c.connected}
+								· <span style:color="var(--good-text)">connected</span>
+								{c.connected.address ? `from ${c.connected.address}` : ''}
+								{c.connected.since
+									? `since ${ago(c.connected.since, store.now).replace(' ago', '')}`
+									: ''}
+								{#if c.connected.rx != null}
+									· ↓ {bytes(c.connected.rx)} ↑ {bytes(c.connected.tx)}{/if}
+							{:else if c.last_seen}
+								· last seen {ago(c.last_seen, store.now)}
+							{:else if vpn.openvpn.seen?.how === 'openwrt' && vpn.openvpn.seen.checked}
+								· not seen yet
+							{/if}
+						</p>
 					</div>
 					{#if canManage && c.status === 'valid'}
 						<div class="flex flex-wrap gap-1.5">
@@ -330,6 +363,7 @@
 				</button>
 			</form>
 			<VpnSetup canInstall={canManage} />
+			<VpnKey canChange={canManage} />
 			{#if !vpn.openvpn.crl_to_server}
 				<p class="mt-2 text-xs" style:color="var(--warning-text)">
 					No OpenVPN server chosen (VPN settings): a revoked client keeps working until the

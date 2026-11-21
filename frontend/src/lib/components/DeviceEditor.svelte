@@ -37,6 +37,9 @@
 	let busy = $state(false);
 	let confirmDelete = $state(false);
 
+	// The sites devices are at already, to pick from (any new id works too).
+	const sites = $derived([...new Set((store.devices ?? []).map((d) => d.site))].sort());
+
 	/** What a service is called when its name is left empty (as config.yaml names it). */
 	const defaultName = (c: CheckForm) =>
 		c.type === 'ping' ? 'ping' : `${c.type}:${c.target ?? ''}`;
@@ -52,6 +55,7 @@
 					name: '',
 					host: '',
 					kind: 'other',
+					site: '',
 					tags: [],
 					always_on: null,
 					exposed: false,
@@ -84,6 +88,7 @@
 	const named = (c: CheckForm): CheckForm => ({
 		...c,
 		target: c.type === 'tcp' && c.target !== null ? Number(c.target) : c.target,
+		server: c.server?.trim() || null,
 		name: c.name.trim()
 	});
 
@@ -187,7 +192,20 @@
 						<span class="font-normal text-faint">Its name in config.yaml; it stays.</span>
 					</label>
 				{/if}
-				<label class="{label} {id ? 'sm:col-span-2' : ''}">
+				<label class={label}>
+					Site
+					<input
+						class="{input} font-mono"
+						bind:value={form.site}
+						list="known-sites"
+						placeholder="home"
+						pattern="[a-z0-9][a-z0-9_\-]*"
+					/>
+					<datalist id="known-sites">
+						{#each sites as s (s)}<option value={s}></option>{/each}
+					</datalist>
+				</label>
+				<label class="{label} {id ? '' : 'sm:col-span-2'}">
 					Tags
 					<input class={input} bind:value={tags} placeholder="docker, ubuntu (comma-separated)" />
 				</label>
@@ -225,6 +243,7 @@
 												type,
 												target: type === 'http' ? 'https://' : null,
 												expect: null,
+												server: null,
 												tls: null,
 												verify: false
 											});
@@ -233,6 +252,7 @@
 										<option value="ping">ping</option>
 										<option value="tcp">port</option>
 										<option value="http">web</option>
+										<option value="dns">dns</option>
 									</select>
 								</label>
 								{#if check.type === 'tcp'}
@@ -258,6 +278,16 @@
 											required
 										/>
 									</label>
+								{:else if check.type === 'dns'}
+									<label class="{label} min-w-48 flex-1">
+										Look up
+										<input
+											class="{input} font-mono"
+											bind:value={check.target}
+											placeholder="www.example.org"
+											required
+										/>
+									</label>
 								{/if}
 								<label class="{label} min-w-32 flex-1">
 									Name
@@ -272,7 +302,7 @@
 									<Trash class="size-4" /><span class="sr-only">Remove</span>
 								</button>
 							</div>
-							{#if check.type !== 'ping'}
+							{#if check.type === 'tcp' || check.type === 'http'}
 								<label class="choice mt-2 text-xs text-muted">
 									<input
 										type="checkbox"
@@ -316,6 +346,29 @@
 										</select>
 									</label>
 								</div>
+							{:else if check.type === 'dns'}
+								<div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
+									<label class="flex items-center gap-1.5">
+										Answers include
+										<input
+											class="h-7 w-56 rounded-md border border-line bg-surface px-2 font-mono text-xs"
+											value={Array.isArray(check.expect) ? check.expect.join(', ') : ''}
+											oninput={(e) => {
+												const all = e.currentTarget.value.split(/[,\s]+/).filter(Boolean);
+												check.expect = all.length ? all : null;
+											}}
+											placeholder="any address"
+										/>
+									</label>
+									<label class="flex items-center gap-1.5">
+										Resolver
+										<input
+											class="h-7 w-36 rounded-md border border-line bg-surface px-2 font-mono text-xs"
+											bind:value={check.server}
+											placeholder="the system's"
+										/>
+									</label>
+								</div>
 							{/if}
 						</li>
 					{/each}
@@ -326,6 +379,9 @@
 					</button>
 					<button type="button" class={button} onclick={() => addCheck('tcp')}>
 						<Plus class="size-4" /> Port
+					</button>
+					<button type="button" class={button} onclick={() => addCheck('dns')}>
+						<Plus class="size-4" /> DNS
 					</button>
 					{#if !form.checks.some((c) => c.type === 'ping')}
 						<button type="button" class={button} onclick={() => addCheck('ping')}>

@@ -325,3 +325,32 @@ def test_setup_page(tmp_path: Path, wg_easy, pki) -> None:
             )
         pki_host = c.get("/api/vpn/openvpn/setup").json()["hosts"][0]
         assert [ch["ok"] for ch in pki_host["checks"][:2]] == [True, True]  # trusted, the script answers
+
+
+def test_last_seen_and_the_key(tmp_path: Path, wg_easy, pki) -> None:
+    from datetime import UTC, datetime
+
+    from kastellan.vpn.openvpn import Connection
+
+    with make_client(tmp_path, wg_easy[0], pki[0], pki[1]) as c:
+        signin(c)
+        hub = c.app.state.hub
+        vpn = c.get("/api/vpn").json()["openvpn"]
+        assert vpn["seen"]["how"] == "no-openwrt"  # the server has no openwrt: login
+        hub.ovpn_seen.note([Connection("alice", None, None, None, None)], datetime(2026, 11, 21, tzinfo=UTC))
+        assert hub.ovpn_seen.last == {"alice": "2026-11-21T00:00:00+00:00"}
+
+        key = c.get("/api/vpn/key").json()
+        assert key["fingerprint"] == hub.keys.hub_key("vpn").get_fingerprint() and key["rotation"] is None
+        # Rotating needs sign-in and the CSRF header like every change; the hosts' keys aren't
+        # trusted here, so adding fails per host and is reported, not raised.
+        assert c.post("/api/vpn/key/rotate/start").status_code == 403
+        r = c.post("/api/vpn/key/rotate/start", headers=H).json()
+        assert set(r["rotation"]["devices"]) == {"pki", "server"}
+        assert not any(s["added"] for s in r["rotation"]["devices"].values())
+        assert c.post("/api/vpn/key/rotate/finish", json={}, headers=H).status_code == 409
+        assert c.post("/api/vpn/key/rotate/cancel", headers=H).json()["rotation"] is None
+        log = (tmp_path / "data" / "audit.log").read_text()
+        assert '"vpn.key.rotate.start"' in log and '"vpn.key.rotate.cancel"' in log
+        signin(c, "obi")
+        assert c.get("/api/vpn/key").status_code == 403

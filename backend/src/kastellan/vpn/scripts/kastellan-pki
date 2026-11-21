@@ -23,6 +23,8 @@
 #   renew-crl            renew the CRL (it expires; the hub does this daily)
 #   crl                  the current CRL (PEM)
 #   export NAME          the client's .ovpn, with its certificate and key inline
+#   add-key OLD NEW      rotating the VPN key: NEW (ed25519) may do what OLD may here
+#   remove-key OLD       ...and then OLD goes (never the last key for this script)
 set -euo pipefail
 umask 077
 
@@ -30,6 +32,7 @@ EASYRSA_DIR=/etc/openvpn/easy-rsa
 TEMPLATE=/etc/kastellan-pki/client.ovpn
 TLS_KEY=
 RESERVED="server"
+AUTHORIZED_KEYS=  # where its key lines are, if not the usual place (tests)
 # The config is the argument fixed in authorized_keys (never the environment: an sshd with
 # AcceptEnv * would let the caller choose it).
 CONF=${1:-/etc/kastellan-pki.conf}
@@ -52,6 +55,54 @@ is_client_cert() {
   [[ $usage == *"TLS Web Client Authentication"* && $usage != *"TLS Web Server Authentication"* ]]
 }
 [ ${#args[@]} -le 3 ] || fail "too many arguments"
+
+# Rotating Kastellan's VPN key (add-key OLD NEW, then remove-key OLD): only lines bound to this
+# script change. A new line copies the options of the line with OLD (its command=, from=, limits)
+# with NEW in place of the key, so the new key may do exactly what the old one may. Keys are one
+# ed25519 key each (the base64 part only: no options, no other type, nothing else). The last key
+# for this script is never removed.
+keys_file() {
+  if [ -n "${AUTHORIZED_KEYS:-}" ]; then echo "$AUTHORIZED_KEYS"
+  elif [ "$(id -u)" = 0 ] && [ -f /etc/openwrt_release ]; then echo /etc/dropbear/authorized_keys
+  else echo "$(awk -F: -v u="$(id -un)" '$1 == u { print $6 }' /etc/passwd)/.ssh/authorized_keys"
+  fi
+}
+ed25519() {
+  case $1 in AAAAC3NzaC1lZDI1NTE5AAAAI*) ;; *) fail "not an ed25519 key" ;; esac
+  [ ${#1} -eq 68 ] && [ -z "$(printf '%s' "$1" | tr -d 'A-Za-z0-9+/')" ] || fail "not an ed25519 key"
+}
+rekey() {
+  ed25519 "$2"
+  [ "$1" = remove ] || ed25519 "$3"
+  f=$(keys_file)
+  [ -f "$f" ] || fail "no $f"
+  awk -v op="$1" -v old="$2" -v new="${3:-}" -v mark="command=\"$0 " '
+    function key(line,   n, i, w) {
+      n = split(line, w, " ")
+      for (i = 1; i < n; i++) if (w[i] == "ssh-ed25519") return w[i + 1]
+      return ""
+    }
+    { line[NR] = $0; mine[NR] = index($0, mark) > 0; k[NR] = key($0) }
+    END {
+      for (i = 1; i <= NR; i++) if (mine[i]) {
+        if (k[i] == old) src = i; else if (k[i] != "") others++
+        if (k[i] == new) has = 1
+      }
+      if (op == "add" && !src) { print "no line of this script with that key" > "/dev/stderr"; exit 3 }
+      if (op == "remove" && src && !others) { print "that is the only key for this script" > "/dev/stderr"; exit 3 }
+      for (i = 1; i <= NR; i++) if (op == "add" || !(mine[i] && k[i] == old)) print line[i]
+      if (op == "add" && !has) {
+        p = index(line[src], " ssh-ed25519 " old)
+        print substr(line[src], 1, p) "ssh-ed25519 " new " kastellan-vpn"
+      }
+    }' "$f" > "$f.kastellan-new" || { rm -f "$f.kastellan-new"; fail "$f not changed"; }
+  chmod 600 "$f.kastellan-new" && mv "$f.kastellan-new" "$f"
+  echo "$1-key done"
+}
+case $command in
+  add-key) rekey add "$name" "$days"; exit 0 ;;
+  remove-key) rekey remove "$name"; exit 0 ;;
+esac
 
 cd "$EASYRSA_DIR" || fail "no $EASYRSA_DIR"
 

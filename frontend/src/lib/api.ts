@@ -2,7 +2,7 @@ export type CheckState = 'unknown' | 'up' | 'partial' | 'down';
 
 export interface CheckStatus {
 	name: string;
-	type: 'ping' | 'tcp' | 'http';
+	type: 'ping' | 'tcp' | 'http' | 'dns';
 	target: string | number | null;
 	exposed?: boolean; // reachable from the internet (this service)
 	up?: boolean | null;
@@ -35,6 +35,8 @@ export interface Device {
 	name: string;
 	host: string;
 	kind: string;
+	site: string; // where it is (an id; "home" when not set)
+	site_name: string;
 	parent: string | null;
 	tags: string[];
 	always_on: boolean;
@@ -49,6 +51,7 @@ export interface Device {
 	outdated_scripts: string[];
 	vulns: Vulns | null;
 	exposed: boolean;
+	web_url: string | null; // its web interface (scheme://host:port), if it has one
 	address: string | null; // its host, resolved
 	networks: NetworkRef[]; // several: it sits on the boundary between them
 	network_assumed: boolean; // its name didn't resolve: taken to be in the hub's network
@@ -217,6 +220,7 @@ export interface NotifyChannelForm {
 	gotify?: string | null;
 	telegram?: string | number | null;
 	email?: string | null;
+	push?: string | null; // a user's browsers (web push), * for everyone's
 	smtp?: string | null;
 	sender?: string | null;
 	token?: string | null;
@@ -254,6 +258,7 @@ export interface Settings {
 		};
 		networks: { networks: Record<string, { name: string; cidr: string | null }> };
 		groups: { groups: Record<string, { name: string; devices: string[] }> };
+		sites: { sites: Record<string, string> };
 		users: { users: Record<string, { role: 'admin' | 'observer'; password?: string }> };
 	};
 }
@@ -396,6 +401,29 @@ export interface OvpnClient {
 	status: 'valid' | 'revoked' | 'expired' | 'unknown';
 	expires: string | null;
 	serial: string;
+	/** Connected now (from the server's status, read through its OpenWrt login). */
+	connected?: {
+		address: string | null;
+		since: string | null;
+		rx: number | null;
+		tx: number | null;
+	} | null;
+	last_seen?: string | null;
+}
+
+/** Rotating the VPN key: the steps per host ("pki", "server"), as for the hub key. */
+export interface VpnKey {
+	fingerprint: string;
+	next: string | null;
+	rotation: {
+		started: string;
+		stage: 'adding' | 'switching' | 'removing' | 'done';
+		finished: string | null;
+		devices: Record<
+			string,
+			{ added: boolean; removed: boolean; error: string | null; target: string | null }
+		>;
+	} | null;
 }
 
 export interface Vpn {
@@ -405,6 +433,13 @@ export interface Vpn {
 		error?: string;
 		crl_to_server?: boolean;
 		crl?: { pushed?: string; next_update?: string | null; error?: string | null };
+		/** Whether Kastellan sees who is connected: through the server's OpenWrt login. */
+		seen?: {
+			how: 'openwrt' | 'not-allowed' | 'no-openwrt';
+			device?: string | null;
+			checked: string | null;
+			error: string | null;
+		};
 	} | null;
 }
 
@@ -442,6 +477,8 @@ export interface Health {
 	ping_refused: string | null;
 	locked: boolean;
 	demo: boolean;
+	/** Device web pages through the hub at <device>.<web_domain>; null: not set up. */
+	web_domain: string | null;
 }
 
 export interface Bucket {
@@ -462,10 +499,11 @@ export type Change =
 
 /** A check as config.yaml has it (the forms). */
 export interface CheckForm {
-	type: 'ping' | 'tcp' | 'http';
+	type: 'ping' | 'tcp' | 'http' | 'dns';
 	target: string | number | null;
 	name: string;
-	expect?: number | null;
+	expect?: number | string[] | null; // http: a status; dns: addresses among the answers
+	server?: string | null; // dns: the resolver to ask
 	verify?: boolean;
 	tls?: boolean | null;
 	interval?: number | null;
@@ -479,6 +517,7 @@ export interface DeviceForm {
 	name: string;
 	host: string;
 	kind: string;
+	site?: string; // empty: home
 	tags: string[];
 	always_on: boolean | null; // null: by kind
 	exposed: boolean;
@@ -637,6 +676,9 @@ export const api = {
 		),
 	ovpnPushCrl: () => call<{ crl: unknown }>('POST', '/vpn/openvpn/crl'),
 	ovpnSetup: () => get<Setup>('/vpn/openvpn/setup'),
+	vpnKey: () => get<VpnKey>('/vpn/key'),
+	vpnKeyRotate: (step: 'start' | 'finish' | 'cancel', anyway = false) =>
+		call<VpnKey>('POST', `/vpn/key/rotate/${step}`, step === 'finish' ? { anyway } : undefined),
 	access: (device: string) => get<Access>(`/devices/${encodeURIComponent(device)}/access`),
 	ovpnInstall: (role: string) =>
 		call<{ output: string }>('POST', `/vpn/openvpn/setup/${role}/install`),
@@ -721,6 +763,17 @@ export const api = {
 	rotateCancel: () => call<{ rotation: null }>('POST', '/ssh/rotate/cancel'),
 	acknowledge: (key: string, note = '') =>
 		call<Alarm>('POST', `/alarms/${encodeURIComponent(key)}/ack`, { note }),
+	push: () =>
+		get<{
+			public_key: string;
+			subscriptions: { endpoint: string; label: string; created: number }[];
+			channel: boolean; // a push: channel in config.yaml reaches this person
+		}>('/push'),
+	pushSubscribe: (subscription: PushSubscriptionJSON, label: string) =>
+		call<{ subscribed: boolean }>('POST', '/push/subscribe', { ...subscription, label }),
+	pushUnsubscribe: (endpoint: string) =>
+		call<{ removed: boolean }>('POST', '/push/unsubscribe', { endpoint }),
+	pushTest: () => call<{ browsers: number }>('POST', '/push/test'),
 	mute: (device: string, minutes: number) =>
 		call<{ muted_until: string | null }>('POST', `/devices/${encodeURIComponent(device)}/mute`, {
 			minutes

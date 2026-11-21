@@ -423,6 +423,15 @@ async def upgradable(ubus: Ubus) -> list[str]:
     return [ln.strip() for ln in str(res.get("stdout", "")).splitlines() if ln.strip()][:200]
 
 
+async def openvpn_status(ubus: Ubus) -> str:
+    """Who is connected to its OpenVPN servers: the one fixed script's output (vpn/openvpn.py
+    reads it). UbusError when the login hasn't that ability."""
+    from .setup import OPENVPN_STATUS
+
+    res = await ubus.call("file", "exec", {"command": OPENVPN_STATUS, "params": []}, timeout=20)
+    return str(res.get("stdout", ""))[:1048576]
+
+
 async def reboot(ubus: Ubus) -> None:
     await ubus.call("system", "reboot")
 

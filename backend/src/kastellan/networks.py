@@ -149,8 +149,8 @@ def public_ways(device: Device, on_internet: bool, statuses: dict[str, Any]) -> 
     the internet (a home IPv6 address is global, yet no way in)."""
     out = []
     for check in device.checks:
-        if check.type == "ping":
-            continue  # not a service: no way in
+        if check.type in ("ping", "dns"):
+            continue  # not a service of the device: no way in
         target = check.hostname or device.host
         if check.exposed:
             pass  # marked: a port forward or a proxy leads to it

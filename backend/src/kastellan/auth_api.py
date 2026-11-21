@@ -39,6 +39,8 @@ log = logging.getLogger(__name__)
 
 PUBLIC = {"/api/health", "/api/auth/login", "/api/auth/me", "/api/auth/logout"}
 READS = {"GET", "HEAD"}
+# What a signed-in observer may change: only their own browsers' push subscriptions (push_api).
+OWN = {"/api/push/subscribe", "/api/push/unsubscribe", "/api/push/test"}
 CSRF_HEADER = "x-kastellan"
 
 
@@ -99,6 +101,14 @@ def same_origin(headers: dict[str, str]) -> bool:
     return bool(origin and host) and urlsplit(origin).netloc == host
 
 
+def cookie_domain(hub: Hub, request: Request) -> str | None:
+    """Signed in at web.domain itself: the session also reaches the devices' pages under it
+    (webproxy.py takes it out before anything goes to a device). Else the cookie stays host-only."""
+    web = hub.config.web
+    host = (request.headers.get("host") or "").lower().rsplit(":", 1)[0]
+    return web.domain if web and host == web.domain else None
+
+
 def client_address(scope: Scope) -> str:
     client = scope.get("client")
     return client[0] if client else "?"
@@ -141,7 +151,9 @@ class Guard:
         method = scope.get("method", "GET")
         users = self.hub.config.users
 
-        if not allowed_host(headers.get("host", ""), self.hub.settings.hosts):
+        web = self.hub.config.web
+        names = (*self.hub.settings.hosts, web.domain) if web else self.hub.settings.hosts
+        if not allowed_host(headers.get("host", ""), names):
             # DNS rebinding: a page on an attacker's name that now points here. Its requests carry
             # that name, which the hub doesn't answer to.
             await _deny(scope, send, 421, "this hub doesn't answer to that name (see KASTELLAN_HOSTS)")
@@ -174,7 +186,7 @@ class Guard:
             else:
                 w = Who(user, users[user].role)
                 writes = scope["type"] == "http" and method not in READS
-                if writes and not w.is_admin and scope["path"] not in PUBLIC:
+                if writes and not w.is_admin and scope["path"] not in PUBLIC | OWN:
                     await _deny(scope, send, 403, "observers can't change anything")
                     return
         scope.setdefault("state", {})["who"] = w
@@ -249,6 +261,7 @@ def router(hub: Hub) -> APIRouter:
             samesite="strict",
             secure=request.url.scheme == "https",
             path="/",
+            domain=cookie_domain(hub, request),
         )
         hub.audit.record("signin", body.user, address)
         return {"user": body.user, "role": user.role}
@@ -264,7 +277,7 @@ def router(hub: Hub) -> APIRouter:
         hub.terminals.stop(token=token)  # its open terminals and desktops end with it
         hub.tickets.drop(session=token_key(token))
         hub.sessions.end(token)
-        response.delete_cookie(SESSION_COOKIE, path="/")
+        response.delete_cookie(SESSION_COOKIE, path="/", domain=cookie_domain(hub, request))
         if w and w.user:
             hub.audit.record("signout", w.user, client_address(request.scope))
         return {"ok": True}

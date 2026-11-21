@@ -15,11 +15,16 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `config.py`: `config.yaml` is the only configuration; there is no database. A `Device` has a
     `host`, a `kind`, an optional `parent` (what it hangs off: alarms fold a device into its parent's; the "via" link; meant for infrastructure links, not which access point
     a client uses), `tags`, `always_on` (default: false
-    for `pc` and `laptop`) and `checks`. A check is written `ping`, `tcp: <port>` or
-    `http: <url>` (`Check._shorthand`); its `name` defaults to the type and target.
+    for `pc` and `laptop`), a `site` (where it is; None is `home`) and `checks`. A check is
+    written `ping`, `tcp: <port>`, `http: <url>` or `dns: <name>` (`Check._shorthand`); its
+    `name` defaults to the type and target. `sites:` names sites; `Config.label(id)` is a
+    device's name for alarms and notifications, with its site when that isn't home; the device
+    list groups by site only when devices are at more than one.
   - `checks.py`: runs one check and returns a `Result`; it never raises. Ping is unprivileged
     ICMP (icmplib). HTTP does not verify certificates by default (home devices are
     self-signed, and a check sends no credentials); any status below 500 is up unless `expect`.
+    DNS (dnspython): A and AAAA from `server` or the system's resolvers; with `expect`, every
+    listed address must be among the answers. A dns check is no way in (networks.py).
   - `monitor.py`: one asyncio task per (device, check). `apply(config)` keeps unchanged loops
     running. `restore(rows)` takes the last known state from the history at start, so `since`
     survives restarts; `since` is None when the state began before the history.
@@ -43,8 +48,13 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `alarms.py`: `evaluate()` (pure) turns status into problems: critical for an always-on device
     down `down_after` seconds, warning for a down service; a down device folds in the devices
     behind it. `Alarms` keeps open ones in `<data>/alarms.json`, logs to `<data>/alarms.log`,
-    sends info events once. `notify.py`: ntfy and webhooks with `min` and `quiet` hours (critical
-    always). `alarms_api.py`: list, acknowledge, mute, test. The hub evaluates every 30 s.
+    sends info events once. `notify.py`: ntfy, webhooks, Gotify, Telegram, e-mail and web push,
+    with `min` and `quiet` hours (critical always). `alarms_api.py`: list, acknowledge, mute,
+    test. The hub evaluates every 30 s.
+  - Web push: `push.py` (VAPID key `<data>/push/vapid.pem`, subscriptions per user, aes128gcm
+    via http-ece, 404/410 drop a browser), `push_api.py` (signed-in people, observers too: `OWN`
+    in auth_api are the only writes an observer may make). A `push: <user>` (or `*`) notify
+    channel; `frontend/static/sw.js` shows them; browsers need HTTPS (a reverse proxy).
   - Version-log keys starting with `@` are not checks: `@firmware`, `@container <key>`.
   - `vulns.py`: products (`from_software`, `from_image`; CPE for NVD, ecosystem/package for
     OSV) and `Sources` (NVD with its rate limit, OSV, CISA KEV; cached a day in `<data>/vulns/`).
@@ -62,6 +72,15 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     mode; `install_script()` is both the copyable instructions and what "Install for me" runs), `vpn_api.py` (lists for everyone signed in; changes and downloads for
     signed-in admins, audited; configs hold private keys: `no-store`). `secrets.py`: files in
     `<data>/secrets` (0600), named from config.yaml, set with `kastellan secret set`.
+  - VPN last seen: WireGuard from wg-easy (`latestHandshakeAt`); OpenVPN from the server's status
+    files, through its OpenWrt login's `openvpn` ability (one fixed script,
+    `setup.OPENVPN_STATUS`, paths from the device's own config, client lines only), read with
+    the router poll (`hub._read_openvpn`); `openvpn.Seen` keeps the last time per client in
+    `<data>/vpn/openvpn-seen.json` (status files list only who is connected now).
+  - VPN key rotation (`vpn/rotation.py`, restricted mode): the scripts' `add-key OLD NEW` copies
+    the line bound to themselves with the new key, `remove-key OLD` drops one (never the last);
+    so the key only ever hands on its own rights. Same stages as the hub key's; `Keys` methods
+    take `of="vpn"`. Tested against a fake sshd that enforces `command=`.
   - Keys go onto devices only through `access.authorize()`: written as the target user (su), never
     by root into a home that user controls (a symlink there would aim root's write anywhere);
     dropbear (`/etc/openwrt_release`) gets plain lines, OpenSSH `from=` (and `restrict`).
@@ -148,6 +167,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     only read; writes need an admin and the header `X-Kastellan: 1` (CSRF). Use `require_admin`
     in routes that change things, and `require_signin` in anything that hands out access to a
     device (terminal, remote desktop): it refuses while sign-in is off.
+  - `webproxy.py`: `WebProxy`, ASGI outside the Guard: `<id>.<web.domain>` forwards (HTTP,
+    streaming, WebSockets) to the device's `web:` or first http check, for signed-in admins only;
+    the session cookie (Domain=web.domain when signed in there) and X-Kastellan are taken out,
+    a device's Set-Cookie loses its Domain, Locations to the device come back to its name.
   - `ssh.py`: the hub's SSH key (`<data>/ssh/hub_ed25519`) and pinned host keys
     (`<data>/ssh/known_hosts`); never trust on first use by itself: `UnknownHost` until an admin
     trusts the fingerprint, `ChangedHost` until someone forgets the old key. No ssh-agent, no

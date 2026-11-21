@@ -8,16 +8,16 @@ to the audit log with what changed (password hashes masked).
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import config_edit
 from .auth_api import Who, client_address, require_signin
-from .config import Check, Kind, Role
+from .config import Check, Kind, NotifyChannel, Role
 from .hub_errors import yaml_problem
 
 if TYPE_CHECKING:
@@ -30,10 +30,19 @@ class FileBody(BaseModel):
 
 
 class CheckForm(BaseModel):
-    type: Literal["ping", "tcp", "http"]
+    type: Literal["ping", "tcp", "http", "dns"]
     target: str | int | None = None
     name: str = Field(default="", max_length=80)
-    expect: int | None = Field(default=None, ge=100, le=599)
+    # http: a status (100 to 599); dns: the addresses that must be among the answers.
+    expect: int | list[str] | None = Field(default=None)
+    server: str | None = Field(default=None, max_length=45)  # dns: the resolver to ask
+
+    @model_validator(mode="after")
+    def _status(self) -> Self:
+        if isinstance(self.expect, int) and not 100 <= self.expect <= 599:
+            raise ValueError("expect: a status from 100 to 599")
+        return self
+
     verify: bool = False
     tls: bool | None = None
     interval: float | None = Field(default=None, ge=5, le=86400)
@@ -45,6 +54,7 @@ class DeviceForm(BaseModel):
     name: str = Field(default="", max_length=120)
     host: str = Field(min_length=1, max_length=253)
     kind: Kind = Kind.OTHER
+    site: str | None = Field(default=None, max_length=40)
     tags: list[str] = Field(default_factory=list, max_length=30)
     always_on: bool | None = None
     exposed: bool = False
@@ -67,6 +77,7 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "vpn": ("vpn",),
     "networks": ("networks",),
     "groups": ("groups",),
+    "sites": ("sites",),
     "users": ("users",),
 }
 
@@ -189,6 +200,7 @@ def router(hub: Hub) -> APIRouter:
             "name": form.name.strip(),
             "host": form.host.strip(),
             "kind": form.kind.value,
+            "site": (form.site or "").strip() or None,
             "tags": tags,
             "always_on": form.always_on,
             "exposed": form.exposed,
@@ -268,9 +280,7 @@ def router(hub: Hub) -> APIRouter:
                     raise HTTPException(400, "notify: a list of channels")
                 i = ch.pop("_id", None)
                 was = old[i] if isinstance(i, int) and 0 <= i < len(old) else None
-                kind = next(
-                    (k for k in ("ntfy", "webhook", "gotify", "telegram", "email") if ch.get(k)), None
-                )
+                kind = next((k for k in NotifyChannel.KINDS if ch.get(k)), None)
                 # The same channel: the same kind, and (where it shows) the same address.
                 same = was is not None and was.kind == kind
                 if ch.get("webhook") == KEEP:
@@ -350,6 +360,8 @@ def router(hub: Hub) -> APIRouter:
                     if g.get("name") == k:
                         del g["name"]
                 return {"groups": out or None}
+            if section == "sites":  # a site without a name needs no line: its id stands in
+                return {"sites": {k: str(v) for k, v in (value.get("sites") or {}).items() if v} or None}
         except ValueError as e:  # pydantic's ValidationError is one
             raise HTTPException(400, _first_problem(e)) from e
         return value
@@ -474,6 +486,7 @@ def router(hub: Hub) -> APIRouter:
                     # Only a name the file gives: a default one follows the target.
                     "name": item.get("name", "") if isinstance(item, dict) else "",
                     "expect": c.expect,
+                    "server": c.server,
                     "verify": c.verify,
                     "tls": c.tls,
                     "interval": c.interval,
@@ -486,6 +499,7 @@ def router(hub: Hub) -> APIRouter:
             "name": raw.get("name") or "",
             "host": raw.get("host") or "",
             "kind": raw.get("kind") or "other",
+            "site": raw.get("site") or "",
             "tags": [str(t) for t in raw.get("tags") or []],
             "always_on": raw.get("always_on"),
             "exposed": bool(raw.get("exposed", False)),

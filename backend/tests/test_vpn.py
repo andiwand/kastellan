@@ -52,3 +52,25 @@ def test_wg_easy_client() -> None:
     assert _id("12") == "12"
     with pytest.raises(ValueError):
         _id("1/../../setup")  # nothing but digits goes into a URL path
+
+
+def test_openvpn_status_versions_and_last_seen(tmp_path: Path) -> None:
+    from kastellan.vpn.openvpn import Seen, parse_status
+
+    v3 = (
+        "== server\n"
+        "HEADER\tCLIENT_LIST\tCommon Name\tReal Address\tVirtual Address\tVirtual IPv6 Address"
+        "\tBytes Received\tBytes Sent\tConnected Since\tConnected Since (time_t)\tUsername\n"
+        "CLIENT_LIST\tcarol\t192.0.2.9:1194\t10.8.0.3\t\t7\t8\tsomething\t1795246400\tUNDEF\n"
+        "CLIENT_LIST\tUNDEF\t192.0.2.10:1194\t\t\t0\t0\tsomething\t1795246400\tUNDEF\n"  # not through yet
+        "CLIENT_LIST\t../etc\t192.0.2.11:1194\t\t\t0\t0\tx\t1\tUNDEF\n"  # not a client name
+        "== other\n!no-status\n"
+    )
+    found = parse_status(v3)
+    assert [(c.name, c.rx, c.tx, c.since) for c in found] == [("carol", 7, 8, "2026-11-21T07:33:20+00:00")]
+
+    seen = Seen(tmp_path / "vpn")
+    seen.note(found, datetime(2026, 11, 21, 10, tzinfo=UTC))
+    seen.note([], datetime(2026, 11, 21, 11, tzinfo=UTC))  # gone: the last time stays
+    again = Seen(tmp_path / "vpn")
+    assert again.last == {"carol": "2026-11-21T10:00:00+00:00"}

@@ -29,11 +29,14 @@ from .monitor import CheckStatus, DeviceStatus
 from .networks import INTERNET, Network, network_of, networks_of, public_ways
 from .networks import Hub as NetHub
 from .openwrt_api import router as openwrt_router
+from .push_api import router as push_router
 from .settings import Settings
 from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
 from .tls import public_name
 from .vpn_api import router as vpn_router
+from .webproxy import WebProxy
+from .webproxy import upstream as web_upstream
 
 WEB = Path(__file__).parent / "web"
 
@@ -81,10 +84,12 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         return JSONResponse({"detail": detail}, status_code=422)
 
     app.add_middleware(Guard, hub=hub)
+    app.add_middleware(WebProxy, hub=hub)  # outermost: a device's name never reaches the hub's routes
     app.include_router(auth_router(hub))
     app.include_router(terminal_router(hub))
     app.include_router(desktop_router(hub))
     app.include_router(alarms_router(hub))
+    app.include_router(push_router(hub))
     app.include_router(vpn_router(hub))
     app.include_router(access_router(hub))
     app.include_router(config_router(hub))
@@ -107,6 +112,8 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             "config_error": (problem if trusted else "config.yaml has a problem") if problem else None,
             "ping_refused": checks.ping_refused if trusted else None,
             "demo": hub.demo is not None,
+            # Device web pages through the hub, at <device>.<this> (webproxy.py).
+            "web_domain": hub.config.web.domain if hub.config.web else None,
         }
 
     def check_view(check: Check, status: CheckStatus | None) -> dict[str, Any]:
@@ -182,6 +189,8 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "name": device.name,
                     "host": device.host,
                     "kind": device.kind,
+                    "site": hub.config.site_of(id),
+                    "site_name": hub.config.site_name(hub.config.site_of(id)),
                     "parent": device.parent,
                     "tags": device.tags,
                     "always_on": device.always_on,
@@ -207,6 +216,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "host_error": status.host_error if status else None,
                     "outdated_scripts": [] if hub.demo else outdated_scripts(device, status),
                     "exposed": device.exposed,
+                    "web_url": web_upstream(device),
                     **where(device, status),
                     "checks": [
                         check_view(check, status.checks.get(check.name) if status else None)

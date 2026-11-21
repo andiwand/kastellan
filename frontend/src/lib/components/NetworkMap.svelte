@@ -151,7 +151,9 @@
 		<div class="min-w-0 flex-1">
 			<p class="truncate text-[13px] font-medium">{device.name}</p>
 			<p class="tabular truncate text-[11px] text-faint">
-				{ping ? ms(ping.latency_ms) : statusLabel[s]}{note ? ` · ${note}` : ''}
+				{ping ? ms(ping.latency_ms) : statusLabel[s]}{device.site !== 'home'
+					? ` · ${device.site_name}`
+					: ''}{note ? ` · ${note}` : ''}
 			</p>
 		</div>
 		{#if reachable(device)}

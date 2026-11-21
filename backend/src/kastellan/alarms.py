@@ -150,12 +150,12 @@ def evaluate(
     for id, since in down.items():
         if top_down_ancestor(id) or is_muted(id) or parent_settling(id):
             continue
-        device = config.devices[id]
+        label = config.label(id)
         behind = sorted(hidden.get(id, []))
-        title = f"{device.name} is down"
+        title = f"{label} is down"
         if behind:
             title += f", and {len(behind)} {'device' if len(behind) == 1 else 'devices'} behind it"
-        problems.append(Problem(f"down:{id}", Severity.CRITICAL, id, device.name, title, "", since, behind))
+        problems.append(Problem(f"down:{id}", Severity.CRITICAL, id, label, title, "", since, behind))
 
     # Services down on devices that are otherwise up (and not behind a device that is down).
     for id, device in config.devices.items():
@@ -175,7 +175,7 @@ def evaluate(
                 and c.since
                 and now - c.since >= after
             ):
-                name = f"{device.name}: {check.name}"
+                name = f"{config.label(id)}: {check.name}"
                 problems.append(
                     Problem(
                         f"service:{id}:{check.name}",
@@ -194,7 +194,7 @@ def evaluate(
         st = status.get(id)
         if device.collect is None or st is None or id in down or is_muted(id) or top_down_ancestor(id):
             continue
-        name = device.name
+        name = config.label(id)
         if st.host_checked is None or st.host_checked < started:
             continue  # nothing read since the hub started: no judgment yet
         if (now - st.host_checked).total_seconds() > 15 * 60:
@@ -220,7 +220,7 @@ def evaluate(
         st = status.get(id)
         if device.openwrt is None or st is None or id in down or is_muted(id) or top_down_ancestor(id):
             continue
-        name = device.name
+        name = config.label(id)
         checked = st.router_checked
         if checked is None or checked < started:
             if st.router_error and (now - started).total_seconds() > 15 * 60:
@@ -281,7 +281,7 @@ def evaluate(
                 if unjudged is not None:
                     unjudged.add(key)
                 continue
-            cert, name = c.cert, f"{device.name}: {check.name}"
+            cert, name = c.cert, f"{config.label(id)}: {check.name}"
             days = (cert.expires - now).total_seconds() / 86400 if cert.expires else None
             if not cert.valid:
                 severity, title = Severity.CRITICAL, f"{name}: certificate not valid"

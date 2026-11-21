@@ -1,4 +1,5 @@
-"""Reachability checks: ping, a TCP connect, an HTTP request. Each returns a Result and never raises."""
+"""Reachability checks: ping, a TCP connect, an HTTP request, a DNS lookup. Each returns a Result and
+never raises."""
 
 from __future__ import annotations
 
@@ -10,6 +11,9 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+import dns.asyncresolver
+import dns.exception
+import dns.resolver
 import httpx
 from icmplib import async_ping
 from icmplib.exceptions import ICMPLibError, SocketPermissionError
@@ -62,6 +66,8 @@ async def _run_once(host: str, check: Check) -> Result:
                     return await _tcp(host, check)
                 case CheckType.HTTP:
                     return await _http(check)
+                case CheckType.DNS:
+                    return await _dns(check)
     except TimeoutError:
         return Result(False, detail="timed out")
     except Exception as e:  # a check reports a failure, it never takes the monitor down
@@ -106,6 +112,41 @@ async def _tcp(host: str, check: Check) -> Result:
         await writer.wait_closed()
     software = from_greeting(greeting.decode("ascii", errors="replace")) if greeting else None
     return Result(True, round(latency, 2), software=software)
+
+
+async def _dns(check: Check) -> Result:
+    """Does the name resolve (A and AAAA), and, with `expect`, to every one of those addresses.
+    Asks `server`, or the system's resolvers (resolv.conf)."""
+    assert isinstance(check.target, str)
+    resolver = dns.asyncresolver.Resolver(configure=check.server is None)
+    if check.server:
+        resolver.nameservers = [check.server]
+    resolver.lifetime = check.timeout
+
+    async def ask(rdtype: str) -> list[str]:
+        try:
+            return [r.to_text() for r in await resolver.resolve(check.target, rdtype)]
+        except dns.resolver.NoAnswer:
+            return []
+
+    start = time.perf_counter()
+    try:
+        found = [a for answers in await asyncio.gather(ask("A"), ask("AAAA")) for a in answers]
+    except dns.resolver.NXDOMAIN:
+        return Result(False, detail="no such name")
+    except dns.exception.Timeout:
+        return Result(False, detail="the resolver didn't answer")
+    except dns.exception.DNSException as e:
+        return Result(False, detail=str(e) or type(e).__name__)
+    latency = round((time.perf_counter() - start) * 1000, 2)
+    shown = ", ".join(found[:3]) + (", …" if len(found) > 3 else "")
+    if not found:
+        return Result(False, latency, "no addresses")
+    expected = {str(ipaddress.ip_address(a)) for a in check.expect or []}  # as dnspython writes them
+    missing = expected - {str(ipaddress.ip_address(a)) for a in found}
+    if missing:
+        return Result(False, latency, f"{shown}; not {', '.join(sorted(missing))}")
+    return Result(True, latency, shown)
 
 
 async def _http(check: Check) -> Result:

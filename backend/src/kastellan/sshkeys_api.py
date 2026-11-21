@@ -51,6 +51,9 @@ def router(hub: Hub) -> APIRouter:
         for which, name in named.items():
             if (hub.keys.folder / hub.keys.NAMES[which]).exists():
                 out[hub.keys.hub_key(which).get_fingerprint()] = name
+        for side in ("next", "old"):  # a VPN key rotation's other key
+            if key := hub.keys.side_key(side, "vpn"):
+                out[key.get_fingerprint()] = f"Kastellan VPN ({side} key)"
         return out
 
     def device_of(id: str):

@@ -44,10 +44,25 @@
 	);
 	const shown = (d: (typeof devices)[number]) => {
 		const q = query.trim().toLowerCase();
-		const text = `${d.name} ${d.host} ${d.kind} ${d.tags.join(' ')} ${d.checks.map((c) => c.name).join(' ')}`;
+		const text = `${d.name} ${d.host} ${d.kind} ${d.site_name} ${d.tags.join(' ')} ${d.checks.map((c) => c.name).join(' ')}`;
 		return matches(statusOf(d), filter) && (!q || text.toLowerCase().includes(q));
 	};
-	const rows = $derived(tree(devices).filter(({ device }) => shown(device)));
+	// By site when devices are at more than one (home first), each with its own tree.
+	const sections = $derived.by(() => {
+		const sites = [...new Set(devices.map((d) => d.site))];
+		if (sites.length < 2)
+			return [{ site: '', name: '', rows: tree(devices).filter((r) => shown(r.device)) }];
+		const name = (site: string) => devices.find((d) => d.site === site)?.site_name ?? site;
+		return sites
+			.sort((a, b) => Number(b === 'home') - Number(a === 'home') || name(a).localeCompare(name(b)))
+			.map((site) => ({
+				site,
+				name: name(site),
+				rows: tree(devices.filter((d) => d.site === site)).filter((r) => shown(r.device))
+			}))
+			.filter((s) => s.rows.length);
+	});
+	const rows = $derived(sections.flatMap((s) => s.rows));
 	// The graph keeps every device and fades the ones a search or filter leaves out.
 	const matching = $derived(
 		filter === 'all' && !query.trim() ? null : new Set(devices.filter(shown).map((d) => d.id))
@@ -188,66 +203,76 @@
 			</p>
 		{/if}
 		<ul class="divide-y divide-line">
-			{#each rows as { device, depth } (device.id)}
-				{@const status = statusOf(device)}
-				{@const buckets = deviceBuckets(store.series?.devices[device.id])}
-				{@const ping = device.checks.find((c) => c.type === 'ping')}
-				<li>
-					<a
-						href="/devices/{device.id}"
-						class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-5 py-3.5 transition-colors hover:bg-surface-2/70 lg:grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_4.5rem]"
+			{#each sections as section (section.site)}
+				{#if section.name}
+					<li
+						class="bg-surface-2/60 px-5 py-1.5 text-xs font-semibold tracking-wide text-muted uppercase"
 					>
-						<div
-							class="flex min-w-0 items-center gap-3"
-							style:padding-left="{flat ? 0 : depth * 1.25}rem"
+						{section.name}
+					</li>
+				{/if}
+				{#each section.rows as { device, depth } (device.id)}
+					{@const status = statusOf(device)}
+					{@const buckets = deviceBuckets(store.series?.devices[device.id])}
+					{@const ping = device.checks.find((c) => c.type === 'ping')}
+					<li>
+						<a
+							href="/devices/{device.id}"
+							class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-5 py-3.5 transition-colors hover:bg-surface-2/70 lg:grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_4.5rem]"
 						>
-							{#if depth && !flat}<span class="-ml-3 h-px w-2 shrink-0 bg-line-strong"></span>{/if}
 							<div
-								class="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-2 text-muted"
+								class="flex min-w-0 items-center gap-3"
+								style:padding-left="{flat ? 0 : depth * 1.25}rem"
 							>
-								<KindIcon kind={device.kind} />
-							</div>
-							<div class="min-w-0">
-								<p class="truncate text-sm font-medium">{device.name}</p>
-								<p class="truncate font-mono text-xs text-faint">{device.host}</p>
-							</div>
-						</div>
-						<div><StatusBadge {status} /></div>
-						<div class="col-span-2 flex flex-wrap gap-1 lg:col-span-1">
-							{#each device.checks as check (check.name)}
-								<span
-									class="inline-flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 text-[11px] text-muted"
-									title={check.detail || ''}
+								{#if depth && !flat}<span class="-ml-3 h-px w-2 shrink-0 bg-line-strong"
+									></span>{/if}
+								<div
+									class="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-2 text-muted"
 								>
-									<span
-										class="size-1.5 rounded-full"
-										style:background={statusColor[checkStatusOf(device, check)].fill}
-									></span>
-									{check.name}
-								</span>
-							{/each}
-						</div>
-						<div class="col-span-2 flex items-center gap-3 lg:col-span-1">
-							<div class="flex-1">
-								{#if store.series && buckets.length}
-									<UptimeStrip
-										{buckets}
-										start={store.series.start}
-										step={store.series.step_seconds}
-										alwaysOn={device.always_on}
-										height="h-4"
-									/>
-								{/if}
+									<KindIcon kind={device.kind} />
+								</div>
+								<div class="min-w-0">
+									<p class="truncate text-sm font-medium">{device.name}</p>
+									<p class="truncate font-mono text-xs text-faint">{device.host}</p>
+								</div>
 							</div>
-							<span class="tabular w-14 shrink-0 text-right text-xs text-muted">
-								{percent(uptimeOf(buckets))}
+							<div><StatusBadge {status} /></div>
+							<div class="col-span-2 flex flex-wrap gap-1 lg:col-span-1">
+								{#each device.checks as check (check.name)}
+									<span
+										class="inline-flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 text-[11px] text-muted"
+										title={check.detail || ''}
+									>
+										<span
+											class="size-1.5 rounded-full"
+											style:background={statusColor[checkStatusOf(device, check)].fill}
+										></span>
+										{check.name}
+									</span>
+								{/each}
+							</div>
+							<div class="col-span-2 flex items-center gap-3 lg:col-span-1">
+								<div class="flex-1">
+									{#if store.series && buckets.length}
+										<UptimeStrip
+											{buckets}
+											start={store.series.start}
+											step={store.series.step_seconds}
+											alwaysOn={device.always_on}
+											height="h-4"
+										/>
+									{/if}
+								</div>
+								<span class="tabular w-14 shrink-0 text-right text-xs text-muted">
+									{percent(uptimeOf(buckets))}
+								</span>
+							</div>
+							<span class="tabular hidden text-right text-sm lg:block">
+								{ping?.up ? ms(ping.latency_ms) : '–'}
 							</span>
-						</div>
-						<span class="tabular hidden text-right text-sm lg:block">
-							{ping?.up ? ms(ping.latency_ms) : '–'}
-						</span>
-					</a>
-				</li>
+						</a>
+					</li>
+				{/each}
 			{/each}
 		</ul>
 	</div>

@@ -1,6 +1,6 @@
 [project]
 name = "kastellan"
-version = "0.4.0"
+version = "0.5.0"
 readme = "README.md"
 description = "One place to watch and administer every device on your home network"
 requires-python = ">=3.13"
@@ -9,12 +9,16 @@ license = "MIT"
 dependencies = [
     "asyncssh>=2.24.1",
     "cryptography>=42",
+    "dnspython>=2.9.2",
     "fastapi>=0.163.1",
+    "http-ece>=1.2.1",
     "httpx>=0.28.1",
     "icmplib>=3.0.4",
+    "py-vapid>=1.9.6",
     "pydantic>=2.14.3",
     "ruamel-yaml>=0.19.1",
     "uvicorn[standard]>=0.54.0",
+    "websockets>=15",
 ]
 
 [project.scripts]

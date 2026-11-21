@@ -35,13 +35,14 @@ from .networks import Resolver, default_gateway
 from .openwrt import client as openwrt_client
 from .openwrt.client import Pins, Ubus
 from .openwrt.firmware import Releases, advise
+from .push import Push
 from .registry import Registries
 from .secrets import Secrets
 from .settings import Settings
 from .ssh import Keys
 from .terminals import Terminals
 from .versions import Versions
-from .vpn.openvpn import OpenVpn, crl_next_update
+from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status
 from .vuln_policy import assess, auto_update_reason
 
 log = logging.getLogger(__name__)
@@ -103,9 +104,14 @@ class Hub:
         self.secrets = Secrets(settings.data / "secrets")
         # The OpenVPN CRL as last pushed: {"pushed": iso, "next_update": iso, "error": str}
         self.crl_state: dict[str, Any] = {}
+        # Who is connected to the OpenVPN server (read through its OpenWrt login), and when each
+        # client was last seen: {"checked": iso, "connected": [...], "error": str | None}
+        self.ovpn_status: dict[str, Any] = {}
+        self.ovpn_seen = Seen(settings.data / "vpn")
         self.terminals = Terminals()
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)
+        self.push = Push(settings.data)  # web push: the hub's key, the browsers that allowed it
         self._events_since = datetime.now(UTC)
         self.started = datetime.now(UTC)  # alarms use only results from after this
         # (channel, message, first try, last try, tries) for notifications that failed
@@ -459,6 +465,9 @@ class Hub:
                 status.info_checked = datetime.now(UTC)
                 if firmware:
                     self._note_firmware(id, f"OpenWrt {firmware}", datetime.now(UTC))
+                ovpn = self.config.vpn.openvpn
+                if ovpn and ovpn.server == id:
+                    await self._read_openvpn(ubus)
 
         while True:
             if self.demo:  # the made-up network's made-up access points
@@ -469,6 +478,21 @@ class Hub:
                 routers = [(id, d) for id, d in list(self.config.devices.items()) if d.openwrt]
                 await asyncio.gather(*(one(id, d) for id, d in routers), return_exceptions=True)
             await asyncio.sleep(ROUTER_EVERY)
+
+    async def _read_openvpn(self, ubus: Ubus) -> None:
+        """Who is connected to the OpenVPN server now (its OpenWrt login's `openvpn` ability)."""
+        now = datetime.now(UTC)
+        try:
+            connected = parse_status(await openwrt_client.openvpn_status(ubus))
+        except Exception as e:  # not granted (set up its login again), or it doesn't answer
+            self.ovpn_status = {**self.ovpn_status, "error": _brief(e)}
+            return
+        self.ovpn_seen.note(connected, now)
+        self.ovpn_status = {
+            "checked": now.isoformat(timespec="seconds"),
+            "connected": [asdict(c) for c in connected],
+            "error": None,
+        }
 
     async def _heartbeat(self) -> None:
         """Call the heartbeat URL every minute while the hub runs (a dead man's switch)."""
@@ -589,7 +613,7 @@ class Hub:
 
     async def _send(self, messages: list[Message], now: datetime) -> None:
         """Send, and keep what failed for _retry_outbox."""
-        failed = await notify.send(self.config.notify, messages, now)
+        failed = await notify.send(self.config.notify, messages, now, push=self.push)
         self._outbox.extend((c, m, now, now, 1) for c, m in failed)
 
     async def _retry_outbox(self, now: datetime) -> None:
@@ -610,7 +634,7 @@ class Hub:
             return
 
         async def one(channel: NotifyChannel, message: Message) -> bool:
-            return not await notify.send([channel], [message], now)
+            return not await notify.send([channel], [message], now, push=self.push)
 
         try:
             async with asyncio.timeout(20):
@@ -647,20 +671,19 @@ class Hub:
             device = self.config.devices.get(id)
             if device is None:
                 continue
+            label = self.config.label(id)
             for c in status.containers or []:
                 if c.get("update"):
                     target = c.get("update_to") or "a newer image"
                     key = f"update:{id}:{c.get('key', c['name'])}:{target}"
-                    title = f"{device.name}: {c['name']} can be updated to {target}"
+                    title = f"{label}: {c['name']} can be updated to {target}"
                     if m := self.alarms.event(key, title, f"{c['image']}:{c['tag']}", id, now, send):
                         out.append(m)
             # An OpenWrt device's newer point release (within its series): once per release.
             fw = (status.router or {}).get("firmware") or {}
             if fw.get("newest_in_series"):
                 key = f"openwrt:{id}:{fw['newest_in_series']}"
-                title = (
-                    f"{device.name}: OpenWrt {fw['newest_in_series']} is out (it runs {fw.get('current')})"
-                )
+                title = f"{label}: OpenWrt {fw['newest_in_series']} is out (it runs {fw.get('current')})"
                 if m := self.alarms.event(key, title, "a bug-fix release of its series", id, now, send):
                     out.append(m)
             # The host wants a reboot (kernel or libc updates): once per set of packages.
@@ -669,7 +692,7 @@ class Hub:
                 why = ", ".join(str(p) for p in (updates.get("reboot_for") or [])[:6])
                 key = f"reboot:{id}:{why}"
                 if m := self.alarms.event(
-                    key, f"{device.name} wants a reboot", why or "after updates", id, now, send
+                    key, f"{label} wants a reboot", why or "after updates", id, now, send
                 ):
                     out.append(m)
             # New findings worth a message: one message per device, not one per finding.
@@ -686,12 +709,12 @@ class Hub:
                         new.append(f"{f['id']} in {item['product']}{note}")
             if new:
                 noun = "vulnerability" if len(new) == 1 else "vulnerabilities"
-                title = f"{device.name}: {len(new)} new known {noun}"
+                title = f"{label}: {len(new)} new known {noun}"
                 out.append(Message(Severity.INFO, title, "; ".join(new[:8]), id))
         # A minute of overlap: the log keeps whole seconds; seen_events keeps it from repeating.
         for change in self.versions.changes(self._events_since - timedelta(seconds=60)):
             device = self.config.devices.get(change["device"])
-            name = device.name if device else change["device"]
+            name = self.config.label(change["device"]) if device else change["device"]
             key = f"version:{change['device']}:{change['check']}:{change['to']}"
             what = change["check"].removeprefix("@")
             title = f"{name}: {what} updated"
@@ -715,7 +738,7 @@ class Hub:
                     if severity is None:
                         continue
                     what = "exploited " if f.get("exploited") else ""
-                    title = f"{device.name}: {what}{f['id']} in {item['product']}"
+                    title = f"{self.config.label(id)}: {what}{f['id']} in {item['product']}"
                     facing = ", internet-facing" if device.faces_internet(item["where"]) else ""
                     detail = f"{f.get('severity')}{facing}: {f.get('summary', '')[:200]}"
                     out.append(
@@ -858,7 +881,7 @@ class Hub:
                 reason=reason,
                 outcome=outcome,
             )
-        title = f"{device.name}: updating {c['name']} to {c.get('update_to')} ({outcome})"
+        title = f"{self.config.label(id)}: updating {c['name']} to {c.get('update_to')} ({outcome})"
         # Through the outbox, like every alarm: retried when a channel can't be reached.
         await self._send([Message(severity, title, f"because of {reason}", id)], datetime.now(UTC))
 

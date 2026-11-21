@@ -1,5 +1,5 @@
-"""Sending alarms: ntfy, webhooks, Gotify, Telegram and e-mail, each with a minimum severity
-and quiet hours.
+"""Sending alarms: ntfy, webhooks, Gotify, Telegram, e-mail and web push, each with a minimum
+severity and quiet hours.
 
     notify:
       - ntfy: https://ntfy.sh/my-secret-topic   # or your own ntfy server
@@ -14,6 +14,7 @@ and quiet hours.
       - email: me@example.org
         smtp: smtps://kastellan%40example.org:password@mail.example.org:465   # or smtp://...:587
         sender: kastellan@example.org           # From (default: the smtp user)
+      - push: ada                               # ada's browsers that allowed it (push.py); * all
 
 Messages carry device names and what is wrong; nothing secret. Quiet hours are in the hub's local
 time (TZ). `send` returns what could not be delivered; the hub retries it with growing pauses
@@ -35,6 +36,7 @@ import httpx
 
 from .alarms import Message, Severity
 from .config import NotifyChannel
+from .push import Push
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ async def send(
     messages: list[Message],
     now: datetime,
     transport: httpx.AsyncBaseTransport | None = None,  # tests
+    push: Push | None = None,  # the hub's browsers, for push: channels
 ) -> list[tuple[NotifyChannel, Message]]:
     """Send each message to each channel that wants it; returns what failed (to retry)."""
     if not channels or not messages:
@@ -69,7 +72,7 @@ async def send(
     if not jobs:
         return []
     async with httpx.AsyncClient(timeout=10, transport=transport) as client:
-        results = await asyncio.gather(*(_send_one(client, c, m) for c, m in jobs))
+        results = await asyncio.gather(*(_send_one(client, c, m, push) for c, m in jobs))
     return [job for job, ok in zip(jobs, results, strict=True) if not ok]
 
 
@@ -80,6 +83,8 @@ def _where(channel: NotifyChannel) -> str:
         return "telegram"
     if kind == "email":
         return f"email via {urlsplit(channel.smtp or '').hostname}"
+    if kind == "push":
+        return f"push to {channel.push}"
     url = httpx.URL(channel.ntfy or channel.webhook or channel.gotify or "")
     return f"{kind} at {url.host}"
 
@@ -95,7 +100,9 @@ GOTIFY_PRIORITY = {Severity.INFO: 2, Severity.WARNING: 5, Severity.CRITICAL: 8}
 MARK = {Severity.INFO: "\N{INFORMATION SOURCE}\ufe0f", Severity.WARNING: "⚠️", Severity.CRITICAL: "🔴"}
 
 
-async def _send_one(client: httpx.AsyncClient, channel: NotifyChannel, message: Message) -> bool:
+async def _send_one(
+    client: httpx.AsyncClient, channel: NotifyChannel, message: Message, push: Push | None = None
+) -> bool:
     title = message.title  # alarms.py writes it whole ("... is back up", "Resolved: ...")
     try:
         match channel.kind:
@@ -133,6 +140,17 @@ async def _send_one(client: httpx.AsyncClient, channel: NotifyChannel, message: 
             case "email":
                 await asyncio.wait_for(asyncio.to_thread(_mail, channel, message), 30)
                 return True
+            case "push":
+                if push is None:
+                    return True  # nothing to push to (the demo, a test send without the hub)
+                mark = "✅" if message.resolved else MARK[message.severity]
+                payload = {
+                    "title": f"{mark} {title}",
+                    "body": message.body,
+                    "url": f"/devices/{message.device}" if message.device else "/",
+                    "tag": message.device or title,
+                }
+                return await push.send(client, channel.push or "", payload)
             case _:
                 r = await client.post(
                     channel.webhook or "",

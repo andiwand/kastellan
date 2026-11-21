@@ -20,12 +20,14 @@ lets you look after them: through narrow doors you open host by host.</p>
 
 > Kastellan is an early preview, built on one real home network; see [PLAN.md](PLAN.md).
 
-- **Checks**: ping, ports and web pages per device, with history (CSV files), uptime, the
-  software and version each service reports, and its certificate.
+- **Checks**: ping, ports, web pages and DNS names per device, with history (CSV files),
+  uptime, the software and version each service reports, and its certificate. Devices at other
+  sites (a rented server, a friend's place) are grouped by site.
 - **Networks**: devices by network, the router on the boundary to the internet, and every way
   in from outside that Kastellan knows.
 - **Alarms** without storms: one alarm for a device and everything behind it, quiet hours, mute,
-  acknowledge. To ntfy, Gotify, Telegram, e-mail or a webhook.
+  acknowledge. To ntfy, Gotify, Telegram, e-mail, a webhook, or as notifications on your phone
+  and computer (web push: needs Kastellan reached over HTTPS, e.g. through a reverse proxy).
 - **Vulnerabilities** in what devices and containers run (NVD, OSV, CISA KEV), urgent where a
   device faces the internet.
 - **Hosts**: disks and space, RAID, disk health, temperatures, failed services, pending
@@ -97,6 +99,13 @@ devices:
         name: jellyfin (public)
       - tcp: 32400
         exposed: true # only this service is reachable from the internet (a port forward)
+  vps:
+    host: 203.0.113.20
+    site: hetzner # not at home: the list groups by site, alarms say where
+    checks:
+      - ping
+      - dns: www.example.org # the name resolves (to this address, if expect: is given)
+        expect: 203.0.113.20
   pc:
     host: 192.168.1.30
     kind: pc # may be off: offline, not down
@@ -129,6 +138,7 @@ notify:
     quiet: "22:00-07:00" # only critical then
   - telegram: 123456789
     token: "123456:ABC-your-bot-token" # also: gotify, email (smtp: smtps://user:pass@host), webhook
+  - push: ada # ada's browsers that turned notifications on (the bell); * for everyone's
 
 heartbeat: https://hc-ping.com/<id> # called every minute: a dead man's switch tells you when it stops
 
@@ -154,6 +164,21 @@ off again. **Observers** see everything; **admins** also change things. Whatever
 device (terminal, desktop, installs, keys, editing the config) needs sign-in on, every change
 goes to `data/audit.log`. Short passwords are allowed after a warning (`--short`).
 
+### Device web pages through Kastellan
+
+Every device's web interface on a name of its own, through the hub: with
+
+```yaml
+web:
+  domain: kastellan.home.arpa # the hub is opened at this name
+```
+
+and one wildcard DNS entry (`kastellan.home.arpa` and `*.kastellan.home.arpa` → the hub), the NAS
+is at `nas.kastellan.home.arpa` (an id's `_` becomes `-`). Only signed-in admins get through; you
+sign in to the device itself as usual (Kastellan keeps no device logins). The page is the
+device's first `http` check (or `web: https://...` on the device). Behind an HTTPS reverse proxy,
+the proxy needs a wildcard certificate for those names and must pass the `Host` header on.
+
 ## Access to your hosts
 
 Kastellan holds no root anywhere by itself. You open each door on the device's page, in a dialog:
@@ -168,7 +193,7 @@ command (`restrict`, `command=`, only from the hub's address):
 | Collector     | `kastellan-collect`   | Run one root-owned, read-only script: system, space, RAID, SMART, temperatures, services, updates, containers (never their settings). |
 | Actor         | `kastellan-act`       | Only the abilities you tick, each a root-owned script with one sudo rule: update or restart chosen containers, install system updates (apt), reboot. |
 | VPN           | `kastellan-pki`, root | Only the client-certificate and CRL scripts.                                    |
-| OpenWrt       | rpcd login `kastellan` | Through the device's own API (HTTPS, certificate pinned), with an access list of its own: read always; reboot, Wi-Fi settings, firmware, chosen services (start/stop/restart, at boot) only if ticked. |
+| OpenWrt       | rpcd login `kastellan` | Through the device's own API (HTTPS, certificate pinned), with an access list of its own: read always; reboot, Wi-Fi settings, firmware, chosen services (start/stop/restart, at boot), who is connected to its OpenVPN server only if ticked. |
 
 A taken-over hub gets exactly what the doors allow. Container updates are asked of the registries
 directly; updating pulls the container's own tag again (only an image that came from its

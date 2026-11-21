@@ -33,3 +33,22 @@ devices:
   laptop:
     host: laptop.lan
     kind: laptop # pcs and laptops are offline when off, not down (always_on: false)
+
+  vps:
+    host: 203.0.113.20
+    kind: server
+    site: hetzner # where it is (default: home); the list groups by site, alarms name it
+    checks:
+      - ping
+      - dns: www.example.org # does the name resolve...
+        expect: 203.0.113.20 # ...to this address (or a list); optional
+        server: 9.9.9.9 # the resolver to ask; default: the system's
+        name: dns
+
+sites: # optional names for the sites devices are at
+  hetzner: Hetzner Cloud
+
+# Device web pages through the hub, each on its own name: <device id>.<domain> (needs
+# *.<domain> in your DNS, pointing at the hub). Only signed-in admins get through.
+# web:
+#   domain: kastellan.home.arpa

@@ -64,3 +64,30 @@ def test_invalid(devices: dict) -> None:
 def test_global_interval_must_be_sane() -> None:
     with pytest.raises(ValidationError):
         Config.model_validate({"check_interval": 0})
+
+
+def test_dns_checks() -> None:
+    from kastellan.config import Check
+
+    c = Check.model_validate({"dns": "www.example.org", "expect": "192.0.2.1", "server": "9.9.9.9"})
+    assert c.type is CheckType.DNS and c.name == "dns:www.example.org" and c.expect == ["192.0.2.1"]
+    assert Check.model_validate({"dns": "example.org", "expect": ["192.0.2.1", "2001:db8::1"]}).expect
+    for bad in (
+        {"dns": "not a name"},
+        {"dns": "example.org", "expect": "nope"},
+        {"dns": "example.org", "server": "resolver.lan"},
+        {"tcp": 53, "server": "9.9.9.9"},
+        {"http": "http://x", "expect": "192.0.2.1"},
+    ):
+        with pytest.raises(ValidationError):
+            Check.model_validate(bad)
+
+
+def test_sites() -> None:
+    one = Config.model_validate({"devices": {"a": {"host": "a"}, "b": {"host": "b", "site": "home"}}})
+    assert not one.multi_site and one.label("a") == "a"
+    away = {"host": "b", "site": "friends-place"}
+    two = Config.model_validate({"devices": {"a": {"host": "a"}, "b": away}})
+    assert two.multi_site and two.label("b") == "b (Friends place)" and two.label("a") == "a"
+    with pytest.raises(ValidationError):
+        Config.model_validate({"devices": {"a": {"host": "a", "site": "Not An Id"}}})

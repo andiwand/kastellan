@@ -80,7 +80,7 @@ def router(hub: Hub) -> APIRouter:
         if not hub.config.notify:
             raise HTTPException(400, "no notify: channels in config.yaml")
         message = Message(Severity.CRITICAL, "Kastellan test", f"sent by {w.user or 'an admin'}")
-        failed = await notify.send(hub.config.notify, [message], datetime.now(UTC))
+        failed = await notify.send(hub.config.notify, [message], datetime.now(UTC), push=hub.push)
         hub.audit.record("notify.test", w.user, client_address(request.scope))
         if failed:
             raise HTTPException(502, f"{len(failed)} of {len(hub.config.notify)} channels failed")

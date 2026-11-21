@@ -1,7 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-21)
 
+Device web pages through the hub, push notifications, sites and DNS checks, the VPN's own key
+rotated and its clients' last contact; a code audit with many fixes.
+
+- Device web pages through Kastellan: with `web: {domain: ...}` and one wildcard DNS name, each
+  device's page opens at `<id>.<domain>` for signed-in admins; Kastellan's cookie never reaches
+  the device (you sign in to the device itself).
+- Push notifications to browsers and the installed app (needs the hub behind HTTPS): a `push:`
+  channel per user, turned on per device from the bell next to sign-out.
+- Sites: `site:` per device (and names under `sites:`); the device list groups by site, alarms
+  name the site of devices away from home.
+- DNS checks: `dns: <name>`, with `expect:` addresses and a `server:` to ask.
+- The VPN: when each client was last seen (WireGuard from wg-easy; OpenVPN from the router's
+  status, a new read-only OpenWrt permission); Kastellan's VPN key rotated like the hub's
+  (restricted mode; set the VPN scripts up again first).
 - A device is edited on its own page (Edit tab), and its part of config.yaml as text (a second
   tab), e.g. to drop `docker: wud:`; the rest of the file stays exactly as it was.
 - The VPN is back in the main menu; Devices, Groups and Services have clearer icons.
@@ -18,6 +32,7 @@
   never got milder; signing in as yourself reset the brake on guessing another password; apt
   could be killed by a closed pipe; a reboot could interrupt an upgrade; uci changes could leak
   into the next one; and more (see the commit).
+- The sidebar says "Connecting to the hub" while the page loads, not "Hub not reachable".
 
 ## 0.4.0 (2026-11-21)
 

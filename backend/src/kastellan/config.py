@@ -30,6 +30,7 @@ check also looks at the certificate; `tls:` decides whether it can raise alarms 
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from enum import StrEnum
 from pathlib import Path
@@ -42,6 +43,7 @@ from ruamel.yaml import YAML
 from .tls import public_name
 
 ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+HOME = "home"  # the site of a device without `site:`
 
 
 class Kind(StrEnum):
@@ -60,20 +62,28 @@ class CheckType(StrEnum):
     PING = "ping"
     TCP = "tcp"
     HTTP = "http"
+    DNS = "dns"  # does a name resolve (to what): checks.py
+
+
+LABEL = r"[A-Za-z0-9_]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?"
+HOSTNAME = re.compile(rf"^(?=.{{1,253}}$){LABEL}(\.{LABEL})*\.?$")  # a name to look up (dns)
 
 
 class Check(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: CheckType
-    target: str | int | None = None  # the port for tcp, the URL for http
+    target: str | int | None = None  # the port for tcp, the URL for http, the name for dns
     name: str = ""
     interval: float | None = Field(default=None, ge=5)  # seconds; None: the global check_interval
     timeout: float = Field(default=5, gt=0, le=60)
     # Devices on a home network mostly have self-signed certificates, and a check sends no
     # credentials, so it does not verify them unless asked to.
     verify: bool = False
-    expect: int | None = None  # http: this status, else any status below 500 counts as up
+    # http: this status, else any status below 500 counts as up. dns: an address (or several)
+    # that must be among the answers.
+    expect: int | str | list[str] | None = None
+    server: str | None = None  # dns: the resolver to ask (an address); default: the system's
     # https: alarm when the certificate is not valid or ends soon. Default: for names on the
     # internet (not addresses, not .lan, .local, .home.arpa, ...) and checks with verify: true.
     tls: bool | None = None
@@ -90,7 +100,7 @@ class Check(BaseModel):
             return data
         kinds = [t for t in CheckType if t.value in data]
         if len(kinds) != 1:
-            raise ValueError("a check is one of: ping, tcp: <port>, http: <url>")
+            raise ValueError("a check is one of: ping, tcp: <port>, http: <url>, dns: <name>")
         data = dict(data)
         kind = kinds[0]
         return {"type": kind, "target": data.pop(kind.value), **data}
@@ -103,6 +113,20 @@ class Check(BaseModel):
             isinstance(self.target, str) and self.target.startswith(("http://", "https://"))
         ):
             raise ValueError("http needs a URL starting with http:// or https://")
+        if self.type is CheckType.DNS:
+            if not (isinstance(self.target, str) and HOSTNAME.match(self.target)):
+                raise ValueError("dns needs a name to look up, like example.org")
+            if isinstance(self.expect, str):
+                self.expect = [self.expect]
+            for address in [*(self.expect or []), *([self.server] if self.server else [])]:
+                try:
+                    ipaddress.ip_address(address)
+                except ValueError as e:
+                    raise ValueError(f"dns: {address!r} is not an address") from e
+        elif isinstance(self.expect, str | list):
+            raise ValueError("expect: a status code for http, addresses for dns")
+        if self.server and self.type is not CheckType.DNS:
+            raise ValueError("server: is for dns checks")
         if not self.name:
             self.name = self.type.value if self.type is CheckType.PING else f"{self.type.value}:{self.target}"
         if self.tls and not (isinstance(self.target, str) and self.target.startswith("https://")):
@@ -212,8 +236,8 @@ class Device(BaseModel):
         def reachable(check: Check) -> bool:
             if check.exposed:
                 return True
-            if check.type is CheckType.PING:
-                return False
+            if check.type in (CheckType.PING, CheckType.DNS):
+                return False  # not a service of the device
             target = check.hostname or self.host
             return public_name(target) or (own if target == self.host else is_public(target))
 
@@ -225,6 +249,7 @@ class Device(BaseModel):
     name: str = ""
     host: str
     kind: Kind = Kind.OTHER
+    site: str | None = None  # where it is (an id: home, hetzner, ...); None: the home site
     parent: str | None = None
     tags: list[str] = Field(default_factory=list)
     # Down is a problem only for devices that should always be on; a laptop that is off is just
@@ -237,6 +262,8 @@ class Device(BaseModel):
     collect: CollectAccess | None = None  # how the host is doing (and its containers)
     act: ActAccess | None = None  # what Kastellan may change there (as the host allows)
     openwrt: OpenWrtAccess | None = None  # an OpenWrt router or access point, through its API
+    # Its web interface (scheme://host:port), when not its first http check's (webproxy.py).
+    web: str | None = Field(default=None, pattern=r"^https?://[^\s/?#]+/?$")
     # Reachable from the internet (a port forward, a public server): known vulnerabilities in
     # what it runs count as urgent, and may trigger automatic updates (see vulns.py).
     exposed: bool = False  # the whole device is reachable from the internet (a check can be too)
@@ -312,7 +339,7 @@ class AlarmSettings(BaseModel):
 
 
 class NotifyChannel(BaseModel):
-    """Where alarms go (notify.py): exactly one of ntfy, webhook, gotify, telegram or email."""
+    """Where alarms go (notify.py): exactly one of ntfy, webhook, gotify, telegram, email or push."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -321,6 +348,9 @@ class NotifyChannel(BaseModel):
     gotify: str | None = Field(default=None, pattern=r"^https?://[^\s]+$")  # the server
     telegram: str | int | None = None  # the chat id (a bot's token in `token`)
     email: str | None = Field(default=None, pattern=r"^[^@\s,]+@[^@\s,]+$")  # to whom
+    push: str | None = Field(
+        default=None, pattern=r"^(\*|[\w.-]{1,64})$"
+    )  # a user's browsers (push.py), * all
     # smtp://user:password@host:587 (STARTTLS) or smtps://...:465 (TLS); for email.
     smtp: str | None = Field(default=None, pattern=r"^smtps?://[^\s]+$")
     sender: str | None = Field(default=None, pattern=r"^[^@\s,]+@[^@\s,]+$")  # email: From
@@ -328,7 +358,7 @@ class NotifyChannel(BaseModel):
     min: Literal["info", "warning", "critical"] = "warning"
     quiet: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$")  # only critical then
 
-    KINDS: ClassVar[tuple[str, ...]] = ("ntfy", "webhook", "gotify", "telegram", "email")
+    KINDS: ClassVar[tuple[str, ...]] = ("ntfy", "webhook", "gotify", "telegram", "email", "push")
 
     @property
     def kind(self) -> str:
@@ -337,7 +367,9 @@ class NotifyChannel(BaseModel):
     @model_validator(mode="after")
     def _one_target(self) -> Self:
         if sum(getattr(self, k) is not None for k in self.KINDS) != 1:
-            raise ValueError("a notify channel is one of ntfy:, webhook:, gotify:, telegram: or email:")
+            raise ValueError(
+                "a notify channel is one of ntfy:, webhook:, gotify:, telegram:, email: or push:"
+            )
         if self.gotify is not None and not self.token:
             raise ValueError("gotify: needs token: (an application token from Gotify)")
         if self.telegram is not None:
@@ -371,8 +403,6 @@ class NetworkSettings(BaseModel):
     @model_validator(mode="after")
     def _cidr(self) -> Self:
         if self.cidr is not None:
-            import ipaddress
-
             try:
                 ipaddress.ip_network(self.cidr, strict=False)
             except ValueError as e:
@@ -449,6 +479,17 @@ class GroupSettings(BaseModel):
     devices: list[str] = Field(min_length=1, max_length=64)
 
 
+class WebSettings(BaseModel):
+    """Device web pages through the hub (webproxy.py): the hub answers at `domain`, and a device
+    at `<device id>.<domain>` (one wildcard DNS entry for both)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str = Field(
+        max_length=200, pattern=r"^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+    )
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -466,6 +507,26 @@ class Config(BaseModel):
     heartbeat: str | None = Field(default=None, pattern=r"^https://[^\s]+$")
     networks: dict[str, NetworkSettings] = Field(default_factory=dict)
     groups: dict[str, GroupSettings] = Field(default_factory=dict)
+    # Names for the sites devices are at (`site:` of a device), e.g. hetzner: Hetzner Cloud.
+    sites: dict[str, str] = Field(default_factory=dict)
+    web: WebSettings | None = None  # device web pages through the hub, on their own names
+
+    def site_of(self, id: str) -> str:
+        return self.devices[id].site or HOME
+
+    def site_name(self, site: str) -> str:
+        return self.sites.get(site) or site.replace("-", " ").replace("_", " ").capitalize()
+
+    @property
+    def multi_site(self) -> bool:
+        """Devices at more than one site: only then do sites show (a list, alarms)."""
+        return len({d.site or HOME for d in self.devices.values()}) > 1
+
+    def label(self, id: str) -> str:
+        """A device for alarms and notifications: its name, and where it is when that isn't home."""
+        site = self.site_of(id)
+        name = self.devices[id].name
+        return name if site == HOME else f"{name} ({self.site_name(site)})"
 
     @model_validator(mode="after")
     def _groups(self) -> Self:
@@ -478,6 +539,13 @@ class Config(BaseModel):
             if len(set(group.devices)) != len(group.devices):
                 raise ValueError(f"groups.{gid}: a device is listed twice")
             group.name = group.name or gid
+        return self
+
+    @model_validator(mode="after")
+    def _site_ids(self) -> Self:
+        for site in self.sites:
+            if not ID.match(site):
+                raise ValueError(f"site id {site!r}: use lowercase letters, digits, - and _")
         return self
 
     @model_validator(mode="after")
@@ -508,6 +576,10 @@ class Config(BaseModel):
             for net in device.network:
                 if net != "internet" and net not in self.networks:
                     raise ValueError(f"device {id!r}: network {net!r} is not in networks: (or internet)")
+            if device.site is not None and not ID.match(device.site):
+                raise ValueError(
+                    f"device {id!r}: site {device.site!r}: use lowercase letters, digits, - and _"
+                )
             if device.parent is not None and device.parent not in self.devices:
                 raise ValueError(f"device {id!r}: parent {device.parent!r} is not a device")
         return self

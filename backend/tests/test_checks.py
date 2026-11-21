@@ -71,3 +71,30 @@ async def test_http_with_a_wrong_charset_still_works() -> None:
     async with server:
         result = await checks.run("127.0.0.1", Check.model_validate({"http": url}))
     assert result.up
+
+
+async def test_dns(monkeypatch) -> None:
+    import dns.asyncresolver
+    import dns.resolver
+
+    asked: list[tuple[str, str, list[str]]] = []
+
+    class Fake:
+        def __init__(self, configure: bool = True) -> None:
+            self.nameservers: list[str] = []
+
+        async def resolve(self, name: str, rdtype: str):
+            asked.append((name, rdtype, self.nameservers))
+            if name == "gone.example":
+                raise dns.resolver.NXDOMAIN
+            if rdtype == "AAAA":
+                raise dns.resolver.NoAnswer
+            return [type("R", (), {"to_text": lambda self: "192.0.2.1"})()]
+
+    monkeypatch.setattr(dns.asyncresolver, "Resolver", Fake)
+    up = await checks.run("x", Check.model_validate({"dns": "www.example", "server": "9.9.9.9"}))
+    assert up.up and up.detail == "192.0.2.1" and asked[0] == ("www.example", "A", ["9.9.9.9"])
+    wrong = await checks.run("x", Check.model_validate({"dns": "www.example", "expect": "192.0.2.9"}))
+    assert not wrong.up and "not 192.0.2.9" in wrong.detail
+    gone = await checks.run("x", Check.model_validate({"dns": "gone.example"}))
+    assert not gone.up and gone.detail == "no such name"

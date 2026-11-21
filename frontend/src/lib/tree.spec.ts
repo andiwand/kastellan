@@ -7,6 +7,8 @@ const device = (id: string, parent: string | null = null): Device => ({
 	name: id,
 	host: id,
 	kind: 'other',
+	site: 'home',
+	site_name: 'Home',
 	parent,
 	tags: [],
 	always_on: true,
@@ -24,6 +26,7 @@ const device = (id: string, parent: string | null = null): Device => ({
 	outdated_scripts: [],
 	vulns: null,
 	exposed: false,
+	web_url: null,
 	state: 'unknown',
 	checks: []
 });

@@ -1,6 +1,7 @@
 #!/bin/sh
 # kastellan-crl: the only thing Kastellan's key may run on the OpenVPN server (OpenWrt): take a
-# new CRL on stdin and put it in place. OpenVPN reads the CRL at every connection.
+# new CRL on stdin and put it in place. OpenVPN reads the CRL at every connection. Also
+# add-key / remove-key, for rotating Kastellan's VPN key (see below).
 #
 # Install (on the OpenVPN server):
 #   install -m 755 kastellan-crl /usr/bin/kastellan-crl
@@ -12,11 +13,65 @@ set -eu
 umask 022
 CRL=/etc/openvpn/crl.pem
 CA=/etc/openvpn/ca.crt
+AUTHORIZED_KEYS=  # where its key lines are, if not the usual place (tests)
 # The config is the argument fixed in authorized_keys, never the environment.
 CONF=${1:-/etc/kastellan-crl.conf}
 [ -r "$CONF" ] && . "$CONF"
 
-[ "${SSH_ORIGINAL_COMMAND:-}" = "install" ] || { echo "kastellan-crl: only 'install'" >&2; exit 2; }
+fail() { echo "kastellan-crl: $*" >&2; exit 2; }
+# Rotating Kastellan's VPN key (add-key OLD NEW, then remove-key OLD): only lines bound to this
+# script change. A new line copies the options of the line with OLD (its command=, from=, limits)
+# with NEW in place of the key, so the new key may do exactly what the old one may. Keys are one
+# ed25519 key each (the base64 part only: no options, no other type, nothing else). The last key
+# for this script is never removed.
+keys_file() {
+  if [ -n "${AUTHORIZED_KEYS:-}" ]; then echo "$AUTHORIZED_KEYS"
+  elif [ "$(id -u)" = 0 ] && [ -f /etc/openwrt_release ]; then echo /etc/dropbear/authorized_keys
+  else echo "$(awk -F: -v u="$(id -un)" '$1 == u { print $6 }' /etc/passwd)/.ssh/authorized_keys"
+  fi
+}
+ed25519() {
+  case $1 in AAAAC3NzaC1lZDI1NTE5AAAAI*) ;; *) fail "not an ed25519 key" ;; esac
+  [ ${#1} -eq 68 ] && [ -z "$(printf '%s' "$1" | tr -d 'A-Za-z0-9+/')" ] || fail "not an ed25519 key"
+}
+rekey() {
+  ed25519 "$2"
+  [ "$1" = remove ] || ed25519 "$3"
+  f=$(keys_file)
+  [ -f "$f" ] || fail "no $f"
+  awk -v op="$1" -v old="$2" -v new="${3:-}" -v mark="command=\"$0 " '
+    function key(line,   n, i, w) {
+      n = split(line, w, " ")
+      for (i = 1; i < n; i++) if (w[i] == "ssh-ed25519") return w[i + 1]
+      return ""
+    }
+    { line[NR] = $0; mine[NR] = index($0, mark) > 0; k[NR] = key($0) }
+    END {
+      for (i = 1; i <= NR; i++) if (mine[i]) {
+        if (k[i] == old) src = i; else if (k[i] != "") others++
+        if (k[i] == new) has = 1
+      }
+      if (op == "add" && !src) { print "no line of this script with that key" > "/dev/stderr"; exit 3 }
+      if (op == "remove" && src && !others) { print "that is the only key for this script" > "/dev/stderr"; exit 3 }
+      for (i = 1; i <= NR; i++) if (op == "add" || !(mine[i] && k[i] == old)) print line[i]
+      if (op == "add" && !has) {
+        p = index(line[src], " ssh-ed25519 " old)
+        print substr(line[src], 1, p) "ssh-ed25519 " new " kastellan-vpn"
+      }
+    }' "$f" > "$f.kastellan-new" || { rm -f "$f.kastellan-new"; fail "$f not changed"; }
+  chmod 600 "$f.kastellan-new" && mv "$f.kastellan-new" "$f"
+  echo "$1-key done"
+}
+set -f
+# shellcheck disable=SC2086 # split into words on purpose (globbing is off)
+set -- ${SSH_ORIGINAL_COMMAND:-}
+set +f
+case "${1:-}:$#" in
+  add-key:3) rekey add "$2" "$3"; exit 0 ;;
+  remove-key:2) rekey remove "$2"; exit 0 ;;
+  install:1) ;;
+  *) fail "only 'install' (and add-key / remove-key)" ;;
+esac
 tmp="$CRL.new"
 head -c 1048576 > "$tmp"
 refuse() { rm -f "$tmp"; echo "kastellan-crl: $*" >&2; exit 2; }

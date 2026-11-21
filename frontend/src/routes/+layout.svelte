@@ -16,10 +16,13 @@
 	import { updatesOf } from '#lib/updates.js';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import LogOut from '@lucide/svelte/icons/log-out';
+	import Bell from '@lucide/svelte/icons/bell';
+	import PushDialog from '#lib/components/PushDialog.svelte';
 	import SignIn from '#lib/components/SignIn.svelte';
 	import type { LayoutProps } from './$types';
 
 	let { children }: LayoutProps = $props();
+	let pushOpen = $state(false); // notifications on this device (web push)
 
 	$effect(() => store.use());
 
@@ -43,7 +46,8 @@
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
 	const attention = $derived((store.devices ?? []).filter(needsAttention).length);
 	const waiting = $derived(updatesOf(store.devices ?? []).length);
-	const connected = $derived(!store.error && store.updated != null);
+	// Before the first answer it is connecting, not unreachable (no red flash on every load).
+	const link = $derived(store.error ? 'down' : store.updated != null ? 'up' : 'connecting');
 </script>
 
 {#if store.health?.locked}
@@ -122,6 +126,14 @@
 							<p class="capitalize">{store.me.role}</p>
 						</div>
 						<button
+							onclick={() => (pushOpen = true)}
+							class="rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-text"
+							title="Notifications on this device"
+							aria-label="Notifications on this device"
+						>
+							<Bell class="size-4" />
+						</button>
+						<button
 							onclick={() => store.signOut()}
 							class="rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-text"
 							title="Sign out"
@@ -160,9 +172,17 @@
 				<div class="flex items-center gap-2">
 					<span
 						class="size-1.5 rounded-full"
-						style:background={connected ? 'var(--good)' : 'var(--critical)'}
+						style:background={link === 'up'
+							? 'var(--good)'
+							: link === 'down'
+								? 'var(--critical)'
+								: 'var(--offline)'}
 					></span>
-					{connected ? 'Connected to the hub' : 'Hub not reachable'}
+					{link === 'up'
+						? 'Connected to the hub'
+						: link === 'down'
+							? 'Hub not reachable'
+							: 'Connecting to the hub'}
 					<span class="tabular ml-auto text-faint">v{store.health?.version ?? '–'}</span>
 				</div>
 			</div>
@@ -181,6 +201,14 @@
 					</span>
 				{/if}
 				{#if store.me?.user}
+					<button
+						onclick={() => (pushOpen = true)}
+						class="rounded-lg p-1.5 text-muted hover:text-text"
+						title="Notifications on this device"
+						aria-label="Notifications on this device"
+					>
+						<Bell class="size-4" />
+					</button>
 					<button
 						onclick={() => store.signOut()}
 						class="rounded-lg p-1.5 text-muted hover:text-text"
@@ -248,4 +276,5 @@
 			{/each}
 		</nav>
 	</div>
+	{#if pushOpen}<PushDialog onclose={() => (pushOpen = false)} />{/if}
 {/if}

@@ -1,0 +1,11 @@
+{
+	"name": "Kastellan",
+	"short_name": "Kastellan",
+	"description": "Every device on your network in one place.",
+	"start_url": "/",
+	"scope": "/",
+	"display": "standalone",
+	"background_color": "#0b0d12",
+	"theme_color": "#0b0d12",
+	"icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

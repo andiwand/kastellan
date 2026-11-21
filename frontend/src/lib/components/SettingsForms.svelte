@@ -22,6 +22,7 @@
 	let notify = $state<NotifyChannelForm[]>([]);
 	let vulns = $state<S['vulns']['vulns']>({ enabled: true, every_hours: 6, nvd_api_key: null });
 	let networks = $state<{ id: string; name: string; cidr: string }[]>([]);
+	let sites = $state<{ id: string; name: string }[]>([]);
 	let users = $state<
 		{ name: string; role: 'admin' | 'observer'; password: string; old: boolean }[]
 	>([]);
@@ -58,6 +59,10 @@
 			}));
 			next.networks = json(networks);
 		}
+		if (clean('sites', sites)) {
+			sites = Object.entries(s.sites.sites ?? {}).map(([id, name]) => ({ id, name }));
+			next.sites = json(sites);
+		}
 		if (clean('users', users)) {
 			users = Object.entries(s.users.users ?? {}).map(([name, u]) => ({
 				name,
@@ -90,7 +95,7 @@
 		}
 	});
 
-	const KINDS = ['ntfy', 'gotify', 'telegram', 'email', 'webhook'] as const;
+	const KINDS = ['ntfy', 'gotify', 'telegram', 'email', 'webhook', 'push'] as const;
 	type Kind = (typeof KINDS)[number];
 	const kindOf = (c: NotifyChannelForm): Kind =>
 		KINDS.find((k) => c[k] != null && c[k] !== '') ?? 'ntfy';
@@ -98,7 +103,8 @@
 		const target = c[kindOf(c)];
 		for (const k of KINDS) c[k] = null;
 		// Another kind is another channel: none of the old one's secrets go along.
-		c[kind] = kind === 'telegram' || target === KEEP ? '' : (target as string) || '';
+		c[kind] =
+			kind === 'telegram' || kind === 'push' || target === KEEP ? '' : (target as string) || '';
 		c.token = null;
 		c.smtp = null;
 	}
@@ -118,7 +124,8 @@
 		gotify: ['Server', 'https://gotify.example.org'],
 		telegram: ['Chat id', '123456789'],
 		email: ['To', 'me@example.org'],
-		webhook: ['URL', 'https://example.org/hook']
+		webhook: ['URL', 'https://example.org/hook'],
+		push: ['User (their browsers with notifications on; * for everyone)', 'ada']
 	};
 	const TOKEN: Partial<Record<Kind, string>> = {
 		ntfy: 'Access token (optional)',
@@ -228,6 +235,7 @@
 								<option value="telegram">Telegram</option>
 								<option value="email">E-mail</option>
 								<option value="webhook">Webhook</option>
+								<option value="push">Push (browsers)</option>
 							</select>
 						</label>
 						<label class="field flex-1">
@@ -381,6 +389,41 @@
 					onclick={() => networks.push({ id: '', name: '', cidr: '' })}
 				>
 					<Plus class="size-3.5" /> Add a network
+				</button>
+			</div>
+		</SettingsCard>
+
+		<SettingsCard
+			title="Sites"
+			description="Names for where devices are (a device's site: home, hetzner, ...). With devices at more than one site, the list is by site, and alarms say where a device away from home is."
+			dirty={json(sites) !== base.sites}
+			canSave={sites.every((s) => nameOk(s.id)) && unique(sites.map((s) => s.id))}
+			reset={() => (sites = JSON.parse(base.sites))}
+			save={() => save('sites', { sites: Object.fromEntries(sites.map((s) => [s.id, s.name])) })}
+		>
+			{#each sites as s, i (i)}
+				<div class="grid grid-cols-[1fr_2fr_auto] items-end gap-3">
+					<label class="field">
+						<span class={i ? 'sr-only' : ''}>Id</span>
+						<input class="input font-mono" bind:value={s.id} placeholder="hetzner" />
+					</label>
+					<label class="field">
+						<span class={i ? 'sr-only' : ''}>Name</span>
+						<input class="input" bind:value={s.name} placeholder="Hetzner Cloud" />
+					</label>
+					<button
+						type="button"
+						class="btn btn-sm mb-0.5 px-2"
+						aria-label="Remove this site"
+						onclick={() => sites.splice(i, 1)}
+					>
+						<Trash2 class="size-4 text-muted" />
+					</button>
+				</div>
+			{/each}
+			<div>
+				<button type="button" class="btn btn-sm" onclick={() => sites.push({ id: '', name: '' })}>
+					<Plus class="size-3.5" /> Add a site
 				</button>
 			</div>
 		</SettingsCard>

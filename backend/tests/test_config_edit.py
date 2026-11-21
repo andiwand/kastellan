@@ -598,3 +598,34 @@ users:
     assert "\n\n  # --- Servers ---\n  nas:" in changed and "192.168.1.2" in changed
     with pytest.raises(KeyError):
         config_edit.device_text(text, "nope")
+
+
+def test_a_site_and_a_dns_check_in_the_form(hub_client) -> None:
+    c, config, _ = hub_client
+    signin(c)
+    body = {
+        "id": "vps",
+        "host": "203.0.113.20",
+        "site": "hetzner",
+        "checks": [
+            {"type": "ping"},
+            {"type": "dns", "target": "www.example.org", "expect": ["203.0.113.20"], "server": "9.9.9.9"},
+        ],
+    }
+    assert c.post("/api/devices", json=body, headers=H).status_code == 200
+    text = config.read_text()
+    assert "site: hetzner" in text and "dns: www.example.org" in text and "expect: 203.0.113.20" in text
+    f = c.get("/api/devices/vps/form").json()
+    assert f["site"] == "hetzner" and f["checks"][1]["expect"] == ["203.0.113.20"]
+    assert f["checks"][1]["server"] == "9.9.9.9" and f["checks"][1]["name"] == ""
+    vps = next(d for d in c.get("/api/devices").json() if d["id"] == "vps")
+    assert vps["site"] == "hetzner" and vps["site_name"] == "Hetzner"
+    version = c.get("/api/settings").json()["version"]
+    named = {"value": {"sites": {"hetzner": "Hetzner Cloud"}}, "version": version}
+    assert c.put("/api/settings/sites", json=named, headers=H).status_code == 200
+    vps = next(d for d in c.get("/api/devices").json() if d["id"] == "vps")
+    assert vps["site_name"] == "Hetzner Cloud" and "hetzner: Hetzner Cloud" in config.read_text()
+    f = c.get("/api/devices/vps/form").json()
+    f.update(site="", checks=[{"type": "http", "target": "http://x", "expect": 999}])
+    del f["id"]
+    assert c.put("/api/devices/vps", json=f, headers=H).status_code == 422  # a status is 100 to 599

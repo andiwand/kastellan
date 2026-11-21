@@ -140,8 +140,15 @@ def diff(old: str, new: str) -> str:
 # changed in place, and its tail (that trailing comment) is taken off before and put back on
 # whatever is last afterwards; a deleted device hands its tail to the one before it.
 
-FORM_FIELDS = ("name", "host", "kind", "tags", "always_on", "exposed", "checks")
-DEFAULTS: dict[str, Any] = {"kind": "other", "exposed": False, "always_on": None, "tags": [], "name": ""}
+FORM_FIELDS = ("name", "host", "kind", "site", "tags", "always_on", "exposed", "checks")
+DEFAULTS: dict[str, Any] = {
+    "kind": "other",
+    "site": None,
+    "exposed": False,
+    "always_on": None,
+    "tags": [],
+    "name": "",
+}
 
 
 def _check_node(check: dict[str, Any]) -> Any:
@@ -154,10 +161,12 @@ def _check_node(check: dict[str, Any]) -> Any:
         target = None
     default_name = "ping" if kind == "ping" else f"{kind}:{target}"
     extras: dict[str, Any] = {}
-    for key in ("name", "expect", "verify", "tls", "interval", "timeout", "exposed"):
+    for key in ("name", "expect", "server", "verify", "tls", "interval", "timeout", "exposed"):
         value = check.get(key)
-        if value in (None, "") or (key in ("verify", "exposed") and value is False):
+        if value in (None, "", []) or (key in ("verify", "exposed") and value is False):
             continue
+        if key == "expect" and isinstance(value, list):
+            value = value[0] if len(value) == 1 else CommentedSeq(value)  # dns: one address, or a list
         if (key == "name" and value == default_name) or (key == "timeout" and value == DEFAULT_TIMEOUT):
             continue  # the default: not written
         extras[key] = value

@@ -24,6 +24,7 @@ from .versions import Versions
 
 CONFIG = {
     "check_interval": 15,
+    "sites": {"hetzner": "Hetzner Cloud"},
     "groups": {"aps": {"name": "Access points", "devices": ["repeater-living", "repeater-attic"]}},
     "devices": {
         "fritzbox": {
@@ -92,11 +93,14 @@ CONFIG = {
             "name": "Website server",
             "host": "203.0.113.20",
             "kind": "server",
+            "site": "hetzner",
             "exposed": True,
             "checks": [
                 "ping",
                 {"tcp": 22, "name": "ssh"},
                 {"http": "https://www.example.net", "name": "website"},
+                # Does the website's name still point here?
+                {"dns": "www.example.net", "expect": "203.0.113.20", "name": "dns"},
             ],
         },
         "pi": {
@@ -366,6 +370,8 @@ class Demo:
         if check.type == "http":
             latency += rng.uniform(8, 30)
             return Result(True, round(latency, 2), "HTTP 200", software, *self.cert(str(check.target)))
+        if check.type == "dns":
+            return Result(True, round(latency + rng.uniform(5, 20), 2), ", ".join(check.expect or []))
         if check.type == "tcp":
             latency += rng.uniform(0.1, 0.6)
         return Result(True, round(latency, 2), software=software)

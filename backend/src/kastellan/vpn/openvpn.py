@@ -18,12 +18,15 @@ passwordless sudo).
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import secrets
 import shlex
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.resources import files
+from pathlib import Path
 
 import asyncssh
 
@@ -65,6 +68,105 @@ def parse_list(text: str, now: datetime | None = None) -> list[OvpnClient]:
             status = "expired"
         out.append(OvpnClient(name, status, when.date().isoformat() if when else None, serial[:64]))
     return out
+
+
+@dataclass(frozen=True)
+class Connection:
+    name: str  # the client certificate's common name
+    address: str | None  # where it connects from (the real address)
+    since: str | None  # ISO time
+    rx: int | None  # bytes the server received from it
+    tx: int | None
+
+
+def _when(text: str) -> str | None:
+    """A status file's time: seconds (version 2/3) or a date (version 1; the router's clock, taken
+    as UTC)."""
+    text = text.strip()
+    if text.isdigit():
+        return datetime.fromtimestamp(int(text), UTC).isoformat(timespec="seconds")
+    for form in ("%a %b %d %H:%M:%S %Y", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return (
+                datetime.strptime(" ".join(text.split()), form)
+                .replace(tzinfo=UTC)
+                .isoformat(timespec="seconds")
+            )
+        except ValueError:
+            pass
+    return None
+
+
+def parse_status(text: str) -> list[Connection]:
+    """The client lines of OpenVPN status files (status-version 1, 2 or 3), as the device's
+    openvpn-status script prints them; untrusted, so anything odd is dropped."""
+    out: dict[str, Connection] = {}
+    header: list[str] = []
+    v1 = False
+
+    def number(value: str | None) -> int | None:
+        return int(value) if value and value.isdigit() and len(value) < 20 else None
+
+    for line in text.splitlines()[:5000]:
+        sep = "\t" if "\t" in line else ","
+        fields = line.split(sep)
+        if line.startswith("== ") or line.startswith("!"):
+            v1 = False
+            continue
+        if fields[0] == "HEADER" and fields[1:2] == ["CLIENT_LIST"]:
+            header = fields[1:]
+            continue
+        if line.startswith("Common Name,Real Address"):
+            v1 = True
+            continue
+        if fields[0] == "CLIENT_LIST":
+            col = {name: i for i, name in enumerate(header)}
+            pick = {
+                k: fields[i] if (i := col.get(k, default)) < len(fields) else ""
+                for k, default in (
+                    ("Common Name", 1),
+                    ("Real Address", 2),
+                    ("Bytes Received", 5),
+                    ("Bytes Sent", 6),
+                    ("Connected Since", 7),
+                    ("Connected Since (time_t)", 8),
+                )
+            }
+            name, address = pick["Common Name"], pick["Real Address"]
+            since = _when(pick["Connected Since (time_t)"]) or _when(pick["Connected Since"])
+            rx, tx = number(pick["Bytes Received"]), number(pick["Bytes Sent"])
+        elif v1 and len(fields) >= 5:
+            name, address, rx, tx = fields[0], fields[1], number(fields[2]), number(fields[3])
+            since = _when(fields[4])
+        else:
+            continue
+        if not name or not NAME.match(name):  # UNDEF (not through yet), or not a client name
+            continue
+        out[name] = Connection(name, (address or "")[:64] or None, since, rx, tx)
+    return list(out.values())
+
+
+class Seen:
+    """When each OpenVPN client was last seen connected (status files only list who is connected
+    now): <data>/vpn/openvpn-seen.json, name -> ISO time."""
+
+    def __init__(self, folder: Path) -> None:
+        self.path = folder / "openvpn-seen.json"
+        try:
+            data = json.loads(self.path.read_text())
+            self.last = {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            self.last = {}
+
+    def note(self, connected: list[Connection], now: datetime | None = None) -> None:
+        if not connected:
+            return
+        stamp = (now or datetime.now(UTC)).isoformat(timespec="seconds")
+        self.last.update({c.name: stamp for c in connected})
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.path.with_suffix(".tmp")
+        temp.write_text(json.dumps(self.last, indent=1))
+        os.replace(temp, self.path)
 
 
 def pki_conf(s: OpenVpnSource, restricted: bool = False) -> str:

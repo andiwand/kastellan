@@ -10,7 +10,10 @@ Abilities:
 - reboot;
 - wifi: read and change the `wireless` configuration only, applied with an automatic rollback;
 - firmware: put an image at /tmp/firmware.bin, test it, and start the upgrade (keeping the
-  settings).
+  settings);
+- openvpn: who is connected to its OpenVPN servers, through one fixed script that prints only
+  the client lines of the status files its own openvpn config names (no file path is ever taken
+  from Kastellan).
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ ACL = "/usr/share/rpcd/acl.d/kastellan.json"
 UPGRADABLE = "/usr/libexec/kastellan/upgradable"
 SERVICE = "/usr/libexec/kastellan/service"
 SERVICES_ALLOW = "/etc/kastellan/services.allow"
+OPENVPN_STATUS = "/usr/libexec/kastellan/openvpn-status"
 SERVICE_NAME = r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
 # Kastellan's own way in: these may be restarted, never stopped or disabled.
 # (and what stopping would open up or cut off: the firewall, the network).
@@ -38,6 +42,8 @@ ABILITIES = {
     " This amounts to full control of the device",
     "password": "Set root's password (to keep it the same across a group). Full control of the device",
     "services": "Start, stop, restart, enable or disable the services ticked below (nothing else)",
+    "openvpn": "See who is connected to its OpenVPN server (names, addresses, since when), for the"
+    " VPN page's last seen",
 }
 
 # The one command the services group may run: an action on a service in the allow list.
@@ -65,6 +71,32 @@ if command -v apk >/dev/null 2>&1; then
 else
   opkg update >/dev/null 2>&1; opkg list-upgradable 2>/dev/null
 fi
+exit 0
+"""
+
+
+# The one command the openvpn group may run: the client lines of each OpenVPN server's status
+# file, where /etc/config/openvpn (or the server's own config file) says it is. No input: the
+# paths come from the device's config, never from Kastellan; only client lines are printed.
+_OPENVPN_STATUS_SCRIPT = r"""#!/bin/sh
+# Kastellan: who is connected to this device's OpenVPN servers. No input, client lines only.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+for s in $(uci -q show openvpn | sed -n "s/^openvpn\.\([A-Za-z0-9_]*\)=openvpn$/\1/p"); do
+  [ "$(uci -q get "openvpn.$s.enabled")" = 1 ] || continue
+  f=$(uci -q get "openvpn.$s.status" | cut -d' ' -f1)
+  conf=$(uci -q get "openvpn.$s.config")
+  if [ -z "$f" ] && [ -n "$conf" ] && [ -r "$conf" ]; then
+    f=$(sed -n 's/^[[:space:]]*status[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p' "$conf" | head -n 1)
+  fi
+  echo "== $s"
+  [ -n "$f" ] || { echo "!no-status"; continue; }
+  [ -r "$f" ] || { echo "!unreadable"; continue; }
+  head -c 1048576 "$f" | awk '
+    /^(HEADER[,\t])?CLIENT_LIST[,\t]/ { print; next }
+    /^Common Name,Real Address/ { v1 = 1; print; next }
+    /^ROUTING TABLE/ { v1 = 0 }
+    v1 { print }'
+done
 exit 0
 """
 
@@ -130,6 +162,10 @@ def acl() -> dict:
         "kastellan-services": {
             "description": "Kastellan: act on the allowed services (through one script)",
             "read": {"ubus": {"file": ["exec"]}, "file": {SERVICE: ["exec"]}},
+        },
+        "kastellan-openvpn": {
+            "description": "Kastellan: who is connected to its OpenVPN servers (through one script)",
+            "read": {"ubus": {"file": ["exec"]}, "file": {OPENVPN_STATUS: ["exec"]}},
         },
         "kastellan-password": {
             "description": "Kastellan: set root's password",
@@ -232,6 +268,10 @@ def install_script(chosen: set[str], password_hash: str, services: list[str] | N
         _SERVICE_SCRIPT.rstrip("\n"),
         "KASTELLAN_SVC_EOF",
         f"chmod 755 {SERVICE}.new && mv {SERVICE}.new {SERVICE}",
+        f"cat > {OPENVPN_STATUS}.new <<'KASTELLAN_OVPN_EOF'",
+        _OPENVPN_STATUS_SCRIPT.rstrip("\n"),
+        "KASTELLAN_OVPN_EOF",
+        f"chmod 755 {OPENVPN_STATUS}.new && mv {OPENVPN_STATUS}.new {OPENVPN_STATUS}",
         *(_RPCSYS if chosen & {"firmware", "password"} else []),
         *(_CGI_IO if "firmware" in chosen else []),
         *_CERT,

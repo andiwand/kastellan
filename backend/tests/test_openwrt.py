@@ -601,3 +601,76 @@ async def test_a_group_lined_up_and_changed(tmp_path: Path, monkeypatch: pytest.
 
     assert all(o.startswith("sent") for o in (await sync.set_root_password(members, "rootpass1")).values())
     assert ("rpc-sys", "password_set", {"user": "root", "password": "rootpass1"}) in devices["wifi2"].calls
+
+
+async def test_openvpn_status_needs_its_own_group(tmp_path: Path) -> None:
+    """Reading alone can't run the status script; with the openvpn group it can, and only it."""
+    from kastellan.openwrt.setup import OPENVPN_STATUS, UPGRADABLE
+
+    with pytest.raises(ow.UbusError) as e:
+        await ow.openvpn_status(ubus(tmp_path, FakeRpcd([])))
+    assert e.value.code == ow.DENIED
+    rpcd = FakeRpcd(["kastellan-openvpn"])
+    await ow.openvpn_status(ubus(tmp_path, rpcd))
+    assert rpcd.allowed("file", "exec", {"command": OPENVPN_STATUS})
+    assert rpcd.allowed("file", "exec", {"command": UPGRADABLE})  # (the read group's own)
+    for other in ("/bin/sh", "/etc/shadow", f"{OPENVPN_STATUS}/../../bin/sh"):
+        assert not rpcd.allowed("file", "exec", {"command": other})
+        assert not rpcd.allowed("file", "read", {"path": other})
+
+
+def test_the_openvpn_status_script(tmp_path: Path) -> None:
+    """The script prints only the client lines of the status files OpenWrt's config names."""
+    from kastellan.openwrt import setup
+
+    v2 = tmp_path / "server.status"
+    v2.write_text(
+        "TITLE,OpenVPN 2.6.12\nTIME,2026-11-21 10:00:00,1795250000\n"
+        "HEADER,CLIENT_LIST,Common Name,Real Address,Virtual Address,Virtual IPv6 Address,"
+        "Bytes Received,Bytes Sent,Connected Since,Connected Since (time_t),Username,Client ID,Peer ID\n"
+        "CLIENT_LIST,alice,203.0.113.5:51000,10.8.0.2,,1000,2000,2026-11-21 09:00:00,1795246400,UNDEF,1,0\n"
+        "ROUTING_TABLE,10.8.0.2,alice,203.0.113.5:51000,2026-11-21 09:59:00,1795249940\n"
+        "GLOBAL_STATS,Max bcast/mcast queue length,0\nEND\n"
+    )
+    conf = tmp_path / "other.conf"
+    v1 = tmp_path / "other.status"
+    conf.write_text(f"port 1195\nstatus {v1} 10\n")
+    v1.write_text(
+        "OpenVPN CLIENT LIST\nUpdated,2026-11-21 10:00:00\n"
+        "Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since\n"
+        "bob,198.51.100.7:40000,5,6,2026-11-21 08:00:00\n"
+        "ROUTING TABLE\nVirtual Address,Common Name,Real Address,Last Ref\n"
+        "10.9.0.2,bob,198.51.100.7:40000,2026-11-21 09:59:00\nEND\n"
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "uci").write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  "-q show openvpn") printf "%s\\n" "openvpn.server=openvpn" "openvpn.server.enabled=\'1\'" '
+        '"openvpn.other=openvpn" "openvpn.off=openvpn" ;;\n'
+        '  "-q get openvpn.server.enabled"|"-q get openvpn.other.enabled") echo 1 ;;\n'
+        '  "-q get openvpn.off.enabled") echo 0 ;;\n'
+        f'  "-q get openvpn.server.status") echo "{v2} 10" ;;\n'
+        f'  "-q get openvpn.other.config") echo "{conf}" ;;\n'
+        "esac\n"
+    )
+    (bin_dir / "uci").chmod(0o755)
+    script = setup._OPENVPN_STATUS_SCRIPT.replace(
+        "PATH=/usr/sbin:/usr/bin:/sbin:/bin", f"PATH={bin_dir}:/usr/bin:/bin"
+    )
+    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True).stdout
+    assert out.splitlines() == [
+        "== server",
+        v2.read_text().splitlines()[2],
+        v2.read_text().splitlines()[3],
+        "== other",
+        "Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since",
+        "bob,198.51.100.7:40000,5,6,2026-11-21 08:00:00",
+    ]  # no routing table, no stats; the disabled server not at all
+    from kastellan.vpn.openvpn import parse_status
+
+    found = {c.name: c for c in parse_status(out)}
+    assert found["alice"].since == "2026-11-21T07:33:20+00:00" and found["alice"].rx == 1000
+    assert found["alice"].address == "203.0.113.5:51000"
+    assert found["bob"].since == "2026-11-21T08:00:00+00:00" and found["bob"].tx == 6

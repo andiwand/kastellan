@@ -142,3 +142,16 @@ def test_quiet_hours_are_local_and_validated() -> None:
     assert not wants(channel, Message(Severity.INFO, "t", ""), local(12))
     with pytest.raises(ValidationError):  # used to pass, and then dropped every notification
         NotifyChannel(ntfy="https://ntfy.sh/x", quiet="25:99-07:00")
+
+
+def test_alarms_say_where_a_device_away_from_home_is() -> None:
+    config = Config.model_validate(
+        {
+            "sites": {"hetzner": "Hetzner Cloud"},
+            "devices": {"nas": {"host": "n", "name": "NAS"}, "vps": {"host": "v", "site": "hetzner"}},
+        }
+    )
+    down = CheckStatus(up=False, since=NOW - timedelta(minutes=10), checked=NOW)
+    st = {id: DeviceStatus(checks={"ping": down}) for id in config.devices}
+    titles = sorted(p.title for p in evaluate(config, st, NOW, {}, STARTED))
+    assert titles == ["NAS is down", "vps (Hetzner Cloud) is down"]

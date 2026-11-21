@@ -95,59 +95,62 @@ class Keys:
     def public_key(self, which: str = "hub") -> str:
         return self.hub_key(which).export_public_key().decode().strip()
 
-    # Rotating the hub key (sshkeys.py): the next key is made and added everywhere first, then
-    # it becomes the key and the old one stays until it is removed everywhere. Meanwhile a login
-    # offers all of them, so a device on either key keeps working.
-    def side_key(self, which: str) -> asyncssh.SSHKey | None:
-        """The hub key's "next" or "old" key, if a rotation has one."""
-        path = self.folder / f"hub_ed25519.{which}"
+    # Rotating a key (`of`: the hub key in sshkeys.py, the VPN key in vpn/rotation.py): the next
+    # key is made and added everywhere first, then it becomes the key and the old one stays until
+    # it is removed everywhere. Meanwhile a login offers all of them, so a device on either key
+    # keeps working.
+    def side_key(self, which: str, of: str = "hub") -> asyncssh.SSHKey | None:
+        """A key's "next" or "old" key, if a rotation has one."""
+        path = self.folder / f"{self.NAMES[of]}.{which}"
         return asyncssh.read_private_key(str(path)) if path.exists() else None
 
-    def make_next(self) -> asyncssh.SSHKey:
+    def make_next(self, of: str = "hub") -> asyncssh.SSHKey:
         with _make_lock:
-            path = self.folder / "hub_ed25519.next"
+            path = self.folder / f"{self.NAMES[of]}.next"
             if not path.exists():
                 self.folder.mkdir(parents=True, exist_ok=True)
                 stamp = time.strftime("%Y-%m-%d")
-                key = asyncssh.generate_private_key("ssh-ed25519", comment=f"kastellan-hub {stamp}")
+                comment = f"kastellan-{'hub' if of == 'hub' else of} {stamp}"
+                key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
                 temp = path.with_suffix(".tmp")
                 key.write_private_key(str(temp))
                 os.chmod(temp, 0o600)
                 os.replace(temp, path)
-                log.info("made the next hub SSH key")
+                log.info("made the next %s SSH key", of)
         return asyncssh.read_private_key(str(path))
 
-    def promote_next(self, expect: str) -> None:
+    def promote_next(self, expect: str, of: str = "hub") -> None:
         """The next key (with fingerprint `expect`) becomes the key; the key so far is kept as
         "old". The key file is never missing on the way (a copy to .old first, then one atomic
         rename), and an .old that isn't the current key is never overwritten: it may be the only
         copy of a key that devices still have."""
         with _make_lock:
-            folder = self.folder
-            nxt, old = folder / "hub_ed25519.next", folder / "hub_ed25519.old"
+            folder, name = self.folder, self.NAMES[of]
+            nxt, old = folder / f"{name}.next", folder / f"{name}.old"
             if not nxt.exists():
                 raise FileNotFoundError("no next key")
             if asyncssh.read_private_key(str(nxt)).get_fingerprint() != expect:
                 raise ValueError("the next key isn't the one that was added")
-            current = asyncssh.read_private_key(str(self.private_path))
+            path = folder / name
+            current = asyncssh.read_private_key(str(path))
             if (
                 old.exists()
                 and asyncssh.read_private_key(str(old)).get_fingerprint() != current.get_fingerprint()
             ):
                 raise ValueError("an old key from an earlier rotation is still there; finish that first")
-            temp = folder / "hub_ed25519.old.tmp"
+            temp = folder / f"{name}.old.tmp"
             current.write_private_key(str(temp))
             os.chmod(temp, 0o600)
             os.replace(temp, old)
-            os.replace(nxt, self.private_path)
-            key = asyncssh.read_private_key(str(self.private_path))
-            key.write_public_key(str(folder / "hub_ed25519.pub"))
-            log.info("the next hub SSH key is now the key")
+            os.replace(nxt, path)
+            key = asyncssh.read_private_key(str(path))
+            key.write_public_key(str(folder / f"{name}.pub"))
+            log.info("the next %s SSH key is now the key", of)
 
-    def drop(self, which: str) -> None:
+    def drop(self, which: str, of: str = "hub") -> None:
         """Forget the next key (cancelled) or the old one (removed everywhere)."""
         with _make_lock:
-            (self.folder / f"hub_ed25519.{which}").unlink(missing_ok=True)
+            (self.folder / f"{self.NAMES[of]}.{which}").unlink(missing_ok=True)
 
     def _pinned(self) -> dict[str, list[asyncssh.SSHKey]]:
         out: dict[str, list[asyncssh.SSHKey]] = {}
@@ -233,8 +236,8 @@ class Keys:
             keys = [only]  # e.g. to see that a new key works
         else:
             keys = [self.hub_key(which)]
-            if which == "hub":  # during a rotation, a device may be on the other key still
-                keys += [k for k in (self.side_key("next"), self.side_key("old")) if k is not None]
+            if which in ("hub", "vpn"):  # during a rotation, a device may be on the other key still
+                keys += [k for k in (self.side_key("next", which), self.side_key("old", which)) if k]
         try:
             conn, _ = await asyncio.wait_for(
                 asyncssh.create_connection(

@@ -53,9 +53,15 @@
 			? `Updated (${r.from} → ${r.to}).`
 			: `Nothing to do: ${r.why ?? 'already the newest'}.`;
 	}
-	const webUi = $derived(
-		device?.checks.find((c) => c.type === 'http')?.target as string | undefined
-	);
+	// Through the hub on its own name (webproxy.py), when the hub is opened at web_domain and an
+	// admin is signed in (the session cookie reaches the device names then); else directly.
+	const webUi = $derived.by(() => {
+		if (!device?.web_url) return undefined;
+		const domain = store.health?.web_domain;
+		if (domain && location.hostname === domain && store.me?.role === 'admin' && store.me.user)
+			return `${location.protocol}//${device.id.replaceAll('_', '-')}.${domain}/`;
+		return (device.checks.find((c) => c.type === 'http')?.target as string) ?? device.web_url;
+	});
 
 	const ranges = [
 		{ hours: 1, buckets: 60, label: '1 h' },
