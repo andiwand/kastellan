@@ -40,7 +40,8 @@ Implementation details and release history belong in [AGENTS.md](AGENTS.md) and
 - Notice of a newer Kastellan release.
 - Central logs: routers, Linux journals, Docker, VPN presence and UDP/TLS syslog.
 - Encrypted device configuration backups with deduplicated versions and masked diffs.
-- FRITZ!Box accounts, internet health and speed tests, Wi-Fi scans and channel suggestions.
+- FRITZ!Box accounts, Wi-Fi, mesh and WireGuard; internet health and speed tests; Wi-Fi scans
+  and channel suggestions; DHCP checks and pools; key-ring hub backups.
 
 Published images may lag behind `main`; see the changelog's Unreleased section.
 
@@ -60,10 +61,11 @@ Published images may lag behind `main`; see the changelog's Unreleased section.
       suggest paths, not identities. Keep address lookups local by default.
 - [ ] **Internet:** client bandwidth, provider-hop checks and iperf3 support. Current speed
       tests use HTTP transfers; scheduled tests defer while the line is busy.
-- [ ] **FRITZ!Box:** mesh topology, line-error and reconnect alarms, VPN details and discovery
-      from its client list. Current support includes pinned TR-064 access, line and Wi-Fi
-      status, clients, port forwards, events, configuration exports and device actions.
-- [ ] **Wi-Fi:** roaming, client radio diagnostics, FRITZ!Box neighbour data, country settings,
+- [ ] **FRITZ!Box:** line-error and reconnect alarms, and discovery from its client list.
+      Current support includes pinned TR-064 access, line and Wi-Fi status, clients, port
+      forwards, events, configuration exports, device actions, Wi-Fi neighbours, FRITZ!Mesh,
+      WireGuard connections, DHCP pool and leases.
+- [ ] **Wi-Fi:** roaming, client radio diagnostics, country settings,
       and a scan after applying a channel plan. OpenWrt changes use rollback; FRITZ!Box changes
       do not. Channel suggestions require reported allowed channels.
 - [ ] **Wi-Fi roaming in groups:** Kastellan watches and lines up roaming; the access points

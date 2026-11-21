@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.11.0 (2026-11-21)
+
+FRITZ!Box Wi-Fi, mesh and WireGuard, DHCP monitoring, logins kept in the key rings, and
+Kastellan's own backup opening with the key rings.
+
+### Upgrading
+
+- OpenWrt logins: set them up again to read the DHCP pool (the read group may now read the
+  `dhcp` configuration); without that, the leases show but not the pool size.
+- Set up the actor again on Linux hosts to give it the journal and container-log abilities
+  (Updates lists them); FRITZ!Box backups need the box's button pressed, or that confirmation
+  turned off in FRITZ!OS.
+- The `dhcp` check needs the hub on the network it asks (host networking) and allowed to use
+  UDP port 68 (root).
+
 ### Added
 
 - FRITZ!Box Wi-Fi: its neighbour networks and channel use feed the Wi-Fi page's scans and
@@ -23,11 +38,6 @@
 - Updates lists abilities Kastellan offers that a device's actor or OpenWrt login hasn't been
   given yet, with "Set up" and "Not needed".
 
-### Upgrading
-
-- OpenWrt logins: set them up again to read the DHCP pool (the read group may now read the
-  `dhcp` configuration); without that, the leases show but not the pool size.
-
 ### Fixed
 
 - Stored logins resolve before setup validation; concurrent update dismissals are preserved.
@@ -37,12 +47,10 @@
 - DHCP alarms expire, respect configured servers, and ignore stale pool readings. Concurrent
   checks share one probe; DHCP never appears as an internet entry point.
 - Wi-Fi readings refresh after edits and config reloads. Stored-login dialogs fit phone screens.
-
 - Setting up the actor with sudo or su failed with "Argument list too long" (the script grew
   past Linux's 128 KB per argument): large scripts go compressed.
 - A FRITZ!Box's settings export waits for its second factor when asked from "Back up now"
   (press the button on the box); the daily backup says why it can't, instead of warning.
-
 - OpenWrt 25.12: radios and Wi-Fi clients are read through iwinfo, since `network.wireless
   status` refuses calls over HTTP there (the session field uhttpd adds); Wi-Fi changes check
   the radios the same way. Radios that report `hwmode` (OpenWrt 22.03) count as 2.4/5 GHz.
