@@ -252,6 +252,16 @@ class OpenWrtAccess(BaseModel):
     password_secret: str | None = None  # default: openwrt-<device id> (made at setup)
 
 
+class FritzBoxAccess(BaseModel):
+    """A FRITZ!Box through TR-064 over HTTPS (fritzbox/): a FRITZ!Box user of Kastellan's own."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user: str = Field(pattern=r"^[A-Za-z0-9_.@-]{1,64}$")
+    port: int = Field(default=49443, ge=1, le=65535)
+    password_secret: str | None = None  # default: fritzbox-<device id>
+
+
 class Device(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -300,6 +310,7 @@ class Device(BaseModel):
     collect: CollectAccess | None = None  # how the host is doing (and its containers)
     act: ActAccess | None = None  # what Kastellan may change there (as the host allows)
     openwrt: OpenWrtAccess | None = None  # an OpenWrt router or access point, through its API
+    fritzbox: FritzBoxAccess | None = None  # a FRITZ!Box, through TR-064 with its own user
     # Its web interface (scheme://host:port), when not its first http check's (webproxy.py).
     web: str | None = Field(default=None, pattern=r"^https?://[^\s/?#]+/?$")
     # Reachable from the internet (a port forward, a public server): known vulnerabilities in
@@ -396,6 +407,94 @@ class AlarmSettings(BaseModel):
     ups_runtime_critical: int = Field(default=5, ge=1, le=120)
     # An alarm nobody acknowledged is sent again this often (hours); 0: never.
     remind_hours: int = Field(default=0, ge=0, le=24 * 7)
+
+
+class SyslogSettings(BaseModel):
+    """The open syslog port (logs.py). Plain syslog is unencrypted and anyone on the network can
+    forge it: off by default; lines only from known devices' addresses, kept as unverified."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    port: int = Field(default=5514, ge=1, le=65535)  # 514 needs root: map 514 -> 5514 in Docker
+
+
+class SyslogTlsSettings(BaseModel):
+    """Syslog over TLS (syslog_tls.py): encrypted, each sender with a client certificate
+    Kastellan issued to that device. Off by default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    port: int = Field(default=6514, ge=1, le=65535)
+
+
+class LogSettings(BaseModel):
+    """Central logs (logs.py): how long and how many lines are kept."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    days: int = Field(default=14, ge=1, le=365)
+    max_lines: int = Field(default=1_000_000, ge=10_000, le=20_000_000)
+    syslog: SyslogSettings = Field(default_factory=SyslogSettings)
+    syslog_tls: SyslogTlsSettings = Field(default_factory=SyslogTlsSettings)
+
+
+class DeviceBackupSettings(BaseModel):
+    """Device configuration backups (devbackups.py): taken from every device whose login may
+    (OpenWrt's `backup` ability, a FRITZ!Box login), deduplicated, kept encrypted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    every_hours: int = Field(default=24, ge=1, le=24 * 30)
+    keep: int = Field(default=60, ge=1, le=1000)  # different versions kept per device
+
+
+class SpeedTest(BaseModel):
+    """Measured speed tests (internet.py): off by default, they use the line."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    every_hours: int = Field(default=24, ge=1, le=24 * 30)
+    download: str = Field(
+        default="https://speed.cloudflare.com/__down?bytes=50000000", pattern=r"^https?://\S+$"
+    )
+    upload: str | None = Field(default="https://speed.cloudflare.com/__up", pattern=r"^https?://\S+$")
+    upload_bytes: int = Field(default=10_000_000, ge=1_000_000, le=200_000_000)
+    # What the contract says (Mbit/s): a test far below for a while raises a warning.
+    booked_down: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    booked_up: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+class InternetSettings(BaseModel):
+    """The internet connection (internet.py): checked from the hub every `every` seconds."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    every: int = Field(default=30, ge=10, le=600)
+    # Outside addresses to ping, from more than one provider (one's trouble isn't an outage).
+    targets: list[str] = Field(
+        default_factory=lambda: ["1.1.1.1", "9.9.9.9", "8.8.8.8"], min_length=1, max_length=8
+    )
+    targets_v6: list[str] = Field(
+        default_factory=lambda: ["2606:4700:4700::1111", "2620:fe::fe"], max_length=8
+    )
+    dns: list[str] = Field(default_factory=lambda: ["example.com", "wikipedia.org"], max_length=8)
+    # The device that connects to the internet (its line, its counters); None: the router whose
+    # address is the hub's gateway, or the only FRITZ!Box / OpenWrt router.
+    router: str | None = None
+    speedtest: SpeedTest = Field(default_factory=SpeedTest)
+
+
+class WifiSettings(BaseModel):
+    """The Wi-Fi page (wifi.py): a daily scan at a quiet hour (local "HH:MM"; None: only on
+    request), by every OpenWrt radio whose login may scan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scan_at: str | None = Field(default="04:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class NotifyChannel(BaseModel):
@@ -707,6 +806,10 @@ class Config(BaseModel):
     vault: VaultSettings = Field(default_factory=VaultSettings)  # key rings: how they open
     maintenance: list[MaintenanceWindow] = Field(default_factory=list)  # planned work
     backups: dict[str, BackupCheck] = Field(default_factory=dict)  # backups that report in
+    logs: LogSettings = Field(default_factory=LogSettings)  # central logs
+    device_backups: DeviceBackupSettings = Field(default_factory=DeviceBackupSettings)
+    internet: InternetSettings = Field(default_factory=InternetSettings)
+    wifi: WifiSettings = Field(default_factory=WifiSettings)
 
     def site_of(self, id: str) -> str:
         return self.devices[id].site or HOME
@@ -736,6 +839,29 @@ class Config(BaseModel):
             if len(set(group.devices)) != len(group.devices):
                 raise ValueError(f"groups.{gid}: a device is listed twice")
             group.name = group.name or gid
+        return self
+
+    @model_validator(mode="after")
+    def _internet(self) -> Self:
+        if self.internet.router is not None and self.internet.router not in self.devices:
+            raise ValueError(f"internet.router: no {self.internet.router!r}")
+        for t in [*self.internet.targets, *self.internet.targets_v6]:
+            try:
+                ipaddress.ip_address(t)
+            except ValueError as e:
+                raise ValueError(f"internet targets are addresses: {t!r}") from e
+        return self
+
+    @model_validator(mode="after")
+    def _device_secret_names(self) -> Self:
+        for device in self.devices.values():
+            for access in (device.openwrt, device.fritzbox):
+                if access and access.password_secret in {
+                    "device-backups",
+                    "group-fingerprints",
+                    "syslog-ca-key",
+                }:
+                    raise ValueError("a device login cannot use Kastellan's encryption or fingerprint key")
         return self
 
     @model_validator(mode="after")

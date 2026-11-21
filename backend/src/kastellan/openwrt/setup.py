@@ -13,7 +13,12 @@ Abilities:
   settings);
 - openvpn: who is connected to its OpenVPN servers, through one fixed script that prints only
   the client lines of the status files its own openvpn config names (no file path is ever taken
-  from Kastellan).
+  from Kastellan);
+- logs: read its system log (logd's `log read`), for the Logs page;
+- backup: download its configuration backup (`sysupgrade -b`, through cgi-io as LuCI does); it
+  holds every password and key on the device, so Kastellan keeps it encrypted;
+- scan: look for neighbouring Wi-Fi networks and how busy each channel is (a scan can disturb
+  its clients for a moment), for the Wi-Fi page's channel plan.
 """
 
 from __future__ import annotations
@@ -44,6 +49,10 @@ ABILITIES = {
     "services": "Start, stop, restart, enable or disable the services ticked below (nothing else)",
     "openvpn": "See who is connected to its OpenVPN server (names, addresses, since when), for the"
     " VPN page's last seen",
+    "logs": "Read its system log (for the Logs page: logins, VPN, services, the kernel)",
+    "backup": "Download its configuration backup (every password and key on it; kept encrypted)",
+    "scan": "Scan for neighbouring Wi-Fi networks and channel use (for the Wi-Fi page's channel"
+    " plan; clients may notice a moment's pause)",
 }
 
 # The one command the services group may run: an action on a service in the allow list.
@@ -131,7 +140,7 @@ _RPCSYS = [
 ]
 _CGI_IO = [
     "if [ ! -e /www/cgi-bin/cgi-upload ]; then",
-    "  echo 'needs cgi-io for uploading firmware (LuCI brings it)' >&2; exit 1",
+    "  echo 'needs cgi-io for firmware and backups (LuCI brings it)' >&2; exit 1",
     "fi",
 ]
 
@@ -156,7 +165,8 @@ def acl() -> dict:
                     "network.interface": ["dump"],
                     "network.wireless": ["status"],
                     "rc": ["list"],  # services: enabled, running
-                    "iwinfo": ["devices", "info", "assoclist"],
+                    "iwinfo": ["devices", "info", "assoclist", "freqlist", "txpowerlist"],
+                    "network.device": ["status"],  # the WAN's byte counters
                     "luci-rpc": ["getDHCPLeases"],
                     "luci": ["getFeatures"],  # whether its Wi-Fi software can do mesh
                     "file": ["exec", "read"],
@@ -184,6 +194,18 @@ def acl() -> dict:
         "kastellan-openvpn": {
             "description": "Kastellan: who is connected to its OpenVPN servers (through one script)",
             "read": {"ubus": {"file": ["exec"]}, "file": {OPENVPN_STATUS: ["exec"]}},
+        },
+        "kastellan-logs": {
+            "description": "Kastellan: read the system log",
+            "read": {"ubus": {"log": ["read"]}},
+        },
+        "kastellan-backup": {
+            "description": "Kastellan: download the configuration backup (through cgi-io)",
+            "read": {"cgi-io": ["backup"]},
+        },
+        "kastellan-scan": {
+            "description": "Kastellan: scan for Wi-Fi networks and channel use",
+            "read": {"ubus": {"iwinfo": ["scan", "survey"]}},
         },
         "kastellan-password": {
             "description": "Kastellan: set root's password",
@@ -291,7 +313,7 @@ def install_script(chosen: set[str], password_hash: str, services: list[str] | N
         "KASTELLAN_OVPN_EOF",
         f"chmod 755 {OPENVPN_STATUS}.new && mv {OPENVPN_STATUS}.new {OPENVPN_STATUS}",
         *(_RPCSYS if chosen & {"firmware", "password"} else []),
-        *(_CGI_IO if "firmware" in chosen else []),
+        *(_CGI_IO if chosen & {"firmware", "backup"} else []),
         *_CERT,
         "# The login: an earlier one goes, the new one gets exactly the chosen groups.",
         f"for s in $(uci -q -X show rpcd | sed -n \"s/^rpcd\\.\\([^.]*\\)\\.username='{USER}'$/\\1/p\"); do",

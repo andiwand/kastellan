@@ -1,0 +1,494 @@
+"""The Wi-Fi page over HTTP (wifi.py): networks by name across every access point, the radios,
+scans and the channel plan. Seeing: admins. Changing and scanning: signed-in admins, as
+streamed jobs (one access point after the other, each with its rollback), audited without
+passwords."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime
+from functools import partial
+from typing import TYPE_CHECKING, Any
+
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from . import setup_run, wifi
+from .auth_api import client_address, require_admin, require_signin
+from .fritzbox import client as fb
+from .groups_api import SALT_SECRET
+from .openwrt import client as ow
+from .openwrt import sync
+from .openwrt.sync import _fp
+
+if TYPE_CHECKING:
+    from .hub import Hub
+
+
+class NetworkChange(BaseModel):
+    ssid: str = Field(min_length=1, max_length=64)  # the network, by its name now
+    new_ssid: str | None = Field(default=None, max_length=64)
+    key: str | None = Field(default=None, max_length=64)
+    encryption: str | None = Field(default=None, max_length=20)
+    enabled: bool | None = None
+    devices: list[str] | None = Field(default=None, max_length=64)  # only these (default: all)
+
+
+class Target(BaseModel):
+    device: str = Field(max_length=64)
+    radio: str = Field(max_length=64)
+
+
+class NetworkAdd(BaseModel):
+    ssid: str = Field(min_length=1, max_length=64)
+    key: str = Field(default="", max_length=64)
+    encryption: str = Field(default="sae-mixed", max_length=20)
+    targets: list[Target] = Field(min_length=1, max_length=32)
+
+
+class NetworkRemove(BaseModel):
+    ssid: str = Field(min_length=1, max_length=64)
+    targets: list[Target] = Field(min_length=1, max_length=32)  # radio: the network's section
+
+
+class RadioChange(BaseModel):
+    device: str = Field(max_length=64)
+    radio: str = Field(max_length=64)
+    channel: str | None = Field(default=None, max_length=8)  # "auto" or a number
+    htmode: str | None = Field(default=None, max_length=10)
+    txpower: int | None = Field(default=None, ge=0, le=36)
+
+
+class PlanApply(BaseModel):
+    radios: list[RadioChange] = Field(min_length=1, max_length=64)
+    before: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    after: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+def router(hub: Hub) -> APIRouter:
+    api = APIRouter(prefix="/api/wifi")
+    scans = hub.wifi_scans
+
+    def salt() -> bytes:
+        return hub.own_secret(SALT_SECRET).encode()
+
+    def openwrt_ids() -> list[str]:
+        return [id for id, d in hub.config.devices.items() if d.openwrt]
+
+    def fritz_ids() -> list[str]:
+        return [id for id, d in hub.config.devices.items() if d.fritzbox]
+
+    def members() -> dict[str, ow.Ubus | Exception]:
+        out: dict[str, ow.Ubus | Exception] = {}
+        for id in openwrt_ids():
+            try:
+                out[id] = hub.ubus(id)
+            except Exception as e:  # its secret isn't there, or the key ring is locked
+                out[id] = e
+        return out
+
+    def fritz_networks() -> dict[str, list[dict[str, Any]]]:
+        out = {}
+        for id in fritz_ids():
+            st = hub.monitor.status.get(id)
+            if st and st.fritz:
+                out[id] = st.fritz.get("wifi") or []
+        return out
+
+    def router_settings() -> dict[str, dict[str, Any]]:
+        """Each OpenWrt device's radios as its last report says (read ability only)."""
+        out = {}
+        for id in openwrt_ids():
+            st = hub.monitor.status.get(id)
+            radios = (st.router or {}).get("radios") if st else None
+            if radios:
+                out[id] = {
+                    "radios": [
+                        {
+                            "section": r["name"],
+                            "band": r.get("band"),
+                            "channel": r.get("channel"),
+                            "htmode": r.get("htmode"),
+                            "clients": sum(len(i.get("clients") or []) for i in r.get("interfaces") or []),
+                            "up": r.get("up"),
+                            "disabled": r.get("disabled"),
+                        }
+                        for r in radios
+                    ]
+                }
+        return out
+
+    def signed_in(request: Request):
+        w = require_signin(request)
+        if hub.demo:
+            raise HTTPException(409, "demo mode shows a made-up network; nothing is changed")
+        return w
+
+    def job(action: str, request: Request, w, work, **logged: Any) -> StreamingResponse:
+        audit = partial(hub.audit.record, f"wifi.{action}", w.user, client_address(request.scope), **logged)
+        return setup_run.stream_work(work, audit)
+
+    @api.get("")
+    async def overview(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        if hub.demo:
+            from . import demo
+
+            survey = demo.WIFI_SURVEY
+        else:
+            survey = await sync.survey(members(), salt())
+        fritz = fritz_networks()
+        keys: dict[tuple[str, int], str | None] = {}
+        if not hub.demo:
+            for id, nets in fritz.items():
+                for n in nets:
+                    try:
+                        keys[(id, n["index"])] = _fp(await fb.wifi_key(hub.fritz(id), n["index"]), salt())
+                    except Exception:
+                        keys[(id, n["index"])] = None
+        settings = router_settings()
+        all_scans = scans.all(time.time() - 7 * 86400)
+        radios = wifi.radios_from(settings, all_scans, fritz)
+        newest: dict[str, dict[str, Any]] = {}
+        for s in all_scans:
+            newest[f"{s['device']}/{s['radio']}"] = s
+        radio_rows = []
+        for r in radios:
+            st = next(
+                (x for x in settings.get(r.device, {}).get("radios", []) if x["section"] == r.radio), {}
+            )
+            fr = next((n for n in fritz.get(r.device, []) if f"wlan{n['index']}" == r.radio), {})
+            scan = newest.get(r.key) or {}
+            busy = r.busy.get(r.channel or 0)
+            radio_rows.append(
+                {
+                    "device": r.device,
+                    "radio": r.radio,
+                    "kind": "fritzbox" if fr else "openwrt",
+                    "band": r.band,
+                    "channel": r.channel,
+                    "width": r.width,
+                    "htmode": st.get("htmode"),
+                    "clients": st.get("clients", fr.get("clients")),
+                    "neighbours": len(r.neighbours),
+                    "hears": r.hears,
+                    "busy": busy,
+                    "scanned": scan.get("t"),
+                    "allowed": r.allowed,
+                }
+            )
+        return {
+            "networks": wifi.lineup(survey, fritz, keys),
+            "radios": radio_rows,
+            "errors": survey.get("errors") or {},
+            "scans": {k: _scan_view(v) for k, v in newest.items()},
+            "plans": scans.plans()[-5:],
+            "scanning": sorted(hub.wifi_scanning),
+            "scan_at": hub.config.wifi.scan_at,
+        }
+
+    @api.post("/networks/change")
+    async def change(body: NetworkChange, request: Request) -> StreamingResponse:
+        """Name, password, encryption, on/off of a network everywhere it is (or on `devices`)."""
+        w = signed_in(request)
+        for k, v in (("ssid", body.new_ssid), ("key", body.key), ("encryption", body.encryption)):
+            if v:
+                try:
+                    ow.check_value(k, v)
+                except ValueError as e:
+                    raise HTTPException(400, str(e)) from e
+        wanted = set(body.devices or [])
+        for id, nets in fritz_networks().items():
+            if body.devices is not None and id not in wanted:
+                continue
+            matching = [n for n in nets if n.get("ssid") == body.ssid]
+            if not matching:
+                continue
+            try:
+                if body.new_ssid is not None:
+                    fb.check_ssid(body.new_ssid)
+                if body.key is not None:
+                    fb.check_key(body.key)
+                if body.encryption and any(
+                    wifi._enc(n.get("encryption")) != wifi._enc(body.encryption) for n in matching
+                ):
+                    raise ValueError(f"{id}: change encryption in FRITZ!OS first")
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+
+        async def work(say):
+            outcome: dict[str, str] = {}
+            values = {"ssid": body.new_ssid, "key": body.key, "encryption": body.encryption}
+            values = {k: v for k, v in values.items() if v}
+            if body.enabled is not None:
+                values["disabled"] = not body.enabled
+            ow_members = {i: u for i, u in members().items() if body.devices is None or i in wanted}
+            if values:
+                outcome |= await sync.change_network(ow_members, body.ssid, values, say)
+            for id, nets in fritz_networks().items():
+                if body.devices is not None and id not in wanted:
+                    continue
+                for n in nets:
+                    if n.get("ssid") != body.ssid:
+                        continue
+                    try:
+                        await fb.change_wifi(
+                            hub.fritz(id),
+                            n["index"],
+                            {"ssid": body.new_ssid, "key": body.key, "enabled": body.enabled},
+                        )
+                        outcome[f"{id}/wlan{n['index']}"] = "done"
+                    except Exception as e:
+                        outcome[f"{id}/wlan{n['index']}"] = f"failed: {str(e)[:160]}"
+                    say(f"{id} wlan{n['index']}: {outcome[f'{id}/wlan{n["index"]}']}")
+            return {"outcome": outcome}
+
+        logged = {
+            "ssid": body.ssid,
+            "new_ssid": body.new_ssid,
+            "key": "***" if body.key else None,
+            "encryption": body.encryption,
+            "enabled": body.enabled,
+            "devices": body.devices,
+        }
+        return job("network", request, w, work, **logged)
+
+    @api.post("/networks/add")
+    async def add(body: NetworkAdd, request: Request) -> StreamingResponse:
+        """The network on more access points (OpenWrt radios)."""
+        w = signed_in(request)
+        for t in body.targets:
+            d = hub.config.devices.get(t.device)
+            if d is None or d.openwrt is None:
+                raise HTTPException(400, f"{t.device}: only OpenWrt access points get new networks from here")
+
+        async def work(say):
+            outcome = {}
+            for t in body.targets:
+                try:
+                    section = await ow.add_network(
+                        hub.ubus(t.device), t.radio, body.ssid, body.key, body.encryption
+                    )
+                    outcome[f"{t.device}/{t.radio}"] = f"added ({section})"
+                except Exception as e:
+                    outcome[f"{t.device}/{t.radio}"] = f"failed: {str(e)[:160]}"
+                say(f"{t.device} {t.radio}: {outcome[f'{t.device}/{t.radio}']}")
+            return {"outcome": outcome}
+
+        return job("add", request, w, work, ssid=body.ssid, targets=[t.model_dump() for t in body.targets])
+
+    @api.post("/networks/remove")
+    async def remove(body: NetworkRemove, request: Request) -> StreamingResponse:
+        w = signed_in(request)
+
+        async def work(say):
+            outcome = {}
+            for t in body.targets:
+                d = hub.config.devices.get(t.device)
+                try:
+                    if d is None or d.openwrt is None:
+                        raise ValueError("a FRITZ!Box's networks are switched off, not removed")
+                    await ow.remove_network(hub.ubus(t.device), t.radio, expected_ssid=body.ssid)
+                    outcome[f"{t.device}/{t.radio}"] = "removed"
+                except Exception as e:
+                    outcome[f"{t.device}/{t.radio}"] = f"failed: {str(e)[:160]}"
+                say(f"{t.device} {t.radio}: {outcome[f'{t.device}/{t.radio}']}")
+            return {"outcome": outcome}
+
+        return job("remove", request, w, work, ssid=body.ssid, targets=[t.model_dump() for t in body.targets])
+
+    async def set_radio(r: RadioChange, say=None) -> str:
+        d = hub.config.devices.get(r.device)
+        if d is None:
+            raise ValueError("no such device")
+        if d.fritzbox is not None and r.radio.startswith("wlan"):
+            if r.channel is None or r.htmode is not None or r.txpower is not None:
+                raise ValueError("FRITZ!Box: only its channel can be changed here")
+            channel = 0 if r.channel == "auto" else int(r.channel)
+            await fb.change_wifi(hub.fritz(r.device), int(r.radio[4:]), {"channel": channel})
+            return "done"
+        if d.openwrt is None:
+            raise ValueError("no OpenWrt or FRITZ!Box login")
+        values = {
+            k: v
+            for k, v in (("channel", r.channel), ("htmode", r.htmode), ("txpower", r.txpower))
+            if v is not None
+        }
+        await ow.change_wifi(hub.ubus(r.device), {r.radio: values})
+        return "done"
+
+    @api.put("/radios")
+    async def radio(body: RadioChange, request: Request) -> dict[str, Any]:
+        w = signed_in(request)
+        audit = partial(
+            hub.audit.record, "wifi.radio", w.user, client_address(request.scope), **body.model_dump()
+        )
+        try:
+            await set_radio(body)
+        except Exception as e:
+            audit(outcome=f"failed: {str(e)[:120]}")
+            raise HTTPException(400 if isinstance(e, ValueError) else 502, str(e)[:300]) from e
+        audit(outcome="done")
+        return {"done": True}
+
+    @api.post("/scan")
+    async def scan(request: Request) -> StreamingResponse:
+        """Scan with every OpenWrt radio whose login may (clients may pause a moment)."""
+        w = signed_in(request)
+
+        async def work(say):
+            return {"scanned": await scan_all(hub, say)}
+
+        return job("scan", request, w, work)
+
+    @api.get("/plan")
+    async def suggest(request: Request, dfs: bool = Query(default=False)) -> dict[str, Any]:
+        """A channel plan from the newest scans (a suggestion: nothing changes)."""
+        require_admin(request)
+        radios = wifi.radios_from(router_settings(), scans.all(time.time() - 7 * 86400), fritz_networks())
+        result = await asyncio.to_thread(
+            wifi.plan, radios, dfs, {id: d.name for id, d in hub.config.devices.items()}
+        )
+        result["scanned"] = bool(scans.all(time.time() - 7 * 86400))
+        return result
+
+    @api.post("/plan/apply")
+    async def apply(body: PlanApply, request: Request) -> StreamingResponse:
+        """The chosen radios to their suggested channels, one access point after the other."""
+        w = signed_in(request)
+
+        async def work(say):
+            outcome = {}
+            for r in body.radios:
+                key = f"{r.device}/{r.radio}"
+                try:
+                    outcome[key] = await set_radio(r)
+                except Exception as e:
+                    outcome[key] = f"failed: {str(e)[:160]}"
+                say(f"{key} → {r.channel}{' ' + r.htmode if r.htmode else ''}: {outcome[key]}")
+            scans.note_plan(
+                {
+                    "t": time.time(),
+                    "by": w.user,
+                    "radios": [r.model_dump() for r in body.radios],
+                    "before": body.before,
+                    "after": body.after,
+                    "outcome": outcome,
+                }
+            )
+            return {"outcome": outcome}
+
+        return job("plan", request, w, work, radios=[r.model_dump() for r in body.radios])
+
+    return api
+
+
+async def scan_all(hub: Hub, say=None) -> int:
+    """Scan with every OpenWrt radio whose login may; the scans are kept. How many radios."""
+    say = say or (lambda line: None)
+    found = []
+    for id, d in list(hub.config.devices.items()):
+        if d.openwrt is None or id in hub.wifi_scanning:
+            continue
+        st = hub.monitor.status.get(id)
+        radios = (st.router or {}).get("radios") if st else None
+        if not radios:
+            say(f"{id}: its radios aren't known yet")
+            continue
+        hub.wifi_scanning.add(id)
+        try:
+            ubus = hub.ubus(id)
+            for r in radios:
+                ifaces = [i for i in r.get("interfaces") or [] if i.get("ifname")]
+                ap = next((i for i in ifaces if i.get("mode") == "ap"), ifaces[0] if ifaces else None)
+                if r.get("disabled") or ap is None:
+                    continue
+                entry: dict[str, Any] = {
+                    "t": time.time(),
+                    "device": id,
+                    "radio": r["name"],
+                    "band": r.get("band"),
+                    "channel": r.get("channel"),
+                }
+                try:
+                    entry["neighbours"] = await ow.scan(ubus, ap["ifname"])
+                except ow.UbusError as e:
+                    if e.code in (6, ow.DENIED):
+                        say(f"{id}: not allowed (tick “Scan for neighbouring Wi-Fi networks” in its setup)")
+                        break
+                    raise
+                for key, call in (("survey", ow.survey), ("freqs", ow.freqlist)):
+                    try:
+                        entry[key] = await call(ubus, ap["ifname"])
+                    except Exception:
+                        entry[key] = []
+                bssids = []
+                for i in ifaces:
+                    try:
+                        info = await ow.iface_info(ubus, i["ifname"])
+                        if info["bssid"]:
+                            bssids.append(info["bssid"])
+                    except Exception:
+                        pass
+                entry["bssids"] = bssids
+                found.append(entry)
+                say(f"{id} {r['name']} ({r.get('band')}): {len(entry['neighbours'])} networks heard")
+        except Exception as e:
+            say(f"{id}: {str(e)[:160] or type(e).__name__}")
+        finally:
+            hub.wifi_scanning.discard(id)
+    if found:
+        await asyncio.to_thread(hub.wifi_scans.add, found)
+    return len(found)
+
+
+def due(scan_at: str | None, last: str | None, now: datetime) -> bool:
+    """Whether the daily scan is due: past `scan_at` (local "HH:MM") today and not yet run today."""
+    if not scan_at:
+        return False
+    h, m = (int(x) for x in scan_at.split(":"))
+    today = now.date().isoformat()
+    return (
+        (now.hour, now.minute) >= (h, m)
+        and last != today
+        and (now.hour * 60 + now.minute) - (h * 60 + m) < 120
+    )
+
+
+async def run(hub: Hub) -> None:
+    """The daily scan at `wifi.scan_at` (a quiet hour), if any radio may scan."""
+    log = logging.getLogger(__name__)
+    marker = hub.wifi_scans.folder / "last-scheduled"
+    while True:
+        await asyncio.sleep(60)
+        if hub.demo:
+            continue
+        try:
+            last = marker.read_text().strip() if marker.exists() else None
+            now = datetime.now().astimezone()
+            if due(hub.config.wifi.scan_at, last, now):
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text(now.date().isoformat())
+                n = await scan_all(hub)
+                log.info("Wi-Fi: scheduled scan of %d radios", n)
+        except Exception:
+            log.exception("the scheduled Wi-Fi scan failed")
+
+
+def _scan_view(s: dict[str, Any]) -> dict[str, Any]:
+    """A scan as the page shows it: neighbours by channel."""
+    by_channel: dict[str, list[dict[str, Any]]] = {}
+    for n in s.get("neighbours") or []:
+        by_channel.setdefault(str(n.get("channel")), []).append(
+            {"ssid": n.get("ssid") or "(hidden)", "signal": n.get("signal"), "width": n.get("width")}
+        )
+    return {
+        "t": s.get("t"),
+        "band": s.get("band"),
+        "channel": s.get("channel"),
+        "neighbours": by_channel,
+        "survey": [x for x in s.get("survey") or [] if x.get("busy") is not None],
+    }

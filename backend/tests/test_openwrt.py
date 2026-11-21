@@ -134,6 +134,12 @@ class FakeRpcd:
     def handle(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/cgi-bin/cgi-upload":
             return self.upload(request)
+        if request.url.path == "/cgi-bin/cgi-backup":  # cgi-io checks the session's cgi-io access
+            sid = request.content.decode().removeprefix("sessionid=")
+            ok = sid == self.session and any(
+                "backup" in acl()[g].get("read", {}).get("cgi-io", []) for g in self.groups
+            )
+            return httpx.Response(200, content=BACKUP) if ok else httpx.Response(403)
         body = json.loads(request.content)
         session, obj, method, args = body["params"]
         self.calls.append((obj, method, args))
@@ -190,6 +196,17 @@ class FakeRpcd:
             ("uci", "get"): {"values": self.wireless},
             ("rpc-sys", "packagelist"): {"packages": {"luci": "1", "wpad-basic-wolfssl": "1"}},
             ("rpc-sys", "upgrade_test"): {"code": 0},
+            ("log", "read"): {
+                "log": [
+                    {
+                        "msg": "dropbear[1]: Exit (root)",
+                        "priority": 30,
+                        "source": 1,
+                        "time": 1_700_000_000_000,
+                        "id": 9,
+                    }
+                ]
+            },
             ("rpc-sys", "upgrade_start"): {},
             ("rpc-sys", "password_set"): {},
             ("luci", "getFeatures"): {
@@ -227,6 +244,22 @@ class FakeRpcd:
                 self.wireless.setdefault(sec, {}).update(vals)
             self.staged = {}
         return httpx.Response(200, json={"result": [0, answers.get((obj, method), {})]})
+
+
+def _backup() -> bytes:
+    import io
+    import tarfile
+
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as t:
+        data = b"config system\n"
+        info = tarfile.TarInfo("etc/config/system")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    return out.getvalue()
+
+
+BACKUP = _backup()
 
 
 def ubus(tmp_path: Path, rpcd: FakeRpcd, password: str = "pw") -> ow.Ubus:
@@ -476,7 +509,8 @@ def test_the_certificate_from_the_setup() -> None:
     assert "rpcd-mod-rpcsys" not in install_script({"wifi"}, md5crypt("pw"))
 
 
-async def test_pinning_checks_the_certificate_itself(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["openwrt", "fritzbox"])
+async def test_pinning_checks_the_certificate_itself(tmp_path: Path, kind: str) -> None:
     """A real TLS server: the pinned fingerprint passes even if the certificate has expired; any
     other certificate gets nothing (not even the request)."""
     import asyncio
@@ -523,16 +557,28 @@ async def test_pinning_checks_the_certificate_itself(tmp_path: Path) -> None:
     server = await asyncio.start_server(serve, "127.0.0.1", 0, ssl=ctx)
     port = server.sockets[0].getsockname()[1]
     pins = ow.Pins(tmp_path / "pins")
-    u = ow.Ubus("r", "127.0.0.1", port, "kastellan", "pw", pins)
+    if kind == "openwrt":
+        u = ow.Ubus("r", "127.0.0.1", port, "kastellan", "pw", pins)
+        request = u.session_id
+    else:
+        from kastellan.fritzbox.client import Fritz
+
+        box = Fritz("r", "127.0.0.1", port, "kastellan", "pw", pins)
+
+        async def request():
+            status, body = await box.request("GET", "/tr64desc.xml")
+            assert status == 200
+            return json.loads(body)["result"][1]["ubus_rpc_session"]
+
     async with server:
         with pytest.raises(ow.ChangedCertificate):
-            await u.session_id()  # nothing pinned
+            await request()  # nothing pinned
         pins.set("r", "0" * 64)
         with pytest.raises(ow.ChangedCertificate):
-            await u.session_id()
+            await request()
         assert not any(got)  # the password was never sent
         pins.set("r", hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest())
-        assert await u.session_id() == "s"  # expired, but the very certificate
+        assert await request() == "s"  # expired, but the very certificate
 
 
 async def test_a_group_lined_up_and_changed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -696,3 +742,33 @@ def test_the_openvpn_status_script(tmp_path: Path) -> None:
     assert found["alice"].address == "203.0.113.5:51000"
     assert found["bob"].since == "2026-11-21T08:00:00+00:00" and found["bob"].tx == 6
     assert found["carol"].address == "[2001:db8::1]:5000"
+
+
+async def test_logs_and_backups_need_their_own_groups(tmp_path: Path) -> None:
+    rpcd = FakeRpcd([])
+    u = ubus(tmp_path, rpcd)
+    with pytest.raises(ow.UbusError):
+        await ow.read_log(u)
+    with pytest.raises(ow.UbusError):
+        await ow.backup(u)
+    rpcd = FakeRpcd(["kastellan-logs", "kastellan-backup"])
+    u = ubus(tmp_path, rpcd)
+    (entry,) = await ow.read_log(u)
+    assert entry["msg"] == "dropbear[1]: Exit (root)"
+    assert await ow.backup(u) == BACKUP
+
+
+async def test_wifi_change_is_one_apply_and_refuses_a_stale_network(tmp_path, monkeypatch) -> None:
+    from kastellan.openwrt import sync
+
+    monkeypatch.setattr(ow, "CONFIRM_AFTER", 0)
+    rpcd = FakeRpcd(["kastellan-wifi"])
+    u = ubus(tmp_path, rpcd)
+    current = (await u.call("uci", "get", {"config": "wireless"}))["values"]
+    section, net = next(
+        (k, v) for k, v in current.items() if v.get(".type") == "wifi-iface" and v.get("mode", "ap") == "ap"
+    )
+    result = await sync.change_network({"ap": u}, net["ssid"], {"ssid": "Changed", "disabled": False})
+    assert result == {"ap": "done"}
+    with pytest.raises(ValueError, match="network changed"):
+        await ow.remove_network(u, section, expected_ssid=net["ssid"])

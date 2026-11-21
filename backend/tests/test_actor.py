@@ -1011,6 +1011,8 @@ def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: p
     asked: list[tuple[str, str | None]] = []
 
     async def fake_act(keys, device, ability, name=None, on_step=None):
+        if ability == "journal":
+            return {"lines": []}
         asked.append((ability, name))
         return {"ok": True}
 
@@ -1181,3 +1183,146 @@ def test_log_contents_never_reach_host_syslog(monkeypatch, capsys) -> None:
         namespace["done"]({"unit": "nginx.service", "lines": ["secret=hunter2"]})
     assert "hunter2" in capsys.readouterr().out
     assert "hunter2" not in str(seen) and "nginx.service" in str(seen)
+
+
+def test_reading_the_journal_after_a_cursor(host, tmp_path: Path) -> None:
+    _, run = host
+    journal = tmp_path / "journalctl"
+    entries = [
+        {
+            "__CURSOR": "s=1;i=1",
+            "__REALTIME_TIMESTAMP": "1700000000000000",
+            "PRIORITY": "6",
+            "SYSLOG_IDENTIFIER": "sshd",
+            "MESSAGE": "Accepted publickey for ada",
+        },
+        {
+            "__CURSOR": "s=1;i=2",
+            "__REALTIME_TIMESTAMP": "1700000001000000",
+            "PRIORITY": "3",
+            "_COMM": "dockerd",
+            "CONTAINER_NAME": "app",
+            "MESSAGE": [104, 105, 27, 91, 49, 109],
+        },
+    ]
+    journal.write_text(
+        f"#!{sys.executable}\nimport sys, json\n"
+        "open(sys.argv[0] + '.args', 'w').write(' '.join(sys.argv[1:]))\n"
+        f"for e in {entries!r}:\n    print(json.dumps(e))\n"
+    )
+    journal.chmod(0o755)
+    folder = run.folder  # type: ignore[attr-defined]
+    code = actor.ability_script("journal").replace(
+        '"/usr/bin/journalctl", "/bin/journalctl"', f"{str(journal)!r},"
+    )
+    script = folder / "journal"
+    script.write_text(code)
+
+    def read(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-I", str(script), *args], capture_output=True, text=True, timeout=30
+        )
+
+    r = read("-")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["cursor"] == "s=1;i=2"
+    assert [(x["program"], x["level"], x["container"]) for x in out["lines"]] == [
+        ("sshd", 6, ""),
+        ("dockerd", 3, "app"),
+    ]
+    assert out["lines"][1]["msg"].startswith("hi")
+    assert "-n 500" in (tmp_path / "journalctl.args").read_text()
+    assert read("s=1;i=2").returncode == 0
+    assert "--after-cursor=s=1;i=2" in (tmp_path / "journalctl.args").read_text()
+    for bad in ("", "a b", "x;y$(id)", "--since=1"):
+        assert read(bad).returncode == 2, bad
+    assert "journal" in actor.READING
+    script_text = actor.install_script({"journal"}, [], KEY, None)
+    assert "NOPASSWD: $py -I -S /usr/local/lib/kastellan/act/journal *" in script_text
+
+
+def test_every_containers_log_since_a_time(host) -> None:
+    fake, run = host
+    r = run("docker-logs", "-", allow="")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert [(x["container"], x["stderr"], x["msg"]) for x in out["lines"]] == [
+        ("app", False, "hello"),
+        ("app", True, " error : oops"),
+    ]
+    assert out["since"] == "1795255201.000000000"
+    again = json.loads(run("docker-logs", out["since"], allow="").stdout)
+    assert again["lines"] == [] and again["since"] == out["since"]  # nothing newer
+    fake.find("app")["HostConfig"] = {"LogConfig": {"Type": "journald"}}  # comes with the journal
+    assert json.loads(run("docker-logs", "-", allow="").stdout)["lines"] == []
+    for bad in ("", "1.2.3", "now", "1;id"):
+        assert run("docker-logs", bad, allow="").returncode == 2, bad
+
+
+async def test_large_journal_batches_are_not_truncated() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from kastellan.config import Device
+
+    result = {"lines": [{"msg": "x" * 1000}] * 200, "cursor": "s=1;i=200"}
+    payload = json.dumps(result)
+
+    class Output:
+        async def readexactly(self, n):
+            assert n > len(payload) > 65536
+            raise asyncio.IncompleteReadError(payload, n)
+
+    async def errors():
+        for line in []:
+            yield line
+
+    async def wait(**kw):
+        return SimpleNamespace(exit_status=0)
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def create_process(self, command, **kw):
+            assert command == "journal s=1;i=100"
+            return SimpleNamespace(stdout=Output(), stderr=errors(), wait=wait)
+
+    class Keys:
+        async def connect(self, *args):
+            return Connection()
+
+    assert await actor.act(Keys(), Device(host="host", act={}), "journal", "s=1;i=100") == result
+
+
+def test_docker_log_batches_keep_the_earliest_unread_entries(host) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    fake, run = host
+    original = fake.handle
+    fake.find("app")["Config"]["Tty"] = True
+
+    def handle(method, path, body):
+        if "/logs?" in path:
+            query = parse_qs(urlsplit(path).query)
+            assert query["tail"] == ["all"]
+            after = float(query["since"][0]) - 1795255200
+            return 200, b"".join(
+                f"2026-11-21T10:00:{i // 100:02d}.{i % 100:02d}0000000Z entry {i}\n".encode()
+                for i in range(2500)
+                if i / 100 >= after
+            )
+        return original(method, path, body)
+
+    fake.handle = handle
+    first = json.loads(run("docker-logs", "1795255199", allow="").stdout)
+    second = json.loads(run("docker-logs", first["since"], allow="").stdout)
+    assert [ln["msg"] for ln in first["lines"] + second["lines"]] == [f"entry {i}" for i in range(2500)]
+    fake.handle = lambda method, path, body: (
+        (500, b"failed") if "/logs?" in path else original(method, path, body)
+    )
+    assert run("docker-logs", second["since"], allow="").returncode != 0

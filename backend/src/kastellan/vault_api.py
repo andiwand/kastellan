@@ -85,7 +85,7 @@ class EntryForm(BaseModel):
 
 def own(id: str) -> bool:
     """Kastellan's own keys: made and replaced by Kastellan (rotation), never edited here."""
-    return id.startswith("ssh/") or id == PUSH_ID
+    return id.startswith("ssh/") or id in (PUSH_ID, "device-backups", "syslog-ca-key")
 
 
 def router(hub: Hub) -> APIRouter:
@@ -121,9 +121,17 @@ def router(hub: Hub) -> APIRouter:
             out.append("push notifications")
         if id == SALT_SECRET:
             out.append("groups: Wi-Fi password fingerprints")
+        if id == "syslog-ca-key":
+            out.append("syslog certificate authority")
+        if id == "device-backups":
+            out.append("device backup encryption")
         for dev, device in hub.config.devices.items():
             if device.openwrt is not None and hub.openwrt_secret(dev) == id:
                 out.append(f"{dev}: its OpenWrt login")
+            if device.fritzbox is not None and hub.fritz_secret(dev) == id:
+                out.append(f"{dev}: its FRITZ!Box login")
+            if device.fritzbox is not None and id == f"fritzbox-export-{dev}":
+                out.append(f"{dev}: its backup export password")
         for vid, vpn in hub.config.vpns.items():
             if vpn.kind == "wireguard" and vpn.password_secret == id:
                 out.append(f"{hub.config.vpn_name(vid)}: its wg-easy login")

@@ -1,0 +1,97 @@
+# The host's journal since a cursor (journald's, as the hub kept it from last time; "-": the last
+# 500 entries), for Kastellan's Logs page. Reads only: no lock, nothing changes. At most MAX
+# entries a time; the hub asks again from the last one's cursor.
+import selectors
+import subprocess
+
+CURSOR = re.compile(r"-|[A-Za-z0-9=;]{1,400}")  # journald's cursors: s=...;i=...;b=...;m=...;t=...;x=...
+if len(sys.argv) != 2 or not CURSOR.fullmatch(sys.argv[1]):
+    fail("wrong arguments", 2)
+cursor = sys.argv[1]
+MAX, MAX_LINE, MAX_BYTES = 2000, 2000, 4_000_000
+ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
+JOURNALCTL = next((p for p in ("/usr/bin/journalctl", "/bin/journalctl") if os.path.exists(p)), None)
+if JOURNALCTL is None:
+    fail("no journalctl on this host")
+FIELDS = "MESSAGE,PRIORITY,SYSLOG_IDENTIFIER,_COMM,_SYSTEMD_UNIT,CONTAINER_NAME"
+
+
+def read(fields):
+    """Up to MAX entries as journalctl gives them (JSON, one per line); stops it after that."""
+    argv = [JOURNALCTL, "--no-pager", "--quiet", "-o", "json"]
+    if fields:
+        argv.append("--output-fields=" + FIELDS)
+    argv += ["-n", "500"] if cursor == "-" else ["--after-cursor=" + cursor]
+    entries, buffer, size = [], b"", 0
+    with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                          env={"PATH": "/usr/bin:/bin", "SYSTEMD_COLORS": "0"}) as p:
+        deadline = time.monotonic() + 40
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(p.stdout, selectors.EVENT_READ)
+                while len(entries) < MAX and size < MAX_BYTES:
+                    left = deadline - time.monotonic()
+                    if left <= 0 or not selector.select(left):
+                        break
+                    chunk = os.read(p.stdout.fileno(), 65536)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    buffer += chunk
+                    *lines, buffer = buffer.split(b"\n")
+                    for ln in lines:
+                        if ln.strip():
+                            try:
+                                entries.append(json.loads(ln))
+                            except ValueError:
+                                pass
+            if p.poll() is None:
+                p.kill()
+            code = p.wait(timeout=5)
+            err = p.stderr.read().decode(errors="replace")
+        finally:
+            if p.poll() is None:
+                p.kill()
+    return entries[:MAX], code, err
+
+
+def text(value):
+    if isinstance(value, list):  # binary messages come as a list of bytes
+        try:
+            value = bytes(value).decode("utf-8", "replace")
+        except (TypeError, ValueError):
+            value = ""
+    return ESCAPES.sub(" ", str(value or ""))[:MAX_LINE]
+
+
+entries, code, err = read(True)
+if not entries and code not in (0, -9) and "output-fields" in err:  # an older journalctl
+    entries, code, err = read(False)
+if not entries and code not in (0, -9) and "cursor" in err.lower():  # a journal rotated away
+    cursor = "-"
+    entries, code, err = read(True)
+if not entries and code != 0:
+    fail("journalctl failed or exceeded its read limit")
+lines, consumed, size = [], [], 0
+for e in entries:
+    try:
+        t = int(e.get("__REALTIME_TIMESTAMP") or 0) / 1e6
+        level = int(e.get("PRIORITY", 6))
+    except (TypeError, ValueError):
+        continue
+    row = {
+        "t": t,
+        "level": max(0, min(7, level)),
+        "program": text(e.get("SYSLOG_IDENTIFIER") or e.get("_COMM") or e.get("_SYSTEMD_UNIT"))[:64],
+        "unit": text(e.get("_SYSTEMD_UNIT"))[:120],
+        "container": text(e.get("CONTAINER_NAME"))[:128],
+        "msg": text(e.get("MESSAGE")),
+    }
+    needed = len(json.dumps(row)) + 2
+    if size + needed > 6_000_000:
+        break
+    size += needed
+    lines.append(row)
+    consumed.append(e)
+last = next((e.get("__CURSOR") for e in reversed(consumed) if e.get("__CURSOR")), None)
+done({"lines": lines, "cursor": last if last and CURSOR.fullmatch(last) else sys.argv[1]})

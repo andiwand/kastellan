@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from .checks import Result
 from .config import Check, Config, Device
+from .demo_more import FRITZ, WIFI_SURVEY  # noqa: F401  (the demo's other made-up parts)
 from .history import History, Row
 from .software import Software
 from .tls import Cert, public_name
@@ -39,6 +40,7 @@ CONFIG = {
             "host": "192.168.178.1",
             "kind": "router",
             "driver": "fritzbox",
+            "fritzbox": {"user": "kastellan"},
             "tags": ["mesh master"],
             "checks": ["ping", {"http": "https://192.168.178.1", "name": "web"}],
         },

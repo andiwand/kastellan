@@ -14,6 +14,10 @@
 	import GlobeLock from '@lucide/svelte/icons/globe-lock';
 	import LockKeyhole from '@lucide/svelte/icons/lock-keyhole';
 	import Settings from '@lucide/svelte/icons/settings';
+	import ScrollText from '@lucide/svelte/icons/scroll-text';
+	import Globe from '@lucide/svelte/icons/globe';
+	import Wifi from '@lucide/svelte/icons/wifi';
+	import DatabaseBackup from '@lucide/svelte/icons/database-backup';
 	import CircleArrowUp from '@lucide/svelte/icons/circle-arrow-up';
 	import { updatesOf } from '#lib/updates.js';
 	import { runner } from '#lib/runner.svelte.js';
@@ -39,11 +43,15 @@
 	}[] = [
 		{ href: '/', label: 'Overview', icon: LayoutDashboard },
 		{ href: '/devices', label: 'Devices', icon: MonitorSmartphone },
+		{ href: '/internet', label: 'Internet', icon: Globe },
+		{ href: '/wifi', label: 'Wi-Fi', icon: Wifi, admin: true },
 		{ href: '/containers', label: 'Containers', icon: Container },
 		{ href: '/vms', label: 'Virtual machines', short: 'VMs', icon: ServerCog },
 		{ href: '/groups', label: 'Groups', icon: Group, admin: true },
 		{ href: '/services', label: 'Services', icon: AppWindow },
 		{ href: '/vpn', label: 'VPN', icon: GlobeLock },
+		{ href: '/logs', label: 'Logs', icon: ScrollText, admin: true },
+		{ href: '/backups', label: 'Backups', icon: DatabaseBackup, admin: true },
 		{ href: '/updates', label: 'Updates', icon: CircleArrowUp },
 		{ href: '/keys', label: 'Keys', icon: LockKeyhole, admin: true },
 		{ href: '/settings', label: 'Settings', icon: Settings, admin: true }

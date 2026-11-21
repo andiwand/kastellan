@@ -1,4 +1,5 @@
 <script lang="ts">
+	import InternetSummary from '#lib/components/InternetSummary.svelte';
 	import { store } from '#lib/state.svelte.js';
 	import { deviceBuckets, needsAttention, statusOf, uptimeOf, type Status } from '#lib/status.js';
 	import { ago, ms, percent, stateFor } from '#lib/format.js';
@@ -337,6 +338,7 @@
 
 		<!-- Activity -->
 		<section>
+			<InternetSummary />
 			<h2 class="mb-3 text-sm font-semibold">Last 24 hours</h2>
 			<div class="card p-2">
 				{#if store.activity.length === 0}

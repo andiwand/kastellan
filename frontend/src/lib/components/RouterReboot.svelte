@@ -1,17 +1,17 @@
 <script lang="ts">
-	import { api } from '#lib/api.js';
+	import { api, more } from '#lib/api.js';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
-	/** Reboot an OpenWrt device through its API, from the top of its page (next to Terminal):
-	 * asked once more, then said how it went. */
-	let { device }: { device: string } = $props();
+	/** Reboot an OpenWrt device (or, with `kind`, a FRITZ!Box) through its API, from the top of
+	 * its page (next to Terminal): asked once more, then said how it went. */
+	let { device, kind = 'openwrt' }: { device: string; kind?: 'openwrt' | 'fritzbox' } = $props();
 	let asking = $state(false);
 	let note = $state<{ ok: boolean; text: string } | null>(null);
 
 	async function reboot() {
 		asking = false;
 		try {
-			await api.openwrtReboot(device);
+			await (kind === 'fritzbox' ? more.fritzReboot(device) : api.openwrtReboot(device));
 			note = { ok: true, text: 'Rebooting; back in a minute or two.' };
 		} catch (e) {
 			note = { ok: false, text: (e as Error).message };

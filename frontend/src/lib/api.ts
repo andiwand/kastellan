@@ -63,6 +63,11 @@ export interface Device {
 	router?: RouterReport | null;
 	router_checked?: string | null;
 	router_error?: string | null;
+	syslog_cert?: boolean; // it has a certificate to send syslog over TLS
+	fritzbox?: boolean; // a FRITZ!Box Kastellan reads through TR-064 with its own user
+	fritz?: FritzReport | null;
+	fritz_checked?: string | null;
+	fritz_error?: string | null;
 	host_report?: HostReport | null;
 	host_forecast?: Record<string, number> | null; // days until full, per mount (disks.py)
 	/** libvirt's virtual machines on the host, from its collector (null: it can't tell). */
@@ -267,6 +272,29 @@ export interface Settings {
 		sites: { sites: Record<string, string> };
 		users: { users: Record<string, { role: 'admin' | 'observer'; password?: string }> };
 		maintenance: { maintenance: MaintenanceWindowForm[] };
+		logs: {
+			logs: {
+				days?: number;
+				max_lines?: number;
+				syslog?: { enabled?: boolean; port?: number };
+				syslog_tls?: { enabled?: boolean; port?: number };
+			} | null;
+		};
+		device_backups: { device_backups: { every_hours?: number; keep?: number } | null };
+		wifi: { wifi: { scan_at?: string | null } | null };
+		internet: {
+			internet: {
+				enabled?: boolean;
+				router?: string | null;
+				targets?: string[];
+				speedtest?: {
+					enabled?: boolean;
+					every_hours?: number;
+					booked_down?: number | null;
+					booked_up?: number | null;
+				};
+			} | null;
+		};
 		backups: {
 			backups: Record<string, { name?: string; device: string; within_hours?: number }>;
 		};
@@ -951,6 +979,427 @@ export interface Me {
 	user: string | null;
 	role: 'admin' | 'observer' | null;
 }
+
+// --- Central logs (logs.py) -----------------------------------------------------------------
+
+export interface LogLine {
+	id: number;
+	ts: number; // seconds since the epoch
+	device: string;
+	source: string; // syslog, kernel, fritzbox, ...
+	program: string;
+	level: number; // 0 emerg .. 7 debug
+	msg: string;
+	verified: boolean; // false: came in on the open syslog port
+}
+
+export interface LogFilter {
+	device?: string[];
+	source?: string[];
+	program?: string[];
+	level?: number;
+	since?: number;
+	until?: number;
+	q?: string;
+	before?: number;
+	after?: number;
+	limit?: number;
+}
+
+export interface LogFacets {
+	devices: Record<string, number>;
+	sources: Record<string, number>;
+	programs: Record<string, number>;
+	total: number;
+}
+
+export interface LogSources {
+	devices: Record<
+		string,
+		{ how: string; ok?: string | null; error?: string | null; denied?: boolean; new?: number }
+	>;
+	syslog: {
+		enabled: boolean;
+		listening: boolean;
+		port: number | null;
+		error: string | null;
+		received: number;
+		refused: number;
+	};
+	syslog_tls: {
+		enabled: boolean;
+		listening: boolean;
+		port: number | null;
+		error: string | null;
+		received: number;
+		refused: number;
+	};
+	days: number;
+	max_lines: number;
+}
+
+// --- Device configuration backups (devbackups.py) ------------------------------------------
+
+export interface BackupVersion {
+	id: string;
+	kind: string;
+	taken: string;
+	checked: string; // last seen the same
+	files: number;
+	size: number;
+	by: string | null;
+}
+
+export interface BackupStatus {
+	tried?: string;
+	ok?: string;
+	error?: string | null;
+	denied?: boolean;
+	new?: boolean;
+}
+
+export interface DeviceBackups {
+	device: string;
+	kind: string | null;
+	versions: BackupVersion[];
+	status: BackupStatus;
+	every_hours: number;
+}
+
+export interface DeviceBackupSummary {
+	device: string;
+	kind: string | null;
+	versions: number;
+	latest: BackupVersion | null;
+	status: BackupStatus;
+}
+
+export interface BackupDiff {
+	added: string[];
+	removed: string[];
+	changed: {
+		path: string;
+		size: [number, number];
+		secret?: boolean;
+		binary?: boolean;
+		only_secrets?: boolean;
+		diff?: string[];
+	}[];
+}
+
+// --- FRITZ!Box (fritzbox/client.py) --------------------------------------------------------
+
+export interface FritzWifi {
+	index: number;
+	ssid: string | null;
+	enabled: boolean;
+	status: string | null;
+	channel: number | null;
+	possible_channels: number[];
+	standard: string | null;
+	encryption: string | null;
+	band: '2g' | '5g' | '6g' | null;
+	guest: boolean;
+	clients: number;
+	bssid: string | null;
+	wps?: boolean;
+}
+
+export interface FritzReport {
+	model: string | null;
+	firmware: string | null;
+	uptime: number | null;
+	update?: { available: boolean; version: string | null };
+	internet: {
+		access?: string;
+		link?: string;
+		max_up?: number | null;
+		max_down?: number | null;
+		connection?: string;
+		connected_for?: number | null;
+		address?: string | null;
+		address_v6?: string | null;
+		last_error?: string | null;
+		dsl?: {
+			status: string | null;
+			up: number | null;
+			down: number | null;
+			max_up: number | null;
+			max_down: number | null;
+			snr_up: number | null;
+			snr_down: number | null;
+			crc?: number | null;
+			fec?: number | null;
+			errored_seconds?: number | null;
+		};
+		rate?: { down?: number; up?: number } | null;
+	};
+	wifi: FritzWifi[];
+	clients: {
+		name: string | null;
+		mac: string | null;
+		address: string | null;
+		via: string | null;
+		speed: number | null;
+		guest: boolean;
+	}[];
+	forwards:
+		| {
+				enabled: boolean;
+				protocol: string | null;
+				port: number | null;
+				to: string | null;
+				to_port: number | null;
+				name: string | null;
+		  }[]
+		| null;
+	remote: { remote_access?: boolean; remote_port?: number | null; myfritz?: boolean };
+	errors: Record<string, string>;
+}
+
+// --- The internet connection (internet.py) -------------------------------------------------
+
+export interface InternetSample {
+	t: number;
+	state: 'up' | 'degraded' | 'down' | 'unknown';
+	step: string | null;
+	why?: string | null;
+	router_ms: number | null;
+	line: boolean | null;
+	loss: number | null;
+	ms: number | null;
+	jitter: number | null;
+	v6_loss: number | null;
+	v6_ms: number | null;
+	dns_ms: number | null;
+	down: number | null;
+	up: number | null;
+	note: string | null;
+}
+
+export interface InternetOutage {
+	start: number;
+	end: number | null;
+	seconds: number;
+	step: string | null;
+	why: string;
+}
+
+export interface SpeedTestResult {
+	t: number;
+	down: number | null;
+	up: number | null;
+	ms_idle: number | null;
+	ms_loaded: number | null;
+	server: string;
+	by: string | null;
+}
+
+export interface InternetView {
+	enabled: boolean;
+	router: string | null;
+	now: InternetSample | null;
+	line: {
+		address?: string | null;
+		address_v6?: string | null;
+		connected_for?: number | null;
+		access?: string | null;
+		max_down?: number | null;
+		max_up?: number | null;
+		dsl?: FritzReport['internet']['dsl'];
+	};
+	outage: InternetOutage | null;
+	series: {
+		t: number;
+		state: string | null;
+		ms: number | null;
+		loss: number | null;
+		down: number | null;
+		up: number | null;
+	}[];
+	days: {
+		day: string;
+		availability: number | null;
+		down_seconds: number;
+		degraded_seconds: number;
+		ms: number | null;
+	}[];
+	months: { month: string; availability: number | null; down_seconds: number }[];
+	outages: InternetOutage[];
+	events: { t: number; kind: string; text: string }[];
+	speedtests: SpeedTestResult[];
+	speedtest: {
+		enabled: boolean;
+		every_hours: number;
+		booked_down: number | null;
+		booked_up: number | null;
+		server: string;
+		testing: boolean;
+		error: string | null;
+	};
+	targets: string[];
+}
+
+// --- Wi-Fi (wifi.py) ------------------------------------------------------------------------
+
+export interface WifiNetworkEntry {
+	device: string;
+	section: string;
+	radio: string;
+	band: string | null;
+	encryption: string | null;
+	key: string | null; // a fingerprint
+	disabled: boolean;
+	kind: 'openwrt' | 'fritzbox';
+	guest: boolean;
+	clients?: number;
+}
+
+export interface WifiNetwork {
+	ssid: string;
+	on: WifiNetworkEntry[];
+	devices: string[];
+	bands: string[];
+	same_key: boolean | null;
+	same_encryption: boolean;
+	off: string[];
+	guest: boolean;
+}
+
+export interface WifiRadio {
+	device: string;
+	radio: string;
+	kind: 'openwrt' | 'fritzbox';
+	band: '2g' | '5g';
+	channel: number | null;
+	width: number;
+	htmode: string | null;
+	clients: number | null;
+	neighbours: number;
+	hears: Record<string, number>;
+	busy: number | null;
+	scanned: number | null;
+	allowed: number[] | null;
+}
+
+export interface WifiScanView {
+	t: number;
+	band: string;
+	channel: number;
+	neighbours: Record<string, { ssid: string; signal: number | null; width: number | null }[]>;
+	survey: { mhz: number; busy: number; noise: number | null }[];
+}
+
+export interface WifiOverview {
+	networks: WifiNetwork[];
+	radios: WifiRadio[];
+	errors: Record<string, string>;
+	scans: Record<string, WifiScanView>;
+	plans: {
+		t: number;
+		by: string;
+		before: number | null;
+		after: number | null;
+		outcome: Record<string, string>;
+	}[];
+	scanning: string[];
+	scan_at: string | null; // the daily scan's local time, or null (only on request)
+}
+
+export interface ChannelPlan {
+	radios: {
+		device: string;
+		radio: string;
+		band: string;
+		current: number | null;
+		channel: number;
+		width: number;
+		htmode: string | null;
+		reason: string;
+		before: number;
+		after: number;
+		change: boolean;
+	}[];
+	before: number;
+	after: number;
+	dfs: boolean;
+	scanned: boolean;
+	hints: string[];
+}
+
+function logQuery(f: LogFilter): string {
+	const q = new URLSearchParams();
+	for (const [k, v] of Object.entries(f)) {
+		if (v === undefined || v === '' || v === null) continue;
+		if (Array.isArray(v)) for (const x of v) q.append(k, String(x));
+		else q.set(k, String(v));
+	}
+	return q.size ? `?${q}` : '';
+}
+
+const dev = (id: string) => `/devices/${encodeURIComponent(id)}`;
+
+export const more = {
+	logs: (f: LogFilter) =>
+		call<{ lines: LogLine[]; levels: string[] }>('GET', `/logs${logQuery(f)}`),
+	logFacets: (hours = 24) => get<LogFacets>('/logs/facets', { hours }),
+	logSources: () => get<LogSources>('/logs/sources'),
+	syslogState: (id: string) =>
+		get<{
+			issued: boolean;
+			issued_at: string | null;
+			enabled: boolean;
+			port: number;
+			listening: boolean;
+		}>(`/logs/syslog/${encodeURIComponent(id)}`),
+	syslogCertificate: (id: string) =>
+		call<{ ca: string; cert: string; key: string; port: number }>(
+			'POST',
+			`/logs/syslog/${encodeURIComponent(id)}/certificate`
+		),
+	syslogRevoke: (id: string) =>
+		call<{ revoked: number }>('DELETE', `/logs/syslog/${encodeURIComponent(id)}/certificate`),
+	deviceBackups: () => get<DeviceBackupSummary[]>('/device-backups'),
+	backupsOf: (id: string) => get<DeviceBackups>(`${dev(id)}/backups`),
+	backupNow: (id: string) => call<DeviceBackups & { new: boolean }>('POST', `${dev(id)}/backups`),
+	backupDiff: (id: string, older: string, newer: string) =>
+		get<BackupDiff>(`${dev(id)}/backups/diff`, { older, newer }),
+	backupFiles: (id: string, sid: string) =>
+		get<{ path: string; size: number; secret: boolean }[]>(`${dev(id)}/backups/${sid}/files`),
+	backupFile: (id: string, sid: string, path: string) =>
+		get<{ path: string; text: string | null }>(`${dev(id)}/backups/${sid}/file`, { path }),
+	backupDownload: (id: string, sid: string) => `/api${dev(id)}/backups/${sid}/download`,
+	fritzCertificate: (id: string, port: number) =>
+		call<{ fingerprint: string; pinned: string | null; port: number }>(
+			'POST',
+			`${dev(id)}/fritzbox/certificate`,
+			{ port }
+		),
+	fritzSetup: (
+		id: string,
+		body: { user: string; password: string; fingerprint: string; port: number }
+	) =>
+		call<{ model: string | null; firmware: string | null }>(
+			'POST',
+			`${dev(id)}/fritzbox/setup`,
+			body
+		),
+	fritzRemove: (id: string) => call<{ removed: boolean }>('DELETE', `${dev(id)}/fritzbox`),
+	fritzReboot: (id: string) => call<{ done: boolean }>('POST', `${dev(id)}/fritzbox/reboot`),
+	fritzFirmware: (id: string) => call<{ done: boolean }>('POST', `${dev(id)}/fritzbox/firmware`),
+	fritzWpsOff: (id: string) => call<{ done: boolean }>('POST', `${dev(id)}/fritzbox/wps-off`),
+	internet: (hours = 24) => get<InternetView>('/internet', { hours }),
+	speedtest: () => call<SpeedTestResult>('POST', '/internet/speedtest'),
+	wifiOverview: () => get<WifiOverview>('/wifi'),
+	wifiPlan: (dfs = false) => get<ChannelPlan>('/wifi/plan', { dfs: String(dfs) }),
+	wifiRadio: (body: {
+		device: string;
+		radio: string;
+		channel?: string;
+		htmode?: string;
+		txpower?: number;
+	}) => call<{ done: boolean }>('PUT', '/wifi/radios', body)
+};
 
 export const api = {
 	health: () => get<Health>('/health'),

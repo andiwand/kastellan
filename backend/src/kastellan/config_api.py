@@ -98,6 +98,10 @@ SECTIONS: dict[str, tuple[str, ...]] = {
     "users": ("users",),
     "maintenance": ("maintenance",),
     "backups": ("backups",),
+    "logs": ("logs",),
+    "device_backups": ("device_backups",),
+    "internet": ("internet",),
+    "wifi": ("wifi",),
 }
 
 
@@ -361,11 +365,15 @@ def router(hub: Hub) -> APIRouter:
             AlarmSettings,
             BackupCheck,
             Config,
+            DeviceBackupSettings,
             GroupSettings,
+            InternetSettings,
+            LogSettings,
             MaintenanceWindow,
             NetworkSettings,
             NotifyChannel,
             VulnSettings,
+            WifiSettings,
         )
 
         def dump(model, v):
@@ -379,6 +387,19 @@ def router(hub: Hub) -> APIRouter:
                 }
             if section == "alarms":
                 return {"alarms": dump(AlarmSettings, value.get("alarms") or {}) or None}
+            if section == "logs":
+                return {"logs": dump(LogSettings, value.get("logs") or {}) or None}
+            if section == "device_backups":
+                return {
+                    "device_backups": dump(DeviceBackupSettings, value.get("device_backups") or {}) or None
+                }
+            if section == "wifi":
+                v = value.get("wifi") or {}
+                out = {"scan_at": v.get("scan_at")} if v.get("scan_at", "04:00") != "04:00" else {}
+                WifiSettings.model_validate(v)
+                return {"wifi": out or None}
+            if section == "internet":
+                return {"internet": dump(InternetSettings, value.get("internet") or {}) or None}
             if section == "vulns":
                 return {"vulns": dump(VulnSettings, value.get("vulns") or {}) or None}
             if section == "notify":
@@ -447,8 +468,15 @@ def router(hub: Hub) -> APIRouter:
         w = guard(request)
         # Kastellan's own: OpenWrt logins and the group fingerprints' key. A VPN's form names its
         # wg-easy secret, so that name alone must not let a form overwrite one of these.
-        own = {"group-fingerprints", *(hub.openwrt_secret(id) for id in hub.config.devices)}
-        if name not in wg_secrets(hub.config) or name in own or name.startswith("openwrt-"):
+        own = {
+            "group-fingerprints",
+            "device-backups",
+            "syslog-ca-key",
+            *(hub.openwrt_secret(id) for id in hub.config.devices),
+            *(hub.fritz_secret(id) for id in hub.config.devices),
+        }
+        mine = name.startswith(("openwrt-", "fritzbox-"))
+        if name not in wg_secrets(hub.config) or name in own or mine:
             raise HTTPException(403, "that secret isn't set from here")
         try:
             hub.secrets.set(name, body.value)

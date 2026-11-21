@@ -45,6 +45,9 @@ ABILITIES = {
     "stop-container": "Stop containers",
     "container-logs": "Read containers' logs (the last lines)",
     "unit-logs": "Read services' logs (the last lines of a systemd unit's journal)",
+    "journal": "Read the host's journal as it goes on, for the Logs page (logins, services, kernel,"
+    " containers that log to journald)",
+    "docker-logs": "Read every container's log as it goes on, for the Logs page (through Docker)",
     "vm-start": "Start virtual machines (libvirt)",
     "vm-shutdown": "Shut virtual machines down (as the power button would)",
     "vm-reboot": "Restart virtual machines",
@@ -61,7 +64,14 @@ CONTAINER_ABILITIES = (
     "container-logs",
 )
 UNIT_ABILITIES = ("unit-logs",)
-READING = ("container-logs", "unit-logs")  # change nothing
+READING = ("container-logs", "unit-logs", "journal", "docker-logs")  # change nothing
+# Reading where it left off: a journald cursor, a Docker log time ("-" for none); no list of names.
+CURSORS = {
+    "journal": re.compile(r"-|[A-Za-z0-9=;]{1,400}"),
+    "docker-logs": re.compile(r"-|\d{1,12}(\.\d{1,9})?"),
+}
+CURSOR_ABILITIES = tuple(CURSORS)
+CURSOR = CURSORS["journal"]
 UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
 REPLACING = ("update-container", "rollback-container")  # with act-containers (the swap)
 VM_ABILITIES = ("vm-start", "vm-shutdown", "vm-reboot", "vm-force-off")
@@ -155,7 +165,7 @@ def install_script(
             )
             if listed is not None and allowed is not None:
                 listed = allowed[ability]
-            args = " *" if listed is not None else ' ""'
+            args = " *" if listed is not None or ability in CURSOR_ABILITIES else ' ""'
             rules.append(f"{user} ALL=(root) NOPASSWD: $py -I -S {script}{args}")
             if listed is not None:
                 # The names as quoted words, not in a heredoc: no name can end it early.
@@ -286,6 +296,8 @@ LIMITS = {
     "stop-container": 180,
     "container-logs": 60,
     "unit-logs": 60,
+    "journal": 90,
+    "docker-logs": 120,
     "vm-start": 180,
     "vm-shutdown": 300,
     "vm-reboot": 180,
@@ -315,6 +327,10 @@ async def act(
         if not name or not VM_NAME.fullmatch(name):
             raise ValueError("a VM name is letters, digits, _ . + -")
         words.append(name)
+    elif ability in CURSOR_ABILITIES:
+        if not name or not CURSORS[ability].fullmatch(name):
+            raise ValueError("where to read from (or -)")
+        words.append(name)
     elif ability in UNIT_ABILITIES:
         if not name or not UNIT.fullmatch(name):
             raise ValueError("a unit name ends in .service, .timer, .socket, ...")
@@ -324,7 +340,18 @@ async def act(
     errors: list[str] = []
     async with asyncio.timeout(LIMITS[ability]), await keys.connect(target_of(device), "act") as conn:
         process = await conn.create_process(" ".join(words), stdin=asyncssh.DEVNULL)
-        out = asyncio.ensure_future(process.stdout.read())  # alongside: neither pipe fills up
+
+        async def read_output() -> str:
+            # Journals can contain 2000 entries; truncating their JSON to 64 KB made
+            # normal batches unreadable. Still put a limit on remote output.
+            try:
+                await process.stdout.readexactly(8 * 1024 * 1024)
+            except asyncio.IncompleteReadError as e:
+                return str(e.partial)
+            process.close()
+            raise RuntimeError("the host's answer is too large")
+
+        out = asyncio.ensure_future(read_output())  # alongside: neither pipe fills up
         async for line in process.stderr:
             line = str(line).rstrip("\n")
             if line.startswith(STEP):
@@ -334,7 +361,7 @@ async def act(
                     on_step(text)
             elif line.strip():
                 errors = [*errors, line][-20:]
-        stdout = str(await out)[-65536:]
+        stdout = await out
         code = (await process.wait(check=False)).exit_status
     if code != 0:
         raise RuntimeError(errors[-1][:300] if errors else f"exit {code}")

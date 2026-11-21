@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 import os
@@ -19,7 +20,21 @@ from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from . import __version__, config_edit, demo, docker, maintenance, notify, releases, vulns
+from . import (
+    __version__,
+    config_edit,
+    demo,
+    demo_more,
+    devbackups,
+    docker,
+    internet_api,
+    logs_poll,
+    maintenance,
+    notify,
+    releases,
+    vulns,
+    wifi_api,
+)
 from . import config as config_mod
 from .access import hub_address
 from .alarms import Alarms, Message, Problem, Severity, evaluate
@@ -30,9 +45,13 @@ from .config import Config, Device, NotifyChannel, Role
 from .desktop_api import Tickets
 from .disks import DiskHistory
 from .drivers import DRIVERS
+from .fritzbox import client as fritz_client
+from .fritzbox.client import Fritz
 from .history import History
 from .host import actor, collector
 from .hub_errors import yaml_problem
+from .internet import Internet
+from .logs import LogStore
 from .monitor import DeviceStatus, Monitor, run_check
 from .networks import Resolver, default_gateway
 from .openwrt import client as openwrt_client
@@ -43,11 +62,13 @@ from .registry import Registries
 from .secrets import Secrets
 from .settings import Settings
 from .ssh import Keys
+from .syslog_tls import Authority
 from .terminals import Terminals
 from .vault import AUTO, KASTELLAN, Damaged, Vault, WrongKey, policy
 from .versions import Versions
 from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status, split_status
 from .vuln_policy import assess, auto_update_reason
+from .wifi import Scans
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +80,7 @@ RESOLVE_EVERY = 300  # seconds between looking up device names
 RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
 DRIVER_EVERY = 600
+FRITZ_EVERY = 60
 ACTIVE_WINDOW = 30 * 60  # a ring that stays open while admins are here: used within this
 ALARMS_EVERY = 30
 VULNS_FIRST = 120
@@ -123,6 +145,37 @@ class Hub:
         self.alarms = Alarms(data)
         self.disks = DiskHistory(data)
         self.backups = Backups(data)
+        self.logs = LogStore(data / "logs.db")  # central logs (logs.py)
+        self.log_status: dict[str, dict[str, Any]] = {}  # per device: how fetching its log went
+        self.syslog = logs_poll.Syslog()  # the open syslog port, when config.yaml turns it on
+        self.syslog_tls = logs_poll.SyslogTls()  # syslog over TLS with client certificates
+        self.syslog_ca = Authority(data / "syslog", self.own_secret)
+        # Device configuration backups (devbackups.py): encrypted with a key of Kastellan's own.
+        self.device_backups = devbackups.Store(
+            data / "device-backups",
+            demo_more.demo_key
+            if self.demo
+            else lambda: base64.b64decode(self.own_secret(devbackups.KEY_SECRET, devbackups.new_key)),
+        )
+        self.backup_status: dict[str, dict[str, Any]] = {}  # per device: the last attempt
+        self.internet = Internet(data / "internet")  # the internet connection (internet.py)
+        self.wifi_scans = Scans(data / "wifi")  # what the radios heard (wifi.py)
+        self.wifi_scanning: set[str] = set()  # devices scanning now
+        if self.demo:  # the made-up network's logs, backups, line and scans
+            now_t = time.time()
+            self.logs.add(demo_more.log_lines(now_t - 86400, now_t))
+            demo_more.seed_backups(self.device_backups)
+            demo_more.seed_internet(self.internet, now_t)
+            self.wifi_scans.add(demo_more.scans(now_t))
+            for id in ("repeater-living", "repeater-attic"):
+                self.log_status[id] = {
+                    "how": "openwrt",
+                    "ok": datetime.now(UTC).isoformat(timespec="seconds"),
+                }
+            self.log_status["fritzbox"] = {
+                "how": "fritzbox",
+                "ok": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
         self.latest_release: releases.Release | None = None  # Kastellan's newest (releases.py)
         if self.demo:  # the made-up backups reported in: one last night, one failed this morning
             now = datetime.now(UTC)
@@ -151,6 +204,8 @@ class Hub:
         self.registries = Registries()
         self._background: set[asyncio.Task[None]] = set()  # automatic updates under way
         self.pins = Pins(settings.data / "openwrt")
+        self.fritz_pins = Pins(settings.data / "fritzbox")  # FRITZ!Boxes' confirmed certificates
+        self._fritz: dict[tuple[str, str, int, str], Fritz] = {}
         self.releases = Releases()
         self._ubus: dict[tuple[str, str, int, str], Ubus] = {}
         self.heartbeat_ok: datetime | None = None
@@ -319,6 +374,11 @@ class Hub:
             asyncio.create_task(self._heartbeat(), name="heartbeat"),
             asyncio.create_task(self._check_releases(), name="Kastellan releases"),
             asyncio.create_task(self._poll_routers(), name="OpenWrt devices"),
+            asyncio.create_task(logs_poll.run(self), name="logs"),
+            asyncio.create_task(self._poll_fritzboxes(), name="FRITZ!Boxes"),
+            asyncio.create_task(devbackups.run(self), name="device backups"),
+            asyncio.create_task(internet_api.run(self), name="internet connection"),
+            asyncio.create_task(wifi_api.run(self), name="scheduled Wi-Fi scans"),
         ]
 
     async def stop(self) -> None:
@@ -331,6 +391,7 @@ class Hub:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await self.monitor.stop()
+        self.logs.close()
         if self._demo_dir:
             shutil.rmtree(self._demo_dir, ignore_errors=True)
 
@@ -534,7 +595,7 @@ class Hub:
         gone = self.vault.lock(ring, by_hand=by_hand)
         if not self.vault.is_open(KASTELLAN):
             self.push.forget_key()
-            self._ubus = {}
+            self._ubus, self._fritz = {}, {}
         return gone
 
     async def _relock(self) -> None:
@@ -548,7 +609,19 @@ class Hub:
                 self.audit.record("vault.lock", None, None, ring=rid, by="its policy")
             if not self.vault.is_open(KASTELLAN):
                 self.push.forget_key()
-                self._ubus = {}
+                self._ubus, self._fritz = {}, {}
+
+    def own_secret(self, name: str, make=None) -> str:
+        """A secret Kastellan makes for itself (a key, a password only it uses): read, or made
+        the first time (`make()`, default a random token) and kept."""
+        try:
+            return self.secrets.get(name)
+        except KeyError:
+            import secrets as random
+
+            value = make() if make else random.token_urlsafe(24)
+            self.secrets.set(name, value)
+            return value
 
     # --- OpenWrt devices (openwrt/) ------------------------------------------------------------
 
@@ -562,8 +635,8 @@ class Hub:
         assert device.openwrt is not None
         key = (id, device.host, device.openwrt.port, device.openwrt.user)
         client = self._ubus.get(key)
-        if client is None:
-            password = self.secrets.get(self.openwrt_secret(id))
+        password = self.secrets.get(self.openwrt_secret(id))
+        if client is None or client.password != password:
             client = Ubus(id, device.host, device.openwrt.port, device.openwrt.user, password, self.pins)
             self._ubus = {k: v for k, v in self._ubus.items() if k[0] != id} | {key: client}
         return client
@@ -627,6 +700,71 @@ class Hub:
                 routers = [(id, d) for id, d in list(self.config.devices.items()) if d.openwrt]
                 await asyncio.gather(*(one(id, d) for id, d in routers), return_exceptions=True)
             await asyncio.sleep(ROUTER_EVERY)
+
+    # --- FRITZ!Boxes (fritzbox/) ---------------------------------------------------------------
+
+    def fritz_secret(self, id: str) -> str:
+        device = self.config.devices[id]
+        return (device.fritzbox.password_secret if device.fritzbox else None) or f"fritzbox-{id}"
+
+    def fritz(self, id: str) -> Fritz:
+        """The FRITZ!Box's TR-064 with Kastellan's user (kept: its service list is read once)."""
+        device = self.config.devices[id]
+        assert device.fritzbox is not None
+        key = (id, device.host, device.fritzbox.port, device.fritzbox.user)
+        client = self._fritz.get(key)
+        password = self.secrets.get(self.fritz_secret(id))
+        if client is None or client.password != password:
+            client = Fritz(
+                id, device.host, device.fritzbox.port, device.fritzbox.user, password, self.fritz_pins
+            )
+            self._fritz = {k: v for k, v in self._fritz.items() if k[0] != id} | {key: client}
+        return client
+
+    async def _poll_fritzboxes(self) -> None:
+        """Every FRITZ!Box with a login: its state every FRITZ_EVERY seconds."""
+
+        async def one(id: str) -> None:
+            status = self.monitor.status.get(id)
+            if status is None:
+                return
+            try:
+                async with asyncio.timeout(90):
+                    report = await fritz_client.read(self.fritz(id))
+            except Exception as e:
+                status.fritz_error = _brief(e)
+                log.info("%s: %s", id, status.fritz_error)
+                return
+            old = (status.fritz or {}).get("internet", {}).get("rate") or {}
+            new = report["internet"].get("rate") or {}
+            if (
+                all(isinstance(r.get(k), (int, float)) for r in (new, old) for k in ("rx", "tx", "at"))
+                and new["at"] > old["at"]
+                and new["rx"] >= old["rx"]
+                and new["tx"] >= old["tx"]
+            ):  # A reset or wrap is unknown, not a huge burst of traffic.
+                span = new["at"] - old["at"]
+                new["down"] = (new["rx"] - old["rx"]) * 8 / span
+                new["up"] = (new["tx"] - old["tx"]) * 8 / span
+            status.fritz, status.fritz_checked, status.fritz_error = report, datetime.now(UTC), None
+            status.info = {
+                "model": report.get("model"),
+                "name": None,
+                "firmware": f"FRITZ!OS {report['firmware']}" if report.get("firmware") else None,
+            }
+            status.info_checked = datetime.now(UTC)
+            if report.get("firmware"):
+                self._note_firmware(id, f"FRITZ!OS {report['firmware']}", datetime.now(UTC))
+
+        while True:
+            if self.demo:
+                for id, report in demo.FRITZ.items():
+                    if status := self.monitor.status.get(id):
+                        status.fritz, status.fritz_checked = report, datetime.now(UTC)
+            else:
+                boxes = [id for id, d in list(self.config.devices.items()) if d.fritzbox]
+                await asyncio.gather(*(one(id) for id in boxes), return_exceptions=True)
+            await asyncio.sleep(FRITZ_EVERY)
 
     def openvpns_on(self, device: str) -> list[str]:
         """The OpenVPN VPNs whose server is this device."""
@@ -803,6 +941,8 @@ class Hub:
                 )
                 problems += self._vuln_problems()
                 problems += self.backups.problems(self.config, now)
+                problems += devbackups.problems(self, now)
+                problems += internet_api.problems(self)
                 problems += self.alarms.carry(self._vuln_keys_unknown())
                 problems += self.alarms.carry(unjudged)
                 # Muted or removed devices: their alarms end without a "back up".
@@ -910,6 +1050,31 @@ class Hub:
                 key = f"openwrt:{id}:{fw['newest_in_series']}"
                 title = f"{label}: OpenWrt {fw['newest_in_series']} is out (it runs {fw.get('current')})"
                 if m := self.alarms.event(key, title, "a bug-fix release of its series", id, now, send):
+                    out.append(m)
+            # A FRITZ!Box: an update FRITZ!OS offers; a new port forward or way in from outside.
+            fritz = status.fritz or {}
+            if (fritz.get("update") or {}).get("available"):
+                version = fritz["update"].get("version") or "a newer FRITZ!OS"
+                if m := self.alarms.event(
+                    f"fritzos:{id}:{version}", f"{label}: {version} can be installed", "", id, now, send
+                ):
+                    out.append(m)
+            for f in fritz.get("forwards") or []:
+                if f.get("enabled"):
+                    what = f"{f.get('protocol')} {f.get('port')} → {f.get('to')}:{f.get('to_port')}"
+                    if m := self.alarms.event(
+                        f"forward:{id}:{what}",
+                        f"{label}: a port forward is on: {what}",
+                        f.get("name") or "",
+                        id,
+                        now,
+                        send,
+                    ):
+                        out.append(m)
+            remote = fritz.get("remote") or {}
+            for way, name in (("remote_access", "remote access (HTTPS)"), ("myfritz", "MyFRITZ!")):
+                key, title = f"fritz-{way}:{id}", f"{label}: {name} is on"
+                if remote.get(way) and (m := self.alarms.event(key, title, "a way in", id, now, send)):
                     out.append(m)
             # The host wants a reboot (kernel or libc updates): once per set of packages.
             updates = (status.host or {}).get("updates") or {}  # normalized (host/report.py)

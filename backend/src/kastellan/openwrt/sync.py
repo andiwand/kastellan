@@ -99,20 +99,26 @@ async def survey(members: dict[str, ow.Ubus | Exception], salt: bytes) -> dict[s
 
 
 async def change_network(
-    members: dict[str, ow.Ubus],
+    members: dict[str, ow.Ubus | Exception],
     ssid: str,
-    values: dict[str, str],
+    values: dict[str, Any],
     say=None,
 ) -> dict[str, str]:
     """Set name/password/encryption on every member's access point network called `ssid`, one
     device after the other, each applied with its rollback. The outcome per device. (Not the
     mesh: changed device by device it would cut members off; that is set_mesh.)"""
-    clean = {k: v for k, v in values.items() if k in ("ssid", "key", "encryption") and v}
+    clean = {
+        k: v
+        for k, v in values.items()
+        if k in ("ssid", "key", "encryption", "disabled") and v is not None and v != ""
+    }
     if not clean:
         raise ValueError("nothing to change")
     outcome: dict[str, str] = {}
     for id, ubus in members.items():
         try:
+            if isinstance(ubus, Exception):
+                raise ubus
             current = (await ubus.call("uci", "get", {"config": "wireless"})).get("values", {})
             sections = [
                 n for n, s in _ifaces(current) if s.get("mode", "ap") == "ap" and s.get("ssid") == ssid
@@ -120,7 +126,7 @@ async def change_network(
             if not sections:
                 outcome[id] = "doesn't have it"
                 continue
-            await ow.change_wifi(ubus, {n: clean for n in sections})
+            await ow.change_wifi(ubus, {n: clean for n in sections}, expected_ssid=ssid)
             outcome[id] = "done"
         except Exception as e:
             outcome[id] = f"failed: {str(e)[:160] or type(e).__name__}"

@@ -84,6 +84,25 @@
 	};
 
 	let backups = $state<{ id: string; name: string; device: string; within_hours: number }[]>([]);
+	let logs = $state({
+		days: 14,
+		max_lines: 1_000_000,
+		syslog: false,
+		port: 5514,
+		tls: false,
+		tlsPort: 6514
+	});
+	let devBackups = $state({ every_hours: 24, keep: 60 });
+	let wifiScan = $state({ on: true, at: '04:00' });
+	let net = $state({
+		enabled: true,
+		router: '',
+		targets: '1.1.1.1, 9.9.9.9, 8.8.8.8',
+		speed: false,
+		every_hours: 24,
+		booked_down: '' as string | number,
+		booked_up: '' as string | number
+	});
 
 	// What was loaded, to tell what changed (as JSON).
 	let base = $state<Record<string, string>>({});
@@ -133,6 +152,42 @@
 				within_hours: b.within_hours ?? 26
 			}));
 			next.backups = json(backups);
+		}
+		if (clean('logs', logs)) {
+			const l = s.logs?.logs ?? {};
+			logs = {
+				days: l.days ?? 14,
+				max_lines: l.max_lines ?? 1_000_000,
+				syslog: l.syslog?.enabled ?? false,
+				port: l.syslog?.port ?? 5514,
+				tls: l.syslog_tls?.enabled ?? false,
+				tlsPort: l.syslog_tls?.port ?? 6514
+			};
+			next.logs = json(logs);
+		}
+		if (clean('device_backups', devBackups)) {
+			const b = s.device_backups?.device_backups ?? {};
+			devBackups = { every_hours: b.every_hours ?? 24, keep: b.keep ?? 60 };
+			next.device_backups = json(devBackups);
+		}
+		if (clean('wifi', wifiScan)) {
+			const w = s.wifi?.wifi;
+			const at = w && 'scan_at' in w ? w.scan_at : '04:00';
+			wifiScan = { on: at !== null, at: at ?? '04:00' };
+			next.wifi = json(wifiScan);
+		}
+		if (clean('internet', net)) {
+			const i = s.internet?.internet ?? {};
+			net = {
+				enabled: i.enabled ?? true,
+				router: i.router ?? '',
+				targets: (i.targets ?? ['1.1.1.1', '9.9.9.9', '8.8.8.8']).join(', '),
+				speed: i.speedtest?.enabled ?? false,
+				every_hours: i.speedtest?.every_hours ?? 24,
+				booked_down: i.speedtest?.booked_down ?? '',
+				booked_up: i.speedtest?.booked_up ?? ''
+			};
+			next.internet = json(net);
 		}
 		if (clean('users', users)) {
 			users = Object.entries(s.users.users ?? {}).map(([name, u]) => ({
@@ -252,6 +307,152 @@
 				/>
 				Tell me when a newer Kastellan is out (asks GitHub once a day; sends nothing about this hub)
 			</label>
+		</SettingsCard>
+
+		<SettingsCard
+			title="Internet"
+			description="Router and outside targets for connectivity checks. Speed tests use bandwidth and are off by default."
+			dirty={json(net) !== base.internet}
+			reset={() => (net = JSON.parse(base.internet))}
+			save={() =>
+				save('internet', {
+					internet: {
+						...settings.data?.sections.internet.internet,
+						enabled: net.enabled,
+						router: net.router || null,
+						targets: net.targets
+							.split(/[\s,]+/)
+							.map((t) => t.trim())
+							.filter(Boolean),
+						speedtest: {
+							...settings.data?.sections.internet.internet?.speedtest,
+							enabled: net.speed,
+							every_hours: net.every_hours,
+							booked_down: net.booked_down === '' ? null : Number(net.booked_down),
+							booked_up: net.booked_up === '' ? null : Number(net.booked_up)
+						}
+					}
+				})}
+		>
+			<label class="choice text-sm">
+				<input type="checkbox" bind:checked={net.enabled} /> Check the internet connection
+			</label>
+			<div class="grid gap-4 sm:grid-cols-2">
+				<label class="field">
+					Router (whose line it is)
+					<select class="input" bind:value={net.router}>
+						<option value="">find it (the gateway, the FRITZ!Box)</option>
+						{#each (store.devices ?? []).filter((d) => d.kind === 'router') as d (d.id)}
+							<option value={d.id}>{d.name}</option>
+						{/each}
+					</select>
+				</label>
+				<label class="field">
+					Addresses to ping
+					<input class="input" bind:value={net.targets} />
+				</label>
+			</div>
+			<label class="choice text-sm">
+				<input type="checkbox" bind:checked={net.speed} /> Scheduled speed tests (deferred while the line
+				is busy)
+			</label>
+			<div class="grid gap-4 sm:grid-cols-3">
+				<label class="field">
+					Every (hours)
+					<input class="input" type="number" min="1" bind:value={net.every_hours} />
+				</label>
+				<label class="field">
+					Booked download (Mbit/s)
+					<input class="input" type="number" min="1" bind:value={net.booked_down} />
+				</label>
+				<label class="field">
+					Booked upload (Mbit/s)
+					<input class="input" type="number" min="1" bind:value={net.booked_up} />
+				</label>
+			</div>
+		</SettingsCard>
+
+		<SettingsCard
+			title="Wi-Fi scans"
+			description="Daily OpenWrt scans for channel suggestions. Clients may briefly pause; choose a quiet hour."
+			dirty={json(wifiScan) !== base.wifi}
+			reset={() => (wifiScan = JSON.parse(base.wifi))}
+			save={() => save('wifi', { wifi: { scan_at: wifiScan.on ? wifiScan.at : null } })}
+		>
+			<label class="choice text-sm">
+				<input type="checkbox" bind:checked={wifiScan.on} /> Scan every day
+			</label>
+			{#if wifiScan.on}
+				<label class="field sm:w-48">
+					At (the hub's time)
+					<input class="input" type="time" bind:value={wifiScan.at} />
+				</label>
+			{/if}
+		</SettingsCard>
+
+		<SettingsCard
+			title="Logs"
+			description="Log retention and optional UDP syslog. Syslog is unencrypted and forgeable; known-device messages are marked unverified. Publish the UDP port in Docker."
+			dirty={json(logs) !== base.logs}
+			reset={() => (logs = JSON.parse(base.logs))}
+			save={() =>
+				save('logs', {
+					logs: {
+						days: logs.days,
+						max_lines: logs.max_lines,
+						syslog: { enabled: logs.syslog, port: logs.port },
+						syslog_tls: { enabled: logs.tls, port: logs.tlsPort }
+					}
+				})}
+		>
+			<div class="grid gap-4 sm:grid-cols-2">
+				<label class="field">
+					Keep (days)
+					<input class="input" type="number" min="1" max="365" bind:value={logs.days} />
+				</label>
+				<label class="field">
+					At most (lines)
+					<input class="input" type="number" min="10000" step="10000" bind:value={logs.max_lines} />
+				</label>
+			</div>
+			<label class="choice text-sm">
+				<input type="checkbox" bind:checked={logs.syslog} /> Take syslog on an open UDP port (unencrypted)
+			</label>
+			{#if logs.syslog}
+				<label class="field sm:w-48">
+					Port
+					<input class="input" type="number" min="1" max="65535" bind:value={logs.port} />
+				</label>
+			{/if}
+			<label class="choice text-sm">
+				<input type="checkbox" bind:checked={logs.tls} /> Take syslog over TLS (encrypted; each device
+				proves itself with a certificate Kastellan issues it, on its Setup tab)
+			</label>
+			{#if logs.tls}
+				<label class="field sm:w-48">
+					TLS port
+					<input class="input" type="number" min="1" max="65535" bind:value={logs.tlsPort} />
+				</label>
+			{/if}
+		</SettingsCard>
+
+		<SettingsCard
+			title="Device configuration backups"
+			description="Encrypted OpenWrt and FRITZ!Box configuration backups, with version comparisons."
+			dirty={json(devBackups) !== base.device_backups}
+			reset={() => (devBackups = JSON.parse(base.device_backups))}
+			save={() => save('device_backups', { device_backups: devBackups })}
+		>
+			<div class="grid gap-4 sm:grid-cols-2">
+				<label class="field">
+					Every (hours)
+					<input class="input" type="number" min="1" bind:value={devBackups.every_hours} />
+				</label>
+				<label class="field">
+					Keep (versions per device)
+					<input class="input" type="number" min="1" max="1000" bind:value={devBackups.keep} />
+				</label>
+			</div>
 		</SettingsCard>
 
 		<SettingsCard

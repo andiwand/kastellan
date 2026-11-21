@@ -25,7 +25,7 @@ Self-hosted checks, alerts and device administration, with permissions you choos
 - **Find problems:** dependency-aware alarms, UPS power status, disk forecasts, backup reports and vulnerability
   lookups (NVD, OSV, CISA KEV). Notifications through ntfy, Gotify, Telegram, e-mail, webhooks
   and browser push, with maintenance windows and optional reminders.
-- **Manage:** Docker containers, libvirt VMs, apt updates, OpenWrt Wi-Fi and firmware;
+- **Manage:** Docker containers, libvirt VMs, apt updates, OpenWrt and FRITZ!Box Wi-Fi and firmware;
   container rollback and logs, SSH terminals, RDP/VNC desktops and device web pages.
 - **Control access:** WireGuard via wg-easy, OpenVPN via easy-rsa, SSH key rotation and group
   synchronization, encrypted key rings.
@@ -184,6 +184,7 @@ Collector and actor permissions are enforced on the device:
 | Actor | Selected container/VM actions, apt updates and reboot; separate sudo rules and allow lists. |
 | Restricted OpenVPN | Certificate and revocation-list helpers only. Direct mode uses a normal SSH login. |
 | OpenWrt | Pinned HTTPS connection with selected rpcd abilities; Wi-Fi changes use rollback. |
+| FRITZ!Box | Pinned HTTPS/TR-064 with a dedicated account; changes have no automatic rollback. |
 | Normal SSH | The configured user's permissions, including root or passwordless sudo if you grant them. |
 
 Normal SSH access is broader than the restricted helpers. OpenSSH source-address restrictions
@@ -209,7 +210,9 @@ After upgrading Kastellan, check the changelog for helper reinstallation require
 Stop Kastellan before copying both `config/` and `data/` for a consistent backup. Keep recovery
 keys and any external unlock keys separately. Restore both directories and their permissions
 before starting the same Kastellan version. Backups contain credentials; protect them accordingly.
-Automatic config-file backups cover edits only. There is no complete backup/restore workflow yet.
+Device backups preserve OpenWrt configuration archives and FRITZ!Box exports. Extract a FRITZ!Box
+ZIP before restoring its `.export`; the included `export-password.txt` contains the restore password.
+These and automatic config-file backups do not replace a complete hub backup.
 
 ## Development
 

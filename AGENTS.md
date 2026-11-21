@@ -12,7 +12,7 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
 ## Layout
 
 - `backend/src/kastellan/` (Python 3.13, FastAPI, managed with uv):
-  - `config.py`: `config.yaml` is the only configuration; there is no database. A `Device` has a
+  - `config.py`: `config.yaml` is the only configuration; SQLite is used only for device logs. A `Device` has a
     `host`, a `kind`, an optional `parent` (what it hangs off: alarms fold a device into its parent's; the "via" link; meant for infrastructure links, not which access point
     a client uses), `tags`, `always_on` (default: false
     for `pc` and `laptop`), a `site` (where it is; None is `home`), an optional `runs_on:
@@ -88,6 +88,56 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `<data>/backups.json`; made on the device page, audited). The Guard lets exactly those two
     paths through without session or CSRF header (`auth_api.REPORT_PATH`); wrong tokens hit a
     `Brake`. `Backups.problems` (warning, `backup:<id>`, on its device): failed, late, never.
+  - `logs.py` + `logs_poll.py` + `logs_api.py`: central logs in SQLite (`<data>/logs.db`, opened on
+    first use; `logs.days`, `logs.max_lines`). Lines come from OpenWrt's logd (`log read`, the
+    login's `logs` ability; cursor = newest time + ids at it, in the `state` table), a FRITZ!Box's
+    event log (`fritzbox/client.log_lines`, its local time), Linux hosts' journals (the actor's
+    `journal` ability: `act-journal <cursor|->`, JSON entries after the cursor, at most 2000 a
+    call; containers logging to journald come as source `container`), containers' own logs
+    (`docker-logs <since|->`: every container not on journald, Docker API with timestamps,
+    the newest "<s>.<ns>" as the next since), WireGuard presence (`logs_poll.wireguard`: a
+    line when a wg-easy client's handshake turns recent or goes quiet for 5 min), syslog over
+    TLS (`syslog_tls.py`: Kastellan's own CA, key in the secret `syslog-ca-key`, cert
+    `<data>/syslog/ca.pem`; client certificates per device, CN = device id, serials in
+    `issued.json`, revocable; the listener's certificate is made at each start; RFC 6587
+    framing; lines verified) and the opt-in UDP syslog port
+    (`logs.syslog`, off by default; only from known devices' addresses, `verified = False`).
+    `hub.log_status` says per device how fetching went. Reading: signed-in admins (demo excepted); a search is audited
+    (filters only, never lines; `X-Kastellan-Auto` follow requests aren't).
+  - `devbackups.py` + `devbackups_api.py`: device configuration backups (OpenWrt `sysupgrade -b`
+    via cgi-io's `cgi-backup`, the `backup` ability; FRITZ!Box export with the secret
+    `fritzbox-export-<id>`). Files content-addressed in `<data>/device-backups/objects`,
+    AES-GCM under the secret `device-backups` (hash as AAD), an index per device; a backup equal
+    to the newest version (exact content and ownership, `File.key`) only moves its `checked`.
+    Changed FRITZ!Box ciphertext must be kept: it may be a changed password. Exports retain
+    their original bytes; downloads bundle the export and its password in a ZIP. Diffs mask
+    known UCI credential fields; unknown file formats are hidden (`secret_file`). HMAC
+    fingerprints use `group-fingerprints`. Taken by `devbackups.run` every
+    `device_backups.every_hours`; failures beyond two periods warn (`devbackup:<id>`).
+  - `fritzbox/client.py` + `fritzbox_api.py`: TR-064 over HTTPS (49443) with a FRITZ!Box user
+    (`fritzbox: {user, port}`, secret `fritzbox-<id>`), Digest auth by hand over a TLS connection
+    whose certificate is pinned (`<data>/fritzbox/<id>.sha256`, confirmed by an admin at setup:
+    `POST .../fritzbox/certificate`, then `/setup`). `read()` → `status.fritz` every 60 s
+    (`hub._poll_fritzboxes`); events for FRITZ!OS updates, enabled port forwards, remote access,
+    MyFRITZ!. AVM's 866 (second factor) says to confirm on the box. Tested against a fake box
+    with Digest (tests/test_fritzbox.py).
+  - `internet.py` + `internet_api.py`: a look every `internet.every` s: router ping, the line as
+    the router says (`line_from`: FRITZ!Box connection, OpenWrt WAN interface), outside targets
+    (v4, v6 when the hub has it), DNS; `look` places a failure at router → line → internet → dns.
+    Samples per day in `<data>/internet/*.jsonl` (31 days), day sums in `state.json` (3 years),
+    outages/events/speed tests as JSON lines. `internet:down` (critical, two looks) and
+    `internet:slow` (three tests below half the booked speed). The router: `internet.router`,
+    else the device at the hub's gateway, the only FRITZ!Box or OpenWrt router. Speed tests
+    (`internet.speedtest`, off by default) defer scheduled tests while the line is busy.
+  - `wifi.py` + `wifi_api.py`: networks by SSID over OpenWrt (`sync.survey`) and FRITZ!Boxes
+    (`lineup`); radios from the routers' reports; scans (`scan` ability: iwinfo scan/survey/
+    freqlist/info) kept in `<data>/wifi/scans.jsonl`; `plan()` picks channels per band
+    (exhaustive for few radios): our radios apart (by what they hear of each other, else assumed
+    near), away from loud neighbours and busy channels, 2.4 GHz on 1/6/11 at 20 MHz, 5 GHz in
+    whole blocks of the width (40 MHz tried when 80 can't keep them apart), DFS only when asked.
+    Changes go as streamed jobs; OpenWrt uses rollback, FRITZ!Box does not. `wifi_api.run`: a daily scan at
+    `wifi.scan_at` (local time, default 04:00; null: only on request), marked done per day in
+    `<data>/wifi/last-scheduled`, skipped if the hub starts more than two hours after it.
   - `releases.py`: GitHub’s highest published version (including 0.x prereleases), daily (`hub._check_releases`, not in demo mode, off
     with `check_releases: false`); `/api/health` `newer`, and an info event once per version.
   - Alarms only from fresh results (after `hub.started`, not overdue); folding to the top-most
@@ -226,7 +276,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     setting up again with a login: the hub's keys may run these scripts, never replace them.
   - `openwrt/` + `openwrt_api.py`: OpenWrt devices through ubus over HTTPS (as LuCI). `setup.py`
     makes an rpcd login `kastellan` (md5crypt hash; the password is the secret
-    `openwrt-<id>`) and `/usr/share/rpcd/acl.d/kastellan.json` with one group per ability;
+    `openwrt-<id>`) and `/usr/share/rpcd/acl.d/kastellan.json` with one group per ability
+    (reboot, wifi, firmware, password, services, openvpn, logs, backup, scan);
     services are acted on only through `/usr/libexec/kastellan/service` (allow list in
     `/etc/kastellan/services.allow`; rpcd/uhttpd restart only), since rpcd's `rc init` would allow any;
     `client.py` reads/acts (certificate pinned in `<data>/openwrt/<id>.pem`), Wi-Fi via uci
@@ -253,6 +304,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     computed from history rows, for the web app.
   - `hub.py`: ties it together; reloads config.yaml when its mtime changes, keeps the last good
     config on an error (`config_error`, shown in the app).
+  - `demo_more.py`: the demo's FRITZ!Box report, logs, device backups (fixed key), a week of
+    internet samples and Wi-Fi scans, seeded into the demo's temporary folder at start.
   - `demo.py`: `KASTELLAN_DEMO=1` swaps in a made-up network with simulated results (a pure
     function of device, check and time) and a backfilled day of history in a temp folder. It
     never reads config.yaml or touches the real data. Used for trying it out and the website.
@@ -315,6 +368,7 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     overflows a narrow column.
   - Routes: `/` overview, `/services` (every tcp/http check on every device), `/devices` (list, or networks with `?view=graph`; search and filters
     apply to both, the networks view fades non-matches), `/groups`, `/updates`, `/vpn`, `/keys`,
+    `/internet`, `/wifi`, `/logs`, `/backups`,
     `/settings` (tabs: forms, `?tab=access` Kastellan's SSH key, `?tab=file` config.yaml; `/config`
     and `/access` redirect there), `/devices/[id]`. Watching and setting up are split everywhere
     (`Tabs`): a device has Status / Setup / Config (`?tab=setup|config`, Config with a Form | YAML

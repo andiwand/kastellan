@@ -24,6 +24,8 @@ FORMS = {
     "stop-container": NAME,
     "container-logs": NAME,  # reads only: the last lines of its log
     "unit-logs": UNIT,  # reads only: the last lines of a systemd unit's journal
+    "journal": re.compile(r"-|[A-Za-z0-9=;]{1,400}"),  # reads only: the journal after a cursor
+    "docker-logs": re.compile(r"-|\d{1,12}(\.\d{1,9})?"),  # reads only: containers' logs since a time
     "vm-start": VM_NAME,  # libvirt's virtual machines
     "vm-shutdown": VM_NAME,
     "vm-reboot": VM_NAME,

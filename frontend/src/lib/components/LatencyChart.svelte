@@ -2,13 +2,23 @@
 	import type { Bucket } from '#lib/api.js';
 	import { clock, ms } from '#lib/format.js';
 
-	/** Mean latency per bucket: a 2 px line over a soft area, with a crosshair and a tooltip. */
+	/** Mean latency per bucket: a 2 px line over a soft area, with a crosshair and a tooltip.
+	 * With `format`, any other value per bucket (in `latency_ms`): Mbit/s, percent. */
 	let {
 		buckets,
 		start,
 		step,
-		height = 180
-	}: { buckets: Bucket[]; start: string; step: number; height?: number } = $props();
+		height = 180,
+		format = ms,
+		label = 'Latency over time'
+	}: {
+		buckets: Bucket[];
+		start: string;
+		step: number;
+		height?: number;
+		format?: (v: number) => string;
+		label?: string;
+	} = $props();
 
 	let width = $state(600);
 	let hover = $state<number | null>(null);
@@ -92,7 +102,7 @@
 		{height}
 		class="block w-full touch-none select-none"
 		role="img"
-		aria-label="Latency over time"
+		aria-label={label}
 		onpointermove={move}
 		onpointerleave={() => (hover = null)}
 	>
@@ -117,7 +127,7 @@
 				text-anchor="end"
 				class="tabular fill-faint text-[11px]"
 			>
-				{t === 0 ? '0' : ms(t)}
+				{t === 0 ? '0' : format(t)}
 			</text>
 		{/each}
 		{#each xTicks as t (t.i)}
@@ -173,7 +183,7 @@
 			style:top="{tip.top - 10}px"
 		>
 			<div class="tabular text-muted">{tip.range}</div>
-			<div class="tabular font-medium">{tip.value == null ? 'No reply' : ms(tip.value)}</div>
+			<div class="tabular font-medium">{tip.value == null ? 'No data' : format(tip.value)}</div>
 		</div>
 	{/if}
 </div>

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- **Logs:** searchable router events, Linux journals, Docker logs and WireGuard presence,
+  with live follow, retention limits and opt-in UDP or client-authenticated TLS syslog. Reading requires a signed-in admin; UDP messages
+  from known device addresses remain marked unverified.
+- **Device backups:** daily and manual OpenWrt configuration archives and FRITZ!Box exports,
+  encrypted storage, deduplication and masked comparisons. FRITZ!Box downloads include the
+  export password. The Backups page also lists reporting backup jobs.
+- **FRITZ!Box accounts:** pinned HTTPS/TR-064 access for line status, Wi-Fi, clients, port
+  forwards, events, exports, reboot and firmware updates.
+- **Internet:** connectivity checks, outages, availability history, router traffic counters
+  and opt-in speed tests with latency under load.
+- **Wi-Fi:** networks across OpenWrt and FRITZ!Box, scans and channel suggestions. Changes
+  require approval; OpenWrt uses rollback. Optional daily scans default to 04:00 hub time.
+- Settings forms for internet checks, scans, logs and device backups.
+
+### Upgrading
+
+- Set up OpenWrt logins again and tick the new abilities (logs, backup, scan) to use them;
+  existing logins keep exactly what they had. For hosts' journals, set the actor up again and
+  tick "Read the host's journal" and "Read every container's log".
+
 ### Fixed
 
 - Missing patch levels are marked uncertain when NVD distinguishes affected updates, including

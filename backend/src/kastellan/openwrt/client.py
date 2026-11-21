@@ -436,6 +436,118 @@ async def reboot(ubus: Ubus) -> None:
     await ubus.call("system", "reboot")
 
 
+async def read_log(ubus: Ubus, lines: int = 1000) -> list[dict[str, Any]]:
+    """The newest `lines` of logd's ring buffer (the `logs` ability): each with msg, priority,
+    source (0 kernel, 1 syslog), time (ms) and id. Oldest first."""
+    res = await ubus.call("log", "read", {"lines": lines, "stream": False, "oneshot": True}, timeout=30)
+    return [e for e in (res.get("log") or []) if isinstance(e, dict)]
+
+
+async def backup(ubus: Ubus) -> bytes:
+    """The configuration backup, as LuCI downloads it (`sysupgrade -b`, a .tar.gz; the `backup`
+    ability). Holds every password and key on the device."""
+    s = await ubus.session_id(min_left=60)
+    status, payload = await ubus._http(
+        "/cgi-bin/cgi-backup", f"sessionid={s}".encode(), "application/x-www-form-urlencoded", 120
+    )
+    if status == 403:
+        raise UbusError(DENIED, STATUS[DENIED])
+    if status != 200 or payload[:2] != b"\x1f\x8b":
+        raise ValueError(f"the device gave no backup (HTTP {status})")
+    return payload
+
+
+async def iface_info(ubus: Ubus, ifname: str) -> dict[str, Any]:
+    """A Wi-Fi interface's own address (bssid) and channel, as iwinfo tells it."""
+    res = await ubus.call("iwinfo", "info", {"device": ifname}, timeout=10)
+    return {"bssid": str(res.get("bssid") or "").lower() or None, "channel": res.get("channel")}
+
+
+async def wan_counters(ubus: Ubus, device: str) -> dict[str, int] | None:
+    """The byte counters of the network device behind the WAN (read: network.device status)."""
+    try:
+        res = await ubus.call("network.device", "status", {"name": device}, timeout=10)
+    except Exception:
+        return None
+    stats = res.get("statistics") or {}
+    if "rx_bytes" not in stats:
+        return None
+    return {"rx": int(stats["rx_bytes"]), "tx": int(stats["tx_bytes"])}
+
+
+async def scan(ubus: Ubus, ifname: str) -> list[dict[str, Any]]:
+    """Neighbouring networks a radio hears (the `scan` ability; clients may pause a moment)."""
+    res = await ubus.call("iwinfo", "scan", {"device": ifname}, timeout=40)
+    out = []
+    for r in res.get("results") or []:
+        enc = r.get("encryption") or {}
+        out.append(
+            {
+                "ssid": r.get("ssid"),
+                "bssid": str(r.get("bssid") or "").lower(),
+                "channel": r.get("channel"),
+                "mhz": r.get("mhz"),
+                "band": r.get("band"),
+                "signal": r.get("signal"),
+                "width": _width(r),
+                "encrypted": bool(enc.get("enabled")),
+            }
+        )
+    return out
+
+
+def _width(r: dict[str, Any]) -> int | None:
+    """The channel width a scanned network uses (MHz), from what it announces."""
+    for key, field in (
+        ("eht_operation", "channel_width"),
+        ("he_operation", "channel_width"),
+        ("vht_operation", "channel_width"),
+        ("ht_operation", "secondary_channel_offset"),
+    ):
+        op = r.get(key)
+        if not isinstance(op, dict):
+            continue
+        value = op.get(field)
+        if key == "ht_operation":
+            return 40 if value and value != "no secondary" else 20
+        if isinstance(value, int) and value > 0:
+            return 20 if value < 20 else value
+    return None
+
+
+async def survey(ubus: Ubus, ifname: str) -> list[dict[str, Any]]:
+    """How busy each channel was (iwinfo survey, the `scan` ability): per frequency the time
+    listened (active) and the time it was busy, in ms, and the noise. Older devices lack it."""
+    res = await ubus.call("iwinfo", "survey", {"device": ifname}, timeout=20)
+    out = []
+    for r in res.get("results") or []:
+        active, busy = r.get("active_time"), r.get("busy_time")
+        out.append(
+            {
+                "mhz": r.get("mhz"),
+                "noise": r.get("noise"),
+                "busy": round(100 * busy / active) if active and busy is not None else None,
+                "in_use": bool(r.get("in_use")),
+            }
+        )
+    return out
+
+
+async def freqlist(ubus: Ubus, ifname: str) -> list[dict[str, Any]]:
+    """The channels a radio may use here: channel, MHz, and whether it is restricted (DFS: it
+    must listen for radar first and may have to move)."""
+    res = await ubus.call("iwinfo", "freqlist", {"device": ifname}, timeout=15)
+    return [
+        {
+            "channel": r.get("channel"),
+            "mhz": r.get("mhz"),
+            "restricted": bool(r.get("restricted")),
+            "active": bool(r.get("active")),
+        }
+        for r in res.get("results") or []
+    ]
+
+
 # --- Wi-Fi ------------------------------------------------------------------------------------
 
 # What the page may change, per kind of section; nothing else in `wireless` is touched.
@@ -521,12 +633,20 @@ def _clean(current: dict[str, Any], changes: dict[str, dict[str, Any]]) -> dict[
 
 
 async def change_wifi(
-    ubus: Ubus, changes: dict[str, dict[str, Any]], confirm_after: float | None = None
+    ubus: Ubus,
+    changes: dict[str, dict[str, Any]],
+    confirm_after: float | None = None,
+    *,
+    expected_ssid: str | None = None,
 ) -> None:
     """Set wireless options and apply them with a rollback (see apply_with_rollback)."""
     async with ubus.changing:
         s = await ubus.session_id(min_left=200)
         current = (await ubus.call("uci", "get", {"config": "wireless"}, session=s)).get("values", {})
+        if expected_ssid is not None and any(
+            current.get(section, {}).get("ssid") != expected_ssid for section in changes
+        ):
+            raise ValueError("the network changed; refresh before applying")
         clean = _clean(current, changes)
         if not clean:
             raise ValueError("nothing to change")
@@ -540,6 +660,55 @@ async def change_wifi(
                 await ubus.call("uci", "revert", {"config": "wireless"}, session=s)
             raise
         await apply_with_rollback(ubus, s, confirm_after)
+
+
+async def add_network(
+    ubus: Ubus, radio: str, ssid: str, key: str, encryption: str, network: str = "lan"
+) -> str:
+    """A new access point network on a radio, applied with its rollback; its section."""
+    check_value("ssid", ssid)
+    check_value("encryption", encryption)
+    if encryption not in ("none", "owe"):
+        check_value("key", key)
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,32}", network):
+        raise ValueError("not a network name")
+    async with ubus.changing:
+        s = await ubus.session_id(min_left=200)
+        current = (await ubus.call("uci", "get", {"config": "wireless"}, session=s)).get("values", {})
+        if (current.get(radio) or {}).get(".type") != "wifi-device":
+            raise ValueError(f"no radio {radio}")
+        values = {"device": radio, "mode": "ap", "ssid": ssid, "encryption": encryption, "network": network}
+        if encryption not in ("none", "owe"):
+            values["key"] = key
+        try:
+            added = await ubus.call(
+                "uci", "add", {"config": "wireless", "type": "wifi-iface", "values": values}, session=s
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await ubus.call("uci", "revert", {"config": "wireless"}, session=s)
+            raise
+        await apply_with_rollback(ubus, s)
+        return str(added.get("section", ""))
+
+
+async def remove_network(ubus: Ubus, section: str, *, expected_ssid: str | None = None) -> None:
+    """An access point network removed, applied with its rollback."""
+    async with ubus.changing:
+        s = await ubus.session_id(min_left=200)
+        current = (await ubus.call("uci", "get", {"config": "wireless"}, session=s)).get("values", {})
+        sec = current.get(section) or {}
+        if sec.get(".type") != "wifi-iface" or sec.get("mode", "ap") != "ap":
+            raise ValueError(f"no access point network {section}")
+        if expected_ssid is not None and sec.get("ssid") != expected_ssid:
+            raise ValueError("the network changed; refresh before removing")
+        try:
+            await ubus.call("uci", "delete", {"config": "wireless", "section": section}, session=s)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await ubus.call("uci", "revert", {"config": "wireless"}, session=s)
+            raise
+        await apply_with_rollback(ubus, s)
 
 
 async def _radios_up(ubus: Ubus, session: str) -> dict[str, bool]:

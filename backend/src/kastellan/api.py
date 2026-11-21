@@ -24,10 +24,14 @@ from .backups_api import router as backups_router
 from .config import Check, Device, Kind
 from .config_api import router as config_router
 from .desktop_api import router as desktop_router
+from .devbackups_api import router as devbackups_router
+from .fritzbox_api import router as fritzbox_router
 from .groups_api import router as groups_router
 from .host import collector
 from .host_api import router as host_router
 from .hub import Hub
+from .internet_api import router as internet_router
+from .logs_api import router as logs_router
 from .monitor import CheckStatus, DeviceStatus
 from .networks import INTERNET, Network, network_of, networks_of, public_ways
 from .networks import Hub as NetHub
@@ -45,6 +49,7 @@ from .webproxy import Access as WebAccess
 from .webproxy import WebProxy
 from .webproxy import router as web_router
 from .webproxy import upstream as web_upstream
+from .wifi_api import router as wifi_router
 
 WEB = Path(__file__).parent / "web"
 
@@ -117,6 +122,11 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(desktop_router(hub))
     app.include_router(alarms_router(hub))
     app.include_router(backups_router(hub))
+    app.include_router(logs_router(hub))
+    app.include_router(devbackups_router(hub))
+    app.include_router(fritzbox_router(hub))
+    app.include_router(internet_router(hub))
+    app.include_router(wifi_router(hub))
     app.include_router(push_router(hub))
     app.include_router(vpn_router(hub))
     app.include_router(access_router(hub))
@@ -272,6 +282,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     @app.get("/api/devices")
     def devices() -> list[dict[str, Any]]:
         out = []
+        with_cert = hub.syslog_ca.devices()
         for id, device in hub.config.devices.items():
             status = hub.monitor.status.get(id)
             out.append(
@@ -303,6 +314,11 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "router": status.router if status else None,
                     "router_checked": status.router_checked if status else None,
                     "router_error": status.router_error if status else None,
+                    "fritzbox": device.fritzbox is not None,
+                    "syslog_cert": id in with_cert,
+                    "fritz": status.fritz if status else None,
+                    "fritz_checked": status.fritz_checked if status else None,
+                    "fritz_error": status.fritz_error if status else None,
                     "host_report": status.host if status else None,
                     "host_forecast": status.host_forecast if status else None,
                     # libvirt's VMs on the host, from its collector (None: it can't tell)

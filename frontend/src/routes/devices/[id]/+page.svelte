@@ -1,7 +1,7 @@
 <script lang="ts">
 	const HOSTS = ['server', 'pc', 'laptop', 'other'];
 	import { page } from '$app/state';
-	import { api, type Change, type Series } from '#lib/api.js';
+	import { api, more, type Change, type Series } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { statusColor, statusOf, upsLabel, upsStatus } from '#lib/status.js';
 	import { ago, dayClock } from '#lib/format.js';
@@ -35,8 +35,12 @@
 	import ActorSetup from '#lib/components/ActorSetup.svelte';
 	import HostHealth from '#lib/components/HostHealth.svelte';
 	import BackupsCard from '#lib/components/BackupsCard.svelte';
+	import ConfigBackups from '#lib/components/ConfigBackups.svelte';
 	import ReadAgain from '#lib/components/ReadAgain.svelte';
 	import RouterCard from '#lib/components/RouterCard.svelte';
+	import FritzCard from '#lib/components/FritzCard.svelte';
+	import FritzSetup from '#lib/components/FritzSetup.svelte';
+	import SyslogSetup from '#lib/components/SyslogSetup.svelte';
 	import OpenWrtSetup from '#lib/components/OpenWrtSetup.svelte';
 	import RouterReboot from '#lib/components/RouterReboot.svelte';
 	import SetupCard from '#lib/components/SetupCard.svelte';
@@ -94,6 +98,17 @@
 	let copied = $state(false);
 	let wifiOpen = $state(false);
 	let firmwareOpen = $state(false);
+	let fritzUpdate = $state<'asking' | 'started' | null>(null);
+	let fritzNote = $state<string | null>(null);
+	async function updateFritz() {
+		try {
+			await more.fritzFirmware(id);
+			fritzUpdate = 'started';
+		} catch (e) {
+			fritzUpdate = null;
+			fritzNote = (e as Error).message;
+		}
+	}
 
 	let loadError = $state<string | null>(null);
 	let latest = 0;
@@ -277,6 +292,34 @@
 					Open web interface <ExternalLink class="size-3.5 text-muted" />
 				</a>
 			{/if}
+			{#if device.fritzbox && device.fritz && store.me?.role === 'admin' && store.me.user}
+				<RouterReboot device={device.id} kind="fritzbox" />
+				{#if device.fritz.update?.available}
+					<button
+						class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
+						title="Install {device.fritz.update.version ?? 'the update FRITZ!OS offers'}"
+						onclick={() => (fritzUpdate = 'asking')}
+					>
+						<CircleFadingArrowUp class="size-4 text-muted" />
+						{fritzUpdate === 'asking'
+							? 'Install it?'
+							: fritzUpdate === 'started'
+								? 'Updating…'
+								: 'Update firmware'}
+					</button>
+					{#if fritzUpdate === 'asking'}
+						<span class="inline-flex h-9 items-center gap-2 text-sm">
+							<button class="underline" style:color="var(--critical-text)" onclick={updateFritz}>
+								Yes, it restarts
+							</button>
+							<button class="underline" onclick={() => (fritzUpdate = null)}>No</button>
+						</span>
+					{/if}
+				{/if}
+				{#if fritzNote}<span class="self-center text-xs" style:color="var(--critical-text)">
+						{fritzNote}
+					</span>{/if}
+			{/if}
 			{#if device.openwrt && device.router && store.me?.role === 'admin' && store.me.user}
 				<RouterReboot device={device.id} />
 				{#if device.router.firmware?.next_step}
@@ -376,16 +419,25 @@
 				</p>
 			{/if}
 			{@const hostLike = !device.openwrt && HOSTS.includes(device.kind)}
+			{@const fritzish = !!device.fritzbox || device.driver === 'fritzbox'}
 			{@const parts = [
 				{
 					id: 'openwrt',
-					shown: !!device.openwrt || ['router', 'access-point', 'switch'].includes(device.kind),
+					shown:
+						!!device.openwrt ||
+						(!fritzish && ['router', 'access-point', 'switch'].includes(device.kind)),
 					set: !!device.openwrt
+				},
+				{
+					id: 'fritzbox',
+					shown: fritzish || (!device.openwrt && ['router', 'access-point'].includes(device.kind)),
+					set: !!device.fritzbox
 				},
 				{ id: 'wifi', shown: !!device.openwrt && !!device.router?.radios?.length, set: true },
 				{ id: 'collector', shown: !!device.collect || hostLike, set: !!device.collect },
 				{ id: 'actor', shown: !!device.act || hostLike, set: !!device.act },
 				{ id: 'access', shown: true, set: !!device.ssh },
+				{ id: 'syslog', shown: !device.openwrt && !fritzish, set: !!device.syslog_cert },
 				{ id: 'keys', shown: !!device.ssh, set: true }
 			].filter((p) => p.shown)}
 			<!-- Keyed: going from one device's page to another's starts these afresh. -->
@@ -403,6 +455,8 @@
 										services={(device.router?.services ?? []).map((s) => s.name)}
 										allowedServices={device.router?.services_allowed ?? []}
 									/>
+								{:else if p.id === 'fritzbox'}
+									<FritzSetup device={device.id} canSetUp={!!store.me.user} />
 								{:else if p.id === 'wifi'}
 									{@const names = (device.router?.radios ?? []).flatMap((r) =>
 										r.interfaces.map((i) => i.ssid ?? i.section)
@@ -415,6 +469,8 @@
 										button="Change"
 										onclick={() => (wifiOpen = true)}
 									/>
+								{:else if p.id === 'syslog'}
+									<SyslogSetup device={device.id} canSetUp={!!store.me.user} />
 								{:else if p.id === 'collector'}
 									<CollectorSetup device={device.id} canInstall={!!store.me.user} />
 								{:else if p.id === 'actor'}
@@ -487,8 +543,22 @@
 				Kastellan can't read this OpenWrt device: {device.router_error}
 			</p>
 		{/if}
+		{#if device.fritz}
+			<FritzCard
+				device={device.id}
+				report={device.fritz}
+				checked={device.fritz_checked ?? null}
+				error={device.fritz_error ?? null}
+				canChange={store.me?.role === 'admin' && !!store.me.user}
+			/>
+		{:else if device.fritzbox && device.fritz_error}
+			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
+				Kastellan can't read this FRITZ!Box: {device.fritz_error}
+			</p>
+		{/if}
 
 		<BackupsCard device={device.id} />
+		{#if admin}<div id="config-backups"><ConfigBackups device={device.id} /></div>{/if}
 		{#if device.host_report}
 			<HostHealth
 				report={device.host_report}

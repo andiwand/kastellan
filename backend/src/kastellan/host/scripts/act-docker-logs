@@ -1,0 +1,98 @@
+# Every running container's new log lines since a time (Docker's own clock, "<seconds>.<nanos>";
+# "-": the last lines of each), for Kastellan's Logs page. Through the Docker API, as `docker
+# logs --since --timestamps` reads them. Containers that log to journald come with the host's
+# journal instead, and are left out here. Reads only: no lock, nothing changes.
+from datetime import datetime, timezone
+
+SINCE = re.compile(r"-|\d{1,12}(\.\d{1,9})?")
+if len(sys.argv) != 2 or not SINCE.fullmatch(sys.argv[1]):
+    fail("wrong arguments", 2)
+since = sys.argv[1]
+FIRST, MAX_LINES, MAX_LINE, MAX_BYTES = 100, 2000, 2000, 8_000_000
+ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
+STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z (.*)$", re.S)
+
+
+def key(stamp):
+    """"<seconds>.<nanos>" as (seconds, nanos), to compare exactly."""
+    s, _, n = stamp.partition(".")
+    return int(s), int((n or "0").ljust(9, "0")[:9])
+
+
+after = None if since == "-" else key(since)
+lines, ceiling = [], None
+for c in docker("GET", "/containers/json") or []:
+    info = docker("GET", f"/containers/{c['Id']}/json", ok=(200, 404))
+    if not isinstance(info, dict):
+        continue
+    name = str(info.get("Name") or "").lstrip("/")
+    if not NAME.fullmatch(name):
+        continue
+    if ((info.get("HostConfig") or {}).get("LogConfig") or {}).get("Type") in ("journald", "none"):
+        continue
+    query = "stdout=1&stderr=1&timestamps=1&" + (f"tail={FIRST}" if after is None else f"since={since}&tail=all")
+    conn = _Unix(30)
+    conn.request("GET", f"{api_version()}/containers/{c['Id']}/logs?{query}")
+    r = conn.getresponse()
+    raw = r.read(MAX_BYTES + 1)
+    truncated = len(raw) > MAX_BYTES
+    raw = raw[:MAX_BYTES]
+    conn.close()
+    if r.status == 404:
+        continue  # the container was removed between listing and reading
+    if r.status != 200:
+        fail("could not read a container's logs")
+    frames = []  # (stream, text): 1 stdout, 2 stderr; with a terminal, all one stream
+    if (info.get("Config") or {}).get("Tty"):
+        frames = [(1, raw.rsplit(b"\n", 1)[0] if truncated else raw)]
+    else:
+        i = 0
+        while i + 8 <= len(raw):
+            size = int.from_bytes(raw[i + 4 : i + 8], "big")
+            if i + 8 + size > len(raw):
+                truncated = True
+                break
+            frames.append((raw[i], raw[i + 8 : i + 8 + size]))
+            i += 8 + size
+    last = None
+    for stream, data in frames:
+        for ln in data.decode(errors="replace").splitlines():
+            m = STAMP.match(ln)
+            if not m:
+                continue
+            day, nanos, text = m.groups()
+            seconds = int(datetime.strptime(day, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
+            k = (seconds, int((nanos or "0").ljust(9, "0")))
+            last = k
+            if after is not None and k <= after:
+                continue
+            lines.append((k, {"t": seconds + k[1] / 1e9, "container": name, "stderr": stream == 2,
+                              "msg": ESCAPES.sub(" ", text)[:MAX_LINE]}))
+    if truncated:
+        if last is None or (after is not None and last <= after):
+            fail("container log entries exceed the read limit")
+        # The unread part may start with the same timestamp: leave that whole group for next time.
+        ceiling = min(ceiling, last) if ceiling else last
+    lines.sort(key=lambda x: x[0])
+    if len(lines) > MAX_LINES:
+        cutoff = lines[MAX_LINES][0]
+        ceiling = min(ceiling, cutoff) if ceiling else cutoff
+    if ceiling:
+        lines = [ln for ln in lines if ln[0] < ceiling]
+
+# Keep the earliest complete timestamp groups, including across containers. Never advance the
+# shared cursor past unread entries or split a group whose entries have the same timestamp.
+from itertools import groupby
+
+out, newest, size = [], after, 0
+for stamp, group in groupby(lines, key=lambda x: x[0]):
+    rows = [row for _, row in group]
+    needed = sum(len(json.dumps(row)) + 2 for row in rows)
+    if size + needed > 6_000_000:
+        break
+    out.extend(rows)
+    size += needed
+    newest = stamp
+if not out and (lines or ceiling):
+    fail("container log entries exceed the batch limit")
+done({"lines": out, "since": f"{newest[0]}.{newest[1]:09d}" if newest else since})
