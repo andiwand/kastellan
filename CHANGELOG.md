@@ -2,80 +2,54 @@
 
 ## Unreleased
 
-- Security: device web logins are never kept in the proxy's shared HTTP client or reused for
-  another browser. Removing a collector or actor removes its SSH key as its own user, so a
-  symlink in that user's home cannot direct root's deletion elsewhere.
-- Security: the OpenVPN CRL helper checks the signature verification result, including on
-  OpenSSL/LibreSSL versions that return success for a bad signature. Older CRLs are refused by
-  issue time and, when present, CRL number (including large hexadecimal numbers). OpenSSL is
-  required. **Set the VPN server's helper up again to apply these checks to existing hosts.**
-- UPS reports stop claiming a current state when stale; missing readings report no contact,
-  and unknown readings don't resolve battery alarms. Slow UPS tools share a time limit and
-  preserve other readings. Alarm folding keeps all descendants, including VMs, and mutual
-  dependencies such as a virtual router and its host keep one visible alarm.
-- Actor permission lists keep valid numeric container names separate from VM names; actions
-  refuse unexpected targets and report failed stops accurately. Removing devices clears their
-  VM and power links. Invalid IDs and cyclic parent or VM-host chains are refused.
-- A failed atomic config replacement preserves the original file; only a bind-mounted file
-  uses the overwrite fallback. Oversized numbers in host reports and invalid history ranges
-  are handled without exceptions. Device response charts fit phone screens and zero latency.
-- UPSes (`kind: ups`): read through the host they're plugged into (apcupsd or NUT, by the
-  collector; no address needed), with their own page: state, charge, runtime left, load,
-  voltages, the last time on battery and why, the battery's age. Devices say which UPS powers
-  them (`powered_by`, or from the UPS's page). Alarms: on battery (critical when low, below
-  30 % or 5 minutes), a battery to replace, no contact; what goes down while its UPS is on
-  battery waits in that alarm, which names what runs on battery. Set the collector up again
-  on the host to read it.
-- A device can be a virtual machine on another (`runs_on: {host, vm}`, or "A virtual machine
-  on another device" in its form, with a suggestion when a VM is named like it): its page
-  shows the VM's state and actions, the VM list shows the device, the network graph says "on
-  <host>", and when the host is down the device waits in its alarm; a VM that is shut off is
-  named in the device's own alarm.
-- Containers (a new page): the Docker containers on every host, grouped by host, with
-  filters (running, stopped, with updates), "Update all" across hosts, and starting and
-  stopping them (two new actor abilities) besides restart and update.
-- Virtual machines (a new page): libvirt/KVM VMs on every host, read by the collector (state,
-  vCPUs, memory, disks, whether it starts with the host); started, shut down, restarted or
-  forced off through four new actor abilities, each on the VMs you choose. A VM set to start
-  with the host that isn't running is a warning. Set the collector and the actor up again on a
-  host to get them.
-- Watching and setting up are apart: a device has Status, Setup (how Kastellan reaches it, what
-  it may do) and Config (a form, or its YAML); the VPN has Clients and Setup; Groups have
-  Status and Setup. Observers see the status only.
-- Config is now Settings, with Kastellan's SSH key (formerly Access) as a tab, in short cards;
-  old links still work. Making the key rings is explained in a sentence, the rest on request.
-- VPNs, reviewed: setting a VPN up again on a login another one used replaces its key line
-  (the first match counts, so the old one would win); the daily CRL renewal goes on when a VPN
-  is removed meanwhile; several OpenVPN servers on one router are told apart (`instance:`),
-  each VPN counting only its own clients; a rotation started before several VPNs, or with no
-  restricted OpenVPN left, still ends; the VPN form keeps options it doesn't show and refuses
-  saving over a change made meanwhile; a missing wg-easy password points to the VPN's Settings.
-- The terminal: a Terminal button on every device that has SSH (an ssh: login, or an SSH
-  check); a device Kastellan has no key on asks for a login there (used once, or stored in the
-  People ring), or offers a stored login. A host key it doesn't know yet is compared and trusted
-  (or not) right there, also from the SSH access card; a changed one is forgotten on purpose,
-  never trusted in one click.
-- The collector and the actor are offered only for computers (servers, PCs, laptops), not for
-  routers, access points, printers or cameras, unless they are set up there already.
-- VPNs: any number, of either kind (two WireGuards, an OpenVPN per site). The VPN page shows a
-  card per VPN with its clients, its settings and its setup; "Add a VPN" asks which kind, then
-  that kind's form. config.yaml's `vpn:` (one of each) still works and becomes `vpns:` when a
-  VPN is changed in the app.
-- Updates: choose several (or all Kastellan can do) and update them in one go. A queue runs
-  them one after another on each device (a reboot last) and devices side by side; the
-  Updates page, a device's containers (now with "Update all") and its system updates share
-  it, with the same words and buttons, also while moving between pages.
-- Updates show how far they got: each step the host reports (pulling, creating, waiting until
-  it runs steadily, the package being set up), a progress card for the batch (done, failed,
-  waiting, what runs now and for how long), the count in the menu while it works, and per
-  update its details (every step with its time, the answer, how long it took).
-- Groups and the VPN have their own icons in the menu (no more key next to the Keys page).
-- Updates and the terminal, reviewed: a reboot queued after a failed update on the same host
-  doesn't run, and a reboot is refused while apt or dpkg still works; an odd byte in apt's
-  output no longer stops an upgrade halfway; a proxy in front no longer cuts a quiet update
-  short (the hub says it is still working); a stored login goes only to the devices it is for
-  (set on the Keys page with your password), and only for an admin with their own way into the
-  People ring; a terminal asks about the host's key before any password.
+## 0.8.0 (2026-11-21)
+
+UPS and VM management, multiple VPNs, update queues, and security fixes.
+
+### Upgrading
+
+- Reinstall the **VPN server helper** through VPN Setup in restricted mode to receive the CRL
+  security fixes. OpenSSL is now required. Direct mode sends the current helper on each call.
+- Reinstall the **collector and actor** on hosts to enable UPS/VM reporting and the new
+  container/VM actions. Choose allowed actions and targets during setup.
+- Existing `vpn:` configuration still reads; editing it in the app migrates it to `vpns:`.
+  The former Config and Access URLs redirect to Settings.
+
+### Added
+
+- UPS devices read through apcupsd or NUT: battery, runtime, power alarms and `powered_by`
+  links. Devices affected by a power outage share the UPS alarm.
+- Libvirt VMs: state, resources, autostart warnings, start/shutdown/reboot/force-off actions,
+  and `runs_on` links between monitored guests and hosts.
+- Containers and Virtual machines pages; container start/stop and batch updates.
+- Update queues with live steps and per-job logs, sequential work per host and parallel work
+  across hosts. A failed update prevents a queued reboot on that host.
+- Multiple WireGuard/OpenVPN instances, separate client state and setup per VPN.
+- Terminal login with a one-time password or stored People-ring entry when no hub key works.
+  Stored logins are restricted to their assigned devices; host trust precedes password entry.
+- Status/Setup/Config tabs on device pages, Status/Setup on groups, Clients/Setup on VPNs;
+  Settings combines forms, the config editor and the hub's SSH key.
+
+### Fixed
+
+- Security: the web proxy never retains device cookies in its shared HTTP client or forwards
+  another browser's login. Helper removal deletes SSH keys as their owner, avoiding root
+  deletion through a user-controlled symlink.
+- Security: CRL installation checks OpenSSL's verification message as well as its exit code,
+  requires OpenSSL, and rejects rollback by issue time and CRL number.
+- Alarm folding preserves descendants and handles mixed VM/network dependencies. Stale or
+  missing UPS readings cannot report healthy power or silently resolve battery alarms.
+- Actor target validation distinguishes container names from VM names; failed stops report
+  failure. Collectors bound slow UPS/VM queries and tolerate oversized report values.
+- Config writes preserve the original after atomic-replace errors, except for the required
+  bind-mount fallback. Device deletion clears VM/power links; cyclic dependencies and invalid
+  IDs/history ranges are rejected.
+- VPN renewal and key rotation tolerate removed VPNs; server instances have separate clients.
+  Setup replaces stale key bindings, and forms preserve hidden options and reject stale saves.
+- Update streams survive quiet periods, apt output tolerates invalid bytes, and reboot refuses
+  active package operations. Response charts fit phone screens and handle zero latency.
+- README and website shortened, security claims corrected, examples validated and demo
+  screenshots refreshed.
 
 ## 0.7.0 (2026-11-21)
 
