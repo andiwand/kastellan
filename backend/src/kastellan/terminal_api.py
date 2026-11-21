@@ -36,6 +36,7 @@ from .auth_api import (
     session_who,
 )
 from .ssh import ChangedHost, Target, UnknownHost
+from .vault import Locked
 
 if TYPE_CHECKING:
     from .hub import Hub
@@ -167,6 +168,9 @@ def router(hub: Hub) -> APIRouter:
             except (OSError, TimeoutError, asyncssh.Error) as e:
                 message = f"cannot reach {t.host}: {e or type(e).__name__}"
                 await refuse(4004, {"type": "error", "message": message}, "unreachable")
+                return None
+            except Locked as e:
+                await refuse(4005, {"type": "error", "message": str(e)}, "key ring locked")
                 return None
             if handle.stop.is_set():  # signed out while connecting
                 conn.close()

@@ -42,8 +42,13 @@ def pull(ref):
         except ValueError:
             continue
     for item in items:
-        if isinstance(item, dict) and item.get("error"):
-            raise RuntimeError(f"pull: {str(item['error'])[:200]}")
+        # "error" until API 1.47; "errorDetail" from 1.48 on (where "error" may stay empty).
+        detail = (item.get("errorDetail") or {}) if isinstance(item, dict) else {}
+        message = (item.get("error") if isinstance(item, dict) else None) or (
+            detail.get("message") if isinstance(detail, dict) else None
+        )
+        if message:
+            raise RuntimeError(f"pull: {str(message)[:200]}")
 
 
 def without_image_defaults(config, image_config):
@@ -64,6 +69,10 @@ def spec(old, image_config):
     """The new container's settings: the old one's own, with the new image."""
     config = without_image_defaults(old["Config"], image_config)
     config["Image"] = old["Config"]["Image"]
+    # A container-wide MAC address (deprecated since API 1.44, refused by create from 1.52) is
+    # set on its network instead; before 1.44 only the container-wide one counts.
+    api_version()
+    mac = config.pop("MacAddress", None) if _api[0] >= (1, 44) else None
     if config.get("Hostname") == old["Id"][:12]:
         config.pop("Hostname")  # Docker's default (the old id): let it pick the new one
     host = dict(old["HostConfig"])
@@ -100,6 +109,8 @@ def spec(old, image_config):
             }
     # The container is created in its NetworkMode's network; the others are connected after.
     primary = mode if mode in endpoints else next(iter(endpoints), None)
+    if mac and primary and not endpoints[primary].get("MacAddress"):
+        endpoints[primary]["MacAddress"] = mac
     first = {primary: endpoints[primary]} if primary else {}
     others = {k: v for k, v in endpoints.items() if k != primary}
     return {**config, "HostConfig": host, "NetworkingConfig": {"EndpointsConfig": first}}, others

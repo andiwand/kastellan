@@ -193,17 +193,19 @@ def parse(output: str) -> tuple[list[AuthorizedKey], bool]:
 
 def kastellan_keys(keys: Keys) -> dict[str, str]:
     """Kastellan's own keys by fingerprint, named for the page (never removed by hand)."""
-    out = {keys.hub_key().get_fingerprint(): "Kastellan"}
+    # From the public halves: they are there also while the key ring is locked, and a key kept in
+    # it (no file any more) is still Kastellan's.
+    hub = keys.known_public("hub") or keys.hub_key().convert_to_public()
+    out = {hub.get_fingerprint(): "Kastellan"}
     for which, name in (("next", "Kastellan (new key)"), ("old", "Kastellan (old key)")):
-        key = keys.side_key(which)
-        if key is not None:
+        if key := keys.known_public("hub", which):
             out[key.get_fingerprint()] = name
     named = {"vpn": "Kastellan VPN", "collect": "Kastellan collector", "act": "Kastellan actor"}
     for which, name in named.items():
-        if (keys.folder / keys.NAMES[which]).exists():
-            out[keys.hub_key(which).get_fingerprint()] = name
+        if key := keys.known_public(which):
+            out[key.get_fingerprint()] = name
     for side in ("next", "old"):  # a VPN key rotation's other key
-        if key := keys.side_key(side, "vpn"):
+        if key := keys.known_public("vpn", side):
             out[key.get_fingerprint()] = f"Kastellan VPN ({side} key)"
     return out
 

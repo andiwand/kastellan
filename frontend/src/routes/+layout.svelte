@@ -10,6 +10,7 @@
 	import Layers from '@lucide/svelte/icons/layers';
 	import AppWindow from '@lucide/svelte/icons/app-window';
 	import KeyRound from '@lucide/svelte/icons/key-round';
+	import LockKeyhole from '@lucide/svelte/icons/lock-keyhole';
 	import FileCog from '@lucide/svelte/icons/file-cog';
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
 	import CircleArrowUp from '@lucide/svelte/icons/circle-arrow-up';
@@ -34,12 +35,14 @@
 		{ href: '/vpn', label: 'VPN', icon: KeyRound },
 		{ href: '/updates', label: 'Updates', icon: CircleArrowUp },
 		{ href: '/access', label: 'Access', icon: ShieldCheck },
+		{ href: '/keys', label: 'Keys', icon: LockKeyhole },
 		{ href: '/config', label: 'Config', icon: FileCog }
 	] as { href: string; label: string; short?: string; icon: typeof Layers }[];
 	// Config, access and groups are for admins (password hashes, keys, Wi-Fi settings).
 	const shownNav = $derived(
 		nav.filter(
-			(i) => !['/config', '/access', '/groups'].includes(i.href) || store.me?.role === 'admin'
+			(i) =>
+				!['/config', '/access', '/groups', '/keys'].includes(i.href) || store.me?.role === 'admin'
 		)
 	);
 	const active = (href: string) =>
@@ -245,6 +248,46 @@
 		{/if}
 
 		<main class="mx-auto max-w-6xl px-4 pt-6 pb-28 sm:px-6 lg:px-10 lg:pt-10 lg:pb-16">
+			{#if store.health?.vault_waiting?.length}
+				<!-- After a restart: what needs a secret waits until its ring opens. -->
+				<div
+					class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-4 py-3 text-sm"
+					style="border-color: color-mix(in srgb, var(--warning) 40%, transparent); background: color-mix(in srgb, var(--warning) 8%, transparent)"
+					role="status"
+				>
+					<LockKeyhole class="size-4 shrink-0" style="color: var(--warning-text)" />
+					<span>
+						<b style:color="var(--warning-text)">
+							{store.health.vault_waiting.length > 1 ? 'Key rings' : 'A key ring'} Kastellan uses
+							{store.health.vault_waiting.length > 1 ? 'are' : 'is'} locked ({store.health.vault_waiting.join(
+								', '
+							)}).
+						</b>
+						Checks go on; what needs a password, key or token waits (router logins, actions, the terminal,
+						push){store.me?.role === 'admin' ? '.' : ': waiting for an admin to sign in.'}
+					</span>
+					{#if store.me?.role === 'admin'}
+						<a href="/keys" class="ml-auto text-sm font-medium" style:color="var(--warning-text)">
+							Unlock
+						</a>
+					{/if}
+				</div>
+			{/if}
+			{#if store.health?.vault === 'damaged' && store.me?.role === 'admin'}
+				<div
+					class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-4 py-3 text-sm"
+					style="border-color: color-mix(in srgb, var(--critical) 40%, transparent); background: color-mix(in srgb, var(--critical) 8%, transparent)"
+					role="alert"
+				>
+					<LockKeyhole class="size-4 shrink-0" style="color: var(--critical-text)" />
+					<span>
+						<b style:color="var(--critical-text)">The key rings can't be read.</b> What needs them waits.
+					</span>
+					<a href="/keys" class="ml-auto text-sm font-medium" style:color="var(--critical-text)">
+						Details
+					</a>
+				</div>
+			{/if}
 			{@render children()}
 		</main>
 

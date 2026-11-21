@@ -177,6 +177,9 @@ class Guard:
                     return
             else:
                 w = Who(user, users[user].role)
+                # A page refreshing on its own (X-Kastellan-Auto) isn't someone using the app.
+                if headers.get("x-kastellan-auto") != "1":
+                    self.hub.sessions.mark(user)
                 writes = scope["type"] == "http" and method not in READS
                 if writes and not w.is_admin and scope["path"] not in PUBLIC | OWN:
                     await _deny(scope, send, 403, "observers can't change anything")
@@ -244,7 +247,11 @@ def router(hub: Hub) -> APIRouter:
             hub.audit.record("signin.failed", body.user, address)
             raise HTTPException(401, "wrong user or password")
         brake.succeeded(address, counted)
+        # The session first: rings that stay open while an admin is here see them at once.
         token = hub.sessions.create(body.user, password_tag(user.password))
+        # The password just typed opens the key ring (an admin's): it is never kept.
+        if opened := await hub.unlock_on_signin(body.user, body.password):
+            hub.audit.record("vault.unlock", body.user, address, by="sign-in", rings=opened)
         response.set_cookie(
             SESSION_COOKIE,
             token,

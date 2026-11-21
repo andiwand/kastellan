@@ -5,7 +5,6 @@ Seeing keys: admins. Changing them (removing one, rotating): signed-in admins, a
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -87,9 +86,9 @@ def router(hub: Hub) -> APIRouter:
     @api.get("/ssh/keys")
     def hub_keys(request: Request) -> dict[str, Any]:
         require_admin(request)
-        key = hub.keys.hub_key()
-        made = datetime.fromtimestamp(os.stat(hub.keys.private_path).st_mtime, UTC)
-        nxt = hub.keys.side_key("next")
+        key = hub.keys.known_public() or hub.keys.hub_key().convert_to_public()  # made if none yet
+        made = datetime.fromtimestamp(hub.keys.made() or 0, UTC)
+        nxt = hub.keys.known_public("hub", "next")
         return {
             "public_key": hub.keys.public_key(),
             "fingerprint": key.get_fingerprint(),

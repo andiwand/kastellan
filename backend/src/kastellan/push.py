@@ -28,6 +28,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from py_vapid import Vapid02
 
+from .vault import Vault
+
 log = logging.getLogger(__name__)
 
 SUBJECT = "https://andiwand.github.io"  # who sends (VAPID `sub`): the software's site, no person
@@ -63,9 +65,13 @@ def valid_endpoint(endpoint: str) -> bool:
     return any(host == s or (s.startswith(".") and host.endswith(s)) for s in SERVICES)
 
 
+VAULT_ID = "push/vapid"  # its key in the key ring, once there is one
+
+
 class Push:
-    def __init__(self, data: Path) -> None:
+    def __init__(self, data: Path, vault: Vault | None = None) -> None:
         self.folder = data / "push"
+        self.vault = vault
         self.path = self.folder / "subscriptions.json"
         self._lock = threading.Lock()
         self._vapid: Vapid02 | None = None
@@ -76,9 +82,22 @@ class Push:
         except (OSError, ValueError):
             self.subscriptions = []
 
-    def vapid(self) -> Vapid02:
-        """The hub's own key for push (made on first use)."""
+    def forget_key(self) -> None:
+        """The key ring was locked: its key leaves memory too."""
         with self._lock:
+            self._vapid = None
+
+    def vapid(self) -> Vapid02:
+        """The hub's own key for push (made on first use). vault.Locked while the key ring is."""
+        with self._lock:
+            if self._vapid is None and self.vault is not None and self.vault.exists:
+                if self.vault.has(VAULT_ID):
+                    self._vapid = Vapid02.from_pem(self.vault.get(VAULT_ID).encode())
+                else:
+                    key = Vapid02()
+                    key.generate_keys()
+                    self.vault.put(VAULT_ID, key.private_pem().decode(), kind="other", name="Push key")
+                    self._vapid = key
             if self._vapid is None:
                 pem = self.folder / "vapid.pem"
                 if pem.exists():

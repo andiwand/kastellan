@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import shutil
 import tempfile
 import time
@@ -23,7 +24,7 @@ from . import config_edit, demo, docker, notify, vulns
 from .access import hub_address
 from .alarms import Alarms, Message, Problem, Severity, evaluate
 from .audit import Audit
-from .auth import Sessions
+from .auth import Sessions, password_tag
 from .config import Config, Device, NotifyChannel, Role
 from .desktop_api import Tickets
 from .drivers import DRIVERS
@@ -41,6 +42,7 @@ from .secrets import Secrets
 from .settings import Settings
 from .ssh import Keys
 from .terminals import Terminals
+from .vault import AUTO, KASTELLAN, Damaged, Vault, WrongKey, policy
 from .versions import Versions
 from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status
 from .vuln_policy import assess, auto_update_reason
@@ -55,6 +57,7 @@ RESOLVE_EVERY = 300  # seconds between looking up device names
 RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
 DRIVER_EVERY = 600
+ACTIVE_WINDOW = 30 * 60  # a ring that stays open while admins are here: used within this
 ALARMS_EVERY = 30
 VULNS_FIRST = 120
 CRL_FIRST = 300  # seconds after start: the first checks and polls have run
@@ -100,8 +103,12 @@ class Hub:
         # Sign-in state lives next to the real data even in demo mode: it is not made up.
         self.sessions = Sessions(settings.data / "sessions.json")
         self.audit = Audit(settings.data / "audit.log")
-        self.keys = Keys(settings.data / "ssh")
-        self.secrets = Secrets(settings.data / "secrets")
+        # The key rings (vault.py): locked at every start, until an admin signs in (or, as the
+        # config says, opened by a key from a file, the environment, or config.yaml).
+        self.vault = Vault(settings.data / "vault.json")
+        self.vault.policy = lambda ring: policy(self.config.vault, ring)
+        self.keys = Keys(settings.data / "ssh", self.vault)
+        self.secrets = Secrets(settings.data / "secrets", self.vault)
         # The OpenVPN CRL as last pushed: {"pushed": iso, "next_update": iso, "error": str}
         self.crl_state: dict[str, Any] = {}
         # Who is connected to the OpenVPN server (read through its OpenWrt login), and when each
@@ -111,7 +118,7 @@ class Hub:
         self.terminals = Terminals()
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)
-        self.push = Push(settings.data)  # web push: the hub's key, the browsers that allowed it
+        self.push = Push(settings.data, self.vault)  # web push: the hub's key, the browsers that allowed it
         self._events_since = datetime.now(UTC)
         self.started = datetime.now(UTC)  # alarms use only results from after this
         # (channel, message, first try, last try, tries) for notifications that failed
@@ -179,6 +186,8 @@ class Hub:
             "your access changed",
         )
         self._apply(config)
+        if not self.demo:
+            self.open_rings_by_themselves()
         log.info("config: %d devices, %d users", len(config.devices), len(config.users))
 
     def check(self, text: str) -> Config:
@@ -281,6 +290,7 @@ class Hub:
             asyncio.create_task(self._poll_drivers(), name="poll drivers"),
             asyncio.create_task(self._watch_config(), name="watch config"),
             asyncio.create_task(self._expire_tickets(), name="expire tickets"),
+            asyncio.create_task(self._relock(), name="key rings close as their policy says"),
             asyncio.create_task(self._watch_alarms(), name="alarms"),
             asyncio.create_task(self._watch_vulns(), name="vulnerabilities"),
             asyncio.create_task(self._renew_crl(), name="renew the OpenVPN CRL"),
@@ -402,6 +412,114 @@ class Hub:
                 # Each host on its own: one host's trouble never stops the others, or the loop.
                 await asyncio.gather(*(one(id, d) for id, d in hosts), return_exceptions=True)
             await asyncio.sleep(COLLECT_EVERY)
+
+    # --- The key ring (vault.py) ----------------------------------------------------------------
+
+    def admins(self) -> set[str]:
+        return {name for name, u in self.config.users.items() if u.role is Role.ADMIN}
+
+    async def keep_slot(self, user: str, password: str) -> None:
+        """In every open ring that opens by password: this admin's slot opens with the password
+        they just gave (made, or made again after a change); people no longer admins lose theirs."""
+        account = self.config.users.get(user)
+        if account is None or not self.vault.exists:
+            return
+        tag = password_tag(account.password)
+        try:
+            await asyncio.to_thread(self.vault.keep_slot, user, password, tag, self.admins())
+        except Damaged as e:
+            log.error("key ring: %s", e)
+
+    async def unlock_on_signin(self, user: str, password: str) -> list[str]:
+        """An admin signed in: open the rings their password opens, and keep their slots
+        current. Which rings this opened. Observers never open any; a damaged vault.json never
+        stops a sign-in."""
+        account = self.config.users.get(user)
+        if account is None or account.role is not Role.ADMIN or not self.vault.exists:
+            return []
+        try:
+            opened = await asyncio.to_thread(self.vault.unlock, user, password)
+        except WrongKey:  # no slot yet, or one made with a password they no longer have
+            opened = []
+        except Damaged as e:
+            log.error("key ring: %s", e)
+            return []
+        await self.keep_slot(user, password)
+        with contextlib.suppress(Damaged):
+            self.vault.note_stale(user, password_tag(account.password))
+        self.sync_slots()
+        return opened
+
+    def open_rings_by_themselves(self) -> None:
+        """Rings whose policy names a key file, an environment variable or a key in config.yaml
+        (not those locked by hand since); then every open ring's slots follow its policy."""
+        keys = {rid: r.key for rid, r in self.config.vault.rings.items() if r.key}
+        try:
+            opened = self.vault.unlock_by_itself(dict(os.environ), keys)
+        except Damaged as e:
+            log.error("key ring: %s", e)
+            return
+        for rid in opened:
+            log.info("key ring %s: opened by itself", rid)
+            self.audit.record("vault.unlock", None, None, ring=rid, by="its key")
+        for rid, problem in self.vault.problems.items():
+            log.warning("key ring %s: %s", rid, problem)
+        self.sync_slots()
+
+    def sync_slots(self) -> list[str]:
+        """Each open ring's ways to open by itself match its policy now (keys read from where
+        the policy says): a way no longer chosen loses its slot, so an old key (also one in a
+        config backup) opens nothing any more. Notes on what couldn't be set up."""
+        notes: list[str] = []
+        keys = {rid: r.key for rid, r in self.config.vault.rings.items() if r.key}
+        try:
+            rings = self.vault.ring_ids()
+        except Damaged:
+            return notes
+        for rid in rings:
+            auto = [w for w in self.vault.policy(rid).unlock if w[0] in AUTO]
+            if not self.vault.is_open(rid):
+                if auto:
+                    notes.append(f"{rid}: locked; its ways to open by itself are set once it is open")
+                continue
+            found: dict[tuple[str, str], str] = {}
+            unread: set[tuple[str, str]] = set()
+            for way, source in auto:
+                secret, note = Vault._source(rid, way, source, dict(os.environ), keys)
+                if note:
+                    notes.append(f"{rid}: {note}")
+                if secret is not None:
+                    found[(way, source)] = secret
+                else:  # chosen, but its key can't be read now: its slot stays
+                    unread.add((way, source))
+            try:
+                if self.vault.set_ways(rid, found, frozenset(unread)):
+                    self.audit.record("vault.ways", None, None, ring=rid, ways=[w for w, _ in found])
+            except ValueError as e:  # it would be left with only its recovery key
+                notes.append(f"{rid}: {e}; kept as it was")
+        return notes
+
+    def lock_vault(self, ring: str | None = None, by_hand: bool = True) -> list[str]:
+        """Lock one ring (or all), and forget what was opened with Kastellan's (logins kept in
+        memory). Which rings were open."""
+        gone = self.vault.lock(ring, by_hand=by_hand)
+        if not self.vault.is_open(KASTELLAN):
+            self.push.forget_key()
+            self._ubus = {}
+        return gone
+
+    async def _relock(self) -> None:
+        """Rings that stay open only while an admin uses the app (within ACTIVE_WINDOW), or until
+        idle, close then."""
+        while True:
+            await asyncio.sleep(30)
+            using = bool(self.sessions.active(ACTIVE_WINDOW) & self.admins())
+            for rid in self.vault.relock(using):
+                log.info("key ring %s: closed (its policy)", rid)
+                self.audit.record("vault.lock", None, None, ring=rid, by="its policy")
+            if not self.vault.is_open(KASTELLAN):
+                self.push.forget_key()
+                self._ubus = {}
 
     # --- OpenWrt devices (openwrt/) ------------------------------------------------------------
 

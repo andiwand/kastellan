@@ -2,6 +2,7 @@
 
 import http.server
 import json
+import re
 import socketserver
 import subprocess
 import sys
@@ -22,6 +23,7 @@ class FakeDocker:
 
     def __init__(self, new_image_runs: bool = True, newer: bool = True) -> None:
         self.calls: list[str] = []
+        self.api, self.min_api = "1.52", "1.44"  # as Docker 29 answers /version
         self.images = {"me/app:1": "sha256:" + ("b" if newer else "a") * 64}
         self.image_info = {
             "sha256:" + "a" * 64: {
@@ -75,7 +77,14 @@ class FakeDocker:
         from urllib.parse import parse_qs, unquote, urlsplit
 
         url = urlsplit(path)
-        p, q = unquote(url.path).removeprefix("/v1.41"), {k: v[0] for k, v in parse_qs(url.query).items()}
+        p, q = unquote(url.path), {k: v[0] for k, v in parse_qs(url.query).items()}
+        if p == "/version":
+            return 200, {"ApiVersion": self.api, "MinAPIVersion": self.min_api}
+        m = re.match(r"^/v(\d+)\.(\d+)(/.*)$", p)
+        asked = (int(m.group(1)), int(m.group(2))) if m else None
+        if asked is None or asked < tuple(int(x) for x in self.min_api.split(".")):
+            return 400, {"message": f"client version {asked} is too old"}  # as Docker 29 refuses
+        p, self.spoke = m.group(3), asked
         self.calls.append(f"{method} {p}")
         if method == "POST" and p == "/images/create":
             return 200, None
@@ -361,7 +370,7 @@ def test_a_pull_error_in_one_line_counts(host) -> None:
     original = fake.handle
 
     def handle(method, path, body):
-        if path.startswith("/v1.41/images/create"):
+        if "/images/create" in path:
             return 200, {"error": "toomanyrequests: rate limit"}
         return original(method, path, body)
 
@@ -439,3 +448,52 @@ def test_no_setup_runs_in_demo_mode(tmp_path: Path) -> None:
         for path in ("collect/install", "collect/uninstall", "act/uninstall"):
             r = c.post(f"/api/devices/{device}/{path}", json=body, headers={"X-Kastellan": "1"})
             assert r.status_code in (403, 409), (path, r.status_code)
+
+
+def test_the_docker_api_version_is_asked(host) -> None:
+    """Docker 29 refuses API versions below 1.44, Docker 20 knows nothing past 1.41: the version
+    is the daemon's newest, up to the one the scripts were checked against."""
+    fake, run = host
+    fake.api = "1.57"  # newer than the scripts know: they speak 1.52
+    assert run("restart-container", "app").returncode == 0 and fake.spoke == (1, 52)
+    fake.api, fake.min_api = "1.41", "1.12"
+    assert run("restart-container", "app").returncode == 0 and fake.spoke == (1, 41)
+
+
+def test_an_old_daemon_updates_too(host) -> None:
+    """Docker 1.13 (API 1.25): no Mounts in HostConfig, a container-wide MAC address."""
+    fake, run = host
+    fake.api, fake.min_api = "1.25", "1.12"
+    c = fake.find("app")
+    c["Config"]["MacAddress"] = "02:42:ac:11:00:09"
+    c["HostConfig"].pop("Mounts", None)
+    r = run("update-container", "app")
+    assert r.returncode == 0, r.stderr
+    assert fake.spoke == (1, 25) and fake.created["MacAddress"] == "02:42:ac:11:00:09"
+
+
+def test_the_mac_address_goes_to_the_network(host) -> None:
+    """From API 1.44 the MAC address is the network endpoint's (create refuses it from 1.52)."""
+    fake, run = host
+    c = fake.find("app")
+    c["Config"]["MacAddress"] = "02:42:ac:11:00:09"
+    c["HostConfig"]["NetworkMode"] = "bridge"
+    c["NetworkSettings"]["Networks"] = {"bridge": {}}
+    assert run("update-container", "app").returncode == 0
+    assert "MacAddress" not in fake.created
+    assert fake.created["NetworkingConfig"]["EndpointsConfig"]["bridge"]["MacAddress"] == "02:42:ac:11:00:09"
+
+
+def test_a_pull_error_only_in_its_detail_counts(host) -> None:
+    """API 1.48 on: "error" may be empty, "errorDetail" says it."""
+    fake, run = host
+    original = fake.handle
+
+    def handle(method, path, body):
+        if "/images/create" in path:
+            return 200, {"errorDetail": {"message": "manifest unknown"}}
+        return original(method, path, body)
+
+    fake.handle = handle
+    r = run("update-container", "app")
+    assert r.returncode == 1 and "manifest unknown" in r.stderr

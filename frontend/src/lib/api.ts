@@ -518,6 +518,76 @@ export interface Health {
 	demo: boolean;
 	/** Device web pages through the hub at <device>.<web_domain>; null: not set up. */
 	web_domain: string | null;
+	/** The key rings (vault.py): absent, locked, partly open, open. */
+	vault: VaultState;
+	/** Locked rings Kastellan uses by itself: what needs their secrets waits. */
+	vault_waiting: string[];
+}
+
+export type VaultState = 'absent' | 'locked' | 'partly' | 'unlocked' | 'damaged';
+export type VaultLevel = 'convenient' | 'balanced' | 'strict';
+
+/** A way a ring opens: an admin's password, a key file, an environment variable, a key in
+ * config.yaml; `ready`: set up (for password: some admin has a slot). */
+export interface RingWay {
+	way: 'password' | 'keyfile' | 'env' | 'config';
+	source: string;
+	ready: boolean;
+	users: string[];
+}
+
+export interface Ring {
+	id: string;
+	name: string;
+	open: boolean;
+	entries: number;
+	ways: RingWay[];
+	recovery: boolean;
+	stays_unlocked: string; // lock | signed_in | idle:<minutes>
+	background: boolean; // Kastellan may use its entries by itself
+	problem: string | null; // why it didn't open by itself
+	builtin: boolean;
+}
+
+export interface Vault {
+	state: VaultState;
+	damaged: string | null; // why vault.json can't be read
+	level: VaultLevel;
+	rings: Ring[];
+	files: string[];
+	entries: VaultEntry[];
+}
+
+export interface VaultEntry {
+	id: string;
+	ring: string;
+	kind: 'password' | 'token' | 'ssh-key' | 'other';
+	name: string;
+	user: string;
+	notes: string;
+	created: number;
+	changed: number;
+	public: string; // an SSH key's public half
+	used_by: string[];
+	own: boolean; // Kastellan's own key: changed by rotating it
+}
+
+export interface VaultForm {
+	ring: string;
+	kind: VaultEntry['kind'];
+	name: string;
+	user: string;
+	notes: string;
+	secret: string | null; // null on a change: kept
+}
+
+export type UnlockItem = 'password' | 'config' | { keyfile: string } | { env: string };
+
+export interface RingChoice {
+	unlock: UnlockItem[] | null; // null: as the level says
+	stays_unlocked: string | null;
+	background: boolean | null;
+	make_keyfile: boolean;
 }
 
 export interface Bucket {
@@ -617,12 +687,23 @@ export type ActivityEntry =
 /** The hub answered 401: nobody is signed in (or the session ended). */
 export class SignedOut extends Error {}
 
+// When the person last did something here. A request made while nobody has for a minute is the
+// page refreshing on its own: marked, so it doesn't keep key rings open ("while an admin uses
+// the app", vault.py).
+let lastInput = Date.now();
+if (typeof window !== 'undefined')
+	for (const event of ['pointerdown', 'keydown', 'focus', 'visibilitychange'])
+		window.addEventListener(event, () => (lastInput = Date.now()), { passive: true });
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
 	const write = method !== 'GET';
+	const headers: Record<string, string> = {};
+	// Every write carries this header; the hub refuses writes without it (see auth_api.py).
+	if (write) Object.assign(headers, { 'X-Kastellan': '1', 'Content-Type': 'application/json' });
+	if (Date.now() - lastInput > 60_000) headers['X-Kastellan-Auto'] = '1';
 	const response = await fetch(`/api${path}`, {
 		method,
-		// Every write carries this header; the hub refuses writes without it (see auth_api.py).
-		headers: write ? { 'X-Kastellan': '1', 'Content-Type': 'application/json' } : undefined,
+		headers,
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
 	if (response.status === 401) throw new SignedOut((await detail(response)) ?? 'sign in first');
@@ -821,6 +902,35 @@ export const api = {
 	pushUnsubscribe: (endpoint: string) =>
 		call<{ removed: boolean }>('POST', '/push/unsubscribe', { endpoint }),
 	pushTest: () => call<{ browsers: number }>('POST', '/push/test'),
+	vault: () => get<Vault>('/vault'),
+	vaultCreate: (password: string) =>
+		call<{ recovery: Record<string, string>; taken: string[]; notes: string[] }>(
+			'POST',
+			'/vault/create',
+			{
+				password
+			}
+		),
+	vaultUnlock: (how: { password?: string; recovery?: string; ring?: string }) =>
+		call<{ state: VaultState; opened: string[] }>('POST', '/vault/unlock', how),
+	vaultLock: (ring?: string) => call<{ state: VaultState }>('POST', '/vault/lock', { ring }),
+	vaultRecovery: (ring: string, password: string) =>
+		call<{ recovery: string }>('POST', `/vault/rings/${ring}/recovery`, { password }),
+	vaultAddRing: (id: string, name: string, password: string) =>
+		call<{ recovery: string }>('POST', '/vault/rings', { id, name, password }),
+	vaultRemoveRing: (id: string) => call<{ ring: string }>('DELETE', `/vault/rings/${id}`),
+	vaultSettings: (password: string, level: VaultLevel, rings: Record<string, RingChoice>) =>
+		call<{ notes: string[]; state: VaultState }>('PUT', '/vault/settings', {
+			password,
+			level,
+			rings
+		}),
+	vaultAdd: (form: VaultForm) => call<{ id: string }>('POST', '/vault/entries', form),
+	vaultChange: (id: string, form: VaultForm) =>
+		call<{ id: string }>('PUT', `/vault/entries/${id}`, form),
+	vaultDelete: (id: string) => call<{ id: string }>('DELETE', `/vault/entries/${id}`),
+	vaultReveal: (id: string, password: string) =>
+		call<{ secret: string }>('POST', `/vault/entries/${id}/reveal`, { password }),
 	mute: (device: string, minutes: number) =>
 		call<{ muted_until: string | null }>('POST', `/devices/${encodeURIComponent(device)}/mute`, {
 			minutes

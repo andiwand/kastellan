@@ -60,7 +60,10 @@ def secret_command(action: str, name: str | None) -> None:
 
     from .secrets import Secrets
 
-    secrets = Secrets(Settings.from_env().data / "secrets")
+    data = Settings.from_env().data
+    if (data / "vault.json").exists():  # this command can't unlock it: the app can
+        raise SystemExit("Secrets are in the key ring now: set them in the app (Keys).")
+    secrets = Secrets(data / "secrets")
     if action == "list":
         print("\n".join(secrets.names()) or "(none)")
         return

@@ -93,7 +93,7 @@ def write(path: Path, backups: Path, old: str, new: str) -> None:
 
 # Keys whose values are secrets, and credentials inside URLs: masked in the audit log, which is
 # kept for good. Masked on the parsed YAML (any style: block, flow, multi-line), then diffed.
-SECRET_KEY = re.compile(r"^(password|token|secret|smtp|ntfy|webhook|\w*_key)$", re.IGNORECASE)
+SECRET_KEY = re.compile(r"^(password|token|secret|smtp|ntfy|webhook|key|\w*_key)$", re.IGNORECASE)
 URL_LOGIN = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/@\s]*@", re.IGNORECASE)
 
 

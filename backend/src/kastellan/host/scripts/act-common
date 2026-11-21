@@ -84,12 +84,39 @@ class _Unix(http.client.HTTPConnection):
         self.sock.connect(SOCKET)
 
 
+TESTED_API = (1, 52)  # the newest Docker API version these scripts were checked against
+_api = []
+
+
+def api_version():
+    """The API version to speak: the daemon's newest, up to TESTED_API, but never below what it
+    accepts (Docker 29 refuses anything older than 1.44; Docker 20 knows nothing past 1.41)."""
+    if not _api:
+        conn = _Unix(15)
+        conn.request("GET", "/version")  # unversioned: answered by every daemon
+        r = conn.getresponse()
+        info = json.loads(r.read() or b"{}") if r.status == 200 else {}
+        conn.close()
+
+        def parse(text, default):
+            try:
+                return tuple(int(x) for x in str(text).split(".")[:2])
+            except ValueError:
+                return default
+
+        newest = parse(info.get("ApiVersion"), (1, 41))
+        oldest = parse(info.get("MinAPIVersion"), (1, 12))
+        _api.append(max(oldest, min(newest, TESTED_API)))
+    return "/v%d.%d" % _api[0]
+
+
 def docker(method, path, body=None, timeout=60, ok=(200, 201, 204, 304)):
     """One call to the Docker API; the JSON answer (or None). Fixed paths built here, never a
     string from outside except a checked container name."""
+    prefix = api_version()
     conn = _Unix(timeout)
     headers = {"Content-Type": "application/json"} if body is not None else {}
-    conn.request(method, "/v1.41" + path, body=json.dumps(body) if body is not None else None, headers=headers)
+    conn.request(method, prefix + path, body=json.dumps(body) if body is not None else None, headers=headers)
     r = conn.getresponse()
     data = r.read()
     conn.close()

@@ -492,6 +492,57 @@ class WebSettings(BaseModel):
     )
 
 
+class RingSettings(BaseModel):
+    """One key ring's choices (vault.py); what is left out comes from the level."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Ways it opens, besides its recovery key: `password` (an admin signing in), `config` (`key`
+    # below), `{keyfile: /path}`, `{env: VARIABLE}`.
+    unlock: list[str | dict[str, str]] | None = None
+    stays_unlocked: str | None = Field(default=None, pattern=r"^(restart|lock|signed_in|idle:\d{1,4})$")
+    background: bool | None = None  # may Kastellan use its entries by itself (never `people`)
+    # The ring's key itself, for `unlock: [config]`: whoever has a copy of config.yaml opens it.
+    key: str | None = Field(default=None, min_length=20, max_length=200)
+
+    @model_validator(mode="after")
+    def _ways(self) -> Self:
+        for item in self.unlock or []:
+            if isinstance(item, str):
+                if item not in ("password", "config"):
+                    raise ValueError(
+                        f"unlock: {item!r}: password, config, {{keyfile: /path}} or {{env: NAME}}"
+                    )
+                continue
+            if len(item) != 1 or next(iter(item)) not in ("keyfile", "env"):
+                raise ValueError("unlock: {keyfile: /path} or {env: NAME}, one per item")
+            way, source = next(iter(item.items()))
+            if way == "keyfile" and not re.match(r"^/[\w./-]+$", source):
+                raise ValueError(f"unlock: keyfile {source!r} isn't an absolute path")
+            if way == "env" and not re.match(r"^[A-Z_][A-Z0-9_]{0,63}$", source):
+                raise ValueError(f"unlock: env {source!r} isn't a variable name")
+        if "config" in (self.unlock or []) and not self.key:
+            raise ValueError("unlock: config needs the ring's key (made on the Keys page)")
+        return self
+
+
+class VaultSettings(BaseModel):
+    """Key rings (vault.py): how secure they are. A level fills in what a ring leaves out:
+    convenient (Kastellan's ring opens by itself at start), balanced, strict."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    level: Literal["convenient", "balanced", "strict"] = "balanced"
+    rings: dict[str, RingSettings] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _ids(self) -> Self:
+        for rid in self.rings:
+            if not re.match(r"^[a-z0-9][a-z0-9_-]{0,39}$", rid):
+                raise ValueError(f"vault: ring {rid!r}: lowercase letters, digits, _ and -")
+        return self
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -512,6 +563,7 @@ class Config(BaseModel):
     # Names for the sites devices are at (`site:` of a device), e.g. hetzner: Hetzner Cloud.
     sites: dict[str, str] = Field(default_factory=dict)
     web: WebSettings | None = None  # device web pages through the hub, on their own names
+    vault: VaultSettings = Field(default_factory=VaultSettings)  # key rings: how they open
 
     def site_of(self, id: str) -> str:
         return self.devices[id].site or HOME

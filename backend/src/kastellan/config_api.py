@@ -232,11 +232,7 @@ def router(hub: Hub) -> APIRouter:
     # --- Settings as forms ---------------------------------------------------------------------
 
     def has_secret(name: str) -> bool:
-        try:
-            hub.secrets.get(name)
-        except (KeyError, ValueError, OSError):
-            return False
-        return True
+        return hub.secrets.has(name)
 
     def _masked(config) -> dict[str, Any]:
         """What the forms show: everything but secrets (tokens, keys, password hashes)."""

@@ -70,8 +70,33 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `vpn/scripts/kastellan-pki` and `kastellan-crl`: installed and bound with `command=` to the
     hub's separate VPN key in restricted mode, or sent over a normal login per call in direct
     mode; `install_script()` is both the copyable instructions and what "Install for me" runs), `vpn_api.py` (lists for everyone signed in; changes and downloads for
-    signed-in admins, audited; configs hold private keys: `no-store`). `secrets.py`: files in
-    `<data>/secrets` (0600), named from config.yaml, set with `kastellan secret set`.
+    signed-in admins, audited; configs hold private keys: `no-store`). `secrets.py`: secrets by
+    name (from config.yaml): the key ring's entries once it exists, else files in `<data>/secrets`.
+  - `vault.py` + `vault_api.py`: key rings, `<data>/vault.json`. Each ring: its own key, entries
+    AES-GCM under it (id, ring and kind bound in), the ring key only wrapped once per way to open
+    it (slots): `password` per admin (scrypt; opened by `hub.unlock_on_signin`), `recovery` (shown
+    once), `keyfile` / `env` / `config` (a key read at start: `hub.open_rings_by_themselves`).
+    Two rings from the start: `kastellan` (Kastellan uses its entries by itself) and `people`
+    (only `get(id, by=<user>)` from an action a signed-in admin started; background use raises,
+    whatever config says). The policy is config.yaml `vault:` (`level`: convenient | balanced |
+    strict, per-ring `unlock`, `stays_unlocked`, `background`, `key` for `config`), applied by
+    `vault.policy()`; `hub._relock` closes rings that stay open only while an admin uses the app
+    (a request within `ACTIVE_WINDOW`, 30 min; requests marked `X-Kastellan-Auto` — a page
+    refreshing on its own — don't count) or until idle. Slots follow the policy whenever a ring is
+    open: after every unlock and config reload (`hub.sync_slots`); a locked ring's slots are never
+    touched, and a ring never ends with only its recovery key. Locked by hand, a ring isn't opened
+    by itself again until unlocked or restarted. Slots: scrypt N=2**17 (tests use less, conftest);
+    key-file/env/config slots carry an HMAC of their key so syncing needs no scrypt. A login's user
+    and notes are sealed with it; names and SSH public halves are plain (checked against the
+    private key when a ring opens). Showing a secret needs the asker's own password slot of that
+    ring. Background use of a `people` entry: `vault.NotForKastellan` (409). A damaged vault.json:
+    `vault.Damaged`, state "damaged", never stops sign-in, start or a reload.
+    Locked: `vault.Locked`, 423 in the API, the pollers' error; `/api/health` `vault_waiting` lists
+    locked rings Kastellan needs. `ssh.Keys`: hub/act/vpn keys (and next/old) in the `kastellan`
+    ring, public halves readable locked; the collector's read-only key stays a file. Making them
+    (`/api/vault/create`) takes in `<data>/secrets/*`, those keys and push's key, each read back
+    before its file is shredded (after that the rings stay, whatever happens to the files; a
+    symlink is only unlinked). A ring key in config.yaml is masked (`config_edit.SECRET_KEY`).
   - VPN last seen: WireGuard from wg-easy (`latestHandshakeAt`); OpenVPN from the server's status
     files, through its OpenWrt login's `openvpn` ability (one fixed script,
     `setup.OPENVPN_STATUS`, paths from the device's own config, client lines only), read with

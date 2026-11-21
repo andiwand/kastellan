@@ -165,6 +165,43 @@ off again. **Observers** see everything; **admins** also change things. Whatever
 device (terminal, desktop, installs, keys, editing the config) needs sign-in on, every change
 goes to `data/audit.log`. Short passwords are allowed after a warning (`--short`).
 
+### Keys (key rings)
+
+Passwords, tokens and Kastellan's own SSH keys that can change things, encrypted in
+`data/vault.json`; none of them, nor the keys that open them, is on disk as plain text. An
+entry's name is visible (so the page can say where it is used while a ring is locked); a login's
+user name and notes are encrypted with it. There
+are rings: **Kastellan's** (what it uses by itself: router logins, its keys, push's key) and
+**people's logins** (kept for you, never used by Kastellan by itself), and any you add. Each
+ring opens its own ways: an admin's password (**signing in opens it**), a key file, an
+environment variable, or a key kept in config.yaml; each has a recovery key, shown once. While a
+ring Kastellan needs is locked, checks go on and the collector still reads; what needs a secret
+waits and says so. Make them on the **Keys** page (it takes in what was kept as files so far and
+removes those files), then choose how secure:
+
+- **Convenient**: Kastellan's ring opens by itself at start, with a key in config.yaml, so
+  everything works again after a power cut; whoever has a copy of the config folder can open it.
+- **Balanced** (the default): nothing opens by itself; once an admin signs in, Kastellan's ring
+  stays open until a restart, people's logins close again when no admin has used the app for 30
+  minutes (a page left open doesn't count).
+- **Strict**: as balanced, and people's logins close after 15 minutes without use.
+
+Per ring you can choose otherwise, e.g. a key file from a Docker secret
+(`unlock: [password, {keyfile: /run/secrets/kastellan}]`) or an environment variable. People's
+logins can be set to open by themselves too: then they are readable by whoever has that key,
+with nobody signed in (Kastellan still never uses them by itself). Lock closes a ring until it is
+unlocked again, also one that opens by itself. The config editor shows config.yaml as it is, a
+ring key in it included; when a way to open a ring is no longer chosen, its old key (also one
+left in a config backup) opens nothing any more once the ring is next open. Showing a stored
+password takes your own password, and it is hidden again after a minute or when its ring
+closes. If your password changes while a ring is locked, open that ring once with its recovery
+key (or let another admin sign in): your slot then follows the new password. With key rings,
+`kastellan secret set` hands over to the Keys page.
+
+What this protects against: a copy of `data/` (a backup, a stolen disk) reveals no secret
+without a way to open its ring. Someone who can change the data folder while Kastellan runs is
+an admin already; that isn't what it guards against.
+
 ### Device web pages through Kastellan
 
 Every device's web interface on a name of its own, through the hub: with

@@ -21,6 +21,8 @@ from typing import ClassVar
 
 import asyncssh
 
+from .vault import Vault
+
 log = logging.getLogger(__name__)
 
 # asyncssh asks for the local user's name on every connection, even with a login given. A
@@ -67,33 +69,109 @@ class Keys:
         "collect": "collect_ed25519",  # the read-only collector (host/collector.py)
         "act": "act_ed25519",  # the actor's abilities (host/actor.py)
     }
+    # With a key ring, the keys that can change things live in it (locked: unusable); the
+    # collector's read-only key stays a file, so host health goes on while it is locked.
+    IN_VAULT: ClassVar[tuple[str, ...]] = ("hub", "vpn", "act")
 
-    def __init__(self, folder: Path) -> None:
+    def __init__(self, folder: Path, vault: Vault | None = None) -> None:
         self.folder = folder
+        self.vault = vault
         self.private_path = folder / "hub_ed25519"
         self.known_hosts = folder / "known_hosts"
         self._lock = asyncio.Lock()
 
+    # Where a key is kept: `of` (hub, vpn, ...), `side` "" for the key, "next" or "old".
+    def _vaulted(self, of: str) -> bool:
+        return self.vault is not None and self.vault.exists and of in self.IN_VAULT
+
+    def _file(self, of: str, side: str) -> Path:
+        return self.folder / (self.NAMES[of] + (f".{side}" if side else ""))
+
+    @staticmethod
+    def vault_id(of: str, side: str = "") -> str:
+        return f"ssh/{of}" + (f".{side}" if side else "")
+
+    def _load(self, of: str, side: str = "") -> asyncssh.SSHKey | None:
+        if self._vaulted(of):
+            assert self.vault is not None
+            id = self.vault_id(of, side)
+            return asyncssh.import_private_key(self.vault.get(id)) if self.vault.has(id) else None
+        path = self._file(of, side)
+        return asyncssh.read_private_key(str(path)) if path.exists() else None
+
+    def _store(self, key: asyncssh.SSHKey, of: str, side: str = "") -> None:
+        if self._vaulted(of):
+            assert self.vault is not None
+            public = key.export_public_key().decode().strip()
+            name = f"Kastellan's {of} key" + (f" ({side})" if side else "")
+            self.vault.put(
+                self.vault_id(of, side),
+                key.export_private_key().decode(),
+                kind="ssh-key",
+                name=name,
+                public=public,
+            )
+            return
+        path = self._file(of, side)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.folder, 0o700)
+        temp = path.with_name(path.name + ".tmp")
+        key.write_private_key(str(temp))
+        os.chmod(temp, 0o600)
+        if not side:
+            key.write_public_key(str(path.with_suffix(".pub")))
+        os.replace(temp, path)
+
+    def _delete(self, of: str, side: str) -> None:
+        if self._vaulted(of):
+            assert self.vault is not None
+            if self.vault.has(self.vault_id(of, side)):
+                self.vault.delete(self.vault_id(of, side))
+            return
+        self._file(of, side).unlink(missing_ok=True)
+
     def hub_key(self, which: str = "hub") -> asyncssh.SSHKey:
         """One of the hub's keys, made the first time it is needed (once, even when two requests
-        ask at the same time; written whole, then renamed into place)."""
-        path = self.folder / self.NAMES[which]
+        ask at the same time; written whole, then renamed into place). vault.Locked while the
+        key ring is locked."""
         with _make_lock:
-            if not path.exists():
-                self.folder.mkdir(parents=True, exist_ok=True)
-                os.chmod(self.folder, 0o700)
+            key = self._load(which)
+            if key is None:
                 comment = "kastellan-hub" if which == "hub" else f"kastellan-{which}"
                 key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
-                temp = path.with_suffix(".new")
-                key.write_private_key(str(temp))
-                os.chmod(temp, 0o600)
-                key.write_public_key(str(path.with_suffix(".pub")))
-                os.replace(temp, path)
-                log.info("made the hub's SSH key %s", path)
-        return asyncssh.read_private_key(str(path))
+                self._store(key, which)
+                log.info("made the hub's %s SSH key", which)
+        return key
 
     def public_key(self, which: str = "hub") -> str:
+        """The public half; also while the key ring is locked (setup commands show it)."""
+        if self._vaulted(which):
+            assert self.vault is not None
+            entry = self.vault.entry(self.vault_id(which))
+            if entry is not None and entry.public:
+                return entry.public
         return self.hub_key(which).export_public_key().decode().strip()
+
+    def known_public(self, of: str = "hub", side: str = "") -> asyncssh.SSHKey | None:
+        """A key's public half if the key is there (also while the key ring is locked), else None."""
+        if self._vaulted(of):
+            assert self.vault is not None
+            entry = self.vault.entry(self.vault_id(of, side))
+            return asyncssh.import_public_key(entry.public) if entry is not None and entry.public else None
+        path = self._file(of, side)
+        pub = path.with_suffix(".pub")
+        if not side and pub.exists():
+            return asyncssh.read_public_key(str(pub))
+        return asyncssh.read_private_key(str(path)).convert_to_public() if path.exists() else None
+
+    def made(self, of: str = "hub") -> float | None:
+        """When a key was made or last replaced (a time stamp), or None."""
+        if self._vaulted(of):
+            assert self.vault is not None
+            entry = self.vault.entry(self.vault_id(of))
+            return entry.changed or entry.created if entry is not None else None
+        path = self._file(of, "")
+        return path.stat().st_mtime if path.exists() else None
 
     # Rotating a key (`of`: the hub key in sshkeys.py, the VPN key in vpn/rotation.py): the next
     # key is made and added everywhere first, then it becomes the key and the old one stays until
@@ -101,56 +179,45 @@ class Keys:
     # keeps working.
     def side_key(self, which: str, of: str = "hub") -> asyncssh.SSHKey | None:
         """A key's "next" or "old" key, if a rotation has one."""
-        path = self.folder / f"{self.NAMES[of]}.{which}"
-        return asyncssh.read_private_key(str(path)) if path.exists() else None
+        return self._load(of, which)
 
     def make_next(self, of: str = "hub") -> asyncssh.SSHKey:
         with _make_lock:
-            path = self.folder / f"{self.NAMES[of]}.next"
-            if not path.exists():
-                self.folder.mkdir(parents=True, exist_ok=True)
+            key = self._load(of, "next")
+            if key is None:
                 stamp = time.strftime("%Y-%m-%d")
                 comment = f"kastellan-{'hub' if of == 'hub' else of} {stamp}"
                 key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
-                temp = path.with_suffix(".tmp")
-                key.write_private_key(str(temp))
-                os.chmod(temp, 0o600)
-                os.replace(temp, path)
+                self._store(key, of, "next")
                 log.info("made the next %s SSH key", of)
-        return asyncssh.read_private_key(str(path))
+        return key
 
     def promote_next(self, expect: str, of: str = "hub") -> None:
         """The next key (with fingerprint `expect`) becomes the key; the key so far is kept as
-        "old". The key file is never missing on the way (a copy to .old first, then one atomic
-        rename), and an .old that isn't the current key is never overwritten: it may be the only
-        copy of a key that devices still have."""
+        "old". The key is never missing on the way (kept as old first, then replaced), and an
+        old key that isn't the current key is never overwritten: it may be the only copy of a
+        key that devices still have."""
         with _make_lock:
-            folder, name = self.folder, self.NAMES[of]
-            nxt, old = folder / f"{name}.next", folder / f"{name}.old"
-            if not nxt.exists():
+            nxt = self._load(of, "next")
+            if nxt is None:
                 raise FileNotFoundError("no next key")
-            if asyncssh.read_private_key(str(nxt)).get_fingerprint() != expect:
+            if nxt.get_fingerprint() != expect:
                 raise ValueError("the next key isn't the one that was added")
-            path = folder / name
-            current = asyncssh.read_private_key(str(path))
-            if (
-                old.exists()
-                and asyncssh.read_private_key(str(old)).get_fingerprint() != current.get_fingerprint()
-            ):
+            current = self._load(of)
+            if current is None:
+                raise FileNotFoundError("no current key")
+            old = self._load(of, "old")
+            if old is not None and old.get_fingerprint() != current.get_fingerprint():
                 raise ValueError("an old key from an earlier rotation is still there; finish that first")
-            temp = folder / f"{name}.old.tmp"
-            current.write_private_key(str(temp))
-            os.chmod(temp, 0o600)
-            os.replace(temp, old)
-            os.replace(nxt, path)
-            key = asyncssh.read_private_key(str(path))
-            key.write_public_key(str(folder / f"{name}.pub"))
+            self._store(current, of, "old")
+            self._store(nxt, of)
+            self._delete(of, "next")
             log.info("the next %s SSH key is now the key", of)
 
     def drop(self, which: str, of: str = "hub") -> None:
         """Forget the next key (cancelled) or the old one (removed everywhere)."""
         with _make_lock:
-            (self.folder / f"{self.NAMES[of]}.{which}").unlink(missing_ok=True)
+            self._delete(of, which)
 
     def _pinned(self) -> dict[str, list[asyncssh.SSHKey]]:
         out: dict[str, list[asyncssh.SSHKey]] = {}

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Key rings (Keys): passwords, tokens and Kastellan's SSH keys that can change things,
+  encrypted, with nothing of them (nor the keys that open them) on disk as plain text. Rings
+  for Kastellan's own secrets and for people's logins (Kastellan never uses those by itself), and
+  any you add; entries move between them. Each ring opens its own ways: an admin signing in, a
+  key file, an environment variable or a key in config.yaml, and a recovery key shown once.
+  How secure is a level (convenient, balanced, strict) or your own choice per ring, including how
+  long a ring stays open (until a restart, while an admin is signed in, or until idle). While a
+  ring Kastellan needs is locked, whatever needs its secrets waits and says so (checks and the
+  collector go on). Making them takes in the secrets and keys kept as files so far. A login's
+  user name and notes are encrypted too; showing a password takes your own password and hides
+  it again after a minute; Lock holds until you unlock; a damaged key ring file never stops a
+  sign-in.
+- Fixed: updating and restarting containers failed on Docker 29 ("client version 1.41 is too
+  old"): the actor now asks the daemon which API version to speak, from Docker 1.13 (API 1.25)
+  to today's (checked up to API 1.52); a pull error in the newer format counts, and a
+  container's own MAC address moves to its network where newer Docker wants it. Set the actor
+  up again on your hosts to get it.
+
 ## 0.6.0 (2026-11-21)
 
 SSH files kept alike across a group; the collector and actor removed or set up again from the

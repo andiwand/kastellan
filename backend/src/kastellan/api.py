@@ -34,6 +34,8 @@ from .settings import Settings
 from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
 from .tls import public_name
+from .vault import Damaged, Locked, NotForKastellan
+from .vault_api import router as vault_router
 from .vpn_api import router as vpn_router
 from .webproxy import Access as WebAccess
 from .webproxy import WebProxy
@@ -85,6 +87,20 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         detail = [{k: e[k] for k in ("loc", "msg", "type") if k in e} for e in exc.errors()]
         return JSONResponse({"detail": detail}, status_code=422)
 
+    @app.exception_handler(Locked)
+    async def locked(request: Request, exc: Locked) -> JSONResponse:
+        # Anything that needs a secret while the key ring is locked: say so, never a 500.
+        return JSONResponse({"detail": str(exc)}, status_code=423)
+
+    @app.exception_handler(NotForKastellan)
+    async def not_for_kastellan(request: Request, exc: NotForKastellan) -> JSONResponse:
+        # config.yaml names a person's login where Kastellan would use it by itself.
+        return JSONResponse({"detail": f"{exc}; name one in a ring Kastellan may use"}, status_code=409)
+
+    @app.exception_handler(Damaged)
+    async def damaged(request: Request, exc: Damaged) -> JSONResponse:
+        return JSONResponse({"detail": f"{exc} (see the Keys page)"}, status_code=409)
+
     app.add_middleware(Guard, hub=hub)
     web_access = WebAccess()
     app.add_middleware(
@@ -92,6 +108,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     )  # outermost: a device's name never reaches the hub's routes
     app.include_router(web_router(hub, web_access))
     app.include_router(auth_router(hub))
+    app.include_router(vault_router(hub))
     app.include_router(terminal_router(hub))
     app.include_router(desktop_router(hub))
     app.include_router(alarms_router(hub))
@@ -104,6 +121,13 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
     app.include_router(act_router(hub))
     app.include_router(openwrt_router(hub))
     app.include_router(groups_router(hub))
+
+    def vault_waiting() -> list[str]:
+        try:
+            rings = hub.vault.ring_ids()
+            return [r for r in rings if not hub.vault.is_open(r) and hub.vault.policy(r).background]
+        except Damaged:
+            return []
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:
@@ -120,6 +144,9 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             "demo": hub.demo is not None,
             # Device web pages through the hub, at <device>.<this> (webproxy.py).
             "web_domain": hub.config.web.domain if hub.config.web else None,
+            "vault": hub.vault.state,  # absent | locked | partly | unlocked | damaged (vault.py)
+            # Locked rings Kastellan uses by itself: what needs their secrets waits.
+            "vault_waiting": vault_waiting(),
         }
 
     def check_view(check: Check, status: CheckStatus | None) -> dict[str, Any]:

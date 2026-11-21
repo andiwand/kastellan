@@ -85,6 +85,8 @@ class Sessions:
         self.path = path
         self._lock = threading.Lock()
         self._sessions: dict[str, Session] = {}
+        # When each user last used the app themselves (not a page polling on its own): in memory.
+        self._active: dict[str, float] = {}
         try:
             data = json.loads(path.read_text())
             self._sessions = {k: Session(**v) for k, v in data.items()}
@@ -110,7 +112,18 @@ class Sessions:
             self._sessions = {k: s for k, s in self._sessions.items() if now - s.used <= SESSION_IDLE}
             self._sessions[self._key(token)] = Session(user, now, now, tag)
             self._save()
+        self.mark(user)
         return token
+
+    def mark(self, user: str) -> None:
+        """This user is using the app now (a request they made, not an automatic refresh)."""
+        self._active[user] = time.time()
+
+    def active(self, within: float) -> set[str]:
+        """Who used the app within the last `within` seconds and still has a session."""
+        now = time.time()
+        live = self.users()
+        return {u for u, t in self._active.items() if now - t <= within and u in live}
 
     def tag(self, token: str | None) -> str | None:
         if not token:
@@ -153,6 +166,12 @@ class Sessions:
         with self._lock:
             if self._sessions.pop(self._key(token), None) is not None:
                 self._save()
+
+    def users(self) -> set[str]:
+        """Who has a session that hasn't idled out."""
+        now = time.time()
+        with self._lock:
+            return {s.user for s in self._sessions.values() if now - s.used <= SESSION_IDLE}
 
     def end_all_except(self, users: set[str]) -> None:
         """Drop the sessions of users who are no longer in config.yaml."""
