@@ -135,7 +135,8 @@
 		{/if}
 	</div>
 	<p class="mt-1 max-w-3xl text-xs text-muted">
-		Encrypted backups of configuration, keys and state. Keep the recovery passphrase separately.
+		Encrypted backups of configuration, keys and state. Keep recovery keys or the backup passphrase
+		separately.
 	</p>
 	{#if error}<p class="mt-2 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
 
@@ -154,15 +155,11 @@
 	{#if view && !view.ready}
 		{#if view.vault}
 			<p class="mt-4 text-sm">
-				No backup yet. It can open with the key rings: an admin's password (as it was at that
-				backup) or the Kastellan ring's recovery key, nothing else to keep. Or with a passphrase of
-				its own, shown once.
+				Open backups with an admin's password or the Kastellan ring's recovery key, or create a
+				separate passphrase.
 			</p>
 		{:else}
-			<p class="mt-4 text-sm">
-				No backup yet: it needs its passphrase first. (With key rings, made on the Keys page, it
-				opens with an admin's password or a recovery key instead.)
-			</p>
+			<p class="mt-4 text-sm">Create a backup passphrase, or set up key rings on Keys first.</p>
 		{/if}
 		{#if signedIn}
 			<div class="mt-2 flex flex-wrap gap-2">
@@ -271,8 +268,8 @@
 		<ul class="mt-1 text-xs">
 			{#if view.keyring}
 				<li>
-					It opens with an admin's password as it was at that backup, or the Kastellan ring's
-					recovery key:
+					A copied folder opens with credentials from its latest backup; a .kbak uses credentials
+					from the downloaded version. The Kastellan recovery check tests the latest local backup.
 				</li>
 			{:else}
 				<li style:color={old(view.checks.passphrase) ? 'var(--warning-text)' : undefined}>
@@ -353,13 +350,15 @@
 		{#if signedIn}
 			{#if replacing}
 				<p class="mt-4 text-xs">
-					Start a new backup? Old local and destination copies stay under their old passphrase;
-					remove them manually when no longer needed.
+					Start a new backup? Old copies keep their original credentials until you remove them.
 					<button
 						class="ml-1 underline"
 						disabled={busy}
 						style:color="var(--critical-text)"
-						onclick={() => ((replacing = false), makePhrase(true))}
+						onclick={() => (
+							(replacing = false),
+							makePhrase(true, view?.keyring ? 'keyring' : 'passphrase')
+						)}
 					>
 						Make a new one
 					</button>
@@ -370,7 +369,7 @@
 					class="mt-4 text-xs text-muted underline hover:text-text"
 					onclick={() => (replacing = true)}
 				>
-					A new passphrase…
+					{view.keyring ? 'A new backup key…' : 'A new passphrase…'}
 				</button>
 			{/if}
 		{/if}

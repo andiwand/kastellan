@@ -116,8 +116,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `device_backups.every_hours`; failures beyond two periods warn (`devbackup:<id>`).
   - `hubbackup.py` + `hubbackup_api.py`: hub snapshots in `<data>/hub-backup`, using
     `devbackups.Store` with an authenticated index (format 2). The key is derived from a
-    generated passphrase and kept as the protected secret `hub-backup-key`; headers hold its
-    salt and check. Config is `@config/config.yaml`; sessions, caches and hub backups are
+    generated passphrase or random in key-ring mode, and kept as `hub-backup-key`. A key-ring
+    store's `keyring.json` opens with credentials from its latest successful snapshot; a `.kbak`
+    carries its selected version's vault. Recovery checks test the saved vault. Config is
+    `@config/config.yaml`; sessions, caches and hub backups are
     excluded. Optional SQLite logs use online backup. Files are bounded (128 MiB each,
     512 MiB total); unreadable or changing state fails the snapshot. An operation lock covers
     snapshots, copies, downloads and rotation; browser disconnects don't cancel backups.
@@ -136,7 +138,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `WebLogin.svelte` copies a device's stored web login after the admin's password.
   - `fritzbox/web.py`: the FRITZ!Box web interface's undocumented API (login_sid.lua PBKDF2,
     data.lua: `chan`/`environment` neighbours, `shareWireguard`), port 443, same pin as TR-064.
-    `fritzbox.client.confirmed`: AVM's second factor (866) waited for via X_AVM-DE_Auth.
+    `fritzbox.client.confirmed`: AVM's second factor (866) via X_AVM-DE_Auth; its token is in
+    the SOAP header for that task only, never concurrent polls or unrelated actions.
   - `fritzbox/client.py` + `fritzbox_api.py`: TR-064 over HTTPS (49443) with a FRITZ!Box user
     (`fritzbox: {user, port}`, secret `fritzbox-<id>`), Digest auth by hand over a TLS connection
     whose certificate is pinned (`<data>/fritzbox/<id>.sha256`, confirmed by an admin at setup:

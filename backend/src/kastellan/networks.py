@@ -149,7 +149,7 @@ def public_ways(device: Device, on_internet: bool, statuses: dict[str, Any]) -> 
     the internet (a home IPv6 address is global, yet no way in)."""
     out = []
     for check in device.checks:
-        if check.type in ("ping", "dns"):
+        if check.type in ("ping", "dns", "dhcp"):
             continue  # not a service of the device: no way in
         target = check.hostname or device.host
         if check.exposed:

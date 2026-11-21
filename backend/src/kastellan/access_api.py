@@ -139,6 +139,7 @@ def router(hub: Hub) -> APIRouter:
         when they need it), streaming the output; then `ssh:` goes into config.yaml."""
         w = require_signin(request)
         device = device_of(id)
+        setup_run.resolve(hub, id, body, w.user)
         if not (USER.match(body.login) and USER.match(body.user)):
             raise HTTPException(400, "user names are letters, digits, . _ - (up to 32, not starting with -)")
         hub_ip = await asyncio.to_thread(hub_address, device.host, body.port)

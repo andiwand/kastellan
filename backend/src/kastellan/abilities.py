@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 
 ADDED = {
@@ -22,6 +23,7 @@ ADDED = {
 class Offered:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._lock = threading.RLock()
 
     def _read(self) -> dict[str, dict[str, list[str]]]:
         try:
@@ -31,13 +33,14 @@ class Offered:
 
     def passed(self, device: str, kind: str, abilities: set[str] | list[str]) -> None:
         """These were offered and not wanted (left out at a setup, or dismissed)."""
-        data = self._read()
-        entry = data.setdefault(device, {})
-        entry[kind] = sorted(set(entry.get(kind, [])) | set(abilities))
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(data))
-        tmp.replace(self.path)
+        with self._lock:
+            data = self._read()
+            entry = data.setdefault(device, {})
+            entry[kind] = sorted(set(entry.get(kind, [])) | set(abilities))
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(data))
+            tmp.replace(self.path)
 
     def new(self, device: str, kind: str, installed: list[str] | None) -> list[str]:
         if installed is None:  # not known yet

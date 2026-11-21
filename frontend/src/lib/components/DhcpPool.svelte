@@ -31,7 +31,7 @@
 </p>
 {#if open}
 	<ul class="mt-1 grid gap-x-6 gap-y-0.5 text-xs sm:grid-cols-2">
-		{#each pool.leases as l, i (l.mac ?? i)}
+		{#each pool.leases as l, i (i)}
 			<li class="flex min-w-0 gap-2">
 				<span class="truncate">{l.name ?? '–'}</span>
 				<span class="font-mono text-muted">{l.address}</span>

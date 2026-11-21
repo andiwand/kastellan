@@ -34,7 +34,10 @@
 
 	async function now() {
 		busy = true;
-		note = null;
+		note =
+			data?.kind === 'fritzbox-export'
+				? 'If the FRITZ!Box asks for confirmation, press a button on it now.'
+				: null;
 		try {
 			const res = await more.backupNow(device);
 			data = res;

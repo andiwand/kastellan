@@ -320,15 +320,15 @@ class HubBackup:
             header["check"], hmac.new(self.store._key(), b"kastellan backup", hashlib.sha256).hexdigest()
         ):
             raise ValueError("the backup key does not match its passphrase")
-        if header.get("keyring"):
-            # The key rings as they are now (encrypted under the admins' passwords and the
-            # recovery keys), next to the store: what opens it again.
-            vault = data / "vault.json"
-            if not vault.is_file():
-                raise ValueError("the backup opens with the key rings, but there are none")
-            private_write(self.folder / KEYRING, read_bounded(vault))
         members = collect(data, config, history, logs)
-        return self.store.add(ID, KIND, members, keep, by)
+        vault = next((content for file, content in members if file.path == "vault.json"), None)
+        if header.get("keyring") and vault is None:
+            raise ValueError("the backup opens with the key rings, but there are none")
+        result = self.store.add(ID, KIND, members, keep, by)
+        if header.get("keyring"):
+            # Publish only the key rings captured by this successful snapshot.
+            private_write(self.folder / KEYRING, vault)
+        return result
 
 
 def copy_path(path: str, header: dict[str, Any]) -> str:
@@ -739,7 +739,9 @@ def encrypted_archive(store: devbackups.Store, header: dict[str, Any], sid: str,
     nonce = os.urandom(12)
     fields = {k: header[k] for k in ("version", "salt", "check", "keyring") if k in header}
     if header.get("keyring"):  # what opens it travels with it
-        fields["vault"] = base64.b64encode(read_bounded(store.folder / KEYRING)).decode()
+        snap = next(s for s in store.snapshots(ID) if s.id == sid)
+        vault = next(f for f in snap.files if f.path == "vault.json")
+        fields["vault"] = base64.b64encode(store.get(vault.sha)).decode()
     head = json.dumps(fields).encode() + b"\n"
     return MAGIC + head + nonce + AESGCM(key).encrypt(nonce, tar, b"kastellan-backup")
 
@@ -755,7 +757,7 @@ def restore_file(
     recovery: str | None = None,
 ) -> dict[str, Any]:
     """Restore a downloaded archive, authenticating and staging it before changing any files."""
-    raw = read_bounded(source, MAX_TOTAL + MAX_FILES * 1024 + 1048576)
+    raw = read_bounded(source, MAX_TOTAL + MAX_FILES * 1024 + 2 * MAX_FILE + 1048576)
     if not raw.startswith(MAGIC):
         raise ValueError("not a Kastellan backup file")
     head, _, rest = raw[len(MAGIC) :].partition(b"\n")

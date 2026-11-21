@@ -507,3 +507,64 @@ def test_a_backup_that_opens_with_the_key_rings(tmp_path: Path) -> None:
         tmp_path / "k.kbak", "", tmp_path / "f", tmp_path / "f.yaml", user="ada", password="ada's password"
     )
     assert out["files"] >= 7
+
+    # An older download carries that snapshot's ring, even after recovery credentials change.
+    newer_recovery = vault.new_recovery(KASTELLAN)
+    saved_ring = (hb.folder / hubbackup.KEYRING).read_bytes()
+    with pytest.raises(FileNotFoundError):
+        hb.take(data, config.with_name("missing.yaml"), keep=10, history=True, logs=False)
+    assert (hb.folder / hubbackup.KEYRING).read_bytes() == saved_ring
+    newer, _ = hb.take(data, config, keep=10, history=True, logs=False)
+    assert newer.id != snap.id
+    (tmp_path / "older.kbak").write_bytes(hubbackup.encrypted_archive(hb.store, hb.header(), snap.id, key))
+    with pytest.raises(ValueError):
+        hubbackup.restore_file(
+            tmp_path / "older.kbak", "", tmp_path / "bad", tmp_path / "bad.yaml", recovery=newer_recovery
+        )
+    assert hubbackup.restore_file(
+        tmp_path / "older.kbak", "", tmp_path / "older", tmp_path / "older.yaml", recovery=recovery
+    )
+    # A copied folder uses the newest snapshot's ring, including when selecting an old version.
+    hubbackup.copy_tree(hb.folder, target)
+    assert hubbackup.restore(
+        target,
+        "",
+        tmp_path / "old-version",
+        tmp_path / "old-version.yaml",
+        version=snap.id,
+        recovery=newer_recovery,
+    )
+
+
+def test_recovery_check_opens_the_saved_backup_not_the_live_ring(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from kastellan.api import create_app
+    from kastellan.auth import password_tag
+    from kastellan.settings import Settings
+
+    hashed = hash_password("password")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices: {}\ninternet: {enabled: false}\ncheck_releases: false\n"
+        f"users:\n  admin: {{password: {hashed}, role: admin}}\n"
+    )
+    headers = {"X-Kastellan": "1"}
+    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as client:
+        client.post("/api/auth/login", json={"user": "admin", "password": "password"}, headers=headers)
+        vault = client.app.state.hub.vault
+        old_key = vault.create("admin", "password", password_tag(hashed))["kastellan"]
+        made = client.post("/api/hub-backup/passphrase", json={"mode": "keyring"}, headers=headers)
+        assert made.status_code == 200, made.text
+        assert made.json()["passphrase"] is None
+        body = {"ring": "kastellan", "recovery": old_key}
+        assert client.post("/api/hub-backup/check", json=body, headers=headers).status_code == 409
+        assert client.post("/api/hub-backup", headers=headers).json()["local_ok"]
+        new_key = vault.new_recovery("kastellan")
+        assert client.post("/api/hub-backup/check", json=body, headers=headers).json()["right"]
+        assert "recovery:kastellan" in client.get("/api/hub-backup").json()["checks"]
+        newer = {"ring": "kastellan", "recovery": new_key}
+        assert not client.post("/api/hub-backup/check", json=newer, headers=headers).json()["right"]
+        assert client.post("/api/hub-backup", headers=headers).json()["local_ok"]
+        assert "recovery:kastellan" not in client.get("/api/hub-backup").json()["checks"]
+        assert client.post("/api/hub-backup/check", json=newer, headers=headers).json()["right"]

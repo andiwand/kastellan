@@ -296,7 +296,7 @@
 				</a>
 			{/if}
 			{#if webUi && store.me?.role === 'admin' && store.me.user}
-				<WebLogin device={device.id} />
+				{#key device.id}<WebLogin device={device.id} />{/key}
 			{/if}
 			{#if device.fritzbox && device.fritz && store.me?.role === 'admin' && store.me.user}
 				<RouterReboot device={device.id} kind="fritzbox" />

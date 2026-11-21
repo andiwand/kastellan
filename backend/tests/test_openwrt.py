@@ -454,6 +454,19 @@ async def test_an_ended_session_logs_in_again_once(tmp_path: Path) -> None:
     assert report["board"]["model"] and rpcd.logins == 2
 
 
+async def test_dhcp_pool_usage_excludes_static_leases_outside_it() -> None:
+    class Ubus:
+        async def call(self, *args):
+            return {"values": {"lan": {".type": "dhcp", "start": "100", "limit": "10"}}}
+
+    leases = [{"address": f"192.168.1.{i}"} for i in range(2, 100)]
+    leases += [{"address": "192.168.1.101"}, {"address": "192.168.1.101"}]
+    interfaces = [{"interface": "lan", "ipv4-address": [{"address": "192.168.1.1", "mask": 24}]}]
+    pool = await ow._dhcp(Ubus(), leases, interfaces)
+    assert pool["size"] == 10 and pool["used"] == 1
+    assert (await ow._dhcp(Ubus(), leases, []))["size"] is None
+
+
 async def test_wifi_values_are_checked(tmp_path: Path) -> None:
     rpcd = FakeRpcd(["kastellan-wifi"])
     u = ubus(tmp_path, rpcd)

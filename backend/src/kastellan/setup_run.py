@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import asyncssh
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from .ssh import ChangedHost, Target, UnknownHost
 
@@ -44,6 +44,7 @@ class Login(BaseModel):
     # typed one there (for this device only) once it worked.
     stored: str | None = Field(default=None, max_length=128)
     remember: bool = False
+    _remembered: str | None = PrivateAttr(default=None)
     port: int = Field(default=22, ge=1, le=65535)
     # How to get root when the login isn't root: sudo (with `root_password` if it is another
     # password than the login's), or su with root's password.
@@ -131,6 +132,7 @@ async def connect(
         conn = await hub.keys.connect(Target(host, body.port, body.login), password=body.password)
         if device is not None and body.remember:
             note = remember(hub, device, body, user, None)
+            body._remembered = note
             if note:
                 audit(remembered=note)
         return conn
@@ -270,6 +272,8 @@ def stream(
     runs) when the browser leaves halfway. The page only follows it."""
     audit(outcome="started")
     queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+    if body._remembered:
+        queue.put_nowait((body._remembered + "\n").encode())
 
     async def run() -> None:
         tail: list[str] = []

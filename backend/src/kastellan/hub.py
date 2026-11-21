@@ -161,7 +161,7 @@ class Hub:
             else lambda: base64.b64decode(self.own_secret(devbackups.KEY_SECRET, devbackups.new_key)),
         )
         self.backup_status: dict[str, dict[str, Any]] = {}  # per device: the last attempt
-        self.offered = Offered(settings.data / "abilities-offered.json")  # new abilities passed on
+        self.offered = Offered(data / "abilities-offered.json")  # new abilities passed on
         # Kastellan's own backup (hubbackup.py): its key comes from a passphrase, not the hub.
         self.hub_backup = HubBackup(data if self.demo else settings.data, self._hub_backup_key)
         self.internet = Internet(data / "internet")  # the internet connection (internet.py)
@@ -762,7 +762,10 @@ class Hub:
                     try:  # the web interface's own API (undocumented): WireGuard
                         from .fritzbox import web
 
-                        report["wireguard"] = web.wireguard(await self.fritz_web(id).data("shareWireguard"))
+                        async with asyncio.timeout(10):
+                            report["wireguard"] = web.wireguard(
+                                await self.fritz_web(id).data("shareWireguard")
+                            )
                     except Exception as e:
                         report["errors"]["wireguard"] = _brief(e)
             except Exception as e:
@@ -1120,10 +1123,12 @@ class Hub:
             fresh = []
             for lease in pool.get("leases") or []:
                 mac, addr = lease.get("mac"), lease.get("address")
-                if not mac or addr in known_hosts or f"newdevice:{mac}" in self.alarms.seen_events:
+                if not mac or addr in known_hosts:
                     continue
+                seen = f"newdevice:{mac}" in self.alarms.seen_events
                 self.alarms.event(f"newdevice:{mac}", "", "", id, now, send=False)
-                fresh.append(f"{lease.get('name') or mac} ({addr})")
+                if not seen:
+                    fresh.append(f"{lease.get('name') or mac} ({addr})")
             if fresh and send:
                 if len(fresh) <= 3:
                     for f in fresh:
@@ -1193,12 +1198,26 @@ class Hub:
         from . import dhcp
 
         out: list[Problem] = []
+        now = datetime.now(UTC)
         for id, status in self.monitor.status.items():
             if id not in self.config.devices:
                 continue
+            checked = status.router_checked if status.router else status.fritz_checked
+            if (
+                checked is None
+                or checked < self.started
+                or (now - checked).total_seconds() > 3 * ROUTER_EVERY
+            ):
+                continue
             pool = ((status.router or {}).get("dhcp") or (status.fritz or {}).get("dhcp")) or {}
             size, used = pool.get("size"), pool.get("used")
-            if size and used is not None and used >= 0.9 * size:
+            if (
+                pool.get("server") is not False
+                and size
+                and size > 0
+                and used is not None
+                and used >= 0.9 * size
+            ):
                 label = self.config.label(id)
                 out.append(
                     Problem(
@@ -1210,10 +1229,15 @@ class Hub:
                         "new devices may get no address",
                     )
                 )
-        hosts = {d.host: id for id, d in self.config.devices.items() if d.host}
+        hosts = {
+            d.host: id
+            for id, d in self.config.devices.items()
+            if d.host and any(c.type == "dhcp" for c in d.checks)
+        }
+        expected = set(hosts) | {self.resolver.address(host) for host in hosts}
         for server, seen in dhcp.UNEXPECTED.items():
             id = hosts.get(seen["device"])
-            if id is None:
+            if id is None or server in expected or time.time() - seen["seen"] > dhcp.UNEXPECTED_FOR:
                 continue
             known = next(
                 (

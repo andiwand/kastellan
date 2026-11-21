@@ -166,6 +166,7 @@ def test_quoted_and_multiline_credentials_stay_hidden() -> None:
 
 
 async def test_fritz_backup_keeps_original_bytes_and_restore_password(tmp_path, monkeypatch) -> None:
+    import asyncio
     import zipfile
     from types import SimpleNamespace
 
@@ -180,7 +181,7 @@ async def test_fritz_backup_keeps_original_bytes_and_restore_password(tmp_path, 
     monkeypatch.setattr(fb, "config_export", export)
     hub = SimpleNamespace(
         config=SimpleNamespace(devices={"gw": SimpleNamespace(openwrt=None, fritzbox={})}),
-        fritz=lambda _: None,
+        fritz=lambda _: SimpleNamespace(confirming=asyncio.Lock()),
         own_secret=lambda _: "restore-password",
     )
     store = devbackups.Store(tmp_path, lambda: KEY)

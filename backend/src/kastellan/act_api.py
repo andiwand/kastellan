@@ -109,6 +109,7 @@ def router(hub: Hub) -> APIRouter:
         streaming the output, and add `act:` to the device in config.yaml."""
         w = require_signin(request)
         device = device_of(id)
+        setup_run.resolve(hub, id, body, w.user)
         if not USER.match(body.login):
             raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
         hub_ip = await asyncio.to_thread(hub_address, device.host, body.port)
@@ -146,6 +147,7 @@ def router(hub: Hub) -> APIRouter:
         remove `act:` from the device in config.yaml."""
         w = require_signin(request)
         device = device_of(id)
+        setup_run.resolve(hub, id, body, w.user)
         if not USER.match(body.login):
             raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
         audit = partial(

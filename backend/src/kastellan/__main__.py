@@ -107,14 +107,17 @@ def restore_command(source: str, version: str | None, force: bool, only_list: bo
         raise SystemExit("--list and --version apply only to backup folders; nothing restored.")
     try:
         if path.is_dir():
-            header = json.loads((path / hubbackup.HEADER).read_text())
+            header = json.loads(hubbackup.read_bounded(path / hubbackup.HEADER))
         else:
-            raw = path.read_bytes()[: 64 * 1024 * 1024]
-            header = (
-                json.loads(raw[len(hubbackup.MAGIC) :].partition(b"\n")[0])
-                if raw.startswith(hubbackup.MAGIC)
-                else {}
-            )
+            with path.open("rb") as src:
+                if src.read(len(hubbackup.MAGIC)) != hubbackup.MAGIC:
+                    raise ValueError("not a .kbak file")
+                head = src.readline(2 * hubbackup.MAX_FILE)
+                if not head.endswith(b"\n"):
+                    raise ValueError("backup header is too large or incomplete")
+                header = json.loads(head)
+        if not isinstance(header, dict):
+            raise ValueError("invalid backup header")
     except (OSError, ValueError) as e:
         raise SystemExit(f"Not a Kastellan backup: {e}") from e
     phrase, user, password, recovery = "", None, None, None
@@ -140,7 +143,7 @@ def restore_command(source: str, version: str | None, force: bool, only_list: bo
             if only_list:
                 if header.get("keyring"):
                     key = hubbackup.key_from_keyring(
-                        header, (path / hubbackup.KEYRING).read_bytes(), user, password, recovery
+                        header, hubbackup.read_bounded(path / hubbackup.KEYRING), user, password, recovery
                     )
                 else:
                     key = hubbackup.key_from(header, phrase)

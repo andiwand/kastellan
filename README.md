@@ -21,7 +21,7 @@ Self-hosted checks, alerts and device administration, with permissions you choos
 > See [releases](https://github.com/andiwand/kastellan/releases), [CHANGELOG.md](CHANGELOG.md)
 > and [PLAN.md](PLAN.md).
 
-- **Monitor:** ping, TCP, HTTP and DNS; uptime, latency, software versions and certificates.
+- **Monitor:** ping, TCP, HTTP, DNS and DHCP; uptime, latency, software versions and certificates.
 - **Find problems:** dependency-aware alarms, UPS power status, disk forecasts, backup reports and vulnerability
   lookups (NVD, OSV, CISA KEV). Notifications through ntfy, Gotify, Telegram, e-mail, webhooks
   and browser push, with maintenance windows and optional reminders.
@@ -59,6 +59,9 @@ uncommenting `build: .` to use unreleased features.
 Ping needs `net.ipv4.ping_group_range="0 2147483647"` on the Linux host; set it with `sysctl`
 and persist it in `/etc/sysctl.d/`. The optional guacd service in Compose provides remote
 desktop and must listen on localhost only.
+
+A `dhcp` check broadcasts on the hub's local network and listens on UDP 68 (root required).
+It does not cross routers or VPNs; configure it only for a DHCP server on that network.
 
 ## Configuration
 
@@ -212,9 +215,10 @@ keys and any external unlock keys separately. Restore both directories and their
 before starting the same Kastellan version. Backups contain credentials; protect them accordingly.
 Device backups preserve OpenWrt configuration archives and FRITZ!Box exports. Extract a FRITZ!Box
 ZIP before restoring its `.export`; the included `export-password.txt` contains the restore password.
-For scheduled hub backups, create a passphrase on **Backups**, then add a mounted folder or
-SFTP destination in **Settings → Kastellan's own backup**. Keep the passphrase separately.
-Each destination gets a `kastellan-…` folder per passphrase; old generations remain until removed.
+For scheduled hub backups, choose key rings or a separate passphrase on **Backups**, then add
+a mounted folder or SFTP destination in **Settings → Kastellan's own backup**. Keep recovery
+keys or the passphrase separately. Each backup key gets its own `kastellan-…` destination folder;
+old generations remain until removed.
 
 Restore a copied folder or downloaded `.kbak` using the same Kastellan version, with the hub
 stopped and empty data/config directories:
@@ -225,9 +229,11 @@ docker compose run --rm --no-deps -v /path/to/backup:/restore:ro kastellan kaste
 docker compose up -d
 ```
 
-The command prompts for the passphrase. For folders, `--list` lists versions and `--version ID`
-selects one. `--force` replaces existing state, including sessions and old secrets. After
-restoring, create a new backup passphrase to resume scheduled hub backups. External unlock
+The command prompts for the passphrase, or an admin login or Kastellan recovery key. A folder
+uses credentials from its latest backup; a `.kbak` uses those from the downloaded version.
+For folders, `--list` lists versions and `--version ID` selects one. `--force` replaces existing
+state, including sessions and old secrets. After restoring, create a new backup key on
+**Backups** to resume scheduled backups. External unlock
 keys are not included. Central logs are optional; backups currently allow 128 MiB per
 file and 512 MiB total. Unreadable or changing state fails the backup instead of silently omitting files.
 

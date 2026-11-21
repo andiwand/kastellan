@@ -24,6 +24,8 @@ from typing import Any
 COOKIE = b"\x63\x82\x53\x63"
 MAC = bytes.fromhex("02") + bytes.fromhex("4b4153") + b"\x74\x6c"  # 02:4b:41:53:74:6c, "KAStl"
 _lock = asyncio.Lock()  # one probe at a time: they share port 68
+_sample: tuple[float, str, list[Offer]] | None = None
+UNEXPECTED_FOR = 1800
 
 
 def discover(xid: int, mac: bytes = MAC) -> bytes:
@@ -58,13 +60,14 @@ class Offer:
     router: str | None = None
     dns: list[str] = field(default_factory=list)
     lease: int | None = None
+    latency_ms: float | None = None
 
 
 def parse(data: bytes, xid: int, sender: str) -> Offer | None:
     """A DHCPOFFER for our request, or None."""
     if len(data) < 240 or data[0] != 2 or data[236:240] != COOKIE:
         return None
-    if struct.unpack("!I", data[4:8])[0] != xid:
+    if struct.unpack("!I", data[4:8])[0] != xid or data[1:3] != b"\x01\x06" or data[28:34] != MAC:
         return None
     offered = socket.inet_ntoa(data[16:20])
     opts: dict[int, bytes] = {}
@@ -77,8 +80,10 @@ def parse(data: bytes, xid: int, sender: str) -> Offer | None:
             i += 1
             continue
         if i + 1 >= len(data):
-            break
+            return None
         length = data[i + 1]
+        if i + 2 + length > len(data):
+            return None
         opts[code] = data[i + 2 : i + 2 + length]
         i += 2 + length
     if opts.get(53) != b"\x02":  # DHCPOFFER
@@ -101,18 +106,26 @@ def parse(data: bytes, xid: int, sender: str) -> Offer | None:
 class _Receiver(asyncio.DatagramProtocol):
     def __init__(self, xid: int) -> None:
         self.xid = xid
+        self.started = time.monotonic()
         self.offers: dict[str, Offer] = {}
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        if addr[1] != 67:
+            return
         offer = parse(data, self.xid, addr[0])
         if offer is not None:
+            offer.latency_ms = round((time.monotonic() - self.started) * 1000, 1)
             self.offers.setdefault(offer.server, offer)
 
 
 async def probe(wait: float = 3.0, interface_address: str = "0.0.0.0") -> list[Offer]:
     """Every DHCP server's offer within `wait` seconds. PermissionError when port 68 can't be
     bound (not root)."""
+    global _sample
+    started = time.monotonic()
     async with _lock:
+        if _sample and _sample[0] >= started and _sample[1] == interface_address:
+            return _sample[2]  # concurrent checks share the broadcast they waited for
         xid = struct.unpack("!I", os.urandom(4))[0]
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         try:
@@ -124,11 +137,17 @@ async def probe(wait: float = 3.0, interface_address: str = "0.0.0.0") -> list[O
             sock.close()
             raise
         loop = asyncio.get_running_loop()
-        transport, protocol = await loop.create_datagram_endpoint(lambda: _Receiver(xid), sock=sock)
+        try:
+            transport, protocol = await loop.create_datagram_endpoint(lambda: _Receiver(xid), sock=sock)
+        except BaseException:
+            sock.close()
+            raise
         try:
             transport.sendto(discover(xid), ("255.255.255.255", 67))
             await asyncio.sleep(wait)
-            return list(protocol.offers.values())
+            offers = list(protocol.offers.values())
+            _sample = (time.monotonic(), interface_address, offers)
+            return offers
         finally:
             transport.close()
 
@@ -144,12 +163,12 @@ def note_unexpected(device: str, offers: list[Offer], expected: set[str]) -> Non
         if o.server not in expected:
             UNEXPECTED[o.server] = {"device": device, "seen": now, "offered": o.offered}
     for server in list(UNEXPECTED):
-        if now - UNEXPECTED[server]["seen"] > 1800:  # not answering for half an hour: gone
+        if now - UNEXPECTED[server]["seen"] > UNEXPECTED_FOR:
             del UNEXPECTED[server]
 
 
 def in_range(address: str, low: str, high: str) -> bool:
-    with contextlib.suppress(ValueError):
+    with contextlib.suppress(ValueError, TypeError):
         a = ipaddress.ip_address(address)
         return ipaddress.ip_address(low) <= a <= ipaddress.ip_address(high)
     return False

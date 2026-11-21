@@ -357,13 +357,8 @@ def test_the_wifi_environment_and_wireguard_as_fritzos_8_25_shows_them() -> None
         }
     )
     assert wg["port"] == "51820" and wg["connections"][0]["name"] == "phone"
-    assert web.wireguard({}) == {
-        "server": None,
-        "port": None,
-        "address": None,
-        "connections": [],
-        "error": None,
-    }
+    with pytest.raises(fb.FritzError, match="can't be read"):
+        web.wireguard({})  # an unknown schema is not an empty connection list
 
 
 async def test_the_mesh_and_each_networks_clients(tmp_path: Path) -> None:
@@ -469,10 +464,16 @@ async def test_the_second_factor_is_waited_for(tmp_path: Path) -> None:
         action = request.headers.get("soapaction", "")
         if fake.authorized(request) and "X_AVM-DE_Auth" in action:
             name = action.strip('"').split("#")[1]
-            out = {
-                "SetConfig": "<NewState>waitingforauth</NewState><NewMethods>button</NewMethods>",
-                "GetState": f"<NewState>{next(states)}</NewState>",
-            }[name]
+            if name == "GetState" or b">stop<" in request.content:
+                assert (
+                    b'<avm:token xmlns:avm="avm.de" s:mustUnderstand="1">test-token</avm:token>'
+                    in request.content
+                )
+            out = (
+                "<NewState>waitingforauth</NewState><NewMethods>button</NewMethods><NewToken>test-token</NewToken>"
+                if name == "SetConfig"
+                else f"<NewState>{next(states)}</NewState>"
+            )
             if name == "GetState" and "authenticated" in out:
                 fake.second_factor = False
             return httpx.Response(
@@ -480,12 +481,15 @@ async def test_the_second_factor_is_waited_for(tmp_path: Path) -> None:
                 text=f'<s:Envelope xmlns:s="x"><s:Body><u:{name}Response xmlns:u="y">{out}'
                 f"</u:{name}Response></s:Body></s:Envelope>",
             )
+        if fake.authorized(request) and "SetSSID" in action and not fake.second_factor:
+            assert b">test-token</avm:token>" in request.content
         return original(request)
 
     b.transport = httpx.MockTransport(handle)
     said = []
     await fb.confirmed(b, lambda: fb.change_wifi(b, 1, {"ssid": "x"}), wait=5, say=said.append, poll=0)
-    assert fake.ssid[1] == "x" and "press a button" in said[0]
+    assert fake.ssid[1] == "x" and "button" in said[0]
+    assert b._token.get() is None  # no token on unrelated requests after the operation
     fake.second_factor = True
     with pytest.raises(fb.FritzError):  # nobody at the box (a scheduled run): no waiting
         await fb.confirmed(b, lambda: fb.change_wifi(b, 1, {"ssid": "y"}), wait=0)

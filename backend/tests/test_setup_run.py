@@ -113,6 +113,18 @@ async def test_passwordless_sudo_gets_no_password(server) -> None:
     assert seen[-1] == ("sudo", "")  # nothing on its stdin: no password where the script could read it
 
 
+async def test_setup_reports_when_the_login_could_not_be_kept(server) -> None:
+    from kastellan.ssh import Target
+
+    keys, port, _, _ = server
+    conn = await keys.connect(Target("127.0.0.1", port, "andreas"), password="mine")
+    body = Login(login="andreas", password="mine", port=port)
+    body._remembered = "not kept: the People ring is locked"
+    response = stream(conn, "echo hi", body, lambda **kw: None)
+    chunks = [chunk.decode() async for chunk in response.body_iterator]
+    assert chunks[0] == body._remembered + "\n"
+
+
 async def test_a_page_that_leaves_doesnt_stop_it(server) -> None:
     """The run is the hub's: the browser leaving halfway still gets it audited and finished."""
     keys, port, _, _ = server
@@ -227,3 +239,14 @@ def test_a_stored_login_only_for_its_device(tmp_path) -> None:
         setup_run.resolve(hub, "nas", setup_run.Login(stored="ssh-sv1-root"), "ada")
     with pytest.raises(HTTPException):  # a typed login needs both
         setup_run.resolve(hub, "sv1", setup_run.Login(login="root"), "ada")
+
+
+def test_concurrent_ability_dismissals_keep_every_device(tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from kastellan.abilities import Offered
+
+    offered = Offered(tmp_path / "offered.json")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda n: offered.passed(f"host{n}", "actor", ["journal"]), range(40)))
+    assert all("journal" not in offered.new(f"host{n}", "actor", []) for n in range(40))

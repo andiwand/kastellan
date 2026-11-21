@@ -76,3 +76,12 @@ def test_demo_logs_backups_internet_wifi(tmp_path: Path) -> None:
         ours = {(r["device"], r["band"]): r["channel"] for r in plan["radios"]}
         assert len({ours[("repeater-living", "2g")], ours[("repeater-attic", "2g")]}) == 2
     assert not (tmp_path / "logs.db").exists() and not (tmp_path / "device-backups").exists()
+
+
+def test_demo_ability_dismissals_stay_in_the_demo(tmp_path: Path) -> None:
+    settings = Settings(config=tmp_path / "none.yaml", data=tmp_path, demo=True)
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/devices/nas/abilities/actor/not-needed", headers={"X-Kastellan": "1"})
+        assert response.status_code == 200, response.text
+        assert client.app.state.hub.offered.path.exists()
+    assert not (tmp_path / "abilities-offered.json").exists()

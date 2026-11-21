@@ -151,6 +151,48 @@ def test_set_up_with_a_password_once(tmp_path: Path, device) -> None:
         assert "access.setup" in log and "hunter2" not in log
 
 
+@pytest.mark.parametrize(
+    "route, extra",
+    [
+        ("access/setup", {"user": "andreas"}),
+        ("collect/install", {}),
+        ("collect/uninstall", {}),
+        ("act/install", {}),
+        ("act/uninstall", {}),
+        ("openwrt/install", {}),
+    ],
+)
+def test_setups_resolve_stored_logins_before_validation(tmp_path, device, route, extra) -> None:
+    from kastellan.auth import password_tag
+    from kastellan.vault import PEOPLE
+
+    port, host_key, ran = device
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"devices:\n  sv1:\n    host: 127.0.0.1\nusers:\n  ada:\n    role: admin\n    password: {HASH}\n"
+    )
+    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
+        assert (
+            c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=H).status_code
+            == 200
+        )
+        hub = c.app.state.hub
+        hub.vault.create("ada", "pw for tests", password_tag(HASH))
+        hub.vault.put("stored", "hunter2", ring=PEOPLE, kind="password", user="andreas", devices=["sv1"])
+        hub.keys.known_hosts.parent.mkdir(parents=True, exist_ok=True)
+        hub.keys.known_hosts.write_text(
+            f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n"
+        )
+        response = c.post(
+            f"/api/devices/sv1/{route}", json={"stored": "stored", "port": port, **extra}, headers=H
+        )
+        assert response.status_code == 200, response.text
+        assert ran  # the fake device accepted the stored username and password
+        records = [json.loads(line) for line in (hub.settings.data / "audit.log").read_text().splitlines()]
+        assert any(r.get("login") == "andreas" for r in records)
+        assert "hunter2" not in json.dumps(records)
+
+
 def test_key_written_as_the_user(tmp_path: Path) -> None:
     """Root adds the key through su as the user; a missing user stops before anything is written."""
     bin = tmp_path / "bin"

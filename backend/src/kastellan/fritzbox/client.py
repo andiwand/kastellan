@@ -24,6 +24,7 @@ import re
 import ssl
 import time
 import xml.etree.ElementTree as ET
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -105,6 +106,8 @@ class Fritz:
         self._challenge: str | None = None
         self._nc = 0
         self.changing = asyncio.Lock()
+        self.confirming = asyncio.Lock()
+        self._token: ContextVar[str | None] = ContextVar("fritz_confirmation", default=None)
 
     async def _http(
         self,
@@ -247,10 +250,18 @@ class Fritz:
             raise FritzError(401, f"this FRITZ!Box has no {service}")
         urn = self._service_types[service]
         inner = "".join(f"<{k}>{escape(str(v))}</{k}>" for k, v in (args or {}).items())
+        token = self._token.get()
+        header = (
+            '<s:Header><avm:token xmlns:avm="avm.de" s:mustUnderstand="1">'
+            f"{escape(token)}</avm:token></s:Header>"
+            if token
+            else ""
+        )
         body = (
             '<?xml version="1.0" encoding="utf-8"?>'
             '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"'
-            ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+            ' s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+            f"{header}<s:Body>"
             f'<u:{action} xmlns:u="{urn}">{inner}</u:{action}></s:Body></s:Envelope>'
         ).encode()
         headers = {"Content-Type": 'text/xml; charset="utf-8"', "SOAPACTION": f'"{urn}#{action}"'}
@@ -372,7 +383,7 @@ async def _dhcp(fb: Fritz, clients: list[dict[str, Any]]) -> dict[str, Any] | No
 def _rcpi(value: Any) -> int | None:
     """IEEE 802.11k's RCPI (0..220, 255 unknown) as dBm."""
     v = _int(value)
-    return None if v is None or v >= 221 else round(v / 2 - 110)
+    return None if v is None or not 0 <= v <= 220 else round(v / 2 - 110)
 
 
 async def _mesh(fb: Fritz, errors: dict[str, str]) -> dict[str, Any] | None:
@@ -696,34 +707,45 @@ async def update_firmware(fb: Fritz) -> None:
         await fb.call("UserInterface:1", "X_AVM-DE_DoUpdate", timeout=60)
 
 
-SECOND_FACTOR = (866, 867, 868)
-
-
 async def confirmed(fb: Fritz, call, wait: float = 90, say=None, poll: float = 2):
     """`call()` (an action FRITZ!OS may want confirmed on the box), and when it asks for its
     second factor (866): start the confirmation (X_AVM-DE_Auth), wait up to `wait` seconds for
     someone to press a button on the box (or dial the code it names), then call again."""
-    try:
-        return await call()
-    except FritzError as e:
-        if e.code != 866 or wait <= 0:
-            raise
-    started = await fb.call("X_AVM-DE_Auth:1", "SetConfig", {"NewAction": "start"})
-    methods = started.get("NewMethods") or "button"
-    if say:
-        say(f"FRITZ!OS asks to confirm it on the box ({methods}): press a button there now")
-    loop = asyncio.get_running_loop()
-    until = loop.time() + wait
-    while loop.time() < until:
-        await asyncio.sleep(poll)
-        state = (await fb.call("X_AVM-DE_Auth:1", "GetState")).get("NewState", "")
-        if state == "authenticated":
+    async with fb.confirming:
+        try:
             return await call()
-        if state in ("stopped", "failure", "blocked"):
-            raise FritzError(867, f"the confirmation on the FRITZ!Box ended ({state})")
-    with contextlib.suppress(Exception):
-        await fb.call("X_AVM-DE_Auth:1", "SetConfig", {"NewAction": "stop"})
-    raise FritzError(866, "nobody confirmed it on the FRITZ!Box in time")
+        except FritzError as e:
+            if e.code != 866 or wait <= 0:
+                raise
+        started = await fb.call("X_AVM-DE_Auth:1", "SetConfig", {"NewAction": "start"})
+        token = started.get("NewToken")
+        if not token:
+            raise FritzError(866, "the FRITZ!Box gave no confirmation token")
+        # AVM requires the token on every SOAP action in this process. A task-local value
+        # keeps a concurrent poll or unrelated change from borrowing the confirmation.
+        context = fb._token.set(token)
+        try:
+            if say:
+                say(f"Confirm on the FRITZ!Box now: {started.get('NewMethods') or 'button'}")
+            async with asyncio.timeout(wait):
+                state = started.get("NewState")
+                while state == "waitingforauth":
+                    await asyncio.sleep(poll)
+                    state = (await fb.call("X_AVM-DE_Auth:1", "GetState")).get("NewState")
+                if state in ("authenticated", "disabled"):
+                    return await call()
+                raise FritzError(
+                    868 if state == "anotherauthprocess" else 867,
+                    f"the confirmation on the FRITZ!Box ended ({state})",
+                )
+        except TimeoutError as e:
+            raise FritzError(866, "nobody confirmed it on the FRITZ!Box in time") from e
+        finally:
+            try:
+                with contextlib.suppress(Exception):
+                    await fb.call("X_AVM-DE_Auth:1", "SetConfig", {"NewAction": "stop"}, timeout=5)
+            finally:
+                fb._token.reset(context)
 
 
 async def config_export(fb: Fritz, password: str) -> bytes:

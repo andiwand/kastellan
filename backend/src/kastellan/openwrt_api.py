@@ -121,6 +121,7 @@ def router(hub: Hub) -> APIRouter:
         """Set the login up on the device (as root over SSH, with a password typed once)."""
         w = require_signin(request)
         device = device_of(id, configured=hub.demo)
+        setup_run.resolve(hub, id, body, w.user)
         try:
             text = install_script(set(body.abilities), md5crypt(password_for(id)), body.services)
         except ValueError as e:

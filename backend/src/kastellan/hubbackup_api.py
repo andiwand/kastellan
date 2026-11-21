@@ -6,6 +6,7 @@ keys: a backup nobody can open saves nothing."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from datetime import UTC, datetime
@@ -52,6 +53,12 @@ def router(hub: Hub) -> APIRouter:
         data = checks() | {what: {"at": datetime.now(UTC).isoformat(timespec="seconds"), "key": key}}
         hubbackup.private_write(checks_file, json.dumps(data).encode())
 
+    def recovery_version(ring: str) -> str | None:
+        if ring == "kastellan" and (hub.hub_backup.header() or {}).get("keyring"):
+            path = hub.hub_backup.folder / hubbackup.KEYRING
+            return hashlib.sha256(hubbackup.read_bounded(path)).hexdigest() if path.exists() else None
+        return hub.vault.recovery_tag(ring)
+
     async def background(work):
         task = asyncio.create_task(work)
         hub._background.add(task)
@@ -79,7 +86,7 @@ def router(hub: Hub) -> APIRouter:
         cfg = hub.config.hub_backup
         versions = {"passphrase": (header or {}).get("check")}
         if not hub.demo and hub.vault.exists:
-            versions |= {f"recovery:{r['id']}": hub.vault.recovery_tag(r["id"]) for r in hub.vault.rings()}
+            versions |= {f"recovery:{r['id']}": recovery_version(r["id"]) for r in hub.vault.rings()}
         verified = {
             what: item["at"]
             for what, item in checks().items()
@@ -183,11 +190,28 @@ def router(hub: Hub) -> APIRouter:
                 ok = False
             what, key = "passphrase", header["check"]
         elif body.ring and body.recovery:
-            key = hub.vault.recovery_tag(body.ring)
-            async with checking:
-                ok = await hubbackup.blocking(hub.vault.check_recovery, body.ring, body.recovery)
-            if key != hub.vault.recovery_tag(body.ring):
-                raise HTTPException(409, "the recovery key changed; try again")
+            async with checking, hub.hub_backup.operation:
+                key = recovery_version(body.ring)
+                if key is None:
+                    raise HTTPException(409, "make a backup before checking its recovery key")
+                header = hub.hub_backup.header()
+                if body.ring == "kastellan" and header and header.get("keyring"):
+                    try:
+                        await hubbackup.blocking(
+                            hubbackup.key_from_keyring,
+                            header,
+                            hubbackup.read_bounded(hub.hub_backup.folder / hubbackup.KEYRING),
+                            None,
+                            None,
+                            body.recovery,
+                        )
+                        ok = True
+                    except ValueError:
+                        ok = False
+                else:
+                    ok = await hubbackup.blocking(hub.vault.check_recovery, body.ring, body.recovery)
+                if key != recovery_version(body.ring):
+                    raise HTTPException(409, "the recovery key changed; try again")
             what = f"recovery:{body.ring}"
         else:
             raise HTTPException(400, "a passphrase, or a ring and its recovery key")

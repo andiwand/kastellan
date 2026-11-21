@@ -172,9 +172,9 @@ def _check_node(check: dict[str, Any]) -> Any:
     target = check.get("target")
     if kind == "tcp" and isinstance(target, str) and target.strip().isdigit():
         target = int(target)
-    if kind == "ping":
+    if kind in ("ping", "dhcp"):
         target = None
-    default_name = "ping" if kind == "ping" else f"{kind}:{target}"
+    default_name = kind if kind in ("ping", "dhcp") else f"{kind}:{target}"
     extras: dict[str, Any] = {}
     for key in ("name", "expect", "server", "verify", "tls", "interval", "timeout", "exposed"):
         value = check.get(key)
@@ -185,8 +185,8 @@ def _check_node(check: dict[str, Any]) -> Any:
         if (key == "name" and value == default_name) or (key == "timeout" and value == DEFAULT_TIMEOUT):
             continue  # the default: not written
         extras[key] = value
-    if kind == "ping" and not extras:
-        return "ping"
+    if kind in ("ping", "dhcp") and not extras:
+        return kind
     node = CommentedMap()
     node[kind] = target
     node.update(extras)

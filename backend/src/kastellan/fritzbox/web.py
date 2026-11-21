@@ -31,6 +31,11 @@ def response(challenge: str, password: str) -> str:
     """The answer to a login challenge: PBKDF2 ("2$iter1$salt1$iter2$salt2") or MD5."""
     if challenge.startswith("2$"):
         _, iter1, salt1, iter2, salt2 = challenge.split("$")
+        if (
+            not (1 <= int(iter1) <= 1_000_000 and 1 <= int(iter2) <= 1_000_000)
+            or max(len(salt1), len(salt2)) > 128
+        ):
+            raise ValueError("invalid FRITZ!Box login challenge")
         hash1 = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt1), int(iter1))
         hash2 = hashlib.pbkdf2_hmac("sha256", hash1, bytes.fromhex(salt2), int(iter2))
         return f"{salt2}${hash2.hex()}"
@@ -126,7 +131,7 @@ def environment(data: dict[str, Any]) -> dict[str, Any]:
                     "bssid": str(n.get("mac") or "").lower()[:17],
                     "channel": channel,
                     "band": band,
-                    "signal": BARS.get(int(n.get("nrssi") or 0), -90),
+                    "signal": BARS.get(n.get("nrssi"), -90),
                     "width": None,
                     "encrypted": None,
                 }
@@ -163,6 +168,8 @@ def wireguard(data: dict[str, Any]) -> dict[str, Any]:
     networks). Fields of a connection are taken by the names they are likely to have and kept
     as they are otherwise: a changed FRITZ!OS shows less, never wrong."""
     init = data.get("init") if isinstance(data.get("init"), dict) else {}
+    if not all(isinstance(init.get(k), list) for k in ("userConnections", "boxConnections")):
+        raise FritzError(0, "the FRITZ!Box WireGuard connection list can't be read")
 
     def connection(c: Any, kind: str) -> dict[str, Any] | None:
         if not isinstance(c, dict):

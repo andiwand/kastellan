@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import ipaddress
 import json
 import re
 import secrets
@@ -315,6 +316,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
         },
         "errors": {},
     }
+    dump = []
     try:
         dump = (await ubus.call("network.interface", "dump")).get("interface", [])
         report["interfaces"] = [
@@ -334,8 +336,9 @@ async def read(ubus: Ubus) -> dict[str, Any]:
     leases: dict[str, str] = {}
     lease_list: list[dict[str, Any]] | None = None
     with contextlib.suppress(Exception):
+        raw_leases = (await ubus.call("luci-rpc", "getDHCPLeases"))["dhcp_leases"]
         lease_list = []
-        for lease in (await ubus.call("luci-rpc", "getDHCPLeases")).get("dhcp_leases", []):
+        for lease in raw_leases:
             mac = str(lease.get("macaddr") or "").lower()
             if mac and lease.get("hostname"):
                 leases[mac] = lease["hostname"]
@@ -348,7 +351,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
                         "expires": lease.get("expires"),
                     }
                 )
-    report["dhcp"] = await _dhcp(ubus, lease_list) if lease_list is not None else None
+    report["dhcp"] = await _dhcp(ubus, lease_list, dump) if lease_list is not None else None
     try:
         try:
             status = await ubus.call("network.wireless", "status")
@@ -491,10 +494,11 @@ async def _radios_from_iwinfo(ubus: Ubus, leases: dict[str, str]) -> list[dict[s
     return sorted(radios.values(), key=lambda r: r["name"])
 
 
-async def _dhcp(ubus: Ubus, leases: list[dict[str, Any]]) -> dict[str, Any]:
+async def _dhcp(ubus: Ubus, leases: list[dict[str, Any]], interfaces: list[dict[str, Any]]) -> dict[str, Any]:
     """The DHCP server: its pools (uci dhcp: start, limit per interface; the read group's uci
     scope, set up again on older logins) and the leases handed out."""
     pools: list[dict[str, Any]] | None = None
+    ranges = []
     with contextlib.suppress(Exception):
         values = (await ubus.call("uci", "get", {"config": "dhcp"})).get("values", {})
         pools = []
@@ -506,16 +510,41 @@ async def _dhcp(ubus: Ubus, leases: list[dict[str, Any]]) -> dict[str, Any]:
             ):
                 continue
             with contextlib.suppress(TypeError, ValueError):
+                interface = sec.get("interface") or name
+                start, size = int(sec.get("start", 100)), int(sec.get("limit", 150))
+                if start < 0 or size <= 0:
+                    continue
                 pools.append(
                     {
-                        "interface": sec.get("interface") or name,
-                        "start": int(sec.get("start", 100)),
-                        "size": int(sec.get("limit", 150)),
+                        "interface": interface,
+                        "start": start,
+                        "size": size,
                         "leasetime": sec.get("leasetime"),
                     }
                 )
-    size = sum(p["size"] for p in pools) if pools else None
-    return {"pools": pools, "size": size, "used": len(leases), "leases": leases[:500]}
+                addresses = next(
+                    (i.get("ipv4-address") or [] for i in interfaces if i.get("interface") == interface), []
+                )
+                if addresses and "mask" in addresses[0]:
+                    a = addresses[0]
+                    network = ipaddress.IPv4Network(f"{a['address']}/{a['mask']}", strict=False)
+                    low = int(network.network_address) + start
+                    high = low + size - 1
+                    if int(network.network_address) < low <= high < int(network.broadcast_address):
+                        ranges.append((low, high))
+    # Static leases outside a dynamic pool don't consume it. Without the interface ranges,
+    # report leases but leave capacity unknown instead of raising a false full-pool alarm.
+    size = sum(p["size"] for p in pools) if pools and len(ranges) == len(pools) else None
+    used = len(leases)
+    if size is not None:
+        addresses = set()
+        for lease in leases:
+            with contextlib.suppress(ValueError, TypeError):
+                address = int(ipaddress.IPv4Address(lease.get("address")))
+                if any(low <= address <= high for low, high in ranges):
+                    addresses.add(address)
+        used = len(addresses)
+    return {"pools": pools, "size": size, "used": used, "leases": leases[:500]}
 
 
 async def service(ubus: Ubus, name: str, action: str) -> str:

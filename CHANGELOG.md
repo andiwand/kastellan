@@ -30,6 +30,14 @@
 
 ### Fixed
 
+- Stored logins resolve before setup validation; concurrent update dismissals are preserved.
+- FRITZ!Box confirmation requests carry AVM's token; unreadable WireGuard data stays unknown.
+- Older hub-backup downloads keep their own recovery credentials. Recovery checks test the
+  saved key ring; failed snapshots don't replace it.
+- DHCP alarms expire, respect configured servers, and ignore stale pool readings. Concurrent
+  checks share one probe; DHCP never appears as an internet entry point.
+- Wi-Fi readings refresh after edits and config reloads. Stored-login dialogs fit phone screens.
+
 - Setting up the actor with sudo or su failed with "Argument list too long" (the script grew
   past Linux's 128 KB per argument): large scripts go compressed.
 - A FRITZ!Box's settings export waits for its second factor when asked from "Back up now"

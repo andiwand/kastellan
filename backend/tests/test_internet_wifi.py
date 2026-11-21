@@ -9,6 +9,47 @@ from kastellan import internet, wifi
 from kastellan.internet import Internet, Probe, Sample
 
 
+async def test_wifi_cache_respects_config_reload_and_locked_keys(tmp_path, monkeypatch):
+    from starlette.requests import Request
+
+    from kastellan import wifi_api
+    from kastellan.auth_api import Who
+    from kastellan.config import Config, Role
+    from kastellan.hub import Hub
+    from kastellan.settings import Settings
+    from kastellan.vault import Locked
+
+    hub = Hub(Settings(config=tmp_path / "config.yaml", data=tmp_path))
+    hub.config = Config.model_validate({"devices": {"ap": {"host": "ap", "openwrt": {}}}})
+    monkeypatch.setattr(hub, "ubus", lambda id: object())
+    calls = []
+
+    async def survey(members, key):
+        calls.extend(members)
+        return {"errors": {}, "networks": []}
+
+    monkeypatch.setattr(wifi_api.sync, "survey", survey)
+    monkeypatch.setattr(hub, "own_secret", lambda *args: "salt")
+    overview = next(r.endpoint for r in wifi_api.router(hub).routes if r.path == "/api/wifi")
+    request = Request({"type": "http", "state": {"who": Who("admin", Role.ADMIN)}})
+    await overview(request)
+    await overview(request)
+    assert calls == ["ap"]
+    hub.config = Config.model_validate({"devices": {"new": {"host": "new", "openwrt": {}}}})
+    await overview(request)
+    assert calls == ["ap", "new"]
+
+    def locked(*args):
+        raise Locked("kastellan")
+
+    monkeypatch.setattr(hub, "own_secret", locked)
+    with pytest.raises(Locked):
+        await overview(request)
+    monkeypatch.setattr(hub, "own_secret", lambda *args: "salt")
+    await overview(request)
+    assert calls == ["ap", "new", "new"]
+
+
 @pytest.fixture
 def pings(monkeypatch: pytest.MonkeyPatch):
     """Which addresses answer, and how fast."""

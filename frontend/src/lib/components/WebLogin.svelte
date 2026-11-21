@@ -1,5 +1,6 @@
 <script lang="ts">
 	import KeyRound from '@lucide/svelte/icons/key-round';
+	import { modal } from '#lib/modal.js';
 
 	/** A device's web login from the People key ring, next to "Open web interface": the logins
 	 * stored for this device; "Copy password" asks for your own password again (as revealing a
@@ -16,6 +17,14 @@
 	let note = $state<{ ok: boolean; text: string } | null>(null);
 	let adding = $state(false);
 	let form = $state({ name: '', user: '', secret: '' });
+	let busy = $state(false);
+	function close() {
+		open = adding = false;
+		mine = '';
+		copying = note = ring = null;
+		logins = [];
+		form = { name: '', user: '', secret: '' };
+	}
 
 	const H = { 'X-Kastellan': '1', 'Content-Type': 'application/json' };
 	async function json<T>(r: Response): Promise<T> {
@@ -34,6 +43,8 @@
 		}
 	}
 	async function copy(id: string) {
+		if (busy) return;
+		busy = true;
 		note = null;
 		try {
 			const { secret } = await json<{ secret: string }>(
@@ -50,10 +61,13 @@
 			note = { ok: false, text: (e as Error).message };
 		} finally {
 			mine = '';
+			busy = false;
 		}
 	}
 	async function add(e: SubmitEvent) {
 		e.preventDefault();
+		if (busy) return;
+		busy = true;
 		note = null;
 		try {
 			await json(
@@ -79,6 +93,7 @@
 			note = { ok: false, text: (err as Error).message };
 		} finally {
 			mine = '';
+			busy = false;
 		}
 	}
 	const look =
@@ -89,16 +104,25 @@
 <div class="relative">
 	<button
 		class={look}
-		onclick={() => ((open = !open), open && load())}
+		onclick={() => ((open = true), load())}
 		title="Its web login from the key ring"
 	>
 		<KeyRound class="size-4 text-muted" /> Login
 	</button>
 	{#if open}
-		<div
-			class="absolute right-0 z-20 mt-2 w-80 rounded-xl border border-line bg-surface p-3 text-sm shadow-pop"
+		<dialog
+			use:modal
+			onclose={close}
+			aria-label="Stored device logins"
+			class="m-auto max-h-[calc(100dvh-2rem)] w-[min(24rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-line bg-surface p-4 text-sm text-text shadow-pop backdrop:bg-black/40"
 		>
-			{#if ring && !ring.vault}
+			<div class="mb-3 flex items-center justify-between gap-3">
+				<h2 class="font-semibold">Device logins</h2>
+				<button class="text-xs underline" onclick={close}>Close</button>
+			</div>
+			{#if !ring}
+				<p class="text-xs text-muted">Loading…</p>
+			{:else if !ring.vault}
 				<p class="text-xs text-muted">
 					Logins are kept in the key rings: make them on the Keys page.
 				</p>
@@ -125,7 +149,7 @@
 							placeholder="Your password, again"
 							bind:value={mine}
 						/>
-						<button class="btn btn-sm" disabled={!mine}>Copy</button>
+						<button class="btn btn-sm" disabled={busy || !mine}>Copy</button>
 					</form>
 				{/if}
 				{#if adding}
@@ -145,7 +169,9 @@
 							placeholder="Your password, again"
 							bind:value={mine}
 						/>
-						<button class="btn btn-sm self-start" disabled={!form.secret || !mine}>Store it</button>
+						<button class="btn btn-sm self-start" disabled={busy || !form.secret || !mine}>
+							Store it
+						</button>
 					</form>
 				{:else}
 					<button
@@ -161,6 +187,6 @@
 					{note.text}
 				</p>
 			{/if}
-		</div>
+		</dialog>
 	{/if}
 </div>

@@ -29,8 +29,23 @@
 	let selected = $state<string[]>([]);
 	let renewing = $state<{ device: string; names: string[] } | null>(null);
 	let firmware = $state<Extract<Update, { kind: 'firmware' }> | null>(null);
+	let dismissError = $state<string | null>(null);
+	let dismissing = $state<string | null>(null);
 
-	const keyOf = (u: Update) => `${u.device.id}:${u.kind}:${u.kind === 'container' ? u.name : ''}`;
+	const keyOf = (u: Update) =>
+		`${u.device.id}:${u.kind}:${u.kind === 'container' ? u.name : u.kind === 'abilities' ? u.login : ''}`;
+	async function dismiss(u: Extract<Update, { kind: 'abilities' }>) {
+		dismissing = keyOf(u);
+		dismissError = null;
+		try {
+			await more.notNeeded(u.device.id, u.login);
+			await store.refresh();
+		} catch (e) {
+			dismissError = (e as Error).message;
+		} finally {
+			dismissing = null;
+		}
+	}
 
 	/** What the actor does for it, if it can (the same jobs as a device's container table). */
 	function jobOf(u: Update): Job | null {
@@ -79,13 +94,13 @@
 	});
 </script>
 
+{#if dismissError}<p class="mt-3 text-sm" style:color="var(--critical-text)">{dismissError}</p>{/if}
+
 <svelte:head><title>Updates · Kastellan</title></svelte:head>
 
 <h1 class="text-2xl font-semibold tracking-tight">Updates</h1>
 <p class="mt-1 max-w-2xl text-sm text-muted">
-	What is waiting to be updated on the network: containers, system packages, reboots after updates,
-	router firmware. Kastellan installs only where a device allows it, and nothing by itself (except a
-	fix for a known vulnerability on an internet-facing device, where that's switched on).
+	Available updates and new device abilities. Actions use each device's configured permissions.
 </p>
 
 {#if store.health?.newer}
@@ -225,7 +240,7 @@
 					<KindIcon kind={u.device.kind} class="size-4 shrink-0 text-muted" />
 					<span class="truncate font-medium hover:underline">{u.device.name}</span>
 				</a>
-				<div class="min-w-0 flex-1 text-sm">
+				<div class="min-w-0 basis-full text-sm break-words sm:flex-1 sm:basis-0">
 					{#if u.kind === 'container'}
 						Container <span class="font-mono text-xs">{u.name}</span>
 						<span class="text-muted">
@@ -296,10 +311,8 @@
 							<button
 								class="btn btn-sm"
 								title="Updates stops offering these for this device"
-								onclick={async () => {
-									await more.notNeeded(u.device.id, u.login);
-									await store.refresh();
-								}}
+								disabled={dismissing !== null}
+								onclick={() => dismiss(u)}
 							>
 								Not needed
 							</button>

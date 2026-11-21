@@ -138,14 +138,19 @@ def router(hub: Hub) -> APIRouter:
             try:
                 return await work(say)
             finally:
-                cache["t"] = 0.0  # what changed shows at the next look
+                invalidate()
 
         return setup_run.stream_work(then_read_again, audit)
 
     # What the access points say live (their Wi-Fi configuration, password fingerprints): asked
     # of all at once, each within LIVE_WAIT, and kept LIVE_FRESH seconds; older, it is shown
     # while a fresh reading is under way.
-    cache: dict[str, Any] = {"t": 0.0, "value": None, "task": None}
+    cache: dict[str, Any] = {"t": 0.0, "value": None, "task": None, "context": None}
+
+    def invalidate() -> None:
+        if cache["task"] is not None:
+            cache["task"].cancel()
+        cache.update(t=0.0, value=None, task=None)
 
     async def read_live() -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
         key = salt()
@@ -177,6 +182,15 @@ def router(hub: Hub) -> APIRouter:
         return {"errors": errors, "networks": list(networks.values())}, dict(found)
 
     async def live() -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
+        # A config reload or a locked ring must not leave old credentials' readings in use.
+        try:
+            context = (id(hub.config), salt())
+        except Exception:
+            invalidate()
+            raise
+        if context != cache["context"]:
+            invalidate()
+            cache["context"] = context
         age = time.monotonic() - cache["t"]
         if cache["value"] is not None and age < LIVE_FRESH:
             return cache["value"]
@@ -188,6 +202,9 @@ def router(hub: Hub) -> APIRouter:
                 return value
 
             cache["task"] = asyncio.create_task(refresh())
+            hub._background.add(cache["task"])
+            cache["task"].add_done_callback(hub._background.discard)
+            cache["task"].add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
         if cache["value"] is not None:  # stale: shown now, the fresh one comes with the next look
             return cache["value"]
         return await asyncio.shield(cache["task"])
@@ -389,7 +406,7 @@ def router(hub: Hub) -> APIRouter:
         except Exception as e:
             audit(outcome=f"failed: {str(e)[:120]}")
             raise HTTPException(400 if isinstance(e, ValueError) else 502, str(e)[:300]) from e
-        cache["t"] = 0.0
+        invalidate()
         audit(outcome="done")
         return {"done": True}
 
