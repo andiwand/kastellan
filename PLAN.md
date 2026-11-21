@@ -69,6 +69,28 @@ Published images may lag behind `main`; see the changelog's Unreleased section.
       Group attempts across devices; highlight success after repeated failures and new outside
       addresses for an admin. Time/address correlations suggest possible paths, not proven
       identities. Keep address lookups local unless external lookup is enabled.
+- [ ] **Wi-Fi page:** a top-level view by network, not by device. Each network name (SSID)
+      once, with the access points that broadcast it, bands, encryption, clients, and where the
+      members differ (password fingerprints, encryption, a radio off). Change name, password,
+      encryption, band and on/off for a network everywhere it is broadcast, member by member
+      with each device's rollback; add a network to more access points or remove it. Reuses the
+      group line-up (`openwrt/sync.py`) beyond groups: devices that broadcast the same name are
+      one network. OpenWrt first; other vendors (FRITZ!Box) read-only where their API allows.
+      The home for roaming settings (below) once those exist.
+- [ ] **Wi-Fi roaming in groups:** Kastellan watches and lines up roaming; the access points
+      decide (usteer, 802.11r/k/v), so Wi-Fi never depends on the hub. In order:
+  - Consistency checks per group: 802.11r on with the same mobility domain, fixed channels that
+    don't overlap (2.4 GHz 1/6/11, 5 GHz apart), usteer running on every member and every
+    member seeing the others. Findings on the group page, with what to change.
+  - Roaming on the device page: clients per access point with signal, handovers and steering
+    kicks, from usteer over the OpenWrt API (a new read-only rpcd ability). Shows whether the
+    thresholds suit the home, or kick too often.
+  - Alarms: usteer stopped, a member missing from the others' view, a client kicked over and
+    over; memory warnings for small devices (32 MB) before they run out.
+  - Set up from the group ("roaming assistance"): the same usteer settings and 802.11k/v
+    where the device's wpad supports them, applied member by member with a check after each.
+    Last: installing on small devices can exhaust memory (install from the package file,
+    without package lists, and lower usteer's OOM priority there).
 
 ## Proposed priorities
 
