@@ -1,83 +1,72 @@
 # Plan
 
-Where Kastellan is going, and the decisions made on the way. The changelog has the details of
-what is done.
-
-## The idea
-
-One self-hosted place to watch and look after every device on a home network (routers, access
-points, switches, servers, PCs, laptops, printers, cameras; about 20 to start). It stands on its
-own; it does not talk to Norn.
+A local hub to monitor and administer a home network. Independent of Norn.
+Implementation details and release history belong in [AGENTS.md](AGENTS.md) and
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Decisions
 
-- **Reached only through a VPN.** Never exposed to the internet.
-- **Build on proven pieces**: guacd + guacamole-common-js (remote desktop), xterm.js + asyncssh
-  (terminal), restic (backups), vendor APIs and libraries for devices.
-- **No single place with root on everything** (2026-11-20). Routine work goes through narrow
-  doors that can only do named things, allowed on the device's side: a read-only collector, an
-  actor with abilities chosen one by one, a restricted login on OpenWrt. Never arbitrary
-  commands. The terminal is separate: human access by a signed-in admin.
-- **Agentless first** (SSH, vendor APIs, HTTP); a small Go agent only where needed (Windows,
-  macOS, laptops away from home), connecting out to the hub.
-- **Files, not a database**: config.yaml (by hand or from the app, comments kept), history as
-  daily CSV. SQLite only if long ranges get slow (`history.py` is the one place to swap).
-- **Stack**: Python + FastAPI, SvelteKit (static) + Tailwind, one Docker image.
-- **Security**: keys, not passwords; pinned host keys; roles observer / admin; every admin action
-  audited; updates suggested, automatic only for a known serious vulnerability on an
-  internet-facing device (opt-in).
-- **The hub never replaces its own scripts on hosts**: they report their version, renewing them
-  takes a login (setting up again).
+- **LAN or VPN only.** Do not expose the hub to the internet.
+- **Restricted routine access.** Collectors read; actors and OpenWrt logins have explicit
+  abilities. Normal SSH and direct VPN mode retain the configured login's privileges.
+- **Explicit administration.** Device access requires an admin login. Changes are audited;
+  host keys and OpenWrt certificates are pinned.
+- **Agentless first.** SSH and vendor APIs now; an outbound Go agent where needed later.
+- **Reuse protocols and tools.** Guacamole, xterm.js, asyncssh, vendor APIs; restic for future backups.
+- **Plain files.** YAML configuration, daily CSV history, no database. Consider SQLite only
+  if history queries require it.
+- **Stack.** FastAPI, SvelteKit, one Docker image.
+- **Controlled updates.** Suggestions by default; automatic container updates require opt-in,
+  whole-device exposure, a confirmed serious vulnerability and an eligible update.
+- **Script replacement needs privileged access.** Restricted helper keys cannot install code.
+  Collector and actor versions are checked; VPN and OpenWrt helper versions are still missing.
 
-## Done
+## Implemented in main
 
-- [x] Checks (ping, TCP, HTTP), history, uptime, state kept across restarts
-- [x] Web app: overview, devices (list and network graph), device pages, services, demo mode
-- [x] Services with their software and version; version changes as events
-- [x] Sign-in, roles, audit log, brake on password guessing
-- [x] Terminal in the browser; host keys pinned
-- [x] SSH access: keys per device, removing keys, rotating the hub key
-- [x] Remote desktop (RDP, VNC) through guacd
-- [x] Drivers: FRITZ!Box (model, firmware); OpenWrt through its own API
-- [x] OpenWrt: state, Wi-Fi with rollback, services, packages, firmware updates
-- [x] Groups: Wi-Fi networks, mesh and root password across devices at once; SSH keys and
-      known hosts kept alike (fetch, edit, push)
-- [x] Docker containers and updates (WUD or the registries directly)
-- [x] Collector (host health) and actor (update/restart containers, system updates, reboot)
-- [x] UPS readings and power alarms; libvirt VMs and guest links; container and VM start/stop
-- [x] Updates page: everything waiting, with its action; outdated Kastellan scripts
-- [x] Alarms: down devices and services, one alarm for what is behind a device, hysteresis,
-      acknowledge with a note, mute; disks, RAID, heat, certificates, vulnerabilities
-- [x] Notifications: ntfy, Gotify, Telegram, e-mail, webhooks; per channel minimum and quiet
-      hours; heartbeat
-- [x] Known vulnerabilities (NVD, OSV, CISA KEV) by exposure; opt-in automatic updates
-- [x] Certificates of every https check; the ways into a service (home, public name)
-- [x] Networks: zones, the ways in from the internet; exposure per service
-- [x] VPN page: WireGuard (wg-easy) and OpenVPN (easy-rsa) clients, configs, QR codes
-- [x] Config from the app: settings as forms, devices as forms or text, config.yaml editor
-- [x] Device web pages through the hub (one wildcard name, admins only)
-- [x] Push notifications to browsers (behind HTTPS)
-- [x] VPN: its key rotated; last seen per client
-- [x] Sites; DNS checks
-- [x] Key rings: encrypted secrets and logins, ways to open and levels per ring
+- Checks: ping, TCP, HTTP, DNS; history, uptime, latency, software and certificate tracking.
+- Overview, services, devices, network map, sites and simulated demo data.
+- Dependency-aware alarms, UPS power alarms, host health and vulnerability findings;
+  notification channels, browser push, quiet hours, mute, acknowledgement and heartbeat.
+- Sign-in, admin/observer roles, audit log, encrypted key rings and stored human logins.
+- Browser SSH, RDP/VNC and device web proxy; SSH key rotation and group key/known-host sync.
+- Linux collector and actor: host health, apt updates, containers, libvirt VMs and UPSes.
+- Container and VM lifecycle controls; update queues with progress; collector/actor renewal notices.
+- FRITZ!Box identification; OpenWrt monitoring, Wi-Fi, services and firmware; group configuration.
+- Multiple WireGuard and OpenVPN instances, client management, last seen and VPN key rotation.
+- Config forms and YAML editing; separate Status, Setup and Config views.
+
+Published images may lag behind `main`; see the changelog's Unreleased section.
 
 ## Next
 
-- [ ] A consistent DNS + HTTPS setup for Kastellan and the services (to discuss)
-- [ ] Signing in to device pages for you (needs stored passwords: see the next item)
-- [ ] Key rings, phase 2: service accounts per device, config.yaml naming credentials
-      (notification tokens, the NVD key), where each is used
-- [ ] Device pages kept apart from each other (they share one site through the hub now)
-- [ ] Versions for the OpenWrt and VPN helper scripts (as for the collector and actor)
-- [ ] Same-major updates offered next to a newer major (auto-update needs them)
-- [ ] SSH CA with short-lived certificates
-- [ ] HTTP checks with an expected text
-- [ ] Alarms for a new, unknown device on the network
+- [ ] Version checks and renewal notices for VPN and OpenWrt helpers.
+- [ ] Same-major container update candidates even when a newer major exists.
+- [ ] Consistent DNS + HTTPS setup for the hub and proxied device pages.
+- [ ] Credential references for service accounts, notification tokens and API keys; show usage.
+- [ ] Stronger isolation for proxied device pages (separate origins and request guards exist;
+      the names still share a browser site).
+- [ ] HTTP checks with expected response text.
+
+## Proposed priorities
+
+These are suggestions, not implemented features or release commitments.
+
+1. **Hub recovery:** export/restore config and state, recovery-key checks and a tested restore
+   procedure. Config-file backups alone cannot recover the vault, keys or history.
+2. **MFA:** passkeys or TOTP, recovery codes and step-up authentication for secret reveals and
+   destructive actions. VPN access does not replace stronger hub authentication.
+3. **Maintenance windows:** extend manual muting to scheduled device/group windows, with an
+   automatic end and audit entry. Keep failures visible during planned work.
+4. **Discovery before an agent:** suggest devices from router clients, ARP and mDNS; require
+   approval before adding them. Unknown-device alerts need this inventory first.
+5. **SNMPv3 monitoring:** read switch ports, printer consumables and network UPS status on
+   devices that cannot run the Linux collector. Keep initial support read-only.
 
 ## Later
 
-- [ ] The Go agent (Windows, macOS, laptops): metrics, a tunnel for shell and screen
-- [ ] Jobs on a schedule; backups (config exports through drivers, restic)
-- [ ] Discovery (ARP, mDNS, the router's clients) to suggest devices
-- [ ] Topology from LLDP / the router's mesh view instead of hand-written parents
-- [ ] Checks from outside (reachable from the internet), through an agent elsewhere
+- [ ] Outbound agent for Windows, macOS and roaming laptops: metrics, shell and screen.
+- [ ] Scheduled jobs and device backups: config exports through drivers, restic for files.
+- [ ] Topology from LLDP or router mesh data.
+- [ ] External checks through a probe outside the home network.
+- [ ] Short-lived SSH certificates.
+- [ ] Assisted login to proxied device pages, after credential references and isolation.

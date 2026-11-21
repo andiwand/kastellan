@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kastellan · every device on your network, in one place</title>
-<meta name="description" content="Kastellan is a self-hosted hub that watches every device on your home network: routers, access points, servers, PCs, printers and cameras. Is it up, since when, and how is it connected. Open source, on your own hardware.">
+<meta name="description" content="Monitor and manage your home network: checks, alerts, containers, VPNs and device access. Self-hosted and open source.">
 <meta name="theme-color" content="#0a0c10" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
 <meta property="og:title" content="Kastellan">
@@ -61,12 +61,12 @@
 <section class="hero" id="top">
   <div class="hero-bg" aria-hidden="true"></div>
   <div class="wrap hero-copy">
-    <p class="eyebrow"><span class="dot"></span> Open source · self-hosted · early days</p>
-    <h1>Every device on your network.<br><span>One place to keep watch.</span></h1>
-    <p class="lead">Kastellan watches your router, access points, servers, PCs, printers and cameras, and answers the first question of every evening: <em>is everything all right?</em> If not, it tells you what, since when, and what it hangs off.</p>
+    <p class="eyebrow"><span class="dot"></span> Open source · self-hosted · early preview</p>
+    <h1>Your home network.<br><span>Monitor it. Manage it.</span></h1>
+    <p class="lead">See what failed, get an alert, and manage devices with the permissions you choose. Runs on your hardware, reached over your LAN or VPN.</p>
     <div class="cta">
       <a class="button primary" href="#start">Run the demo <span aria-hidden="true">→</span></a>
-      <a class="button ghost" href="#roadmap">Where it's going</a>
+      <a class="button ghost" href="#roadmap">See the plan</a>
     </div>
   </div>
 
@@ -75,7 +75,7 @@
       <div class="browser-bar"><i></i><i></i><i></i><span class="url">kastellan.lan</span></div>
       <picture>
         <source srcset="img/overview-dark.webp" media="(prefers-color-scheme: dark)">
-        <img src="img/overview-light.webp" width="2720" height="1700" alt="The overview: one device needs attention, the NAS's Jellyfin answers HTTP 502 for 9 minutes; below, every device with its last 24 hours as a strip of bars.">
+        <img src="img/overview-light.webp" width="2720" height="1700" alt="Overview of the demo network with alarms, device status and uptime history.">
       </picture>
     </figure>
     <figure class="phone">
@@ -102,17 +102,17 @@
   <article class="feature reveal">
     <div class="feature-copy">
       <p class="kicker">Overview</p>
-      <h2>The answer first, <b>the details one tap away</b></h2>
-      <p>The first line says whether anything needs you. Below it: exactly which check failed, how it failed, and for how long. Every device carries its last 24 hours as a strip; a hiccup at 3 a.m. is a bar you can point at.</p>
+      <h2>See what <b>needs attention</b></h2>
+      <p>Failed checks, how long they have been failing, and a day of uptime history for each device.</p>
       <ul class="points">
-        <li><b>Calm by default.</b> A laptop that's asleep is offline, not an alarm. Only devices that should always be on can be "down".</li>
-        <li><b>Amber and red mean different things.</b> A service that limps is amber; a server that's gone is red.</li>
+        <li><b>Offline can be normal.</b> Sleeping PCs and laptops do not raise device-down alarms.</li>
+        <li><b>Related failures stay together.</b> A failed router or UPS groups affected devices into one alarm.</li>
       </ul>
     </div>
     <figure class="shot">
       <picture>
         <source srcset="img/devices-dark.webp" media="(prefers-color-scheme: dark)">
-        <img src="img/devices-light.webp" width="2720" height="1700" alt="The device list in network order with status, checks, a 24-hour uptime strip and ping per device.">
+        <img src="img/devices-light.webp" width="2720" height="1700" alt="Device list with status, checks and uptime, grouped by site.">
       </picture>
     </figure>
   </article>
@@ -120,17 +120,17 @@
   <article class="feature flip reveal">
     <div class="feature-copy">
       <p class="kicker">Networks</p>
-      <h2>What's at home, and what's <b>open to the internet</b></h2>
-      <p>Switch the device list to its networks: home, a second site, the internet. The router sits on the boundary between home and the internet, and everything that can be reached from outside carries a globe, with each way in listed: a public name, and the device it leads to.</p>
+      <h2>Map devices <b>and known exposure</b></h2>
+      <p>Group configured devices by network and site. Public names and exposure settings highlight known ways in; this is not an external port scan.</p>
       <ul class="points">
-        <li><b>Found by itself.</b> Networks come from the addresses, and the router from the way out; name them, or put a device in several, in config.yaml.</li>
-        <li><b>Search keeps the shape.</b> Filtering fades the rest of the network instead of removing it.</li>
+        <li><b>Inferred from addresses.</b> Name networks and assign devices in config.yaml.</li>
+        <li><b>Filter in place.</b> Non-matching devices fade without changing the map.</li>
       </ul>
     </div>
     <figure class="shot">
       <picture>
         <source srcset="img/graph-dark.webp" media="(prefers-color-scheme: dark)">
-        <img src="img/graph-light.webp" width="2720" height="1700" alt="The devices by network: an Internet zone with a website server and one way in, home.example.net to the home server; the FRITZ!Box on the boundary between the Internet and Home; the Home zone with cameras, laptops, servers, the NAS in amber, and the home server marked as reachable from the internet.">
+        <img src="img/graph-light.webp" width="2720" height="1700" alt="Configured devices grouped into network zones, with known public access paths.">
       </picture>
     </figure>
   </article>
@@ -138,17 +138,17 @@
   <article class="feature reveal">
     <div class="feature-copy">
       <p class="kicker">Device</p>
-      <h2>Every check, <b>every hiccup</b></h2>
-      <p>Ping, TCP ports and HTTP endpoints, each with its response time, how long it's been up and its uptime over an hour, a day or a week. The activity list shows exactly when something dropped out and came back.</p>
+      <h2>Check availability. <b>Track changes.</b></h2>
+      <p>Ping, TCP, HTTP and DNS checks with latency, uptime and state history. Track reported software versions and TLS certificates.</p>
       <ul class="points">
-        <li><b>Open the web interface</b> of a router or camera straight from its page.</li>
-        <li><b>Restarts don't forget.</b> "Down for 9 min" survives a hub update.</li>
+        <li><b>Open device pages</b> through the hub as a signed-in admin.</li>
+        <li><b>History survives restarts.</b> See when a failure began.</li>
       </ul>
     </div>
     <figure class="shot">
       <picture>
         <source srcset="img/device-dark.webp" media="(prefers-color-scheme: dark)">
-        <img src="img/device-light.webp" width="2720" height="1700" alt="The garden camera: ping and RTSP checks with uptime strips showing a few dropouts, a response-time chart over 24 hours, and the activity list.">
+        <img src="img/device-light.webp" width="2720" height="1700" alt="Garden camera status with ping and RTSP checks, latency and recent activity.">
       </picture>
     </figure>
   </article>
@@ -156,17 +156,17 @@
   <article class="feature flip reveal">
     <div class="feature-copy">
       <p class="kicker">Hosts</p>
-      <h2>Disks, services, containers. <b>Through doors you open.</b></h2>
-      <p>For a Linux host: space, RAID, disk health, temperatures, failed services, pending system updates and reboots, and its containers with their updates, asked of the registries directly. Installing system updates, updating a container, a reboot: as far as the host allows.</p>
+      <h2>Host health. <b>Selected actions.</b></h2>
+      <p>Read Linux host health, containers, libvirt VMs and UPS status. Allow selected container and VM actions, apt updates or reboot on each host.</p>
       <ul class="points">
-        <li><b>Read-only by default.</b> The collector is one root-owned script that only reads, run through one sudo rule.</li>
-        <li><b>Change only what you tick.</b> Each ability is a script of its own; what isn't installed can't be run.</li>
+        <li><b>A separate collector</b> reads through a restricted SSH command.</li>
+        <li><b>Permissions on the host</b> limit the actor to installed abilities and allowed targets.</li>
       </ul>
     </div>
     <figure class="shot">
       <picture>
         <source srcset="img/host-dark.webp" media="(prefers-color-scheme: dark)">
-        <img src="img/host-light.webp" width="2720" height="1700" alt="The home server's host card: uptime, load and memory; space on / at 45% and on /srv/media at 92% in amber; a healthy RAID 1 and three healthy disks with temperatures; no failed services, three pending updates and a reboot wanted; below, the collector, actor and SSH access sections and the containers with their updates.">
+        <img src="img/host-light.webp" width="2720" height="1700" alt="Home server health: disk usage, RAID, temperatures and pending system updates.">
       </picture>
     </figure>
   </article>
@@ -176,7 +176,7 @@
   <div class="files-copy">
     <p class="kicker">Plain files</p>
     <h2 id="files-title">One YAML file. <b>No database.</b></h2>
-    <p>Your network is described in <code>config.yaml</code>, a file you can read, diff and back up. Kastellan notices when it changes. The history is a CSV file per day, so you can open it in anything and delete old days by deleting files.</p>
+    <p>Edit <code>config.yaml</code> by hand or in the app; changes reload automatically. Check history is stored as daily CSV files.</p>
   </div>
   <div class="code">
     <div class="code-bar"><span>config.yaml</span><button class="copy" data-copy="cfg" type="button">Copy</button></div>
@@ -205,36 +205,38 @@
 
 <section class="wrap roadmap" id="roadmap" aria-labelledby="roadmap-title">
   <p class="kicker center">Roadmap</p>
-  <h2 id="roadmap-title" class="center">From watching <b>to looking after</b></h2>
-  <p class="section-lead center">Kastellan is young. It watches, and looks after hosts as far as you let it; the plan is one place for everything on the network, built on proven tools rather than reinventing them.</p>
+  <h2 id="roadmap-title" class="center">Built now. <b>Planned next.</b></h2>
+  <p class="section-lead center">Features and demo screenshots describe <code>main</code>; published releases may lag behind. See the <a href="https://github.com/andiwand/kastellan/blob/main/PLAN.md">plan</a> for details and proposed priorities.</p>
 
   <div class="stages">
     <div class="stage now reveal">
-      <h3><span class="badge">Works today</span></h3>
+      <h3><span class="badge">In main</span></h3>
       <ul>
-        <li><svg><use href="#i-radar"/></svg><div><b>Checks &amp; history</b><span>Ping, ports, web pages and DNS, software versions and certificates, uptime kept as CSV files; devices by site.</span></div></li>
-        <li><svg><use href="#i-network"/></svg><div><b>Networks &amp; alarms</b><span>Devices by network, ways in from outside; alarms as push notifications, or to ntfy, Gotify, Telegram, e-mail.</span></div></li>
-        <li><svg><use href="#i-shield"/></svg><div><b>Vulnerabilities</b><span>NVD, OSV and CISA KEV for software, firmware and containers.</span></div></li>
-        <li><svg><use href="#i-server"/></svg><div><b>Hosts</b><span>Disks, RAID, health, services, containers; updates and restarts where allowed.</span></div></li>
-        <li><svg><use href="#i-terminal"/></svg><div><b>Terminal &amp; desktop</b><span>SSH, RDP and VNC in the browser, through Apache Guacamole.</span></div></li>
-        <li><svg><use href="#i-key"/></svg><div><b>VPN &amp; keys</b><span>WireGuard and OpenVPN clients and when they were last seen; SSH keys and known hosts kept alike across hosts, rotation of Kastellan's own.</span></div></li>
-        <li><svg><use href="#i-lock"/></svg><div><b>Key rings</b><span>Passwords, tokens and keys encrypted, each ring opened as securely as you choose.</span></div></li>
-        <li><svg><use href="#i-desktop"/></svg><div><b>Device pages</b><span>A router's or camera's own web page, opened through Kastellan.</span></div></li>
-        <li><svg><use href="#i-wifi"/></svg><div><b>OpenWrt</b><span>Clients, services, Wi-Fi and firmware updates; Wi-Fi, mesh and root password kept the same across a group.</span></div></li>
+        <li><svg><use href="#i-radar"/></svg><div><b>Checks &amp; history</b><span>Ping, TCP, HTTP, DNS, versions, certificates and uptime.</span></div></li>
+        <li><svg><use href="#i-network"/></svg><div><b>Networks &amp; alarms</b><span>Network map, grouped failures and notifications.</span></div></li>
+        <li><svg><use href="#i-shield"/></svg><div><b>Vulnerabilities</b><span>NVD, OSV and CISA KEV lookups for recognized products and versions.</span></div></li>
+        <li><svg><use href="#i-server"/></svg><div><b>Hosts</b><span>Health, UPSes, containers and libvirt VMs; selected updates and actions.</span></div></li>
+        <li><svg><use href="#i-terminal"/></svg><div><b>Terminal &amp; desktop</b><span>Browser SSH; RDP and VNC through Guacamole.</span></div></li>
+        <li><svg><use href="#i-key"/></svg><div><b>VPN &amp; keys</b><span>WireGuard and OpenVPN clients; SSH key sync and rotation.</span></div></li>
+        <li><svg><use href="#i-lock"/></svg><div><b>Key rings</b><span>Encrypted secrets with configurable unlock policies.</span></div></li>
+        <li><svg><use href="#i-desktop"/></svg><div><b>Device pages</b><span>Device web interfaces through an admin-only proxy.</span></div></li>
+        <li><svg><use href="#i-wifi"/></svg><div><b>OpenWrt</b><span>Wi-Fi, services, firmware and group settings.</span></div></li>
       </ul>
     </div>
     <div class="stage next reveal">
       <h3><span class="badge">Next</span></h3>
       <ul>
-        <li><svg><use href="#i-laptop"/></svg><div><b>A small agent</b><span>For Windows, macOS and laptops away from home, downloaded ready from the app; it reports in, no open ports.</span></div></li>
-        <li><svg><use href="#i-radar"/></svg><div><b>Discovery</b><span>New devices on the network, as they appear.</span></div></li>
+        <li><svg><use href="#i-refresh"/></svg><div><b>Helper versions</b><span>Renewal notices for VPN and OpenWrt scripts.</span></div></li>
+        <li><svg><use href="#i-server"/></svg><div><b>Safer update choices</b><span>Same-major container candidates alongside newer majors.</span></div></li>
+        <li><svg><use href="#i-lock"/></svg><div><b>HTTPS &amp; credentials</b><span>Consistent setup, credential references and stronger device-page isolation.</span></div></li>
       </ul>
     </div>
     <div class="stage later reveal">
       <h3><span class="badge">Later</span></h3>
       <ul>
-        <li><svg><use href="#i-backup"/></svg><div><b>Backups &amp; jobs</b><span>Config exports, full backups with restic, any task on a schedule.</span></div></li>
-        <li><svg><use href="#i-key"/></svg><div><b>Short-lived SSH certificates</b><span>Instead of keys spread over hosts.</span></div></li>
+        <li><svg><use href="#i-backup"/></svg><div><b>Backups &amp; jobs</b><span>Device config exports, restic and scheduled work.</span></div></li>
+        <li><svg><use href="#i-laptop"/></svg><div><b>An outbound agent</b><span>Windows, macOS and roaming laptops.</span></div></li>
+        <li><svg><use href="#i-radar"/></svg><div><b>Discovery</b><span>Suggested devices and unknown-device alerts.</span></div></li>
       </ul>
     </div>
   </div>
@@ -243,13 +245,13 @@
 <section class="security" id="security" aria-labelledby="security-title">
   <div class="wrap">
     <p class="kicker">Security</p>
-    <h2 id="security-title">It holds the keys, <b>so it's built like a keep</b></h2>
-    <p class="section-lead">A tool that can reach every device is the most valuable thing on the network. These are the rules it's designed around.</p>
+    <h2 id="security-title">Limit access. <b>Keep control.</b></h2>
+    <p class="section-lead">A compromised hub inherits the access you grant it. Restricted helpers reduce that access; normal SSH can grant much more.</p>
     <div class="rules">
-      <div class="rule reveal"><svg><use href="#i-lock"/></svg><h3>Behind your VPN</h3><p>Kastellan is meant for the inside of your network, reached from home or through a VPN, never published to the internet.</p></div>
-      <div class="rule reveal"><svg><use href="#i-shield"/></svg><h3>No root of its own</h3><p>Each host gets narrow doors you open yourself: a read-only collector, and only the actions you tick. A taken-over hub gets exactly that.</p></div>
-      <div class="rule reveal"><svg><use href="#i-key"/></svg><h3>Keys bound to one command</h3><p>Every key Kastellan holds can run one thing, only from the hub's address. Host keys are pinned; its own key rotates in one step.</p></div>
-      <div class="rule reveal"><svg><use href="#i-refresh"/></svg><h3>No surprise updates</h3><p>Updates are suggested, not installed. Automatically only when a known vulnerability meets a device that faces the internet.</p></div>
+      <div class="rule reveal"><svg><use href="#i-lock"/></svg><h3>Behind your VPN</h3><p>Use your LAN or VPN, with HTTPS for logins. Do not expose the hub publicly.</p></div>
+      <div class="rule reveal"><svg><use href="#i-shield"/></svg><h3>Restricted helpers</h3><p>The collector reads; the actor gets selected abilities. Normal SSH retains the login's privileges, including root if granted.</p></div>
+      <div class="rule reveal"><svg><use href="#i-key"/></svg><h3>Explicit trust</h3><p>Host keys require approval. Collector, actor and restricted VPN keys run fixed commands; replacing helpers requires privileged access.</p></div>
+      <div class="rule reveal"><svg><use href="#i-refresh"/></svg><h3>Opt-in automation</h3><p>Automatic updates are limited to eligible containers on exposed devices with confirmed serious vulnerabilities.</p></div>
     </div>
   </div>
 </section>
@@ -258,8 +260,8 @@
   <div class="start-copy">
     <p class="kicker">Try it</p>
     <h2 id="start-title">Run the demo <b>in a minute</b></h2>
-    <p>With Docker, one command starts the demo. It shows a made-up home network with a day of history. Nothing on your network is contacted.</p>
-    <p class="note">For your own network, use the <a href="https://github.com/andiwand/kastellan/blob/main/compose.yaml">compose.yaml</a> with a <code>config.yaml</code> in <code>config/</code>. Or build it from a checkout with uv and Node.js.</p>
+    <p>A simulated home network with a day of history. No devices on your network are contacted.</p>
+    <p class="note">For your network, follow the <a href="https://github.com/andiwand/kastellan#quick-start">quick start</a>. The command here runs release 0.7.0; build <code>main</code> for unreleased features.</p>
   </div>
   <div class="code">
     <div class="code-bar"><span>Terminal</span><button class="copy" data-copy="run" type="button">Copy</button></div>
@@ -274,7 +276,7 @@
 <footer class="foot">
   <div class="wrap foot-inner">
     <div class="foot-brand"><img src="favicon.svg" alt="" width="22" height="22"> Kastellan</div>
-    <p>A <i>Kastellan</i> was the keeper of a castle: the one with the keys to every room. MIT licensed, made at home.</p>
+    <p>Kastellan: keeper of a castle. Self-hosted. MIT licensed.</p>
     <a href="https://github.com/andiwand/kastellan">GitHub</a>
   </div>
 </footer>

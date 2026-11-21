@@ -2,9 +2,8 @@
 
 <h1 align="center">Kastellan</h1>
 
-<p align="center"><b>Every device on your home network in one place.</b><br>
-A self-hosted hub that watches routers, access points, servers, PCs, printers and cameras, and
-lets you look after them: through narrow doors you open host by host.</p>
+<p align="center"><b>Monitor and manage your home network.</b><br>
+Self-hosted checks, alerts and device administration, with permissions you choose per host.</p>
 
 <p align="center">
 <a href="https://github.com/andiwand/kastellan/actions/workflows/ci.yml"><img src="https://github.com/andiwand/kastellan/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -18,271 +17,219 @@ lets you look after them: through narrow doors you open host by host.</p>
 
 ---
 
-> Kastellan is an early preview, built on one real home network; see [PLAN.md](PLAN.md).
+> Early preview. This README describes `main`; published images may lag behind.
+> See [releases](https://github.com/andiwand/kastellan/releases), [CHANGELOG.md](CHANGELOG.md)
+> and [PLAN.md](PLAN.md).
 
-- **Checks**: ping, ports, web pages and DNS names per device, with history (CSV files),
-  uptime, the software and version each service reports, and its certificate. Devices at other
-  sites (a rented server, a friend's place) are grouped by site.
-- **Networks**: devices by network, the router on the boundary to the internet, and every way
-  in from outside that Kastellan knows.
-- **Alarms** without storms: one alarm for a device and everything behind it, quiet hours, mute,
-  acknowledge. To ntfy, Gotify, Telegram, e-mail, a webhook, or as notifications on your phone
-  and computer (web push: needs Kastellan reached over HTTPS, e.g. through a reverse proxy).
-- **Vulnerabilities** in what devices and containers run (NVD, OSV, CISA KEV), urgent where a
-  device faces the internet.
-- **Hosts**: disks and space, RAID, disk health, temperatures, failed services, pending
-  system updates and reboots, Docker containers and their updates; installing system updates,
-  updating or restarting a container, a reboot: as far as the host allows.
-- **Terminal and remote desktop** in the browser (SSH; RDP and VNC through Apache Guacamole).
-- **VPN**: any number of VPNs, WireGuard clients through wg-easy and OpenVPN clients through
-  easy-rsa, each added on the VPN page.
-- **SSH keys**: which keys may log in where; rotating Kastellan's own; a group's
-  authorized_keys and known_hosts side by side (several users per device), changed on all at once.
-- **A YAML file, no database**: edit `config.yaml` by hand or in the app; comments stay.
-- **Local**: no account, no cloud, no telemetry. Reach it from home or through a VPN only.
+- **Monitor:** ping, TCP, HTTP and DNS; uptime, latency, software versions and certificates.
+- **Find problems:** dependency-aware alarms, UPS power status, host health and vulnerability
+  lookups (NVD, OSV, CISA KEV). Notifications through ntfy, Gotify, Telegram, e-mail, webhooks
+  and browser push.
+- **Manage:** Docker containers, libvirt VMs, apt updates, OpenWrt Wi-Fi and firmware;
+  SSH terminals, RDP/VNC desktops and device web pages.
+- **Control access:** WireGuard via wg-easy, OpenVPN via easy-rsa, SSH key rotation and group
+  synchronization, encrypted key rings.
+- **Keep it local:** one Docker image, YAML configuration and file-based history. No vendor
+  account or telemetry. Checks and integrations contact devices and external services as configured.
 
 ## Quick start
 
-With Docker (Linux; amd64 or arm64), using [compose.yaml](compose.yaml):
-
-```yaml
-services:
-  kastellan:
-    image: ghcr.io/andiwand/kastellan:latest
-    restart: unless-stopped
-    network_mode: host # the checks see the network as the host does
-    environment:
-      TZ: Etc/UTC
-    volumes:
-      - ./config:/config # config.yaml
-      - ./data:/data # history, sign-in, Kastellan's SSH keys, the audit log
-```
+Docker on Linux, amd64 or arm64. For a demo without contacting your devices:
 
 ```sh
+docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1 ghcr.io/andiwand/kastellan:latest
+```
+
+Open `http://localhost:8100`.
+
+For your network, save [compose.yaml](compose.yaml), create `config/config.yaml` using the
+example below, and run:
+
+```sh
+mkdir -p config data
+# Save config/config.yaml before starting.
 docker compose up -d
 ```
 
-Open `http://<host>:8100`. To try it first: `docker run --rm -p 8100:8100 -e KASTELLAN_DEMO=1
-ghcr.io/andiwand/kastellan` shows a made-up network.
+Open `http://<host>:8100`. Keep Kastellan on your LAN or VPN. The Compose file uses host
+networking and pins a release; build this checkout with `docker compose up -d --build` after
+uncommenting `build: .` to use unreleased features.
 
-Ping runs without root; on Linux the host must allow that once:
-`sysctl -w net.ipv4.ping_group_range="0 2147483647"` (persist it in `/etc/sysctl.d/`). Remote
-desktop needs guacd next to it (in [compose.yaml](compose.yaml), listening on localhost only).
+Ping needs `net.ipv4.ping_group_range="0 2147483647"` on the Linux host; set it with `sysctl`
+and persist it in `/etc/sysctl.d/`. The optional guacd service in Compose provides remote
+desktop and must listen on localhost only.
 
 ## Configuration
 
-Everything is in `config.yaml` (`/config` in the container), editable in the app once sign-in is
-on: as forms on the Settings, Groups and VPN pages and on each device's page, or as the file itself. Kastellan picks up changes by itself. Settings left out keep their defaults:
+Create `config/config.yaml` (mounted at `/config/config.yaml`) and change the addresses:
 
 ```yaml
-check_interval: 60 # seconds
-
 devices:
-  router: # the id: history and alarms are filed under it
-    name: FRITZ!Box
+  router:
     host: 192.168.1.1
-    kind: router # router, access-point, switch, server, pc, laptop, printer, camera, other
-    driver: fritzbox # model and firmware, without a password
+    kind: router
     checks:
       - ping
       - http: https://192.168.1.1
-        name: web
   nas:
     host: nas.lan
     kind: server
-    exposed: true # all of it reachable from the internet: vulnerabilities count as urgent
-    ssh: { user: andreas } # the terminal, and Kastellan's SSH access
-    collect: {} # the collector (see below): also lists libvirt's virtual machines
-    act: {} # the actor (see below)
-    checks:
-      - tcp: 22
-        name: ssh
-      - http: https://media.example.org # by its public name: its certificate is watched
-        name: jellyfin (public)
-      - tcp: 32400
-        exposed: true # only this service is reachable from the internet (a port forward)
-  ups:
-    kind: ups # no address: read by the NAS's collector (apcupsd or NUT)
-    ups: { via: nas }
-  home-assistant:
-    host: homeassistant.lan
-    powered_by: ups # what it hangs on, power-wise
-    runs_on: { host: nas, vm: haos } # a virtual machine on the NAS: shown and acted on there
-  vps:
-    host: 203.0.113.20
-    site: hetzner # not at home: the list groups by site, alarms say where
+    parent: router
     checks:
       - ping
-      - dns: www.example.org # the name resolves (to this address, if expect: is given)
-        expect: 203.0.113.20
-  pc:
-    host: 192.168.1.30
-    kind: pc # may be off: offline, not down
-    desktop: { protocol: rdp, user: andreas }
-    checks: [{ tcp: 3389 }] # Windows answers no ping by default
-  ap-attic:
-    host: 192.168.1.3
-    kind: access-point
-    openwrt: {} # OpenWrt through its own API (set up from the device's page)
-
-groups: # devices that belong together; for OpenWrt members Wi-Fi, mesh, root password in sync
-  aps: { name: Access points, devices: [ap-attic, ap-garden] }
-
-networks: # optional: names for networks, or devices in several (network: [home, vpn])
-  home: { name: Home, cidr: 192.168.1.0/24 }
-
-users: # sign-in; off while empty
-  andreas:
-    role: admin # or observer: sees everything, changes nothing
-    password: scrypt$... # from: kastellan hash-password
-
-alarms:
-  down_after: 180 # seconds down before an alarm
-  cert_days: 14 # a watched certificate ending sooner
-  disk_warning: 85 # percent full; disk_critical: 95
-
-notify:
-  - ntfy: https://ntfy.sh/your-secret-topic
-    min: warning # info, warning, critical
-    quiet: "22:00-07:00" # only critical then
-  - telegram: 123456789
-    token: "123456:ABC-your-bot-token" # also: gotify, email (smtp: smtps://user:pass@host), webhook
-  - push: ada # ada's browsers that turned notifications on (the bell); * for everyone's
-
-heartbeat: https://hc-ping.com/<id> # called every minute: a dead man's switch tells you when it stops
-
-vpns: # any number, of either kind (the VPN page adds and changes them)
-  home: { kind: wireguard, name: Home, wg_easy: http://nas.lan:51821 } # its password: on the VPN page
-  office: { kind: openvpn, name: Office, pki: nas, server: router } # easy-rsa on the nas, OpenVPN on the router
+      - tcp: 22
+        name: ssh
+  laptop:
+    host: laptop.lan
+    kind: laptop # being off is normal
 ```
 
-| Variable              | Default                 | What                                                        |
-| --------------------- | ----------------------- | ----------------------------------------------------------- |
-| `KASTELLAN_CONFIG`    | `data/config.yaml`      | The config file (`/config/config.yaml` in the image).       |
-| `KASTELLAN_DATA`      | the config's folder     | History, sign-in, keys, logs (`/data`).                     |
-| `KASTELLAN_PORT`      | `8100`                  | The web app and the API.                                    |
-| `KASTELLAN_HOSTS`     |                         | Names you open it by (`kastellan.lan`); addresses always work. Others are refused (DNS rebinding). |
-| `KASTELLAN_GUACD`     | `127.0.0.1:4822`        | guacd, for remote desktop.                                  |
-| `KASTELLAN_DEMO`      |                         | `1`: a made-up network.                                     |
-| `KASTELLAN_LOG_LEVEL` | `info`                  | `debug`, `info`, `warning`, `error`.                        |
+Changes reload automatically. After enabling sign-in, edit devices in **Config**, or use
+**Settings**, **Groups** and **VPN**. Forms preserve YAML comments; Settings also has a file
+editor. See [config.example.yaml](config.example.yaml) for sites, DNS, UPSes and VM links.
+
+HTTP checks accept status codes below 500 unless `expect` specifies a code. TLS verification
+is off by default for local self-signed devices; enable `verify: true` to require it. Certificate
+alarms watch public names and checks with `verify: true` or `tls: true`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `KASTELLAN_CONFIG` | `data/config.yaml` | Config path; `/config/config.yaml` in Docker. |
+| `KASTELLAN_DATA` | Config directory | State, keys and logs; `/data` in Docker. |
+| `KASTELLAN_PORT` | `8100` | HTTP port. |
+| `KASTELLAN_HOSTS` | Empty | Allowed hostnames, comma-separated; IP addresses and localhost also work. |
+| `KASTELLAN_GUACD` | `127.0.0.1:4822` | Remote desktop daemon. |
+| `KASTELLAN_DEMO` | Unset | `1` enables simulated devices. |
+| `KASTELLAN_LOG_LEVEL` | `info` | Logging verbosity. |
 
 ### Sign-in
 
-Off until the first user is in `config.yaml`; then everyone signs in, and it never turns itself
-off again. **Observers** see everything; **admins** also change things. Whatever reaches into a
-device (terminal, desktop, installs, keys, editing the config) needs sign-in on, every change
-goes to `data/audit.log`. Short passwords are allowed after a warning (`--short`).
+Without users, monitoring is readable without sign-in; device access and configuration changes
+require a signed-in admin. Generate a password hash:
 
-### Keys (key rings)
-
-Passwords, tokens and Kastellan's own SSH keys that can change things are encrypted in
-`data/vault.json`. How the keys that open the rings are kept depends on the chosen policy below. An
-entry's name is visible (so the page can say where it is used while a ring is locked); a login's
-user name and notes are encrypted with it. There
-are rings: **Kastellan's** (what it uses by itself: router logins, its keys, push's key) and
-**people's logins** (kept for you, never used by Kastellan by itself), and any you add. Each
-ring opens its own ways: an admin's password (**signing in opens it**), a key file, an
-environment variable, or a key kept in config.yaml; each has a recovery key, shown once. While a
-ring Kastellan needs is locked, checks go on and the collector still reads; what needs a secret
-waits and says so. Make them on the **Keys** page (it takes in what was kept as files so far and
-removes those files), then choose how secure:
-
-- **Convenient**: Kastellan's ring opens by itself at start, with a key in config.yaml, so
-  everything works again after a power cut; whoever has a copy of the config folder can open it.
-- **Balanced** (the default): nothing opens by itself; once an admin signs in, Kastellan's ring
-  stays open until a restart, people's logins close again when no admin has used the app for 30
-  minutes (a page left open doesn't count).
-- **Strict**: as balanced, and people's logins close after 15 minutes without use.
-
-Per ring you can choose otherwise, e.g. a key file from a Docker secret
-(`unlock: [password, {keyfile: /run/secrets/kastellan}]`) or an environment variable. People's
-logins can be set to open by themselves too: then they are readable by whoever has that key,
-with nobody signed in (Kastellan still never uses them by itself). Lock closes a ring until it is
-unlocked again, also one that opens by itself. The config editor shows config.yaml as it is, a
-ring key in it included; when a way to open a ring is no longer chosen, its old key (also one
-left in a config backup) opens nothing any more once the ring is next open. Showing a stored
-password takes your own password, and it is hidden again after a minute or when its ring
-closes. If your password changes while a ring is locked, open that ring once with its recovery
-key (or let another admin sign in): your slot then follows the new password. With key rings,
-`kastellan secret set` hands over to the Keys page.
-
-What this protects against: a copy of `data/` (a backup, a stolen disk) reveals no secret
-without a way to open its ring. Someone who can change the data folder while Kastellan runs is
-an admin already; that isn't what it guards against.
-
-### UPSes
-
-A UPS plugged into a host by USB or serial is read by that host's collector: apcupsd
-(`apcaccess`) or NUT (`upsc`, on that host), nothing to install for Kastellan beyond the
-collector. Add it as a device of `kind: ups` with `ups: { via: <host> }` (with NUT and
-several UPSes, also `name:`); it needs no address. Its page shows its state, charge, runtime
-left, load, voltages, when it last went on battery and why, and its battery's age, and which
-devices it powers (each device's `powered_by:`, set on the UPS's page or in a device's form).
-On battery is a warning, critical below `alarms: ups_charge_critical` (30 %) or
-`ups_runtime_critical` (5 minutes); devices that go down meanwhile wait in its alarm.
-
-### Device web pages through Kastellan
-
-Every device's web interface on a name of its own, through the hub: with
-
-```yaml
-web:
-  domain: kastellan.home.arpa # the hub is opened at this name
+```sh
+docker compose run --rm kastellan kastellan hash-password
 ```
 
-and one wildcard DNS entry (`kastellan.home.arpa` and `*.kastellan.home.arpa` → the hub), the NAS
-is at `nas.kastellan.home.arpa` (an id's `_` becomes `-`). Open it with the device page's "Open
-web interface": only signed-in admins get through, each device name with its own access tied to
-your Kastellan session (signing out ends it), and a device's page can't use another's. You sign
-in to the device itself as usual (Kastellan keeps no device logins). The page is the device's
-first `http` check (or `web: https://...` on the device). Behind an HTTPS reverse proxy, the proxy
-needs a wildcard certificate for those names and must pass the `Host` header on.
+Add it to `config.yaml`:
+
+```yaml
+users:
+  admin:
+    role: admin # observer allows monitoring only
+    password: 'scrypt$...' # replace with the generated hash
+```
+
+Once enabled, sign-in cannot be disabled by removing users or breaking the config.
+Administrative actions are recorded in `data/audit.log`. Use HTTPS when sending passwords;
+browser push also requires HTTPS.
+
+### Key rings
+
+Create key rings on **Keys** to migrate stored secrets into encrypted `data/vault.json`.
+The **Kastellan** ring supplies background tasks; **People** stores logins used only by an
+admin's explicit action. Entry names and SSH public keys remain visible while locked.
+
+| Policy | Kastellan ring | People ring |
+| --- | --- | --- |
+| Balanced (default) | Opens on admin sign-in; stays open until locked or restarted. | Closes after 30 minutes without admin activity. |
+| Convenient | Opens at startup using a key in config.yaml. | Same as Balanced. |
+| Strict | Same as Balanced. | Closes after 15 minutes without use. |
+
+Each ring has a recovery key shown once. Keep it separately. You can choose password, key-file,
+environment or config-based unlocking per ring. A copy of both the vault and its unlock key
+can reveal the secrets; Convenient stores that key in the config. The raw config editor shows
+it, while audit diffs mask it. Before migration, file-based secrets are not encrypted.
+
+Locked rings pause tasks that need their secrets; checks and the read-only collector continue.
+If a password changes while a ring is locked, unlock it through recovery or another admin to
+refresh its password slot.
+
+### UPSes and virtual machines
+
+Set up the collector on the host first, then add:
+
+```yaml
+# Under devices:
+ups:
+  kind: ups
+  ups: { via: nas } # apcupsd or NUT on nas; add name: for a specific NUT UPS
+home-assistant:
+  host: homeassistant.lan
+  runs_on: { host: nas, vm: haos } # libvirt domain name
+  powered_by: ups
+```
+
+The UPS page shows power, battery and runtime readings and lets you choose what it powers.
+On-battery alarms become critical below 30% charge or 5 minutes remaining by default; devices
+that fail during the outage are grouped into that alarm. VM actions require the host's actor
+and an allow list of VM names.
+
+### Device web pages
+
+Set `web: { domain: kastellan.home.arpa }` and point that name and `*.kastellan.home.arpa` at the
+hub. **Open web interface** uses the device's first HTTP check or its `web:` URL.
+Only signed-in admins can use the proxy; device logins remain separate. An HTTPS reverse proxy
+needs certificates for the hub and device names and must preserve `Host`.
 
 ## Access to your hosts
 
-Kastellan holds no root anywhere by itself. You open each door on the device's page, in a dialog:
-either run the commands it shows yourself (Kastellan never sees a login), or type your login and
-password (root through sudo, or su with root's password), used for that one connection, never
-stored, the output shown as it runs. Each door is a user of its own with a key bound to one
-command (`restrict`, `command=`, only from the hub's address):
+Use a device's **Setup** tab to copy installation commands or run them with a one-time login.
+Collector and actor permissions are enforced on the device:
 
-| Door          | User                  | What it can do                                                                 |
-| ------------- | --------------------- | ------------------------------------------------------------------------------ |
-| SSH access    | yours, or `kastellan` | The terminal, as that user.                                                     |
-| Collector     | `kastellan-collect`   | Run one root-owned, read-only script: system, space, RAID, SMART, temperatures, services, updates, containers (never their settings). |
-| Actor         | `kastellan-act`       | Only the abilities you tick, each a root-owned script with one sudo rule: update, restart, stop or start chosen containers; start, shut down, restart or force off chosen virtual machines (libvirt); install system updates (apt); reboot. |
-| VPN           | `kastellan-pki`, root | Only the client-certificate and CRL scripts.                                    |
-| OpenWrt       | rpcd login `kastellan` | Through the device's own API (HTTPS, certificate pinned), with an access list of its own: read always; reboot, Wi-Fi settings, firmware, chosen services (start/stop/restart, at boot), who is connected to its OpenVPN server only if ticked. |
+| Access | Permissions |
+| --- | --- |
+| Collector | Read host health, updates, containers, libvirt VMs and UPSes through one restricted SSH command. |
+| Actor | Selected container/VM actions, apt updates and reboot; separate sudo rules and allow lists. |
+| Restricted OpenVPN | Certificate and revocation-list helpers only. Direct mode uses a normal SSH login. |
+| OpenWrt | Pinned HTTPS connection with selected rpcd abilities; Wi-Fi changes use rollback. |
+| Normal SSH | The configured user's permissions, including root or passwordless sudo if you grant them. |
 
-A taken-over hub gets exactly what the doors allow. Container updates are asked of the registries
-directly; updating pulls the container's own tag again (only an image that came from its
-registry) and recreates it with its settings, and puts the old one back if the new one doesn't
-run steadily. System updates keep changed config files and never remove a package. Automatic updates
-(`auto_update: true`) happen only for a known vulnerability on an `exposed` device.
+Normal SSH access is broader than the restricted helpers. OpenSSH source-address restrictions
+are added when the hub's address is known; Dropbear does not support them. Host keys require
+explicit trust. Rotate the hub key in **Settings → Access** and the VPN key on **VPN**.
 
-OpenWrt routers and access points show their state, Wi-Fi clients, package updates and whether
-their release still gets fixes. Wi-Fi changes are applied with the device's own rollback (it
-undoes them if it can't be reached afterwards). Firmware moves one release series at a time: an
-image built for the model by OpenWrt's image builder with its packages, checked, tested on the
-device, installed keeping the settings. A group of them (`groups:`) keeps Wi-Fi networks, the
-mesh and root's password the same: the Groups page shows where they differ and changes them on all.
+Container updates through the actor repull the existing tag and restore the old container if
+the replacement fails its startup checks. They do not switch version tags. Apt updates retain
+modified config files and avoid package removals. OpenWrt firmware advances one release series
+at a time, using an image built for the device and its packages.
 
-Host keys are pinned (trusted once on the page). Kastellan's own key can be rotated on the
-**Access** page: added and tried everywhere, then switched, then the old one removed.
+Automatic updates are opt-in and limited to containers on devices marked `exposed: true`,
+with a confirmed high/critical or exploited vulnerability and an eligible update. Version
+changes must stay within the same major and include a known fix when available; actor updates
+remain limited to a newer build of the existing tag.
+
+**Updates** lists outdated collector and actor scripts. Reinstall from Setup with a host login;
+their restricted keys cannot replace them. VPN and OpenWrt helpers do not yet report versions.
+After upgrading Kastellan, check the changelog for helper reinstallation requirements.
+
+## Backup and recovery
+
+Stop Kastellan before copying both `config/` and `data/` for a consistent backup. Keep recovery
+keys and any external unlock keys separately. Restore both directories and their permissions
+before starting the same Kastellan version. Backups contain credentials; protect them accordingly.
+Automatic config-file backups cover edits only. There is no complete backup/restore workflow yet.
 
 ## Development
 
-`backend/` (Python, FastAPI), `frontend/` (SvelteKit, Tailwind), `website/` (GitHub Pages).
-[AGENTS.md](AGENTS.md) explains the architecture.
+Python 3.13 with uv; Node 24 (`frontend/.nvmrc`). Run each block from the repository root:
 
 ```sh
-cd frontend && npm install && npm run build && cp -r build ../backend/src/kastellan/web
-cd backend && KASTELLAN_DEMO=1 uv run kastellan  # http://localhost:8100
-cd frontend && npm run dev                        # http://localhost:5173, with hot reload
-
-cd backend && uv run ruff check . && uv run ruff format --check . && uv run pytest
-cd frontend && npm run lint && npm run check && npm test
+(cd backend && uv sync)
+(cd frontend && npm ci && npm run build)
+mkdir -p backend/src/kastellan/web
+cp -R frontend/build/. backend/src/kastellan/web/
+(cd backend && KASTELLAN_DEMO=1 uv run kastellan)
 ```
+
+For frontend hot reload, run `(cd frontend && npm run dev)` in another terminal.
+
+```sh
+(cd backend && uv run ruff check . && uv run ruff format --check . && uv run pytest)
+(cd frontend && npm run lint && npm run check && npm test && npm run build)
+```
+
+[AGENTS.md](AGENTS.md) covers architecture; [PLAN.md](PLAN.md) lists remaining work.
 
 ## License
 
