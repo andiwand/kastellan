@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { CheckStatus, Device } from './api';
-import { groupOwn, ownServicesOf } from './ownServices';
+import { actionsOf, groupOwn, ownServicesOf } from './ownServices';
 
 const check = (name: string, type: CheckStatus['type'], target: string | number | null) =>
 	({ name, type, target }) as CheckStatus;
@@ -32,4 +32,24 @@ it('puts a service under the check it answers, the rest as rows', () => {
 	// failed first, then running, then the rest; openvpn has no check here
 	expect(rest.map((s) => s.name)).toEqual(['backup.service', 'firewall', 'openvpn']);
 	expect(rest.find((s) => s.name === 'openvpn')?.actable).toBe(true);
+});
+
+it('keeps unusual names and external DNS lookups from breaking service grouping', () => {
+	const d = {
+		checks: [check('__proto__', 'tcp', 22), check('lookup', 'dns', 'example.org')]
+	} as Device;
+	const services = ['dropbear', 'constructor', 'dnsmasq'].map((name) => ({
+		name,
+		source: 'openwrt' as const,
+		state: 'running' as const,
+		enabled: true,
+		actable: true
+	}));
+	const groups = groupOwn(d, services);
+	expect(groups.byCheck.__proto__.map((s) => s.name)).toEqual(['dropbear']);
+	expect(groups.rest.map((s) => s.name)).toEqual(['constructor', 'dnsmasq']);
+	expect(actionsOf(services[0])).toEqual(['restart', 'stop', 'disable']);
+	for (const name of ['uhttpd', 'rpcd', 'network', 'firewall'])
+		expect(actionsOf({ ...services[0], name })).toEqual(['restart']);
+	expect(actionsOf({ ...services[0], actable: false })).toEqual([]);
 });

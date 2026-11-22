@@ -1,7 +1,15 @@
 <script lang="ts">
 	import type { VitalField, Vitals } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { detailOf, formatVital, LABEL, limitsOf, toneColor, toneOf } from '#lib/vitals.js';
+	import {
+		detailOf,
+		formatVital,
+		isStale,
+		LABEL,
+		limitsOf,
+		toneColor,
+		toneOf
+	} from '#lib/vitals.js';
 
 	/** A device's CPU, memory and storage as three slim bars (the devices list): the value, and
 	 * colour only when it is high. A CPU known only by its load shows the load. */
@@ -12,6 +20,7 @@
 		critical: store.alarms?.limits?.disk_critical ?? 95
 	});
 	const SHORT: Record<string, string> = { cpu: 'CPU', memory: 'RAM', storage: 'Disk' };
+	const stale = $derived(vitals ? isStale(vitals, store.now) : false);
 	const rows = $derived(
 		vitals
 			? (['cpu', 'memory', 'storage'] as VitalField[])
@@ -22,9 +31,10 @@
 </script>
 
 {#if vitals && rows.length}
-	<div class="grid w-full gap-1" aria-label="Vitals">
+	<div class="grid w-full gap-1" class:opacity-60={stale} aria-label="Vitals">
+		{#if stale}<span class="text-[10px] text-muted">Old reading</span>{/if}
 		{#each rows as { f, v } (f)}
-			{@const tone = toneOf(v, limitsOf(f, disk))}
+			{@const tone = stale ? 'normal' : toneOf(v, limitsOf(f, disk))}
 			<div
 				class="grid grid-cols-[1.9rem_minmax(0,1fr)_2.2rem] items-center gap-1.5 text-[10.5px] leading-none"
 				title="{LABEL[f]}: {v == null ? '' : formatVital(f, v)}{detailOf(f, vitals)

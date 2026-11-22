@@ -106,3 +106,74 @@ def test_the_endpoint(tmp_path: Path) -> None:
         assert r["devices"]["nas"]["cpu"][-1] == 42.0 and len(r["devices"]["nas"]["cpu"]) == 4
         assert c.get("/api/vitals", params={"device": "nope"}).status_code == 404
         assert "nas" in c.get("/api/vitals").json()["devices"]
+
+
+def test_cpu_and_compose_survive_the_collector_boundary() -> None:
+    from kastellan.host.report import normalize
+
+    cpu = Cpu()
+    first = normalize(
+        {
+            "system": {"cpu": [100, 0, 100, 800]},
+            "docker": [{"name": "app", "image": "repo/app:1", "compose": "/srv/app/compose.yaml"}],
+        }
+    )
+    assert vitals.from_host("h", first, cpu).cpu is None
+    second = normalize({"system": {"cpu": [150, 0, 150, 900]}})
+    assert vitals.from_host("h", second, cpu).cpu == 50
+    assert first["docker"][0]["compose"] == "/srv/app/compose.yaml"
+    counters = [2**53 + 1, 0, 100, 800]
+    assert normalize({"system": {"cpu": counters}})["system"]["cpu"] == counters
+    for bad in ([1, 2], [1, 2, True, 4], [1, 2, -3, 4], [1, 2, float("inf"), 4], [1, 2, 2**64, 4]):
+        assert normalize({"system": {"cpu": bad}})["system"]["cpu"] is None
+        assert cpu.percent("bad", bad) is None
+
+
+def test_missing_samples_are_not_replaced_by_older_values() -> None:
+    assert vitals.from_fritz({"cpuutil": {"series": [[10, None]]}}).empty()
+    assert vitals.from_fritz({"cputemp": {"series": [[50, float("inf")]]}}).empty()
+    assert vitals.from_fritz({"cpuutil": {"series": [[10**1000]]}}).empty()
+    v = vitals.from_openwrt("r", {"system": {"memory": {"total": 1000, "free": 0}}}, {"temp": 500}, Cpu())
+    assert v.memory == 100 and v.temperature == 0.5
+    assert Vitals(memory_used=float("nan"), memory_total=10).memory is None
+
+
+def test_concurrent_samples_and_shutdown(tmp_path: Path) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = Store(tmp_path / "vitals.db")
+    barrier = threading.Barrier(8)
+
+    def add(_):
+        barrier.wait()
+        return store.add("h", Vitals(cpu=50), now=1_000_000)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert sum(pool.map(add, range(8))) == 1
+    store.close()
+    assert not store.add("h", Vitals(cpu=50), now=1_000_200)
+    assert store._conn is None
+
+
+async def test_empty_readings_and_replaced_devices_clear_current_vitals(tmp_path: Path) -> None:
+    from kastellan.hub import Hub
+    from kastellan.settings import Settings
+
+    config = tmp_path / "config.yaml"
+    config.write_text("devices: {nas: {host: 127.0.0.1}}")
+    hub = Hub(Settings(config=config, data=tmp_path))
+    try:
+        hub.reload()
+        status = hub.monitor.status["nas"]
+        await hub.note_vitals("nas", status, Vitals(cpu=50))
+        await hub.note_vitals("nas", status, Vitals())
+        assert status.vitals is None
+        await hub.note_vitals("nas", status, Vitals(cpu=50))
+        assert hub._cpu.percent("nas", [100, 0, 100, 800]) is None
+        config.write_text("devices: {nas: {host: 127.0.0.2}}")
+        hub.reload()
+        assert hub.monitor.status["nas"].vitals is None
+        assert hub._cpu.percent("nas", [150, 0, 150, 900]) is None
+    finally:
+        await hub.stop()

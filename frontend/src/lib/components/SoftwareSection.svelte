@@ -41,14 +41,20 @@
 								: `· ${fw.series} gets no more security fixes; next step ${fw.next_step}`}
 						</span>
 						<span class="text-xs text-muted">(supported: {fw.stable} and {fw.oldstable})</span>
-					{:else if fw}
+					{:else if fw?.supported}
 						<span class="text-xs" style:color="var(--good-text)">· the newest release</span>
+					{:else if fw}
+						<span class="text-xs" style:color="var(--warning-text)">
+							· not listed among supported releases
+						</span>
 					{/if}
 					<span class="w-full text-xs text-muted">
 						{#if device.router.packages_skipped}
 							Packages: not asked ({device.router.packages_skipped}).
+						{:else if device.router.errors?.packages}
+							Package updates unknown: the last check failed.
 						{:else if packages == null}
-							Packages: not looked yet.
+							Packages: not checked yet.
 						{:else if packages.length === 0}
 							No package updates.
 						{:else}

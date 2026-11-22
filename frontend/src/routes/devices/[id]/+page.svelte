@@ -520,55 +520,58 @@
 		{#if device.kind === 'ups'}
 			<UpsCard {device} canChange={store.editBlocked === null && store.me?.role === 'admin'} />
 		{/if}
-		<ReadingsLine {device} />
-		{#if device.vitals}
-			{#key device.id}<VitalsPanel device={device.id} vitals={device.vitals} />{/key}
-		{/if}
-		<!-- Range (a UPS read through its host has no services of its own) -->
-		{#if device.checks.length || own.rest.length}<div
-				class="mt-8 flex items-center justify-between"
-			>
-				<h2 class="text-sm font-semibold">Services</h2>
-				<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-					{#each ranges as r (r.label)}
-						<button
-							onclick={() => (range = r)}
-							class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range === r
-								? 'bg-surface-3 text-text'
-								: 'text-muted hover:text-text'}"
-						>
-							{r.label}
-						</button>
-					{/each}
-				</div>
-			</div>
-
-			{#if loadError}
-				<p class="mt-3 text-sm" style:color="var(--critical-text)">
-					Cannot load the history: {loadError}. Showing what was loaded before.
-				</p>
+		{#key device.id}
+			<ReadingsLine {device} />
+			{#if device.vitals}
+				<VitalsPanel device={device.id} vitals={device.vitals} />
 			{/if}
+			<!-- Range (a UPS read through its host has no services of its own) -->
+			{#if device.checks.length || own.rest.length}<div
+					class="mt-8 flex items-center justify-between"
+				>
+					<h2 class="text-sm font-semibold">Services</h2>
+					<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
+						{#each ranges as r (r.label)}
+							<button
+								onclick={() => (range = r)}
+								class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range.hours ===
+								r.hours
+									? 'bg-surface-3 text-text'
+									: 'text-muted hover:text-text'}"
+							>
+								{r.label}
+							</button>
+						{/each}
+					</div>
+				</div>
 
-			<div class="mt-3">
-				<ServicesTable
-					rows={device.checks.map((check) => ({ device: device!, check }))}
-					buckets={(_, name) => checkSeries[name] ?? []}
-					start={series?.start ?? null}
-					step={series?.step_seconds ?? 0}
-					rangeLabel={range.label}
-					own={own.byCheck}
-					rest={own.rest}
-					onDevice={device}
-					canChange={canChangeOwn}
-				/>
-			</div>{/if}
+				{#if loadError}
+					<p class="mt-3 text-sm" style:color="var(--critical-text)">
+						Cannot load the history: {loadError}. Showing what was loaded before.
+					</p>
+				{/if}
 
-		<SoftwareSection {device} canAct={!!device.act && signedAdmin} />
-		<WifiSection {device} canChange={signedAdmin} />
-		<NetworkSection {device} />
-		{#if device.host_report}
-			<StorageSection report={device.host_report} forecast={device.host_forecast ?? {}} />
-		{/if}
+				<div class="mt-3">
+					<ServicesTable
+						rows={device.checks.map((check) => ({ device: device!, check }))}
+						buckets={(_, name) => checkSeries[name] ?? []}
+						start={series?.start ?? null}
+						step={series?.step_seconds ?? 0}
+						rangeLabel={range.label}
+						own={own.byCheck}
+						rest={own.rest}
+						onDevice={device}
+						canChange={canChangeOwn}
+					/>
+				</div>{/if}
+
+			<SoftwareSection {device} canAct={!!device.act && signedAdmin} />
+			<WifiSection {device} canChange={signedAdmin} />
+			<NetworkSection {device} />
+			{#if device.host_report}
+				<StorageSection report={device.host_report} forecast={device.host_forecast ?? {}} />
+			{/if}
+		{/key}
 
 		<BackupsCard device={device.id} />
 		{#if admin}<div id="config-backups"><ConfigBackups device={device.id} /></div>{/if}

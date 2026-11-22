@@ -19,7 +19,7 @@
 		step,
 		rangeLabel = '24 h',
 		showDevice = false,
-		own = {},
+		own = Object.create(null),
 		rest = [],
 		onDevice,
 		canChange = () => false
@@ -84,7 +84,7 @@
 						<p class="truncate font-mono text-xs text-faint" title={target(check)}>
 							{target(check)}
 						</p>
-						{#each own[check.name] ?? [] as svc (svc.name)}
+						{#each own[check.name] ?? [] as svc (svc.source + svc.name)}
 							<div class="mt-1">
 								<OwnServiceLine device={device.id} service={svc} canChange={canChange(svc)} />
 							</div>

@@ -11,32 +11,27 @@
 
 ### Added
 
-- Vitals for every device that tells them: CPU, memory, storage and temperature as slim tiles
-  on the device page, each with its last 24 hours and a chart over a day, a week or a month, and
-  as small meters in the devices list. From the Linux collector, OpenWrt (`system info` and a
-  read-only helper) and a FRITZ!Box's energy monitor (its web interface, undocumented). Kept
-  every two minutes for 30 days (`<data>/vitals.db`).
+- CPU, memory, storage and temperature readings from Linux, OpenWrt and FRITZ!Box. The device
+  page shows 24-hour, 7-day and 30-day charts; the device list shows current values. History
+  stays for 30 days in `vitals.db` and is included in hub backups when history is enabled.
 
 ### Changed
 
-- Updates no longer lists OpenWrt packages: they come with the next firmware, which Updates
-  offers; the device page still names them.
-- The device page has no OpenWrt, FRITZ!Box or Host cards any more; their parts sit where they
-  belong for every kind of device: the device's own services (OpenWrt's init scripts, failed
-  systemd units) in Services, under the check they answer (dropbear under SSH, uhttpd under the
-  web check), the others as rows with their buttons; Software (release, next firmware step and
-  its packages, FRITZ!OS update, system updates with Install); Wi-Fi as a card per radio or
-  network, with roaming and the FRITZ!Mesh; Network (internet line, ways in, DHCP, WireGuard,
-  who is connected); Storage and hardware (space, disks, temperatures). Uptime, kernel, where
-  readings come from and what couldn't be read: one line under the tabs.
+- Device pages group readings into Services, Software, Wi-Fi, Network, and Storage and hardware.
+- Updates leaves out OpenWrt packages, which come with firmware; Software still lists them.
 
 ### Fixed
 
-- OpenWrt routers with less than 64 MB aren't asked for package updates any more: `opkg update`
-  ran them out of memory and the kernel killed usteer or the web interface. The router card
-  says why.
-- The FRITZ!Box firmware no longer "changes" every ten minutes between `FRITZ!OS 8.25` and
-  `FRITZ!OS 164.08.25`: both sources now spell it the same way.
+- Skip package checks on OpenWrt routers with less than 64 MB usable memory. Use temporary
+  package lists and report failed checks as unknown, keeping their errors until a successful check.
+- Use one FRITZ!OS version spelling across sources to prevent false firmware-change notices.
+- Preserve CPU counters and Compose paths through collector report validation.
+- Handle missing and invalid vitals, serialize concurrent samples, close the history database,
+  and use consistent SQLite snapshots for backups. Old readings are labelled.
+- Keep chart ranges correct when responses arrive out of order. Reset device-specific panels
+  on navigation; fit charts, filters and hardware tables at phone widths. Plot negative temperatures.
+- Handle unusual service names and keep unrelated DNS lookups separate. Hide service actions
+  that the router's access helper refuses.
 
 ## 0.13.0 (2026-11-22)
 

@@ -11,7 +11,8 @@
 		height = 180,
 		format = ms,
 		label = 'Latency over time',
-		fixedMax
+		fixedMax,
+		fixedMin = 0
 	}: {
 		buckets: Bucket[];
 		start: string;
@@ -19,6 +20,7 @@
 		height?: number;
 		format?: (v: number) => string;
 		label?: string;
+		fixedMin?: number;
 		fixedMax?: number; // the top of the scale (100 for percentages), instead of from the data
 	} = $props();
 
@@ -37,7 +39,7 @@
 	const innerW = $derived(Math.max(10, width - pad.left - pad.right));
 	const innerH = $derived(height - pad.top - pad.bottom);
 	const x = (i: number) => pad.left + ((i + 0.5) / buckets.length) * innerW;
-	const y = (v: number) => pad.top + innerH - (v / max) * innerH;
+	const y = (v: number) => pad.top + innerH - ((v - fixedMin) / (max - fixedMin)) * innerH;
 
 	function niceMax(v: number) {
 		if (v <= 0) return 1;
@@ -62,12 +64,15 @@
 	const line = (run: { i: number; v: number }[]) =>
 		run.map((p, k) => `${k ? 'L' : 'M'}${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join('');
 	const area = (run: { i: number; v: number }[]) =>
-		`${line(run)}L${x(run[run.length - 1].i).toFixed(1)},${y(0)}L${x(run[0].i).toFixed(1)},${y(0)}Z`;
+		`${line(run)}L${x(run[run.length - 1].i).toFixed(1)},${y(fixedMin)}L${x(run[0].i).toFixed(1)},${y(fixedMin)}Z`;
 
-	const yTicks = $derived([0, max / 2, max]);
+	const yTicks = $derived([fixedMin, (max + fixedMin) / 2, max]);
 	const xTicks = $derived.by(() => {
 		const total = buckets.length * step;
-		const every = total > 3 * 86400 ? 86400 : total > 6 * 3600 ? 6 * 3600 : 3600;
+		const spacing = total / Math.max(2, Math.floor(innerW / 70));
+		const every =
+			[1, 3, 6, 12, 24, 48, 72, 168, 336, 720].map((h) => h * 3600).find((s) => s >= spacing) ??
+			total;
 		const ticks: { i: number; label: string }[] = [];
 		const first = Math.ceil(t0 / 1000 / every) * every;
 		for (let t = first; t < t0 / 1000 + total; t += every) {
@@ -75,7 +80,12 @@
 			const d = new Date(t * 1000);
 			ticks.push({
 				i,
-				label: every >= 86400 ? d.toLocaleDateString([], { weekday: 'short' }) : clock(d)
+				label:
+					total > 7 * 86400
+						? d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+						: every >= 86400
+							? d.toLocaleDateString([], { weekday: 'short' })
+							: clock(d)
 			});
 		}
 		return ticks;

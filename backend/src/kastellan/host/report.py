@@ -51,12 +51,16 @@ def normalize(raw: Any) -> dict[str, Any]:
     s = _dict(r.get("system"))
     if s:
         mem, swap = _dict(s.get("memory")), _dict(s.get("swap"))
+        cpu = _list(s.get("cpu"), 8)
+        if len(cpu) < 4 or not all(type(n) is int and 0 <= n < 2**64 for n in cpu):
+            cpu = None
         out["system"] = {
             "hostname": _text(s.get("hostname"), 100) or "",
             "kernel": _text(s.get("kernel"), 100) or "",
             "uptime": _num(s.get("uptime"), 0, 1e10) or 0.0,
             "load": [x for x in (_num(v, 0, 1e6) for v in _list(s.get("load"), 3)) if x is not None],
             "cpus": _int(s.get("cpus"), 1, 100000) or 1,
+            "cpu": cpu,
             "memory": {"total": _int(mem.get("total")) or 0, "available": _int(mem.get("available")) or 0},
             "swap": {"total": _int(swap.get("total")) or 0, "free": _int(swap.get("free")) or 0},
         }
@@ -177,6 +181,7 @@ def normalize(raw: Any) -> dict[str, Any]:
                         "status": _text(c.get("status"), 100) or "",
                         # The image kept from before its last update (short id), to go back to.
                         "previous": _text(c.get("previous"), 12),
+                        "compose": _text(c.get("compose"), 300),
                     }
                 )
             out["docker"] = containers

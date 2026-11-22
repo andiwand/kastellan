@@ -225,19 +225,24 @@ def test_force_replaces_stale_secrets_and_sessions_and_private_modes(tmp_path):
     assert (target / "ssh/hub_ed25519").stat().st_mode & 0o777 == 0o600
 
 
-def test_sqlite_wal_is_backed_up_as_one_consistent_database(tmp_path):
+@pytest.mark.parametrize("name", ["logs.db", "vitals.db"])
+def test_sqlite_wal_is_backed_up_as_one_consistent_database(tmp_path, name):
     import sqlite3
 
     data, config = hub_data(tmp_path)
     (data / "logs.db").unlink()
-    with sqlite3.connect(data / "logs.db") as db:
+    with sqlite3.connect(data / name) as db:
         db.execute("pragma journal_mode=wal")
         db.execute("create table lines (message text)")
         db.execute("insert into lines values ('committed in WAL')")
         db.commit()
-        members = dict((f.path, content) for f, content in hubbackup.collect(data, config, False, True))
-        assert "logs.db-wal" not in members and "logs.db-shm" not in members
-        (tmp_path / "snapshot.db").write_bytes(members["logs.db"])
+        members = dict(
+            (f.path, content)
+            for f, content in hubbackup.collect(data, config, name == "vitals.db", name == "logs.db")
+        )
+        assert name + "-wal" not in members and name + "-shm" not in members
+        assert name not in {f.path for f, _ in hubbackup.collect(data, config, False, False)}
+        (tmp_path / "snapshot.db").write_bytes(members[name])
         with sqlite3.connect(tmp_path / "snapshot.db") as restored:
             assert restored.execute("select message from lines").fetchone()[0] == "committed in WAL"
     config.unlink()

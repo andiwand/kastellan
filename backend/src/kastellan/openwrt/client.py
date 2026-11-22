@@ -554,6 +554,8 @@ async def upgradable(ubus: Ubus) -> list[str]:
     from .setup import UPGRADABLE
 
     res = await ubus.call("file", "exec", {"command": UPGRADABLE, "params": []}, timeout=55)
+    if res.get("code", 0) != 0:
+        raise ValueError("the package update check failed")
     return [ln.strip() for ln in str(res.get("stdout", "")).splitlines() if ln.strip()][:200]
 
 

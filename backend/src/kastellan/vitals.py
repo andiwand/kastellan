@@ -55,7 +55,7 @@ class Vitals:
 
 
 def _pct(used: int | float | None, total: int | float | None) -> float | None:
-    if not isinstance(used, int | float) or not isinstance(total, int | float) or total <= 0:
+    if _num(used) is None or _num(total) is None or used < 0 or total <= 0:
         return None
     return max(0.0, min(100.0, 100 * used / total))
 
@@ -65,7 +65,13 @@ def _round(v: float | None) -> float | None:
 
 
 def _num(v: Any) -> float | None:
-    return float(v) if isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v) else None
+    if not isinstance(v, int | float) or isinstance(v, bool):
+        return None
+    try:
+        value = float(v)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) else None
 
 
 class Cpu:
@@ -78,9 +84,8 @@ class Cpu:
     def percent(self, device: str, counters: Any) -> float | None:
         if not isinstance(counters, list) or len(counters) < 4:
             return None
-        try:
-            values = [int(c) for c in counters[:8]]
-        except (TypeError, ValueError):
+        values = counters[:8]
+        if not all(type(c) is int and 0 <= c < 2**64 for c in values):
             return None
         total, idle = sum(values), values[3] + (values[4] if len(values) > 4 else 0)
         last = self._last.get(device)
@@ -104,12 +109,14 @@ def from_host(device: str, report: dict[str, Any], cpu: Cpu) -> Vitals:
         cores=sys.get("cpus") if isinstance(sys.get("cpus"), int) else None,
     )
     total, available = mem.get("total"), mem.get("available")
-    if isinstance(total, int) and isinstance(available, int) and total > 0:
+    if type(total) is int and type(available) is int and 0 <= available <= total and total > 0:
         v.memory_used, v.memory_total = total - available, total
     fullest = None
     for fs in report.get("filesystems") or []:
+        if not isinstance(fs, dict):
+            continue
         used, free = fs.get("used"), fs.get("available", fs.get("free"))
-        if not isinstance(used, int) or not isinstance(free, int) or used + free <= 0:
+        if type(used) is not int or type(free) is not int or min(used, free) < 0 or used + free <= 0:
             continue
         if fullest is None or used / (used + free) > fullest[0]:
             fullest = (used / (used + free), used, used + free, fs.get("mount"))
@@ -127,12 +134,13 @@ def from_openwrt(device: str, router: dict[str, Any], helper: dict[str, Any] | N
     mem = sys.get("memory") or {}
     v = Vitals(load=_num((sys.get("load") or [None])[0]))
     total = mem.get("total")
-    if isinstance(total, int) and total > 0:
+    if type(total) is int and total > 0:
         available = mem.get("available")
-        if not isinstance(available, int):  # before OpenWrt 21.02: free + buffered (+ cached)
+        if type(available) is not int:  # before OpenWrt 21.02: free + buffered (+ cached)
             parts = [mem.get(k) for k in ("free", "buffered", "cached")]
-            available = sum(p for p in parts if isinstance(p, int)) or None
-        if isinstance(available, int):
+            parts = [p for p in parts if type(p) is int and p >= 0]
+            available = sum(parts) if parts else None
+        if type(available) is int and 0 <= available <= total:
             v.memory_used, v.memory_total = max(0, total - available), total
     root = router.get("storage") or {}
     if isinstance(root.get("total"), int) and root["total"] > 0 and isinstance(root.get("used"), int):
@@ -141,8 +149,8 @@ def from_openwrt(device: str, router: dict[str, Any], helper: dict[str, Any] | N
     if helper:
         v.cpu = cpu.percent(device, helper.get("cpu"))
         t = _num(helper.get("temp"))
-        if t and t > 0:
-            v.temperature = round(t / 1000 if t > 1000 else t, 1)  # millidegrees on Linux
+        if t is not None and 0 < t < 150_000:
+            v.temperature = round(t / 1000, 1)  # the helper always returns millidegrees
     return v
 
 
@@ -157,9 +165,7 @@ def from_fritz(eco: dict[str, Any] | None) -> Vitals:
         series = (eco.get(key) or {}).get("series") if isinstance(eco.get(key), dict) else None
         if not isinstance(series, list) or len(series) <= index or not isinstance(series[index], list):
             return None
-        values = [_num(x) for x in series[index]]
-        values = [x for x in values if x is not None]
-        return values[-1] if values else None
+        return _num(series[index][-1]) if series[index] else None
 
     cpu = newest("cpuutil")
     v.cpu = cpu if cpu is not None and 0 <= cpu <= 100 else None
@@ -180,9 +186,12 @@ class Store:
         self._conn: sqlite3.Connection | None = None
         self._last: dict[str, float] = {}
         self._pruned = 0.0
+        self._closed = False
 
     @property
     def _db(self) -> sqlite3.Connection:
+        if self._closed:
+            raise RuntimeError("vitals store is closed")
         if self._conn is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600)
@@ -197,12 +206,21 @@ class Store:
             self._conn = db
         return self._conn
 
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
     def add(self, device: str, v: Vitals, now: float | None = None) -> bool:
         """Keep it, unless the device's last sample is newer than SAMPLE_EVERY."""
         now = time.time() if now is None else now
-        if v.empty() or now - self._last.get(device, 0) < SAMPLE_EVERY:
+        if v.empty():
             return False
         with self._lock:
+            if self._closed or now - self._last.get(device, 0) < SAMPLE_EVERY:
+                return False
             self._db.execute(
                 "INSERT INTO vitals VALUES (?, ?, ?, ?, ?, ?)",
                 (device, now, v.cpu, v.memory, v.storage, v.temperature),

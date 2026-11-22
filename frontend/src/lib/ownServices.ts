@@ -26,7 +26,8 @@ const port = (c: CheckStatus): number | null => {
 
 const SSH = (c: CheckStatus) => port(c) === 22 || /\bssh\b/i.test(c.name);
 const WEB = (c: CheckStatus) => c.type === 'http' || [80, 443, 8080, 8443].includes(port(c) ?? 0);
-const DNS = (c: CheckStatus) => c.type === 'dns' || port(c) === 53;
+// DNS checks may use the hub's resolver, so they do not identify a service on this device.
+const DNS = (c: CheckStatus) => port(c) === 53;
 const DHCP = (c: CheckStatus) => c.type === 'dhcp';
 const VPN = (c: CheckStatus) => [1194, 51820].includes(port(c) ?? 0) || /vpn/i.test(c.name);
 
@@ -81,10 +82,10 @@ export function groupOwn(
 	device: Device,
 	own: OwnService[]
 ): { byCheck: Record<string, OwnService[]>; rest: OwnService[] } {
-	const byCheck: Record<string, OwnService[]> = {};
+	const byCheck: Record<string, OwnService[]> = Object.create(null);
 	const rest: OwnService[] = [];
 	for (const s of own) {
-		const answers = ANSWERS[s.name];
+		const answers = Object.hasOwn(ANSWERS, s.name) ? ANSWERS[s.name] : undefined;
 		const check = answers ? device.checks.find((c) => answers(c)) : undefined;
 		if (check) (byCheck[check.name] ??= []).push(s);
 		else rest.push(s);
@@ -93,4 +94,14 @@ export function groupOwn(
 	const rank = (s: OwnService) => (s.state === 'failed' ? 0 : s.state === 'running' ? 1 : 2);
 	rest.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 	return { byCheck, rest };
+}
+
+/** Match the helper's protection of the services used to reach and secure the router. */
+export function actionsOf(service: OwnService): string[] {
+	if (service.source !== 'openwrt' || !service.actable) return [];
+	const protectedService = ['rpcd', 'uhttpd', 'firewall', 'network'].includes(service.name);
+	const actions = service.state === 'running' ? ['restart'] : ['start'];
+	if (!protectedService && service.state === 'running') actions.push('stop');
+	if (!protectedService || !service.enabled) actions.push(service.enabled ? 'disable' : 'enable');
+	return actions;
 }

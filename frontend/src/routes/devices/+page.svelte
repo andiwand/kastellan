@@ -166,7 +166,10 @@
 				/
 			</kbd>
 		</label>
-		<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card" role="tablist">
+		<div
+			class="flex max-w-full flex-wrap gap-1 rounded-xl border border-line bg-surface p-1 shadow-card"
+			role="tablist"
+		>
 			{#each filters as f (f.id)}
 				<button
 					role="tab"

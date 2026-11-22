@@ -3,7 +3,7 @@
 The backup key comes from a recovery passphrase; the hub keeps only its derived key.
 Contents use devbackups.Store; the hub index is authenticated too. Copies go into a separate
 kastellan-<key id> folder per passphrase, preserving earlier generations. Restore stages and
-validates all files before replacing state. Sessions and caches are excluded; SQLite logs
+validates all files before replacing state. Sessions and caches are excluded; SQLite databases
 use the online backup API. External unlock keys must be kept separately.
 """
 
@@ -46,7 +46,8 @@ INDEX_MAGIC = b"KASTELLAN-INDEX-2\n"
 HEADER = "kastellan-backup.json"
 # Left out of the data folder (relative paths, or their first part).
 SKIP = {"sessions.json", "hub-backup", "vulns", "signin-required.tmp", "web"}
-LOGS = ("logs.db", "logs.db-wal", "logs.db-shm")
+DATABASES = {"logs.db", "vitals.db"}
+SQLITE_FILES = {name + suffix for name in DATABASES for suffix in ("", "-wal", "-shm")}
 MAX_FILE = 128 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
 MAX_FILES = 100_000
@@ -205,7 +206,7 @@ def collect(data: Path, config: Path, history: bool, logs: bool) -> list[tuple[d
             rel = path.relative_to(data)
             if name.startswith(".") or name.endswith(".tmp") or rel.parts[0] in SKIP:
                 continue
-            if name.startswith("hub-backup") or name in LOGS:
+            if name.startswith("hub-backup") or name in SQLITE_FILES:
                 continue
             if path.resolve() == config.resolve():
                 continue  # the explicitly configured file was already read, including through its symlink
@@ -214,18 +215,22 @@ def collect(data: Path, config: Path, history: bool, logs: bool) -> list[tuple[d
             if not stat.S_ISREG(path.stat().st_mode):
                 continue
             add(path, rel.as_posix())
-    if logs and (data / "logs.db").exists():
+    for name, include in (("logs.db", logs), ("vitals.db", history)):
+        if not include or not (data / name).exists():
+            continue
+        if (data / name).is_symlink():
+            raise ValueError("data contains a symlink; back its target up separately")
         # SQLite's online backup includes committed WAL pages in one consistent database.
-        with tempfile.TemporaryDirectory(prefix="kastellan-logs-") as tmp:
-            dest = Path(tmp) / "logs.db"
+        with tempfile.TemporaryDirectory(prefix="kastellan-sqlite-") as tmp:
+            dest = Path(tmp) / name
             with (
                 contextlib.closing(
-                    sqlite3.connect((data / "logs.db").resolve().as_uri() + "?mode=ro", uri=True)
+                    sqlite3.connect((data / name).resolve().as_uri() + "?mode=ro", uri=True)
                 ) as src,
                 contextlib.closing(sqlite3.connect(dest)) as dst,
             ):
                 src.backup(dst)
-            add(dest, "logs.db", read_bounded(dest))
+            add(dest, name, read_bounded(dest))
     for path, before in stamps.items():
         st = path.stat()
         if before != (st.st_ino, st.st_size, st.st_mtime_ns):
@@ -514,7 +519,7 @@ def restore_members(members, data: Path, config: Path, force: bool) -> int:
             if name == "@config/config.yaml":
                 config_text = content.decode("utf-8")
                 continue
-            if parts[0].startswith("@") or parts[0] in ("sessions.json", *LOGS[1:]):
+            if parts[0].startswith("@") or parts[0] in {"sessions.json"} | (SQLITE_FILES - DATABASES):
                 raise ValueError("unexpected backup member")
             target = stage / name
             if target.exists() or target.is_symlink():

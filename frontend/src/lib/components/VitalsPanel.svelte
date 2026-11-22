@@ -9,6 +9,7 @@
 		formatVital,
 		LABEL,
 		limitsOf,
+		isStale,
 		toneColor,
 		toneOf
 	} from '#lib/vitals.js';
@@ -26,9 +27,11 @@
 	];
 	let trend = $state<VitalsSeries | null>(null); // the last 24 hours, for the tiles' lines
 	let open = $state<VitalField | null>(null);
-	let range = $state(RANGES[0]);
+	let range = $state(RANGES[0].hours);
 	let chart = $state<VitalsSeries | null>(null);
 	let chartError = $state<string | null>(null);
+	let refresh = $state(0);
+	const stale = $derived(isStale(vitals, store.now));
 
 	const disk = $derived({
 		warning: store.alarms?.limits?.disk_warning ?? 85,
@@ -45,18 +48,31 @@
 	}
 	onMount(() => {
 		loadTrend();
-		const t = setInterval(loadTrend, 300_000); // one sample every two minutes at most
+		const t = setInterval(() => {
+			loadTrend();
+			refresh++;
+		}, 300_000); // one sample every two minutes at most
 		return () => clearInterval(t);
 	});
 	$effect(() => {
 		const field = open;
-		const r = range;
-		if (!field) return;
+		const r = RANGES.find((r) => r.hours === range)!;
+		refresh; // refresh an open chart along with the tiles
+		chart = null;
 		chartError = null;
+		if (!field) return;
+		let current = true;
 		api.vitals(r.hours, r.buckets, device).then(
-			(s) => (chart = s),
-			(e) => (chartError = (e as Error).message)
+			(s) => {
+				if (current) chart = s;
+			},
+			(e) => {
+				if (current) chartError = (e as Error).message;
+			}
 		);
+		return () => {
+			current = false;
+		};
 	});
 
 	const valueOf = (f: VitalField) => vitals[f] as number | null;
@@ -91,12 +107,14 @@
 	<section class="mt-8">
 		<div class="flex flex-wrap items-baseline justify-between gap-2">
 			<h2 class="text-sm font-semibold">Vitals</h2>
-			<p class="text-xs text-muted">{ago(vitals.checked)}</p>
+			<p class="text-xs text-muted">
+				{stale ? 'Old reading · ' : ''}{ago(vitals.checked, store.now)}
+			</p>
 		</div>
 		<div class="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
 			{#each fields as f (f)}
 				{@const v = valueOf(f)}
-				{@const tone = toneOf(v, limitsOf(f, disk))}
+				{@const tone = stale ? 'normal' : toneOf(v, limitsOf(f, disk))}
 				{@const line = spark(seriesOf(trend, f), f)}
 				<button
 					type="button"
@@ -128,7 +146,7 @@
 							<svg
 								viewBox="0 0 100 100"
 								preserveAspectRatio="none"
-								class="h-7 w-20 shrink-0 overflow-visible"
+								class="h-7 w-20 min-w-0 shrink overflow-visible"
 								aria-hidden="true"
 							>
 								<path
@@ -169,8 +187,8 @@
 					<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
 						{#each RANGES as r (r.label)}
 							<button
-								onclick={() => (range = r)}
-								class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range === r
+								onclick={() => (range = r.hours)}
+								class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range === r.hours
 									? 'bg-surface-3 text-text'
 									: 'text-muted hover:text-text'}"
 							>
@@ -189,13 +207,16 @@
 							step={chart.step_seconds}
 							format={(x) => formatVital(f, x)}
 							fixedMax={f === 'temperature' ? undefined : 100}
+							fixedMin={f === 'temperature'
+								? Math.min(0, ...values.filter((v): v is number => v != null))
+								: 0}
 							label="{LABEL[f]} over time"
 						/>
 					</div>
 				{:else if chart}
-					<p class="mt-3 text-sm text-muted">
-						No history yet: Kastellan keeps a reading every two minutes from now on.
-					</p>
+					<p class="mt-3 text-sm text-muted">No readings in this period.</p>
+				{:else}
+					<p class="mt-3 text-sm text-muted">Loading…</p>
 				{/if}
 			</div>
 		{/if}

@@ -962,4 +962,60 @@ def test_small_routers_are_not_asked_for_package_updates() -> None:
     assert packages_skipped({"system": {"memory": {"total": 2**28}}}) is None
     assert packages_skipped({"system": {"memory": {}}}) is None  # unknown: asked as before
     # Where it is asked, the lists don't stay behind in RAM.
-    assert "rm -rf /var/opkg-lists" in setup._UPGRADABLE_SCRIPT
+    assert "--lists-dir" in setup._UPGRADABLE_SCRIPT
+
+
+@pytest.mark.parametrize("manager", ["opkg", "apk"])
+@pytest.mark.parametrize("failure", [False, True])
+def test_package_helper_cleans_its_own_lists_and_reports_failure(
+    tmp_path: Path, manager: str, failure: bool
+) -> None:
+    import os
+    import shutil
+    import subprocess
+
+    from kastellan.openwrt import setup
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("mktemp", "rm"):
+        (bin_dir / name).symlink_to(shutil.which(name))
+    log = tmp_path / "calls"
+    fake = bin_dir / manager
+    fake.write_text("""#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_LOG"
+if [ "$1" = --lists-dir ]; then
+  printf '%s\n' "$2" > "$TEST_LISTS"
+  echo index > "$2/Packages"
+  shift 2
+fi
+if [ "$1" = update ]; then exit "$TEST_FAILURE"; fi
+echo 'curl - 8.1 - 8.2'
+""")
+    fake.chmod(0o755)
+    lists_file = tmp_path / "lists"
+    env = {
+        **os.environ,
+        "PATH": str(bin_dir),
+        "TEST_LOG": str(log),
+        "TEST_LISTS": str(lists_file),
+        "TEST_FAILURE": "7" if failure else "0",
+    }
+    result = subprocess.run(
+        ["/bin/sh", "-c", setup._UPGRADABLE_SCRIPT], env=env, text=True, capture_output=True
+    )
+    assert result.returncode == (7 if failure else 0), result.stderr
+    assert len(log.read_text().splitlines()) == (1 if failure else 2)
+    assert result.stdout == ("" if failure else "curl - 8.1 - 8.2\n")
+    if manager == "opkg":
+        assert not Path(lists_file.read_text().strip()).exists()
+
+
+async def test_failed_package_helpers_cannot_report_no_updates() -> None:
+    from types import SimpleNamespace
+
+    async def call(*args, **kwargs):
+        return {"code": 7, "stdout": "", "stderr": "failed to download"}
+
+    with pytest.raises(ValueError, match="check failed"):
+        await ow.upgradable(SimpleNamespace(call=call))

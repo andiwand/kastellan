@@ -297,6 +297,15 @@ class Hub:
         old_users = self.config.users
         for id, old in self.config.devices.items():
             new = config.devices.get(id)
+            if new is None or (old.host, old.collect, old.openwrt, old.fritzbox) != (
+                new.host,
+                new.collect,
+                new.openwrt,
+                new.fritzbox,
+            ):
+                self._cpu.forget(set(config.devices) - {id})
+                if status := self.monitor.status.get(id):
+                    status.vitals = None
             if new is None or (old.host, old.openwrt, old.fritzbox) != (new.host, new.openwrt, new.fritzbox):
                 self.drop_clients(id)
         self.config, self.config_error, self.locked, self._loaded = config, None, None, True
@@ -452,6 +461,7 @@ class Hub:
         await self.monitor.stop()
         self.drop_clients()
         self.logs.close()
+        self.vitals.close()
         if self._demo_dir:
             shutil.rmtree(self._demo_dir, ignore_errors=True)
 
@@ -562,6 +572,7 @@ class Hub:
     async def note_vitals(self, id: str, status: DeviceStatus, v: Vitals) -> None:
         """A device's vitals now (shown) and, now and then, kept (charted)."""
         if v.empty():
+            status.vitals = None
             return
         status.vitals = {**v.view(), "checked": datetime.now(UTC).isoformat(timespec="seconds")}
         try:
@@ -781,16 +792,21 @@ class Hub:
                     old = status.router or {}
                     report["packages"] = old.get("packages")
                     report["packages_checked"] = old.get("packages_checked")
+                    if err := (old.get("errors") or {}).get("packages"):
+                        report["errors"]["packages"] = err
                     report["packages_skipped"] = packages_skipped(report)
                     if report["packages_skipped"]:
                         report["packages"] = None
+                        report["errors"].pop("packages", None)
                     now = time.time()
                     due = not report["packages_checked"] or now - report["packages_checked"] > PACKAGES_EVERY
                     if due and not report["packages_skipped"]:
                         try:
                             report["packages"] = await openwrt_client.upgradable(ubus)
                             report["packages_checked"] = now
+                            report["errors"].pop("packages", None)
                         except Exception as e:  # asked again only after the same while
+                            report["packages"] = None
                             report["errors"]["packages"] = _brief(e)
                             report["packages_checked"] = now
                     versions = await self.releases.get()

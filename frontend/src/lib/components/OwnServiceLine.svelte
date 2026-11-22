@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { api } from '#lib/api.js';
-	import type { OwnService } from '#lib/ownServices.js';
+	import { actionsOf, type OwnService } from '#lib/ownServices.js';
 	import LogsDialog from './LogsDialog.svelte';
 
 	/** One of the device's own services: its state, and what may be done (an OpenWrt service on
@@ -48,22 +48,21 @@
 		{service.state}{service.enabled === false ? ' · not at boot' : ''}
 	</span>
 	{#if canChange && service.source === 'openwrt' && service.actable}
-		{#each service.state === 'running' ? ['restart', 'stop'] : ['start'] as action (action)}
+		{#each actionsOf(service) as action (action)}
 			<button
 				class="text-muted underline decoration-line underline-offset-2 hover:text-text disabled:opacity-50"
 				disabled={busy !== null}
 				onclick={() => act(action)}
 			>
-				{busy === action ? '…' : action}
+				{busy === action
+					? '…'
+					: action === 'enable'
+						? 'on at boot'
+						: action === 'disable'
+							? 'off at boot'
+							: action}
 			</button>
 		{/each}
-		<button
-			class="text-muted underline decoration-line underline-offset-2 hover:text-text disabled:opacity-50"
-			disabled={busy !== null}
-			onclick={() => act(service.enabled ? 'disable' : 'enable')}
-		>
-			{service.enabled ? 'off at boot' : 'on at boot'}
-		</button>
 	{/if}
 	{#if canChange && service.source === 'systemd'}
 		<button

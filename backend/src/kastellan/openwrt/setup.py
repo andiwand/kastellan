@@ -84,13 +84,16 @@ exec "/etc/init.d/$name" "$action"
 _UPGRADABLE_SCRIPT = """#!/bin/sh
 # Kastellan: which packages have updates (opkg on OpenWrt up to 24.10, apk from 25.12). No input.
 if command -v apk >/dev/null 2>&1; then
-  apk update >/dev/null 2>&1; apk list --upgradable 2>/dev/null
+  apk update >/dev/null 2>&1 || exit $?
+  apk list --upgradable 2>/dev/null
 else
-  opkg update >/dev/null 2>&1; opkg list-upgradable 2>/dev/null
-  # The lists would stay in RAM (/var is /tmp) until a reboot: about 1 MB a small router lacks.
-  rm -rf /var/opkg-lists
+  # Own lists: release their RAM without deleting lists used by LuCI or another administrator.
+  lists=$(mktemp -d /tmp/kastellan-packages.XXXXXX) || exit 1
+  trap 'rm -rf "$lists"' EXIT
+  trap 'exit 1' HUP INT TERM
+  opkg --lists-dir "$lists" update >/dev/null 2>&1 || exit $?
+  opkg --lists-dir "$lists" list-upgradable 2>/dev/null
 fi
-exit 0
 """
 
 

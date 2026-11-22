@@ -475,7 +475,7 @@ class HubBackupSettings(BaseModel):
 
     every_hours: int = Field(default=24, ge=1, le=24 * 30)
     keep: int = Field(default=30, ge=1, le=1000)
-    history: bool = True  # the check history (checks/): larger, but the graphs come back too
+    history: bool = True  # check and vitals history: larger, but the graphs come back too
     logs: bool = False  # the central logs (logs.db): large; they come back in by themselves
     targets: list[HubBackupTarget] = Field(default_factory=list, max_length=8)
 

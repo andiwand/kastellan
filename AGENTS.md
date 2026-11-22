@@ -328,6 +328,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `SAMPLE_EVERY` in `<data>/vitals.db` (30 days); `/api/vitals` gives bucketed means for the
     device page's tiles and charts (`VitalsPanel`) — the devices list (`VitalMeters`) uses only
     the current values. Demo: `demo.vitals`, a week filled at start.
+    `host.report.normalize` must preserve new collector fields (including `system.cpu` and
+    container `compose`). Hub backups snapshot `vitals.db` through SQLite when history is
+    enabled; WAL/SHM files are never copied or restored separately.
   - `host/actor.py` + `host/scripts/act-*` + `act_api.py`: the actor. `act-dispatch` (as
     kastellan-act, bound to the act key) accepts exact forms and execs `sudo -n python3 -I
     <ability> <arg>`; each ability is `act-common` + `act-<ability>`, root-owned, checks its

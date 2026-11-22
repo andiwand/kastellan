@@ -30,7 +30,9 @@
 				<ul class="mt-2 space-y-2">
 					{#each report.filesystems as fs, i (i)}
 						{@const p = percent(fs.used, fs.available)}
-						<li class="grid grid-cols-[minmax(0,10rem)_1fr_auto] items-center gap-3 text-sm">
+						<li
+							class="grid grid-cols-[minmax(0,1fr)_2.5rem_minmax(0,1.8fr)] items-center gap-3 text-sm sm:grid-cols-[minmax(0,10rem)_1fr_auto]"
+						>
 							<span class="truncate font-mono text-xs" title={fs.device}>{fs.mount}</span>
 							<span class="h-1 overflow-hidden rounded-full bg-[var(--empty)]">
 								<span

@@ -69,3 +69,7 @@ export function fieldsOf(v: Vitals | null | undefined): VitalField[] {
 	if (v.temperature != null) out.push('temperature');
 	return out;
 }
+
+/** The slowest source (FRITZ!Box) reads every five minutes. */
+export const isStale = (v: Vitals, now: number) =>
+	!Number.isFinite(Date.parse(v.checked)) || now - Date.parse(v.checked) > 10 * 60 * 1000;

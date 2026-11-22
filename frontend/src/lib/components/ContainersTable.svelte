@@ -156,7 +156,9 @@
 				>
 					{c.state}
 				</span>
-				<span class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
+				<span
+					class="col-span-2 row-start-3 flex min-w-0 flex-wrap items-center gap-1.5 text-xs md:col-span-1 md:row-start-auto"
+				>
 					{#if c.update}
 						<ArrowUpCircle class="size-3.5 shrink-0 text-accent" />
 						<span class="font-medium text-accent" class:opacity-60={c.skipped}>

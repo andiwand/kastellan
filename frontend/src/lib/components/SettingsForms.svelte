@@ -485,7 +485,7 @@
 				</label>
 			</div>
 			<label class="choice text-sm">
-				<input type="checkbox" bind:checked={hubBackup.history} /> With the check history (the graphs)
+				<input type="checkbox" bind:checked={hubBackup.history} /> With check and vitals history
 			</label>
 			<label class="choice text-sm">
 				<input type="checkbox" bind:checked={hubBackup.logs} /> With the central logs (large)

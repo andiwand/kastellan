@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { Vitals } from './api';
-import { detailOf, fieldsOf, formatVital, limitsOf, toneOf } from './vitals';
+import { detailOf, fieldsOf, formatVital, isStale, limitsOf, toneOf } from './vitals';
 
 const v = (more: Partial<Vitals>): Vitals => ({
 	cpu: null,
@@ -45,4 +45,11 @@ it('says what a value is of', () => {
 	).toBe('2.0 GB of 8.0 GB · /');
 	expect(formatVital('temperature', 51.6)).toBe('52 °C');
 	expect(formatVital('cpu', null)).toBe('–');
+});
+
+it('marks readings older than two slow polling intervals as old', () => {
+	const now = Date.parse('2026-11-22T10:00:00Z');
+	expect(isStale(v({ checked: '2026-11-22T09:55:00Z' }), now)).toBe(false);
+	expect(isStale(v({ checked: '2026-11-22T09:49:00Z' }), now)).toBe(true);
+	expect(isStale(v({ checked: '' }), now)).toBe(true);
 });
