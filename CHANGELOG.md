@@ -15,6 +15,12 @@
   not red.
 - A check served by a container names it, and the container says which check it serves (by the
   ports it publishes).
+- Updates renews an outdated OpenWrt login in place (root's password once), keeping what it
+  may do now, as it does for the collector and the actor.
+
+### Fixed
+
+- Renewing the actor from Updates marked its new abilities as not needed.
 
 ## 0.14.0 (2026-11-22)
 
