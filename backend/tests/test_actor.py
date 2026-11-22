@@ -14,6 +14,7 @@ import pytest
 
 from kastellan.host import actor, collector
 
+NAS = "devices:\n  nas:\n    host: 127.0.0.1\n    act: {}\n"  # a host with the actor
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBgfPq3YGT1qT0EzQAp9VUdHPu+P2Q0Ck0tUjJmQNlpc kastellan-act"
 
 
@@ -190,7 +191,8 @@ def host():
             return conn, ("local", 0)
 
     server = Server(str(sock), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # Polled often: shutting down waits for the next poll (0.5 s by default, at every test's end).
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
 
     def run(ability: str, *args: str, allow: str = "app\n") -> subprocess.CompletedProcess:
         (folder / "allow" / f"{ability}.allow").write_text(allow)
@@ -400,6 +402,17 @@ def test_the_dispatcher_accepts_only_known_forms(tmp_path: Path) -> None:
     assert dispatch(tmp_path / "other", "restart-container norn 1.2", ("restart-container",)).returncode == 2
     listing = dispatch(tmp_path, "abilities", ("update-container", "reboot"))
     assert listing.stdout.splitlines()[0] == "reboot update-container"
+    for command, installed in [
+        ("start-container app", ("start-container",)),
+        ("stop-container app", ("stop-container",)),
+        ("vm-shutdown deb+test", ("vm-shutdown",)),
+        ("vm-force-off win11", ("vm-force-off",)),
+    ]:
+        ok = dispatch(tmp_path / "other", command, installed)
+        assert ok.returncode == 0 and ok.stdout.strip().endswith(command.split(" ", 1)[1]), command
+    # A VM by name only: never a domain id or a UUID virsh would take before a name.
+    for bad in ("vm-start a;b", "vm-start 12", f"vm-start {U1}", "vm-start"):
+        assert dispatch(tmp_path / "other", bad, ("vm-start",)).returncode == 2, bad
 
 
 def test_older_scripts_are_told(tmp_path: Path) -> None:
@@ -485,6 +498,12 @@ def test_the_install_script() -> None:
         actor.install_script({"rm-rf"}, [], KEY, None)
     with pytest.raises(ValueError):
         actor.install_script({"update-container"}, ["a;b"], KEY, None)
+    vms = actor.install_script({"vm-start", "stop-container"}, ["app"], KEY, None, vms=["win11", "deb+test"])
+    assert subprocess.run(["sh", "-n"], input=vms, text=True).returncode == 0
+    assert "printf '%s\\n' win11 deb+test > /etc/kastellan/act/vm-start.allow.new" in vms
+    assert "printf '%s\\n' app > /etc/kastellan/act/stop-container.allow.new" in vms
+    with pytest.raises(ValueError):
+        actor.install_script({"vm-start"}, [], KEY, None, vms=["a;b"])
     for ability in actor.ABILITIES:
         compile(actor.ability_script(ability), ability, "exec")
 
@@ -534,18 +553,28 @@ def test_networks_and_mounts_carry_over(host) -> None:
     assert spec["HostConfig"]["Mounts"] == [{"Type": "volume", "Target": "/cache", "Source": "anon1"}]
 
 
-def test_a_pull_error_in_one_line_counts(host) -> None:
+@pytest.mark.parametrize(
+    "answer, said",
+    [
+        ({"error": "toomanyrequests: rate limit"}, "toomanyrequests"),
+        ({"errorDetail": {"message": "manifest unknown"}}, "manifest unknown"),  # API 1.48 on
+        # Text from outside (a registry's error) can't add lines read as steps.
+        ({"error": "denied\nKASTELLAN-STEP forged"}, "forged"),
+    ],
+)
+def test_a_pull_error_counts_and_is_one_line(host, answer: dict, said: str) -> None:
     fake, run = host
     original = fake.handle
 
     def handle(method, path, body):
         if "/images/create" in path:
-            return 200, {"error": "toomanyrequests: rate limit"}
+            return 200, answer
         return original(method, path, body)
 
     fake.handle = handle
     r = run("update-container", "app")
-    assert r.returncode == 1 and "toomanyrequests" in r.stderr
+    assert r.returncode == 1 and said in r.stderr
+    assert "forged" not in " ".join(steps(r))
 
 
 def test_installing_system_updates(tmp_path: Path) -> None:
@@ -638,19 +667,14 @@ def test_uninstall_does_not_unlink_through_a_users_home_as_root(tmp_path: Path) 
     assert "kastellan-act" in called.read_text() and str(home) in called.read_text()
 
 
-def test_no_setup_runs_in_demo_mode(tmp_path: Path) -> None:
+def test_no_setup_runs_in_demo_mode(demo_client) -> None:
     """Demo devices are made up: a real machine at one of their addresses is never logged in to."""
-    from fastapi.testclient import TestClient
-
-    from kastellan.api import create_app
-    from kastellan.settings import Settings
-
-    with TestClient(create_app(Settings(config=tmp_path / "c.yaml", data=tmp_path, demo=True))) as c:
-        body = {"login": "root", "password": "x", "port": 22, "elevate": "none"}
-        device = c.get("/api/devices").json()[0]["id"]
-        for path in ("collect/install", "collect/uninstall", "act/uninstall"):
-            r = c.post(f"/api/devices/{device}/{path}", json=body, headers={"X-Kastellan": "1"})
-            assert r.status_code in (403, 409), (path, r.status_code)
+    c = demo_client
+    body = {"login": "root", "password": "x", "port": 22, "elevate": "none"}
+    device = c.get("/api/devices").json()[0]["id"]
+    for path in ("collect/install", "collect/uninstall", "act/uninstall"):
+        r = c.post(f"/api/devices/{device}/{path}", json=body, headers={"X-Kastellan": "1"})
+        assert r.status_code in (403, 409), (path, r.status_code)
 
 
 def test_the_docker_api_version_is_asked(host) -> None:
@@ -685,21 +709,6 @@ def test_the_mac_address_goes_to_the_network(host) -> None:
     assert run("update-container", "app").returncode == 0
     assert "MacAddress" not in fake.created
     assert fake.created["NetworkingConfig"]["EndpointsConfig"]["bridge"]["MacAddress"] == "02:42:ac:11:00:09"
-
-
-def test_a_pull_error_only_in_its_detail_counts(host) -> None:
-    """API 1.48 on: "error" may be empty, "errorDetail" says it."""
-    fake, run = host
-    original = fake.handle
-
-    def handle(method, path, body):
-        if "/images/create" in path:
-            return 200, {"errorDetail": {"message": "manifest unknown"}}
-        return original(method, path, body)
-
-    fake.handle = handle
-    r = run("update-container", "app")
-    assert r.returncode == 1 and "manifest unknown" in r.stderr
 
 
 async def test_steps_come_as_they_go(tmp_path: Path) -> None:
@@ -759,14 +768,9 @@ async def test_steps_come_as_they_go(tmp_path: Path) -> None:
         server.close()
 
 
-def test_the_streamed_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_streamed_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admin_client) -> None:
     """Steps, then the outcome; audited when it starts and when it ends."""
-    from fastapi.testclient import TestClient
-
     from kastellan import act_api
-    from kastellan.api import create_app
-    from kastellan.auth import hash_password
-    from kastellan.settings import Settings
 
     async def fake_act(keys, device, ability, container=None, on_step=None, tag=None):
         on_step("pulling me/app:1")
@@ -776,24 +780,17 @@ def test_the_streamed_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         return {"container": container, "updated": True, "from": "a", "to": "b"}
 
     monkeypatch.setattr(act_api.actor, "act", fake_act)
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        "devices:\n  nas:\n    host: 127.0.0.1\n    act: {}\n"
-        f"users:\n  ada:\n    role: admin\n    password: {hash_password('pw for tests')}\n"
-    )
-    h = {"X-Kastellan": "1"}
-    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
-        assert c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=h)
-        r = c.post("/api/devices/nas/act/update-container/stream", json={"container": "app"}, headers=h)
-        lines = r.text.splitlines()
-        assert lines[:2] == ["KASTELLAN-STEP pulling me/app:1", "KASTELLAN-STEP creating the new container"]
-        assert json.loads(lines[-1].removeprefix("KASTELLAN-DONE ")) == {
-            "ok": True,
-            "result": {"container": "app", "updated": True, "from": "a", "to": "b"},
-        }
-        bad = c.post("/api/devices/nas/act/update-container/stream", json={"container": "broken"}, headers=h)
-        outcome = json.loads(bad.text.splitlines()[-1].removeprefix("KASTELLAN-DONE "))
-        assert outcome == {"ok": False, "error": "the new container didn't work: it restarted (it crashes)"}
+    c = admin_client(NAS)
+    r = c.post("/api/devices/nas/act/update-container/stream", json={"container": "app"})
+    lines = r.text.splitlines()
+    assert lines[:2] == ["KASTELLAN-STEP pulling me/app:1", "KASTELLAN-STEP creating the new container"]
+    assert json.loads(lines[-1].removeprefix("KASTELLAN-DONE ")) == {
+        "ok": True,
+        "result": {"container": "app", "updated": True, "from": "a", "to": "b"},
+    }
+    bad = c.post("/api/devices/nas/act/update-container/stream", json={"container": "broken"})
+    outcome = json.loads(bad.text.splitlines()[-1].removeprefix("KASTELLAN-DONE "))
+    assert outcome == {"ok": False, "error": "the new container didn't work: it restarted (it crashes)"}
     audit = [json.loads(ln) for ln in (tmp_path / "audit.log").read_text().splitlines()]
     acts = [a["outcome"] for a in audit if a.get("action") == "act.update-container"]
     assert acts == [
@@ -845,22 +842,6 @@ def test_odd_bytes_from_apt_dont_stop_the_upgrade(tmp_path: Path) -> None:
     r = subprocess.run([sys.executable, "-I", str(script)], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["packages"] == ["café", "curl"]
-
-
-def test_a_failure_is_one_line(host) -> None:
-    """Text from outside in a failure (a registry's error) can't add lines read as steps."""
-    fake, run = host
-    original = fake.handle
-
-    def handle(method, path, body):
-        if "/images/create" in path:
-            return 200, {"error": "denied\nKASTELLAN-STEP forged"}
-        return original(method, path, body)
-
-    fake.handle = handle
-    r = run("update-container", "app")
-    assert r.returncode == 1 and "forged" in r.stderr
-    assert "forged" not in " ".join(steps(r))
 
 
 def test_starting_and_stopping_containers(host) -> None:
@@ -1018,7 +999,9 @@ def test_a_hanging_virsh_is_one_line(libvirt) -> None:
 
 
 def test_the_collector_lists_vms(libvirt) -> None:
-    code = libvirt.with_virsh(collector.script()).replace("timeout=10)", "timeout=1)")
+    code = libvirt.with_virsh(collector.script())
+    code = code.replace("min(10, end", "min(0.5, end")  # a hung VM: half a second, not 10
+    assert "min(0.5, end" in code
     data = json.loads(
         subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True).stdout
     )
@@ -1034,34 +1017,6 @@ def test_the_collector_lists_vms(libvirt) -> None:
     assert win["disks"] == [{"target": "vda", "source": "/var/lib/libvirt/images/win11.qcow2"}]  # no cdrom
 
 
-def test_the_dispatcher_knows_the_new_forms(tmp_path: Path) -> None:
-    for command, installed in [
-        ("start-container app", ("start-container",)),
-        ("stop-container app", ("stop-container",)),
-        ("vm-shutdown deb+test", ("vm-shutdown",)),
-        ("vm-force-off win11", ("vm-force-off",)),
-    ]:
-        ok = dispatch(tmp_path, command, installed)
-        assert ok.returncode == 0 and ok.stdout.strip().endswith(command.split(" ", 1)[1]), command
-    assert dispatch(tmp_path, "vm-start a;b", ("vm-start",)).returncode == 2
-    assert dispatch(tmp_path, "vm-start 12", ("vm-start",)).returncode == 2  # a domain id
-    assert dispatch(tmp_path, f"vm-start {U1}", ("vm-start",)).returncode == 2  # a UUID
-    assert dispatch(tmp_path, "vm-start", ("vm-start",)).returncode == 2
-
-
-def test_the_install_script_lists_vms() -> None:
-    script = actor.install_script(
-        {"vm-start", "stop-container"}, ["app"], KEY, None, vms=["win11", "deb+test"]
-    )
-    assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
-    assert "printf '%s\\n' win11 deb+test > /etc/kastellan/act/vm-start.allow.new" in script
-    assert "printf '%s\\n' app > /etc/kastellan/act/stop-container.allow.new" in script
-    with pytest.raises(ValueError):
-        actor.install_script({"vm-start"}, [], KEY, None, vms=["a;b"])
-    for ability in actor.ABILITIES:
-        compile(actor.ability_script(ability), ability, "exec")
-
-
 def test_the_collector_stops_asking_libvirt_in_time(libvirt) -> None:
     """All VMs within VMS_WITHIN: past it, the rest are skipped (and named), the report goes on."""
     code = libvirt.with_virsh(collector.script()).replace("VMS_WITHIN = 25", "VMS_WITHIN = 0")
@@ -1072,15 +1027,12 @@ def test_the_collector_stops_asking_libvirt_in_time(libvirt) -> None:
     assert "raid" in data  # the other sections are all there
 
 
-def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_action_takes_what_its_ability_acts_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admin_client
+) -> None:
     """A VM ability takes `vm`, a container ability `container`, the journal a `cursor`, reboot
     nothing: any other field is refused, and the audit names what was acted on."""
-    from fastapi.testclient import TestClient
-
     from kastellan import act_api
-    from kastellan.api import create_app
-    from kastellan.auth import hash_password
-    from kastellan.settings import Settings
 
     asked: list[tuple[str, str | None]] = []
 
@@ -1092,25 +1044,16 @@ def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: p
         return {"ok": True}
 
     monkeypatch.setattr(act_api.actor, "act", fake_act)
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        "devices:\n  nas:\n    host: 127.0.0.1\n    act: {}\n"
-        f"users:\n  ada:\n    role: admin\n    password: {hash_password('pw for tests')}\n"
-    )
-    h = {"X-Kastellan": "1"}
-    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
-        assert c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=h)
-        url = "/api/devices/nas/act"
-        assert c.post(f"{url}/restart-container", json={"vm": "x"}, headers=h).status_code == 400
-        assert c.post(f"{url}/vm-start", json={"container": "x"}, headers=h).status_code == 400
-        both = {"vm": "x", "container": "y"}
-        assert c.post(f"{url}/vm-start", json=both, headers=h).status_code == 400
-        assert c.post(f"{url}/vm-start", json={"vm": "win11"}, headers=h).status_code == 200
-        assert c.post(f"{url}/restart-container", json={"container": "app"}, headers=h).status_code == 200
-        assert c.post(f"{url}/journal", json={"container": "-"}, headers=h).status_code == 400
-        assert c.post(f"{url}/journal", json={"cursor": "-"}, headers=h).status_code == 200
-        refused = c.post(f"{url}/reboot", json={"container": "app"}, headers=h)
-        assert refused.status_code == 400 and refused.json()["detail"] == "reboot takes nothing"
+    c = admin_client(NAS)
+    url = "/api/devices/nas/act"
+    assert c.post(f"{url}/restart-container", json={"vm": "x"}).status_code == 400
+    assert c.post(f"{url}/vm-start", json={"container": "x"}).status_code == 400
+    assert c.post(f"{url}/vm-start", json={"vm": "x", "container": "y"}).status_code == 400
+    assert c.post(f"{url}/vm-start", json={"vm": "win11"}).status_code == 200
+    assert c.post(f"{url}/restart-container", json={"container": "app"}).status_code == 200
+    assert c.post(f"{url}/journal", json={"container": "-"}).status_code == 400
+    assert c.post(f"{url}/journal", json={"cursor": "-"}).status_code == 200
+    assert c.post(f"{url}/reboot", json={"container": "app"}).status_code == 400
     assert asked == [("vm-start", "win11"), ("restart-container", "app")]
     audit = [json.loads(ln) for ln in (tmp_path / "audit.log").read_text().splitlines()]
     acts = {a["action"]: a for a in audit if a.get("action", "").startswith("act.")}
@@ -1159,31 +1102,18 @@ def test_reading_a_units_journal(host, tmp_path: Path) -> None:
         assert logs(bad).returncode == 2, bad
 
 
-async def test_log_lines_stay_out_of_the_audit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from fastapi.testclient import TestClient
-
-    from kastellan.api import create_app
-    from kastellan.auth import hash_password
-    from kastellan.settings import Settings
-
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        "devices:\n  nas:\n    host: 127.0.0.1\n    act: {user: kastellan-act}\n"
-        f"users:\n  ada:\n    role: admin\n    password: {hash_password('admin password')}\n"
-    )
-
+def test_log_lines_stay_out_of_the_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admin_client
+) -> None:
     async def fake_act(keys, device, ability, name=None, on_step=None, tag=None):
         assert (ability, name) == ("unit-logs", "nginx.service")
         return {"unit": name, "lines": ["SECRET=hunter2"], "state": "failed"}
 
     monkeypatch.setattr(actor, "act", fake_act)
-    h = {"X-Kastellan": "1"}
-    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
-        c.post("/api/auth/login", json={"user": "ada", "password": "admin password"}, headers=h)
-        r = c.post("/api/devices/nas/act/unit-logs", json={"unit": "nginx.service"}, headers=h)
-        assert r.status_code == 200 and r.json()["lines"] == ["SECRET=hunter2"]
-        bad = c.post("/api/devices/nas/act/unit-logs", json={"container": "nginx.service"}, headers=h)
-        assert bad.status_code == 400
+    c = admin_client(NAS)
+    r = c.post("/api/devices/nas/act/unit-logs", json={"unit": "nginx.service"})
+    assert r.status_code == 200 and r.json()["lines"] == ["SECRET=hunter2"]
+    assert c.post("/api/devices/nas/act/unit-logs", json={"container": "nginx.service"}).status_code == 400
     audit = (tmp_path / "audit.log").read_text()
     assert "act.unit-logs" in audit and "hunter2" not in audit
 
@@ -1408,16 +1338,13 @@ def test_docker_log_batches_keep_the_earliest_unread_entries(host) -> None:
     assert run("docker-logs", second["since"], allow="").returncode != 0
 
 
-def test_only_a_tag_the_hub_found_and_not_needed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_only_a_tag_the_hub_found_and_not_needed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admin_client
+) -> None:
     """A tag goes to the host only when the hub found it for that container; an update offer
     said to be not needed stops being shown until a newer one comes."""
-    from fastapi.testclient import TestClient
-
     from kastellan import act_api
-    from kastellan.api import create_app
-    from kastellan.auth import hash_password
     from kastellan.monitor import DeviceStatus
-    from kastellan.settings import Settings
 
     asked: list[tuple[str, str | None, str | None]] = []
 
@@ -1426,45 +1353,38 @@ def test_only_a_tag_the_hub_found_and_not_needed(tmp_path: Path, monkeypatch: py
         return {"updated": True}
 
     monkeypatch.setattr(act_api.actor, "act", fake_act)
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        "devices:\n  nas:\n    host: 127.0.0.1\n    act: {}\n"
-        f"users:\n  ada:\n    role: admin\n    password: {hash_password('pw for tests')}\n"
-    )
-    h = {"X-Kastellan": "1"}
     bind = {"key": "bind", "name": "bind", "image": "isc/bind9", "tag": "9.20", "update": True}
-    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
-        assert c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=h)
-        hub = c.app.state.hub
-        hub.monitor.status["nas"] = DeviceStatus(
-            containers=[{**bind, "update_to": "10.0", "update_within": "9.21", "update_digest": ""}]
-        )
-        url = "/api/devices/nas/act/update-container"
-        for tag in ("9.21", "10.0"):
-            assert c.post(url, json={"container": "bind", "tag": tag}, headers=h).status_code == 200
-        assert c.post(url, json={"container": "bind", "tag": "9.19"}, headers=h).status_code == 409
-        assert c.post(url, json={"container": "other", "tag": "9.21"}, headers=h).status_code == 409
-        container = hub.monitor.status["nas"].containers[0]
-        container["unchecked"] = "registry unavailable"
-        assert c.post(url, json={"container": "bind", "tag": "10.0"}, headers=h).status_code == 409
-        container["unchecked"] = None
-        hub.monitor.status["nas"].containers.append({**container, "key": "remote/bind"})
-        assert c.post(url, json={"container": "bind", "tag": "10.0"}, headers=h).status_code == 409
-        hub.monitor.status["nas"].containers.pop()
-        restart = "/api/devices/nas/act/restart-container"
-        assert c.post(restart, json={"container": "bind", "tag": "9.21"}, headers=h).status_code == 400
-        assert asked == [("update-container", "bind", "9.21"), ("update-container", "bind", "10.0")]
+    c = admin_client(NAS)
+    hub = c.app.state.hub
+    hub.monitor.status["nas"] = DeviceStatus(
+        containers=[{**bind, "update_to": "10.0", "update_within": "9.21", "update_digest": ""}]
+    )
+    url = "/api/devices/nas/act/update-container"
+    for tag in ("9.21", "10.0"):
+        assert c.post(url, json={"container": "bind", "tag": tag}).status_code == 200
+    assert c.post(url, json={"container": "bind", "tag": "9.19"}).status_code == 409
+    assert c.post(url, json={"container": "other", "tag": "9.21"}).status_code == 409
+    container = hub.monitor.status["nas"].containers[0]
+    container["unchecked"] = "registry unavailable"
+    assert c.post(url, json={"container": "bind", "tag": "10.0"}).status_code == 409
+    container["unchecked"] = None
+    hub.monitor.status["nas"].containers.append({**container, "key": "remote/bind"})
+    assert c.post(url, json={"container": "bind", "tag": "10.0"}).status_code == 409
+    hub.monitor.status["nas"].containers.pop()
+    restart = "/api/devices/nas/act/restart-container"
+    assert c.post(restart, json={"container": "bind", "tag": "9.21"}).status_code == 400
+    assert asked == [("update-container", "bind", "9.21"), ("update-container", "bind", "10.0")]
 
-        def shown():
-            (d,) = [d for d in c.get("/api/devices").json() if d["id"] == "nas"]
-            return d["containers"][0]["skipped"]
+    def shown():
+        (d,) = [d for d in c.get("/api/devices").json() if d["id"] == "nas"]
+        return d["containers"][0]["skipped"]
 
-        assert shown() is False
-        assert c.post("/api/devices/nas/containers/bind/not-needed", headers=h).json() == {"skipped": "10.0"}
-        assert shown() is True
-        hub.monitor.status["nas"].containers[0]["update_to"] = "10.1"  # a newer offer shows again
-        assert shown() is False
-        assert c.post("/api/devices/nas/containers/nope/not-needed", headers=h).status_code == 404
+    assert shown() is False
+    assert c.post("/api/devices/nas/containers/bind/not-needed").json() == {"skipped": "10.0"}
+    assert shown() is True
+    hub.monitor.status["nas"].containers[0]["update_to"] = "10.1"  # a newer offer shows again
+    assert shown() is False
+    assert c.post("/api/devices/nas/containers/nope/not-needed").status_code == 404
     audit = [json.loads(ln) for ln in (tmp_path / "audit.log").read_text().splitlines()]
     assert any(a.get("action") == "act.update-container" and a.get("tag") == "10.0" for a in audit)
     assert any(a.get("action") == "update.not-needed" and a.get("update") == "10.0" for a in audit)

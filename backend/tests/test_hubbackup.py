@@ -4,9 +4,9 @@ import base64
 from pathlib import Path
 
 import pytest
+from conftest import password_hash as hash_password
 
 from kastellan import hubbackup
-from kastellan.auth import hash_password
 from kastellan.secrets import HUB_BACKUP_KEY
 
 

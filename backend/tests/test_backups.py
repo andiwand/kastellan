@@ -50,44 +50,37 @@ def test_config_is_checked() -> None:
         Config.model_validate({"devices": {"nas": {"host": "x"}}, "backups": {"B 2": {"device": "nas"}}})
 
 
-def test_the_routes(tmp_path: Path) -> None:
-    from fastapi.testclient import TestClient
+def test_the_routes(tmp_path: Path, admin_client) -> None:
+    from conftest import ADMIN_PASSWORD
 
-    from kastellan.api import create_app
-    from kastellan.auth import hash_password
-    from kastellan.settings import Settings
-
-    path = tmp_path / "config.yaml"
-    path.write_text(
-        "devices:\n  nas:\n    host: 127.0.0.1\nbackups:\n  b2:\n    device: nas\n"
-        f"users:\n  ada:\n    role: admin\n    password: {hash_password('admin password')}\n"
+    c = admin_client(
+        "devices:\n  nas:\n    host: 127.0.0.1\nbackups:\n  b2:\n    device: nas\n", signin=False
     )
-    with TestClient(create_app(Settings(config=path, data=tmp_path))) as c:
-        assert c.get("/api/backups").status_code == 401
-        # The job's call: no session, no X-Kastellan; its token only.
-        assert c.post("/api/backups/b2/ok").status_code == 401
-        h = {"X-Kastellan": "1"}
-        c.post("/api/auth/login", json={"user": "ada", "password": "admin password"}, headers=h)
-        response = c.post("/api/backups/b2/token", headers=h)
-        assert response.headers["cache-control"] == "no-store"
-        token = response.json()["token"]
-        version = c.get("/api/settings").json()["version"]
-        saved = c.put(
-            "/api/settings/backups",
-            headers=h,
-            json={"version": version, "value": {"backups": {"b2": {"device": "nas", "within_hours": 26}}}},
-        )
-        assert saved.status_code == 200, saved.text
-        c.cookies.clear()  # the job has no session
-        auth = {"Authorization": f"Bearer {token}"}
-        assert c.post("/api/backups/b2/fail", content=b"x" * 2001, headers=auth).status_code == 413
-        assert c.post("/api/backups/b2/fail", content=b"disk full", headers=auth).status_code == 200
-        assert c.post("/api/backups/b2/ok", headers={"Authorization": "Bearer nope"}).status_code == 401
-        assert c.get("/api/backups/b2/ok", headers=auth).status_code == 401  # only POST passes the guard
-        c.post("/api/auth/login", json={"user": "ada", "password": "admin password"}, headers=h)
-        [b] = c.get("/api/backups").json()
-        assert b["state"] == "failed" and b["message"] == "disk full" and b["token"] is True
-        assert "hash" not in str(b) and token not in str(b)
+    assert c.get("/api/backups").status_code == 401
+    assert c.post("/api/backups/b2/ok").status_code == 401  # no session, no token
+    login = {"user": "ada", "password": ADMIN_PASSWORD}
+    c.post("/api/auth/login", json=login)
+    response = c.post("/api/backups/b2/token")
+    assert response.headers["cache-control"] == "no-store"
+    token = response.json()["token"]
+    version = c.get("/api/settings").json()["version"]
+    saved = c.put(
+        "/api/settings/backups",
+        json={"version": version, "value": {"backups": {"b2": {"device": "nas", "within_hours": 26}}}},
+    )
+    assert saved.status_code == 200, saved.text
+    # The job's call: no session, no X-Kastellan; its token only.
+    c.cookies.clear()
+    del c.headers["X-Kastellan"]
+    auth = {"Authorization": f"Bearer {token}"}
+    assert c.post("/api/backups/b2/fail", content=b"x" * 2001, headers=auth).status_code == 413
+    assert c.post("/api/backups/b2/fail", content=b"disk full", headers=auth).status_code == 200
+    assert c.post("/api/backups/b2/ok", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert c.get("/api/backups/b2/ok", headers=auth).status_code == 401  # only POST passes the guard
+    c.post("/api/auth/login", json=login, headers={"X-Kastellan": "1"})
+    [b] = c.get("/api/backups").json()
+    assert b["state"] == "failed" and b["message"] == "disk full" and b["token"] is True
+    assert "hash" not in str(b) and token not in str(b)
     assert "backup.token" in (tmp_path / "audit.log").read_text()
 
 

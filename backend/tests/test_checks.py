@@ -1,6 +1,9 @@
 import asyncio
 import time
 
+import pytest
+from pydantic import ValidationError
+
 from kastellan import checks
 from kastellan.config import Check
 
@@ -129,8 +132,5 @@ async def test_http_page_must_contain_a_text() -> None:
         bad = await checks.run("127.0.0.1", Check.model_validate({"http": url, "contains": "Welcome"}))
     assert ok.up and str(ok.software).startswith("nginx")
     assert not bad.up and bad.detail == "HTTP 200, without 'Welcome'"
-    import pytest
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         Check.model_validate({"tcp": 22, "contains": "x"})

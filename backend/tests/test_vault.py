@@ -3,10 +3,11 @@ from pathlib import Path
 
 import asyncssh
 import pytest
+from conftest import password_hash
 from fastapi.testclient import TestClient
 
 from kastellan.api import create_app
-from kastellan.auth import hash_password, password_tag
+from kastellan.auth import password_tag
 from kastellan.config import VaultSettings
 from kastellan.secrets import Secrets
 from kastellan.settings import Settings
@@ -62,18 +63,6 @@ def test_tampering_is_noticed(tmp_path: Path) -> None:
     assert KASTELLAN not in v.unlock("ada", ADA)
 
 
-def test_a_persons_login_is_never_used_by_kastellan(tmp_path: Path) -> None:
-    v = Vault(tmp_path / "vault.json")
-    v.create("ada", ADA, "t")
-    v.put("my-root", "pw", ring=PEOPLE)
-    with pytest.raises(NotForKastellan):
-        v.get("my-root")  # background use
-    assert v.get("my-root", by="ada") == "pw"
-    secrets = Secrets(tmp_path / "secrets", v)
-    with pytest.raises(NotForKastellan):
-        secrets.get("my-root")
-
-
 def test_slots_follow_the_admins(tmp_path: Path) -> None:
     v = Vault(tmp_path / "vault.json")
     v.create("ada", ADA, "t1")
@@ -123,9 +112,9 @@ def config(tmp_path: Path) -> Path:
     path = tmp_path / "config.yaml"
     path.write_text(
         "devices:\n  box:\n    host: 127.0.0.1\n    openwrt: {}\n"
-        f"users:\n  ada:\n    role: admin\n    password: {hash_password(ADA)}\n"
-        f"  bea:\n    role: admin\n    password: {hash_password(BEA)}\n"
-        f"  obi:\n    role: observer\n    password: {hash_password(OBI)}\n"
+        f"users:\n  ada:\n    role: admin\n    password: {password_hash(ADA)}\n"
+        f"  bea:\n    role: admin\n    password: {password_hash(BEA)}\n"
+        f"  obi:\n    role: observer\n    password: {password_hash(OBI)}\n"
     )
     return path
 
@@ -215,6 +204,7 @@ def test_not_while_signin_is_off(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text("devices:\n  box:\n    host: 127.0.0.1\n")
     with TestClient(create_app(Settings(config=path, data=tmp_path))) as c:
+        assert c.get("/api/vault").status_code == 403  # nobody sees it
         assert c.post("/api/vault/create", json={"password": "x"}, headers=H).status_code == 403
 
 
@@ -312,7 +302,10 @@ def test_ring_policies(tmp_path: Path) -> None:
     v.put("nas-root", "pw", ring=PEOPLE)
     v.put("router", "pw")
     with pytest.raises(NotForKastellan):
-        v.get("nas-root")
+        v.get("nas-root")  # background use
+    with pytest.raises(NotForKastellan):
+        Secrets(tmp_path / "secrets", v).get("nas-root")  # nor through Kastellan's secrets
+    assert not issubclass(NotForKastellan, OSError)  # refused as such, never "can't reach the host"
     assert v.get("nas-root", by="ada") == "pw"
     now[0] = 14 * 60
     assert v.relock(admins_signed_in=True) == []
@@ -477,13 +470,6 @@ def test_a_logins_user_and_notes_are_sealed(tmp_path: Path) -> None:
     assert (v.entry("nas").user, v.entry("nas").notes) == ("", "")
 
 
-def test_only_signed_in_admins_see_the_key_ring(tmp_path: Path) -> None:
-    path = tmp_path / "config.yaml"
-    path.write_text("devices:\n  box:\n    host: 127.0.0.1\n")
-    with TestClient(create_app(Settings(config=path, data=tmp_path))) as c:
-        assert c.get("/api/vault").status_code == 403  # sign-in off: nobody
-
-
 def test_the_files_go_only_once_everything_is_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A file that can't be removed is a note: the rings stay (they hold the secret now)."""
     from kastellan import vault_api
@@ -526,10 +512,6 @@ def test_a_damaged_key_ring_never_stops_a_sign_in(tmp_path: Path) -> None:
         assert c.get("/api/health").json()["vault"] == "damaged"
         state = c.get("/api/vault").json()
         assert state["state"] == "damaged" and "can't be read" in state["damaged"]
-
-
-def test_a_persons_login_is_refused_as_such() -> None:
-    assert not issubclass(NotForKastellan, OSError)  # never "can't reach the host"
 
 
 def test_a_changed_password_says_how_to_open(tmp_path: Path) -> None:
@@ -629,21 +611,14 @@ def test_where_a_login_may_go_needs_the_password(tmp_path: Path) -> None:
         assert c.put(url, json=form | {"secret": None, "name": "Box"}, headers=H).status_code == 200
         assert hub.vault.entry("box-root").devices == ["box"]
         assert '"devices"' not in (tmp_path / "vault.json").read_text()  # sealed with user and notes
-
-
-def test_moving_into_a_locked_ring_changes_nothing(tmp_path: Path) -> None:
-    with TestClient(create_app(Settings(config=config(tmp_path), data=tmp_path))) as c:
-        signin(c, "ada", ADA)
-        c.post("/api/vault/create", json={"password": ADA}, headers=H)
-        form = {"name": "Box root", "ring": PEOPLE, "user": "root", "secret": "box pw"}
-        assert c.post("/api/vault/entries", json=form, headers=H).status_code == 200
-        hub = c.app.state.hub
+        # Moving it into a locked ring changes nothing.
         hub.vault.lock(KASTELLAN)
-        moved = form | {"ring": KASTELLAN, "secret": "new pw", "name": "Box"}
-        assert c.put("/api/vault/entries/box-root", json=moved, headers=H).status_code == 423
+        moved = form | {"ring": KASTELLAN, "secret": "new pw", "name": "Box root 2"}
+        assert c.put(url, json=moved, headers=H).status_code == 423
         entry = hub.vault.entry("box-root")
-        assert entry.ring == PEOPLE and entry.name == "Box root"
-        assert hub.vault.get("box-root", by="ada") == "box pw"
+        assert (
+            entry.ring == PEOPLE and entry.name == "Box" and hub.vault.get("box-root", by="ada") == "box pw"
+        )
 
 
 def test_kastellans_own_secrets_are_never_shown_or_edited() -> None:

@@ -4,6 +4,8 @@ import socket
 import struct
 import time
 
+import pytest
+
 from kastellan import dhcp
 from kastellan.config import Check, CheckType
 
@@ -38,6 +40,11 @@ def test_offers_are_read_and_others_ignored() -> None:
     assert dhcp.parse(offer(8, "192.168.15.1", "192.168.15.200"), 7, "x") is None  # someone else's
     assert dhcp.parse(offer(7, "192.168.15.1", "192.168.15.200", kind=5), 7, "x") is None  # an ACK
     assert dhcp.parse(b"short", 7, "x") is None
+    message = bytearray(offer(7, "192.168.1.1", "192.168.1.10"))
+    message[28] ^= 1  # another client's hardware address
+    assert dhcp.parse(bytes(message), 7, "192.168.1.1") is None
+    assert dhcp.parse(offer(7, "192.168.1.1", "192.168.1.10")[:-2], 7, "192.168.1.1") is None  # cut short
+    assert not dhcp.in_range("::1", "192.168.1.1", "192.168.1.200")
 
 
 def test_an_unexpected_server_is_noted() -> None:
@@ -51,20 +58,8 @@ def test_an_unexpected_server_is_noted() -> None:
 def test_the_check_in_config() -> None:
     c = Check.model_validate("dhcp")
     assert (c.type, c.name, c.target) == (CheckType.DHCP, "dhcp", None)
-    try:
+    with pytest.raises(ValueError):  # dhcp takes no target
         Check.model_validate({"dhcp": "x"})
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("dhcp takes no target")
-
-
-def test_malformed_and_other_clients_offers_are_ignored() -> None:
-    message = bytearray(offer(7, "192.168.1.1", "192.168.1.10"))
-    message[28] ^= 1
-    assert dhcp.parse(bytes(message), 7, "192.168.1.1") is None
-    assert dhcp.parse(offer(7, "192.168.1.1", "192.168.1.10")[:-2], 7, "192.168.1.1") is None
-    assert not dhcp.in_range("::1", "192.168.1.1", "192.168.1.200")
 
 
 async def test_concurrent_checks_share_one_broadcast(monkeypatch) -> None:

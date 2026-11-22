@@ -226,17 +226,21 @@ def test_device_forms(hub_client) -> None:
     assert c.delete("/api/devices/printer", headers=H).status_code == 404
 
 
-def test_form_saves_and_preserves_http_text_condition(hub_client) -> None:
+def test_form_saves_and_preserves_check_options(hub_client) -> None:
     c, config, _ = hub_client
     signin(c)
     f = c.get("/api/devices/router/form").json()
     del f["id"]
     f["checks"][1]["contains"] = "Ready for requests"
+    f["checks"][1]["exposed"] = True  # reachable from the internet
     f["checks"].append({"type": "dhcp"})
     assert c.put("/api/devices/router", json=f, headers=H).status_code == 200
+    assert "exposed: true" in config.read_text().split("users:")[0]
     f = c.get("/api/devices/router/form").json()
-    assert f["checks"][1]["contains"] == "Ready for requests"
+    assert f["checks"][1]["contains"] == "Ready for requests" and f["checks"][1]["exposed"] is True
     assert f["checks"][2]["type"] == "dhcp"
+    router = next(d for d in c.get("/api/devices").json() if d["id"] == "router")
+    assert [ch["exposed"] for ch in router["checks"]] == [False, True, False]
     del f["id"]
     f["name"] = "A new name"
     assert c.put("/api/devices/router", json=f, headers=H).status_code == 200
@@ -505,20 +509,6 @@ def test_the_wifi_scan_time_is_written_only_when_it_differs(hub_client) -> None:
     assert r.status_code == 400 and "scan_at" in r.json()["detail"]
 
 
-def test_a_service_reachable_from_the_internet_round_trips(hub_client) -> None:
-    c, config, _ = hub_client
-    signin(c)
-    form = c.get("/api/devices/router/form").json()
-    form["checks"][1]["exposed"] = True
-    r = c.put("/api/devices/router", json=form, headers=H)
-    assert r.status_code == 200, r.text
-    assert "exposed: true" in config.read_text().split("users:")[0]
-    assert c.get("/api/devices/router/form").json()["checks"][1]["exposed"] is True
-    assert [
-        ch["exposed"] for ch in next(d for d in c.get("/api/devices").json() if d["id"] == "router")["checks"]
-    ] == [False, True]
-
-
 SECTIONS_TEXT = """check_interval: 60 # often enough
 retention_days: 30
 
@@ -599,8 +589,14 @@ def test_a_kept_secret_goes_back_only_to_its_own_channel(hub_client) -> None:
     assert "MAIL_SECRET" in text and "NTFY_SECRET" in text and "GOTIFY_SECRET" not in text
     assert text.index("MAIL_SECRET") < text.index("NTFY_SECRET")
     v = r.json()["version"]
-    # A different mail server: its password must be typed again.
+    # A new recipient on the same server keeps the mail password.
     shown = c.get("/api/settings").json()["sections"]["notify"]["notify"]
+    shown[0]["email"] = "you@example.org"
+    r = c.put("/api/settings/notify", json={"value": {"notify": shown}, "version": v}, headers=H)
+    assert r.status_code == 200, r.text
+    assert "MAIL_SECRET" in config.read_text() and "you@example.org" in config.read_text()
+    v = r.json()["version"]
+    # A different mail server: its password must be typed again.
     shown[0]["smtp"] = "smtps://me:__keep__@other.example.org"
     assert (
         c.put("/api/settings/notify", json={"value": {"notify": shown}, "version": v}, headers=H).status_code
@@ -624,21 +620,6 @@ def test_the_vpn_form_cant_aim_at_kastellans_own_secrets(tmp_path: Path) -> None
             signin(c)
             assert c.put(f"/api/secrets/{name}", json={"value": "x"}, headers=H).status_code == 403
     assert not (tmp_path / "secrets").exists()
-
-
-def test_a_new_recipient_keeps_the_mail_password(hub_client) -> None:
-    c, config, _ = hub_client
-    signin(c)
-    v = c.get("/api/settings").json()["version"]
-    chans = [{"email": "me@example.org", "smtp": "smtps://me:MAIL_SECRET@mail.example.org"}]
-    v = c.put("/api/settings/notify", json={"value": {"notify": chans}, "version": v}, headers=H).json()[
-        "version"
-    ]
-    shown = c.get("/api/settings").json()["sections"]["notify"]["notify"]
-    shown[0]["email"] = "you@example.org"
-    r = c.put("/api/settings/notify", json={"value": {"notify": shown}, "version": v}, headers=H)
-    assert r.status_code == 200, r.text
-    assert "MAIL_SECRET" in config.read_text() and "you@example.org" in config.read_text()
 
 
 def test_a_device_as_text() -> None:

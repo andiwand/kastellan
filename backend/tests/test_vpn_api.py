@@ -459,16 +459,13 @@ users:
         with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
             hub = c.app.state.hub
             signin(c)
-            for device in ("sv1", "gw", "sv2"):
-                state = c.get(f"/api/devices/{device}/ssh").json()
-                assert (
-                    c.post(
-                        f"/api/devices/{device}/ssh/trust",
-                        json={"fingerprint": state["fingerprint"]},
-                        headers=H,
-                    ).status_code
-                    == 200
+            # The hosts' keys pinned directly (trusting through the API: test_openvpn).
+            hub.keys.known_hosts.write_text(
+                "".join(
+                    f"[127.0.0.1]:{port} {key.export_public_key().decode().strip()}\n"
+                    for port, key in ((one[0], one[2]), (one[1], one[2]), (two[0], two[2]))
                 )
+            )
             assert c.post("/api/vpns/office/openvpn", json={"name": "alice"}, headers=H).status_code == 200
             assert c.post("/api/vpns/lab/openvpn", json={"name": "bob"}, headers=H).status_code == 200
             vpns = {v["id"]: v for v in c.get("/api/vpn").json()["vpns"]}

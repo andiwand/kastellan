@@ -7,15 +7,11 @@ from pathlib import Path
 
 import asyncssh
 import pytest
-from fastapi.testclient import TestClient
+from conftest import ADMIN_PASSWORD, password_hash
 
 from kastellan.access import DROPBEAR, hub_address, setup_script, ssh_greeting
-from kastellan.api import create_app
-from kastellan.auth import hash_password
-from kastellan.settings import Settings
 
-H = {"X-Kastellan": "1"}
-HASH = hash_password("pw for tests")
+SV1 = "devices:\n  sv1:\n    host: 127.0.0.1\n"
 
 
 def test_scripts() -> None:
@@ -126,88 +122,69 @@ def device():
     thread.join(timeout=5)
 
 
-def test_set_up_with_a_password_once(tmp_path: Path, device) -> None:
-    port, host_key, ran = device
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        f"devices:\n  sv1:\n    host: 127.0.0.1\nusers:\n  ada:\n    role: admin\n    password: {HASH}\n"
-    )
-    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
-        assert (
-            c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=H).status_code
-            == 200
-        )
-        hub = c.app.state.hub
-        hub.keys.known_hosts.parent.mkdir(parents=True, exist_ok=True)
-        hub.keys.known_hosts.write_text(
-            f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n"
-        )
-
-        body = {
-            "login": "andreas",
-            "password": "wrong",
-            "user": "kastellan",
-            "create": True,
-            "sudo": True,
-            "port": port,
-        }
-        assert c.post("/api/devices/sv1/access/setup", json=body, headers=H).status_code == 401
-        body["password"] = "hunter2"
-        r = c.post("/api/devices/sv1/access/setup", json=body, headers=H)
-        assert r.status_code == 200, r.text
-        # The output streams; the last line is the outcome.
-        lines = r.text.splitlines()
-        assert lines[0] == "Kastellan can log in as kastellan."
-        done = json.loads(lines[-1].removeprefix("KASTELLAN-DONE "))
-        assert done["ok"] and done["config"] == f"ssh:\n  user: kastellan\n  port: {port}"
-        assert hub.config.devices["sv1"].ssh.user == "kastellan"  # in config.yaml now
-        [(command, stdin)] = ran
-        assert command.startswith("sudo -S -p '' sh -c ") and "useradd" in command  # not root: through sudo
-        assert stdin == "hunter2\n"  # the password reaches sudo, nothing else
-        log = (tmp_path / "data" / "audit.log").read_text()
-        assert "access.setup" in log and "hunter2" not in log
+def trusting(c, device) -> object:
+    """The hub of a signed-in client, with the fake device's host key trusted."""
+    port, host_key, _ = device
+    hub = c.app.state.hub
+    hub.keys.known_hosts.parent.mkdir(parents=True, exist_ok=True)
+    hub.keys.known_hosts.write_text(f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n")
+    return hub
 
 
-@pytest.mark.parametrize(
-    "route, extra",
-    [
+def test_set_up_with_a_password_once(tmp_path: Path, device, admin_client) -> None:
+    port, _, ran = device
+    c = admin_client(SV1)
+    hub = trusting(c, device)
+    body = {
+        "login": "andreas",
+        "password": "wrong",
+        "user": "kastellan",
+        "create": True,
+        "sudo": True,
+        "port": port,
+    }
+    assert c.post("/api/devices/sv1/access/setup", json=body).status_code == 401
+    body["password"] = "hunter2"
+    r = c.post("/api/devices/sv1/access/setup", json=body)
+    assert r.status_code == 200, r.text
+    # The output streams; the last line is the outcome.
+    lines = r.text.splitlines()
+    assert lines[0] == "Kastellan can log in as kastellan."
+    done = json.loads(lines[-1].removeprefix("KASTELLAN-DONE "))
+    assert done["ok"] and done["config"] == f"ssh:\n  user: kastellan\n  port: {port}"
+    assert hub.config.devices["sv1"].ssh.user == "kastellan"  # in config.yaml now
+    [(command, stdin)] = ran
+    assert command.startswith("sudo -S -p '' sh -c ") and "useradd" in command  # not root: through sudo
+    assert stdin == "hunter2\n"  # the password reaches sudo, nothing else
+    log = (tmp_path / "audit.log").read_text()
+    assert "access.setup" in log and "hunter2" not in log
+
+
+def test_setups_resolve_stored_logins_before_validation(device, admin_client) -> None:
+    """Every setup route takes a login stored in the People ring for this device."""
+    from kastellan.auth import password_tag
+    from kastellan.vault import PEOPLE
+
+    port, _, ran = device
+    c = admin_client(SV1)
+    hub = trusting(c, device)
+    hub.vault.create("ada", ADMIN_PASSWORD, password_tag(password_hash()))
+    hub.vault.put("stored", "hunter2", ring=PEOPLE, kind="password", user="andreas", devices=["sv1"])
+    for route, extra in [
         ("access/setup", {"user": "andreas"}),
         ("collect/install", {}),
         ("collect/uninstall", {}),
         ("act/install", {}),
         ("act/uninstall", {}),
         ("openwrt/install", {}),
-    ],
-)
-def test_setups_resolve_stored_logins_before_validation(tmp_path, device, route, extra) -> None:
-    from kastellan.auth import password_tag
-    from kastellan.vault import PEOPLE
-
-    port, host_key, ran = device
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        f"devices:\n  sv1:\n    host: 127.0.0.1\nusers:\n  ada:\n    role: admin\n    password: {HASH}\n"
-    )
-    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
-        assert (
-            c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=H).status_code
-            == 200
-        )
-        hub = c.app.state.hub
-        hub.vault.create("ada", "pw for tests", password_tag(HASH))
-        hub.vault.put("stored", "hunter2", ring=PEOPLE, kind="password", user="andreas", devices=["sv1"])
-        hub.keys.known_hosts.parent.mkdir(parents=True, exist_ok=True)
-        hub.keys.known_hosts.write_text(
-            f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n"
-        )
-        response = c.post(
-            f"/api/devices/sv1/{route}", json={"stored": "stored", "port": port, **extra}, headers=H
-        )
-        assert response.status_code == 200, response.text
-        assert ran  # the fake device accepted the stored username and password
-        records = [json.loads(line) for line in (hub.settings.data / "audit.log").read_text().splitlines()]
-        assert any(r.get("login") == "andreas" for r in records)
-        assert "hunter2" not in json.dumps(records)
+    ]:
+        ran.clear()
+        response = c.post(f"/api/devices/sv1/{route}", json={"stored": "stored", "port": port, **extra})
+        assert response.status_code == 200, (route, response.text)
+        assert ran, route  # the fake device accepted the stored username and password
+    records = [json.loads(line) for line in (hub.settings.data / "audit.log").read_text().splitlines()]
+    assert any(r.get("login") == "andreas" for r in records)
+    assert "hunter2" not in json.dumps(records)
 
 
 def test_key_written_as_the_user(tmp_path: Path) -> None:
@@ -240,73 +217,46 @@ def test_key_written_as_the_user(tmp_path: Path) -> None:
     assert setup_script("john.doe", "k", None, False, True).count("/etc/sudoers.d/kastellan-john_doe") >= 1
 
 
-def test_installing_the_collector(tmp_path: Path, device) -> None:
-    port, host_key, ran = device
-    config = tmp_path / "config.yaml"
-    users = f"users:\n  ada:\n    role: admin\n    password: {HASH}\n"
-    config.write_text("devices:\n  sv1:\n    host: 127.0.0.1 # SV1\n" + users)
-    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
-        c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=H)
-        hub = c.app.state.hub
-        hub.keys.known_hosts.parent.mkdir(parents=True, exist_ok=True)
-        hub.keys.known_hosts.write_text(
-            f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n"
-        )
+def test_installing_the_collector(tmp_path: Path, device, admin_client) -> None:
+    port, _, ran = device
+    c = admin_client("devices:\n  sv1:\n    host: 127.0.0.1 # SV1\n")
+    hub = trusting(c, device)
+    setup = c.get("/api/devices/sv1/collect").json()
+    assert setup["state"] == "off" and "kastellan-collect" in setup["script"]
+    assert hub.keys.public_key("collect") in setup["script"] and hub.keys.public_key() not in setup["script"]
 
-        setup = c.get("/api/devices/sv1/collect").json()
-        assert setup["state"] == "off" and "kastellan-collect" in setup["script"]
-        assert (
-            hub.keys.public_key("collect") in setup["script"] and hub.keys.public_key() not in setup["script"]
-        )
-
-        body = {"login": "andreas", "password": "hunter2", "port": port}
-        r = c.post("/api/devices/sv1/collect/install", json=body, headers=H)
-        assert r.status_code == 200, r.text
-        [(command, stdin)] = ran
-        assert command.startswith("sudo -S -p '' sh -c ") and "/usr/local/lib/kastellan/collect" in command
-        assert stdin == "hunter2\n"
-        # Kastellan reads it from now on: collect: added, the rest of the file as it was.
-        text = config.read_text()
-        assert f"host: 127.0.0.1 # SV1\n    collect:\n      port: {port}\n" in text
-        assert hub.config.devices["sv1"].collect is not None
-        log = (tmp_path / "data" / "audit.log").read_text()
-        assert "collect.install" in log and "hunter2" not in log
+    body = {"login": "andreas", "password": "hunter2", "port": port}
+    r = c.post("/api/devices/sv1/collect/install", json=body)
+    assert r.status_code == 200, r.text
+    [(command, stdin)] = ran
+    assert command.startswith("sudo -S -p '' sh -c ") and "/usr/local/lib/kastellan/collect" in command
+    assert stdin == "hunter2\n"
+    # Kastellan reads it from now on: collect: added, the rest of the file as it was.
+    text = (tmp_path / "config.yaml").read_text()
+    assert f"host: 127.0.0.1 # SV1\n    collect:\n      port: {port}\n" in text
+    assert hub.config.devices["sv1"].collect is not None
+    log = (tmp_path / "audit.log").read_text()
+    assert "collect.install" in log and "hunter2" not in log
 
 
-def test_installing_the_actor(tmp_path: Path, device) -> None:
-    port, host_key, ran = device
-    config = tmp_path / "config.yaml"
-    users = f"users:\n  ada:\n    role: admin\n    password: {HASH}\n"
-    config.write_text("devices:\n  sv1:\n    host: 127.0.0.1\n" + users)
-    with TestClient(create_app(Settings(config=config, data=tmp_path / "data"))) as c:
-        c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=H)
-        hub = c.app.state.hub
-        hub.keys.known_hosts.parent.mkdir(parents=True, exist_ok=True)
-        hub.keys.known_hosts.write_text(
-            f"[127.0.0.1]:{port} {host_key.export_public_key().decode().strip()}\n"
-        )
-        # Nothing to act through yet.
-        assert c.post("/api/devices/sv1/act/reboot", json={}, headers=H).status_code == 409
-        choice = {"abilities": ["update-container"], "containers": ["norn"]}
-        preview = c.post("/api/devices/sv1/act/script", json=choice, headers=H).json()
-        assert preview["configured"] is False and "act/update-container *" in preview["script"]
-        assert "act/reboot" in preview["script"]  # only to remove it: "rm -f ..."
-        assert (
-            c.post("/api/devices/sv1/act/script", json={"abilities": ["format-disk"]}, headers=H).status_code
-            == 400
-        )
+def test_installing_the_actor(tmp_path: Path, device, admin_client) -> None:
+    port, _, ran = device
+    c = admin_client(SV1)
+    hub = trusting(c, device)
+    # Nothing to act through yet.
+    assert c.post("/api/devices/sv1/act/reboot", json={}).status_code == 409
+    choice = {"abilities": ["update-container"], "containers": ["norn"]}
+    preview = c.post("/api/devices/sv1/act/script", json=choice).json()
+    assert preview["configured"] is False and "act/update-container *" in preview["script"]
+    assert "act/reboot" in preview["script"]  # only to remove it: "rm -f ..."
+    assert c.post("/api/devices/sv1/act/script", json={"abilities": ["format-disk"]}).status_code == 400
 
-        r = c.post(
-            "/api/devices/sv1/act/install",
-            json=choice | {"login": "andreas", "password": "hunter2", "port": port},
-            headers=H,
-        )
-        assert r.status_code == 200, r.text
-        [(command, stdin)] = ran
-        assert (
-            command.startswith("sudo -S -p '' sh -c ") and "/usr/local/lib/kastellan/act/dispatch" in command
-        )
-        assert stdin == "hunter2\n"
-        assert hub.config.devices["sv1"].act is not None
-        log = (tmp_path / "data" / "audit.log").read_text()
-        assert "act.install" in log and "hunter2" not in log and '"update-container"' in log
+    login = {"login": "andreas", "password": "hunter2", "port": port}
+    r = c.post("/api/devices/sv1/act/install", json=choice | login)
+    assert r.status_code == 200, r.text
+    [(command, stdin)] = ran
+    assert command.startswith("sudo -S -p '' sh -c ") and "/usr/local/lib/kastellan/act/dispatch" in command
+    assert stdin == "hunter2\n"
+    assert hub.config.devices["sv1"].act is not None
+    log = (tmp_path / "audit.log").read_text()
+    assert "act.install" in log and "hunter2" not in log and '"update-container"' in log

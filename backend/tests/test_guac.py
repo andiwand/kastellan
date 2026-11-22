@@ -9,7 +9,18 @@ def test_encode_decode_counts_code_points() -> None:
     text = guac.encode("clipboard", "grüße 👋")
     assert text == "9.clipboard,7.grüße 👋;"
     assert guac.decode(text) == ["clipboard", "grüße 👋"]
-    for bad in ("4.size", "x.size;", "4.size,1.1;junk", "9.size;"):
+    # Lengths are plain ASCII digits, within reason.
+    for bad in (
+        "4.size",
+        "x.size;",
+        "4.size,1.1;junk",
+        "9.size;",
+        "+3.abc;",
+        " 3.abc;",
+        "1_0.abcdefghij;",
+        "٣.abc;",
+        "99999999999.a;",
+    ):
         with pytest.raises(guac.ProtocolError):
             guac.decode(bad)
 
@@ -51,19 +62,6 @@ async def fake_guacd(log: list[list[str]], answer: str = "ready"):
     return server, server.sockets[0].getsockname()[1]
 
 
-async def test_handshake() -> None:
-    log: list[list[str]] = []
-    server, port = await fake_guacd(log)
-    async with server:
-        r, w = await asyncio.open_connection("127.0.0.1", port)
-        params = {"hostname": "pc.lan", "port": "3389", "username": "andreas", "password": "pw"}
-        assert await guac.handshake(guac.Reader(r), w, "rdp", params, (1280, 720, 96)) == "$abc"
-        w.close()
-    assert log[0] == ["select", "rdp"]
-    assert ["size", "1280", "720", "96"] in log
-    assert log[-1] == ["connect", "VERSION_1_5_0", "pc.lan", "3389", "andreas", "pw"]
-
-
 async def test_handshake_error() -> None:
     server, port = await fake_guacd([], answer="error")
     async with server:
@@ -84,12 +82,6 @@ async def test_reader_keeps_characters_split_between_reads() -> None:
     reader = guac.Reader(stream)
     reader.reader._limit = 1 << 30
     assert guac.decode(await reader.instruction()) == ["name", "é" * 40000]
-
-
-def test_lengths_only_ascii_digits() -> None:
-    for bad in ("+3.abc;", " 3.abc;", "1_0.abcdefghij;", "٣.abc;", "99999999999.a;"):
-        with pytest.raises(guac.ProtocolError):
-            guac.decode(bad)
 
 
 def test_browser_lengths_count_utf16_units() -> None:

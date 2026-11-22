@@ -1,5 +1,7 @@
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from kastellan.api import create_app
@@ -21,24 +23,34 @@ def test_devices_and_health(tmp_path: Path) -> None:
             assert client.get(route, params={"hours": "-1e300"}).status_code == 422
 
 
-def test_demo(tmp_path: Path) -> None:
-    settings = Settings(config=tmp_path / "none.yaml", data=tmp_path, demo=True)
+@pytest.fixture(scope="module")
+def demo(tmp_path_factory: pytest.TempPathFactory) -> Iterator[TestClient]:
+    """One demo hub for the module: starting one backfills days of made-up history (~1.5 s)."""
+    data = tmp_path_factory.mktemp("demo")
+    settings = Settings(config=data / "none.yaml", data=data, demo=True)
     with TestClient(create_app(settings)) as client:
-        assert client.get("/api/health").json()["demo"]
-        devices = {d["id"]: d for d in client.get("/api/devices").json()}
-        assert devices["gaming-pc"]["always_on"] is False
-        series = client.get("/api/series", params={"hours": 24, "buckets": 24}).json()
-        assert len(series["devices"]["nas"]["jellyfin"]) == 24
-        changes = client.get("/api/changes").json()
-        assert any(c["device"] == "printer" and c["kind"] == "state" for c in changes)
-        [update] = [c for c in changes if c["kind"] == "version"]
-        assert (update["device"], update["to"]) == ("homeserver", "OpenSSH 10.2p1 (Debian)")
-        ssh = next(c for c in devices["homeserver"]["checks"] if c["name"] == "ssh")
-        assert ssh["software"] == "OpenSSH 10.2p1 (Debian)"
-    assert not (tmp_path / "checks").exists()  # demo history stays out of the real data
+        yield client
+    # The demo's history, logs, backups and choices stay out of the real data.
+    for name in ("checks", "logs.db", "device-backups", "abilities-offered.json"):
+        assert not (data / name).exists(), name
 
 
-def test_demo_containers_have_unique_keys(tmp_path: Path) -> None:
+def test_demo(demo: TestClient) -> None:
+    client = demo
+    assert client.get("/api/health").json()["demo"]
+    devices = {d["id"]: d for d in client.get("/api/devices").json()}
+    assert devices["gaming-pc"]["always_on"] is False
+    series = client.get("/api/series", params={"hours": 24, "buckets": 24}).json()
+    assert len(series["devices"]["nas"]["jellyfin"]) == 24
+    changes = client.get("/api/changes").json()
+    assert any(c["device"] == "printer" and c["kind"] == "state" for c in changes)
+    [update] = [c for c in changes if c["kind"] == "version"]
+    assert (update["device"], update["to"]) == ("homeserver", "OpenSSH 10.2p1 (Debian)")
+    ssh = next(c for c in devices["homeserver"]["checks"] if c["name"] == "ssh")
+    assert ssh["software"] == "OpenSSH 10.2p1 (Debian)"
+
+
+def test_demo_containers_have_unique_keys() -> None:
     """The web app keys lists by these; a missing key crashed the overview."""
     from kastellan.demo import CONTAINERS
     from kastellan.docker import Container
@@ -49,42 +61,33 @@ def test_demo_containers_have_unique_keys(tmp_path: Path) -> None:
         assert len({c["key"] for c in containers}) == len(containers)
 
 
-def test_demo_logs_backups_internet_wifi(tmp_path: Path) -> None:
-    settings = Settings(config=tmp_path / "none.yaml", data=tmp_path, demo=True)
-    with TestClient(create_app(settings)) as client:
-        lines = client.get("/api/logs", params={"device": "repeater-living", "level": 4}).json()["lines"]
-        assert lines and all(ln["device"] == "repeater-living" and ln["level"] <= 4 for ln in lines)
-        assert client.get("/api/logs/facets").json()["total"] > 10
-        overview = {b["device"]: b for b in client.get("/api/device-backups").json()}
-        assert overview["repeater-living"]["versions"] == 3 and overview["fritzbox"]["versions"] == 2
-        versions = client.get("/api/devices/repeater-living/backups").json()["versions"]
-        newer, older = versions[0]["id"], versions[1]["id"]
-        # Comparing and downloading need a signed-in admin (sign-in is off in this demo).
-        assert (
-            client.get(
-                "/api/devices/repeater-living/backups/diff", params={"older": older, "newer": newer}
-            ).status_code
-            == 403
-        )
-        net = client.get("/api/internet", params={"hours": 168}).json()
-        assert net["router"] == "fritzbox" and len(net["series"]) == 84
-        assert any(o["step"] == "provider" for o in net["outages"]) and net["speedtests"]
-        w = client.get("/api/wifi").json()
-        castle = next(n for n in w["networks"] if n["ssid"] == "Castle")
-        assert set(castle["devices"]) == {"fritzbox", "repeater-attic", "repeater-living"}
-        plan = client.get("/api/wifi/plan").json()
-        ours = {(r["device"], r["band"]): r["channel"] for r in plan["radios"]}
-        assert len({ours[("repeater-living", "2g")], ours[("repeater-attic", "2g")]}) == 2
-    assert not (tmp_path / "logs.db").exists() and not (tmp_path / "device-backups").exists()
+def test_demo_logs_backups_internet_wifi(demo: TestClient) -> None:
+    client = demo
+    lines = client.get("/api/logs", params={"device": "repeater-living", "level": 4}).json()["lines"]
+    assert lines and all(ln["device"] == "repeater-living" and ln["level"] <= 4 for ln in lines)
+    assert client.get("/api/logs/facets").json()["total"] > 10
+    overview = {b["device"]: b for b in client.get("/api/device-backups").json()}
+    assert overview["repeater-living"]["versions"] == 3 and overview["fritzbox"]["versions"] == 2
+    versions = client.get("/api/devices/repeater-living/backups").json()["versions"]
+    newer, older = versions[0]["id"], versions[1]["id"]
+    # Comparing and downloading need a signed-in admin (sign-in is off in this demo).
+    diff = client.get("/api/devices/repeater-living/backups/diff", params={"older": older, "newer": newer})
+    assert diff.status_code == 403
+    net = client.get("/api/internet", params={"hours": 168}).json()
+    assert net["router"] == "fritzbox" and len(net["series"]) == 84
+    assert any(o["step"] == "provider" for o in net["outages"]) and net["speedtests"]
+    w = client.get("/api/wifi").json()
+    castle = next(n for n in w["networks"] if n["ssid"] == "Castle")
+    assert set(castle["devices"]) == {"fritzbox", "repeater-attic", "repeater-living"}
+    plan = client.get("/api/wifi/plan").json()
+    ours = {(r["device"], r["band"]): r["channel"] for r in plan["radios"]}
+    assert len({ours[("repeater-living", "2g")], ours[("repeater-attic", "2g")]}) == 2
 
 
-def test_demo_ability_dismissals_stay_in_the_demo(tmp_path: Path) -> None:
-    settings = Settings(config=tmp_path / "none.yaml", data=tmp_path, demo=True)
-    with TestClient(create_app(settings)) as client:
-        response = client.post("/api/devices/nas/abilities/actor/not-needed", headers={"X-Kastellan": "1"})
-        assert response.status_code == 200, response.text
-        assert client.app.state.hub.offered.path.exists()
-    assert not (tmp_path / "abilities-offered.json").exists()
+def test_demo_ability_dismissals_stay_in_the_demo(demo: TestClient) -> None:
+    response = demo.post("/api/devices/nas/abilities/actor/not-needed", headers={"X-Kastellan": "1"})
+    assert response.status_code == 200, response.text
+    assert demo.app.state.hub.offered.path.exists()
 
 
 def test_logs_by_group_with_alarms_among_them(tmp_path: Path) -> None:

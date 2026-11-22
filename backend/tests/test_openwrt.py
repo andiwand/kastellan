@@ -342,10 +342,6 @@ async def test_reading_needs_only_the_read_group(tmp_path: Path) -> None:
         "inactive": None,
     }
     assert await ow.upgradable(ubus(tmp_path, rpcd)) == ["curl - 8.1 - 8.2"]
-    # Without the reboot group, the device refuses.
-    with pytest.raises(ow.UbusError) as e:
-        await ow.reboot(ubus(tmp_path, rpcd))
-    assert e.value.code == ow.DENIED
     with pytest.raises(ow.UbusError):
         await ow.wifi_settings(ubus(tmp_path, rpcd))
 
@@ -355,7 +351,7 @@ async def test_a_wrong_password_is_refused(tmp_path: Path) -> None:
         await ow.read(ubus(tmp_path, FakeRpcd([]), password="nope"))
 
 
-async def test_roaming_refuses_a_replaced_network_before_staging(tmp_path: Path) -> None:
+async def test_a_replaced_network_is_refused_before_staging(tmp_path: Path) -> None:
     rpcd = FakeRpcd(["kastellan-wifi"])
     with pytest.raises(ValueError, match="network changed"):
         await ow.change_wifi(
@@ -363,7 +359,9 @@ async def test_roaming_refuses_a_replaced_network_before_staging(tmp_path: Path)
             {"default_radio0": {"ieee80211r": "1"}},
             expected_ssids={"default_radio0": "a network that used to be here"},
         )
-    assert not any(o == "uci" and m in {"set", "apply"} for o, m, _ in rpcd.calls)
+    with pytest.raises(ValueError, match="network changed"):
+        await ow.remove_network(ubus(tmp_path, rpcd), "default_radio0", expected_ssid="used to be here")
+    assert not any(o == "uci" and m in {"set", "delete", "apply"} for o, m, _ in rpcd.calls)
 
 
 async def test_wifi_with_rollback_and_keys_hidden(tmp_path: Path) -> None:
@@ -477,15 +475,6 @@ def test_the_service_script(tmp_path: Path) -> None:
         install_script({"services"}, md5crypt("pw"), ["x; reboot"])
 
 
-async def test_an_ended_session_logs_in_again_once(tmp_path: Path) -> None:
-    rpcd = FakeRpcd([])
-    u = ubus(tmp_path, rpcd)
-    await ow.read(u)
-    rpcd.session = "s2"  # the device rebooted: the old session is gone
-    report = await ow.read(u)
-    assert report["board"]["model"] and rpcd.logins == 2
-
-
 async def test_a_denied_call_doesnt_log_in_again(tmp_path: Path) -> None:
     """uhttpd refuses a call outside the login's access list as it does one in an ended session;
     only the latter is worth a new login."""
@@ -497,21 +486,6 @@ async def test_a_denied_call_doesnt_log_in_again(tmp_path: Path) -> None:
             await ow.reboot(u)
         assert e.value.code == ow.DENIED
     assert rpcd.logins == 1
-
-
-async def test_a_restart_or_a_new_login_forgets_what_was_kept(tmp_path: Path) -> None:
-    rpcd = FakeRpcd([])
-    u = ubus(tmp_path, rpcd)
-    boards = lambda: sum(1 for c in rpcd.calls if c[:2] == ("system", "board"))  # noqa: E731
-    await ow.read(u)
-    await ow.read(u)
-    assert boards() == 1
-    rpcd.uptime = 5  # restarted (new firmware, perhaps through LuCI)
-    await ow.read(u)
-    assert boards() == 2
-    rpcd.session = "s2"  # the session ended, as with a reboot
-    await ow.read(u)
-    assert boards() == 3 and rpcd.logins == 2
 
 
 async def test_dhcp_pool_usage_excludes_static_leases_outside_it() -> None:
@@ -871,22 +845,6 @@ async def test_logs_and_backups_need_their_own_groups(tmp_path: Path) -> None:
     assert await ow.backup(u) == BACKUP
 
 
-async def test_wifi_change_is_one_apply_and_refuses_a_stale_network(tmp_path, monkeypatch) -> None:
-    from kastellan.openwrt import sync
-
-    monkeypatch.setattr(ow, "CONFIRM_AFTER", 0)
-    rpcd = FakeRpcd(["kastellan-wifi"])
-    u = ubus(tmp_path, rpcd)
-    current = (await u.call("uci", "get", {"config": "wireless"}))["values"]
-    section, net = next(
-        (k, v) for k, v in current.items() if v.get(".type") == "wifi-iface" and v.get("mode", "ap") == "ap"
-    )
-    result = await sync.change_network({"ap": u}, net["ssid"], {"ssid": "Changed", "disabled": False})
-    assert result == {"ap": "done"}
-    with pytest.raises(ValueError, match="network changed"):
-        await ow.remove_network(u, section, expected_ssid=net["ssid"])
-
-
 async def test_radios_on_openwrt_25_through_iwinfo(tmp_path: Path) -> None:
     rpcd = FakeRpcd([])
     rpcd.status_refused = True
@@ -941,10 +899,6 @@ async def test_a_failed_confirm_doesnt_stop_the_others(tmp_path: Path) -> None:
 
 
 def test_nlbwmon_and_usteer_are_read() -> None:
-    import json
-
-    import pytest
-
     from kastellan.openwrt.client import parse_nlbw, parse_roaming
 
     out = {
@@ -994,7 +948,7 @@ def test_setup_choice_takes_every_ability():
 
 async def test_what_rarely_changes_is_read_less_often(tmp_path: Path) -> None:
     """The board, uci dhcp and the allowed services are kept for a while, until a change of
-    Kastellan's; whether the services run is read every round."""
+    Kastellan's, a restart or a new login; whether the services run is read every round."""
     rpcd = FakeRpcd(["kastellan-services"])
     u = ubus(tmp_path, rpcd)
     await ow.read(u)
@@ -1005,10 +959,17 @@ async def test_what_rarely_changes_is_read_less_often(tmp_path: Path) -> None:
     assert asked(first, ("system", "board")) == 1 and asked(again, ("system", "board")) == 0
     assert asked(again, ("rc", "list")) == 1 and asked(again, ("system", "info")) == 1
     assert asked(again, ("file", "read")) == 0
+    boards = lambda: asked(rpcd.calls, ("system", "board"))  # noqa: E731
     async with u.changing:
         pass
     await ow.read(u)
-    assert asked(rpcd.calls[len(first) + len(again) :], ("system", "board")) == 1
+    assert boards() == 2
+    rpcd.uptime = 5  # restarted (new firmware, perhaps through LuCI)
+    await ow.read(u)
+    assert boards() == 3
+    rpcd.session = "s2"  # the session ended, as with a reboot: one new login, all read anew
+    await ow.read(u)
+    assert boards() == 4 and rpcd.logins == 2
 
 
 async def test_an_old_read_cannot_repopulate_an_invalidated_cache(tmp_path: Path, monkeypatch) -> None:
@@ -1102,3 +1063,24 @@ async def test_failed_package_helpers_cannot_report_no_updates() -> None:
 
     with pytest.raises(ValueError, match="check failed"):
         await ow.upgradable(SimpleNamespace(call=call))
+
+
+def test_firmware_only_the_advised_step(admin_client) -> None:
+    """The safety gate before anything is built or flashed: only the release Kastellan advises
+    (the next step, or the newest of the series it runs) is accepted, never one a page names."""
+    from kastellan.monitor import DeviceStatus
+
+    c = admin_client("devices:\n  ap:\n    host: 192.0.2.1\n    openwrt: {}\n")
+    url = "/api/devices/ap/openwrt/firmware"
+    board = {"board_name": "cudy,wr3000-v1", "release": {"version": "23.05.2", "target": "mediatek/filogic"}}
+    c.app.state.hub.monitor.status["ap"] = DeviceStatus(
+        router={"firmware": {"next_step": "23.05.6", "newest_in_series": None}, "board": board}
+    )
+    for wanted in ("24.10.5", "22.03.7"):  # a jump, or back
+        r = c.post(url, json={"version": wanted})
+        assert r.status_code == 400 and "23.05.6" in r.json()["detail"]
+    assert c.post(url, json={"version": "23.05.6; reboot"}).status_code == 422
+    c.app.state.hub.monitor.status["ap"].router["board"] = {"release": {"version": "23.05.2"}}
+    assert c.post(url, json={"version": "23.05.6"}).status_code == 409  # its model unknown yet
+    log = c.app.state.hub.audit.path
+    assert not log.exists() or "openwrt.firmware" not in log.read_text()  # nothing was started

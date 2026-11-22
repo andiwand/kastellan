@@ -127,6 +127,13 @@ def test_masking() -> None:
     assert "option name 'keep'" in masked
     pem = "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----"
     assert "MIIE" not in devbackups.mask("x.pem", pem, SALT)
+    for text in (
+        "option 'key' 'private-value' # comment",
+        "option key 'private-\nvalue'",
+    ):  # quoted, multiline
+        masked = devbackups.mask("etc/config/wireless", text, SALT)
+        assert "private-" not in masked and "value" not in masked
+    assert "credential" not in devbackups.mask("etc/custom.conf", "credential", SALT)
 
 
 @pytest.mark.parametrize("name", ["../etc/shadow", "../../etc/config/system", "/etc/shadow", "etc/../shadow"])
@@ -156,13 +163,6 @@ def test_dotfiles_ownership_and_hardlinks_survive(tmp_path: Path) -> None:
         f = archive.getmember(".hidden")
         assert (f.uid, f.gid, f.mode) == (123, 456, 0o640)
         assert archive.extractfile("etc/link").read() == b"data"
-
-
-def test_quoted_and_multiline_credentials_stay_hidden() -> None:
-    for text in ("option 'key' 'private-value' # comment", "option key 'private-\nvalue'"):
-        masked = devbackups.mask("etc/config/wireless", text, SALT)
-        assert "private-" not in masked and "value" not in masked
-    assert "credential" not in devbackups.mask("etc/custom.conf", "credential", SALT)
 
 
 async def test_fritz_backup_keeps_original_bytes_and_restore_password(tmp_path, monkeypatch) -> None:

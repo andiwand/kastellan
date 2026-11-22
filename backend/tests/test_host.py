@@ -29,22 +29,15 @@ def test_the_install_script() -> None:
     )
     assert 'openssh_line="${hub:+from=\\"$hub\\",}restrict,command=\\"sudo -n $cmd\\" $key"' in script
     assert "chown root:root /usr/local/lib/kastellan/collect.new" in script
-    # The script it installs is itself valid Python.
-    compile(collector.script(), "kastellan-collect", "exec")
 
 
-def test_the_collector_runs_and_never_fails_whole() -> None:
-    """On any machine (here maybe without /proc): JSON, with what it couldn't read in errors."""
-    r = subprocess.run([sys.executable, "-I", "-c", collector.script()], capture_output=True, text=True)
-    data = json.loads(r.stdout)
-    assert data["version"] == 1 and isinstance(data["errors"], dict)
-
-
-def test_the_collector_says_which_it_is(tmp_path: Path) -> None:
-    """Installed through a heredoc (one newline at the end), it reports what the hub expects."""
+def test_the_collector_runs_and_says_which_it_is(tmp_path: Path) -> None:
+    """On any machine (here maybe without /proc): JSON, with what it couldn't read in errors.
+    Installed through a heredoc (one newline at the end), it reports what the hub expects."""
     path = tmp_path / "collect"
     path.write_text(collector.script().rstrip("\n") + "\n")
     data = json.loads(subprocess.run([sys.executable, "-I", path], capture_output=True, text=True).stdout)
+    assert data["version"] == 1 and isinstance(data["errors"], dict)
     assert not collector.outdated(normalize(data))
     assert collector.outdated(normalize(data | {"script": "older"}))
     assert collector.outdated(normalize({}))  # from before collectors said it
@@ -107,6 +100,16 @@ def test_image_names_and_versions() -> None:
     assert newer_tag("1.2.3", ["1.2.4", "1.10.0", "2.0.0-rc1", "v1.11.0"]) == "1.10.0"
     assert newer_tag("16-alpine", ["17-alpine", "17", "18-bookworm"]) == "17-alpine"
     assert newer_tag("latest", ["1.0"]) is None
+    # Dates are not versions.
+    assert newer_tag("3", ["3", "4", "20260805", "20250108"]) == "4"
+    assert newer_tag("20250108", ["20260805"]) == "20260805"
+    # Newest within the same major.
+    tags = ["16.4", "16.6", "16.10", "17.0", "17.2", "15.9", "16.6-alpine", "20250101"]
+    assert newer_tag("16.4", tags) == "17.2"
+    assert newer_tag("16.4", tags, same_major=True) == "16.10"
+    assert newer_tag("16.10", tags, same_major=True) is None
+    assert newer_tag("v2.8.1", ["v2.9.4", "v3.0.0"], same_major=True) == "v2.9.4"
+    assert newer_tag("15", ["16", "15"], same_major=True) is None  # one number: no "within"
 
 
 def fake_registry(digest: str, tags: list[str]):
@@ -198,14 +201,7 @@ async def test_the_registry_client_stays_on_the_internet() -> None:
     assert regs2.peek("reg.example/me/app:latest", []).unchecked != "not checked yet"
 
 
-def test_dates_are_not_versions() -> None:
-    assert newer_tag("3", ["3", "4", "20260805", "20250108"]) == "4"
-    assert newer_tag("20250108", ["20260805"]) == "20260805"
-
-
 def test_a_hostile_report_is_tamed() -> None:
-    from kastellan.host.report import normalize
-
     nested: list = []
     for _ in range(800):
         nested = [nested]
@@ -228,9 +224,7 @@ def test_a_hostile_report_is_tamed() -> None:
     assert r["updates"]["reboot_for"] == []
     assert r["system"]["uptime"] == 0
     host_problems("x", "X", r, AlarmSettings())  # never raises on what normalize lets through
-    import json as _json
-
-    _json.dumps(r)  # and it serializes
+    json.dumps(r)  # and it serializes
 
 
 def test_vms_in_the_report() -> None:
@@ -289,19 +283,7 @@ def test_the_collector_tells_a_kept_previous_image() -> None:
     assert docker["db"]["previous"] is None  # it runs that one: nothing to go back to
 
 
-def test_reading_a_host_again(tmp_path: Path, monkeypatch) -> None:
-    from fastapi.testclient import TestClient
-
-    from kastellan.api import create_app
-    from kastellan.auth import hash_password
-    from kastellan.settings import Settings
-
-    path = tmp_path / "config.yaml"
-    path.write_text(
-        "devices:\n  nas:\n    host: 127.0.0.1\n    collect: {user: kastellan-collect}\n"
-        "  cam:\n    host: 127.0.0.2\n"
-        f"users:\n  ada:\n    role: admin\n    password: {hash_password('admin password')}\n"
-    )
+def test_reading_a_host_again(monkeypatch, admin_client) -> None:
     asked = []
 
     async def fake_collect(keys, device):
@@ -309,21 +291,11 @@ def test_reading_a_host_again(tmp_path: Path, monkeypatch) -> None:
         return {"version": 1, "errors": {}}
 
     monkeypatch.setattr(collector, "collect", fake_collect)
-    h = {"X-Kastellan": "1"}
-    with TestClient(create_app(Settings(config=path, data=tmp_path))) as c:
-        c.post("/api/auth/login", json={"user": "ada", "password": "admin password"}, headers=h)
-        r = c.post("/api/devices/nas/collect/now", headers=h)
-        assert r.status_code == 200 and r.json()["checked"] and "127.0.0.1" in asked
-        assert c.post("/api/devices/nas/collect/now", headers=h).status_code == 429  # just read
-        assert c.post("/api/devices/cam/collect/now", headers=h).status_code == 409
-
-
-def test_newest_within_the_same_major() -> None:
-    from kastellan.registry import newer_tag
-
-    tags = ["16.4", "16.6", "16.10", "17.0", "17.2", "15.9", "16.6-alpine", "20250101"]
-    assert newer_tag("16.4", tags) == "17.2"
-    assert newer_tag("16.4", tags, same_major=True) == "16.10"
-    assert newer_tag("16.10", tags, same_major=True) is None
-    assert newer_tag("v2.8.1", ["v2.9.4", "v3.0.0"], same_major=True) == "v2.9.4"
-    assert newer_tag("15", ["16", "15"], same_major=True) is None  # one number: no "within"
+    c = admin_client(
+        "devices:\n  nas:\n    host: 127.0.0.1\n    collect: {user: kastellan-collect}\n"
+        "  cam:\n    host: 127.0.0.2\n"
+    )
+    r = c.post("/api/devices/nas/collect/now")
+    assert r.status_code == 200 and r.json()["checked"] and "127.0.0.1" in asked
+    assert c.post("/api/devices/nas/collect/now").status_code == 429  # just read
+    assert c.post("/api/devices/cam/collect/now").status_code == 409

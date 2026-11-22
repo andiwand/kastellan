@@ -119,18 +119,16 @@ def test_exposure_per_service() -> None:
     # The firmware and the containers of a device with an exposed service count as exposed.
     assert assess(d, CRITICAL, "firmware").alarm is Severity.CRITICAL
     assert d.faces_internet() and not device(checks=[{"tcp": 22}]).faces_internet()
+    # It is a way in on the network view too; the inside-only one isn't.
+    from kastellan.networks import public_ways
+
+    inside = device(host="10.0.0.5", checks=[{"tcp": 443, "name": "https", "exposed": True}, {"tcp": 22}])
+    assert [w["check"] for w in public_ways(inside, False, {})] == ["https"]
     # The whole device marked: everything counts.
     assert (
         assess(device(exposed=True, checks=[{"tcp": 22}]), CRITICAL, "service tcp:22").alarm
         is Severity.CRITICAL
     )
-
-
-def test_an_exposed_service_is_a_way_in() -> None:
-    from kastellan.networks import public_ways
-
-    d = device(host="10.0.0.5", checks=[{"tcp": 443, "name": "https", "exposed": True}, {"tcp": 22}])
-    assert [w["check"] for w in public_ways(d, False, {})] == ["https"]
 
 
 def test_a_public_name_counts_and_auto_update_needs_the_whole_device() -> None:

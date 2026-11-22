@@ -54,7 +54,7 @@ ups.status: OL CHRG RB
 
 def fake(tmp_path: Path, name: str, body: str) -> Path:
     tool = tmp_path / name
-    tool.write_text(f"#!{sys.executable}\nimport sys\n{body}\n")
+    tool.write_text(body + "\n" if body.startswith("#!") else f"#!{sys.executable}\nimport sys\n{body}\n")
     tool.chmod(0o755)
     return tool
 
@@ -102,11 +102,13 @@ def test_the_report_keeps_ups_data_in_bounds() -> None:
 
 
 def test_a_hung_ups_does_not_discard_earlier_readings(tmp_path: Path) -> None:
+    # Shell fakes start in milliseconds, so a short budget still leaves the healthy one ample room.
+    (tmp_path / "status.txt").write_text(APCACCESS)
     data = collect(
         tmp_path,
-        f"print({APCACCESS!r})",
-        "import time\nprint('cyber') if sys.argv[1:] == ['-l'] else time.sleep(10)",
-        budget=1.5,  # room for the healthy one to start on a busy machine; the hung one takes 10 s
+        f"#!/bin/sh\nexec cat {tmp_path / 'status.txt'}",
+        '#!/bin/sh\nif [ "$1" = -l ]; then echo cyber; else exec sleep 10; fi',
+        budget=0.5,
     )
     assert data["ups"][0]["charge"] == 18
     assert data["ups"][1]["flags"] == ["no_contact"]

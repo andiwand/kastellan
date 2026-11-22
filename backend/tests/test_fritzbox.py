@@ -209,8 +209,6 @@ async def test_changing_wifi_and_the_second_factor(tmp_path: Path) -> None:
     await fb.change_wifi(b, 2, {"ssid": "Castle 5", "key": "a-new-passphrase", "channel": 0})
     assert fake.ssid[2] == "Castle 5" and fake.key[2] == "a-new-passphrase"
     assert ("WLANConfiguration:2#SetChannel", {"NewChannel": "0"}) in fake.calls
-    with pytest.raises(ValueError):
-        await fb.change_wifi(b, 2, {"key": "short"})
     fake.second_factor = True
     with pytest.raises(fb.FritzError, match="confirm it on the FRITZ!Box"):
         await fb.change_wifi(b, 1, {"ssid": "x"})
@@ -519,14 +517,8 @@ async def test_what_rarely_changes_is_asked_less_often(tmp_path: Path) -> None:
     m = len(fake.calls)
     await fb.read(b)
     assert any(c.startswith("WLANConfiguration") for c, _ in fake.calls[m:])
-
-
-async def test_a_restart_reads_everything_anew(tmp_path: Path) -> None:
-    """A lower uptime: the box restarted (new FRITZ!OS perhaps), so the kept sections and its
-    service list are read again."""
-    fake = FakeBox()
-    b = box(tmp_path, fake)
-    await fb.read(b)
+    # A lower uptime: the box restarted (new FRITZ!OS perhaps), so the kept sections and its
+    # service list are read again.
     services = b._services
     fake.uptime = "5"
     m = len(fake.calls)

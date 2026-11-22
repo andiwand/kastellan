@@ -28,7 +28,6 @@ async def test_traceroute_uses_supported_icmplib_arguments(monkeypatch) -> None:
 
 
 async def test_cancelled_iperf_is_killed_and_reaped(monkeypatch) -> None:
-    import asyncio
     from unittest.mock import AsyncMock, Mock
 
     begun = asyncio.Event()
@@ -187,6 +186,9 @@ async def test_where_an_outage_is(pings) -> None:
     assert (await internet.look(probe())).step == "router"
     pings |= {"192.168.178.1": [0.5] * 3, "1.1.1.1": [10] * 4, "dns": []}
     assert (await internet.look(probe())).step == "dns"
+    pings |= {"192.168.178.1": [], "1.1.1.1": [10] * 4, "9.9.9.9": [20] * 4, "dns": [1]}
+    s = await internet.look(probe(line=False))  # a router may ignore pings while the internet works
+    assert s.state == "up" and s.jitter == 0  # jitter is measured within each destination
 
 
 def test_outages_days_and_events(tmp_path: Path) -> None:
@@ -322,12 +324,6 @@ def test_the_daily_scan_is_due_once_after_its_time() -> None:
     assert not due(None, None, at)
 
 
-async def test_router_can_ignore_ping_while_the_internet_works(pings) -> None:
-    pings |= {"1.1.1.1": [10] * 4, "9.9.9.9": [20] * 4, "dns": [1]}
-    s = await internet.look(probe(line=False))
-    assert s.state == "up" and s.jitter == 0  # jitter is measured within each destination
-
-
 def test_unknown_channels_and_passwords_are_not_assumed_safe() -> None:
     r = wifi.Radio("ap", "radio0", "2g", 6, 20)
     assert wifi.candidates(r, False) == [6]
@@ -338,8 +334,6 @@ def test_unknown_channels_and_passwords_are_not_assumed_safe() -> None:
 
 
 async def test_speedtest_sends_exact_size_and_download_has_a_deadline(monkeypatch) -> None:
-    import asyncio
-
     import httpx
 
     bodies = []
@@ -366,8 +360,6 @@ async def test_speedtest_sends_exact_size_and_download_has_a_deadline(monkeypatc
 
 
 def test_provider_hops_are_after_the_home_network() -> None:
-    from kastellan import internet
-
     route = [
         {"distance": 1, "address": "192.168.1.1"},
         {"distance": 2, "address": "10.0.0.1"},
@@ -379,17 +371,8 @@ def test_provider_hops_are_after_the_home_network() -> None:
     assert internet.provider_hops([], None) == []
 
 
-async def test_an_outage_at_the_provider_is_told_apart(monkeypatch) -> None:
-    from kastellan import internet
-
-    async def pings(address, count=4):
-        return (count, count, [1.0] * count) if address == "192.168.1.1" else (count, 0, [])
-
-    async def resolve(name):
-        return None
-
-    monkeypatch.setattr(internet, "_pings", pings)
-    monkeypatch.setattr(internet, "_resolve", resolve)
+async def test_an_outage_at_the_provider_is_told_apart(pings) -> None:
+    pings["192.168.1.1"] = [1.0] * 4  # the router answers; nothing beyond it, the provider's hop neither
     p = internet.Probe("192.168.1.1", True, None, ["1.1.1.1"], [], ["example.com"], hops=["100.70.0.1"])
     s = await internet.look(p, now=1.0)
     assert (s.state, s.step) == ("down", "provider") and s.hop_loss == 1.0
@@ -400,9 +383,6 @@ async def test_an_outage_at_the_provider_is_told_apart(monkeypatch) -> None:
 def test_iperf3_results_are_read() -> None:
     import json
 
-    import pytest
-
-    from kastellan import internet
     from kastellan.config import SpeedTest
 
     out = {"end": {"sum_received": {"bits_per_second": 93_500_000.5}, "sum_sent": {}}}
@@ -415,8 +395,6 @@ def test_iperf3_results_are_read() -> None:
 
 
 def test_line_trouble(tmp_path) -> None:
-    from kastellan import internet
-
     net = internet.Internet(tmp_path)
     for i in range(3):
         net._append("events.jsonl", {"t": 1000.0 + i, "kind": "reconnect", "text": "x"})
@@ -429,7 +407,6 @@ def test_line_trouble(tmp_path) -> None:
 
 
 def test_wifi_clients_are_diagnosed() -> None:
-    from kastellan import wifi
     from kastellan.openwrt.client import assoc_client
 
     c = assoc_client(

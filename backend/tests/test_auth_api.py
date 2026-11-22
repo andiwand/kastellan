@@ -68,12 +68,6 @@ def test_writes_need_the_header(client: TestClient) -> None:
     assert client.get("/api/devices").status_code == 200  # still signed in
 
 
-def test_brake(client: TestClient) -> None:
-    for _ in range(5):
-        assert signin(client, "ada", "wrong") == 401
-    assert signin(client, "ada", "admin password") == 429
-
-
 def test_removed_user_is_signed_out(client: TestClient, tmp_path: Path) -> None:
     signin(client, "obi", "observer password")
     assert client.get("/api/devices").status_code == 200
@@ -220,6 +214,8 @@ def test_acknowledge_alarm_with_slashes(client: TestClient) -> None:
 
 
 def test_signing_in_elsewhere_doesnt_wipe_the_guesses(client: TestClient) -> None:
+    """Five wrong guesses at a login brake it, the right password too; another login's own
+    sign-in in between doesn't reset the count."""
     for _ in range(4):
         assert signin(client, "ada", "nope") == 401
     assert signin(client, "obi", "observer password") == 200  # a login of one's own

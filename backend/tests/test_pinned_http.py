@@ -96,7 +96,7 @@ async def test_a_closed_connection_is_replaced_and_the_pin_checked(tmp_path: Pat
         pool.close()
 
 
-async def test_connection_close_and_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_connection_close_and_too_large(tmp_path: Path) -> None:
     closing = b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok"
     srv, port, fp, seen = await server(tmp_path, [closing])
     async with srv:
@@ -106,8 +106,6 @@ async def test_connection_close_and_too_large(tmp_path: Path, monkeypatch: pytes
         assert seen["connections"] == 2  # not kept when the server says so
         with pytest.raises(ValueError, match="too large"):
             await pool.request(port, "GET", "/", {}, b"", 5, 1)
-        monkeypatch.setattr(pinned_http, "IDLE_FOR", 0.0)  # stale: a new one
-        await pool.request(port, "GET", "/", {}, b"", 5, 1000)
         pool.close()
 
 

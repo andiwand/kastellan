@@ -74,14 +74,13 @@ def test_global_interval_must_be_sane() -> None:
 
 
 def test_dns_checks() -> None:
-    from kastellan.config import Check
-
     c = Check.model_validate({"dns": "www.example.org", "expect": "192.0.2.1", "server": "9.9.9.9"})
     assert c.type is CheckType.DNS and c.name == "dns:www.example.org" and c.expect == ["192.0.2.1"]
     assert Check.model_validate({"dns": "example.org", "expect": ["192.0.2.1", "2001:db8::1"]}).expect
     for bad in (
         {"dns": "not a name"},
         {"dns": "example.org", "expect": "nope"},
+        {"dns": "example.org", "expect": 200},  # a status, not addresses
         {"dns": "example.org", "server": "resolver.lan"},
         {"tcp": 53, "server": "9.9.9.9"},
         {"http": "http://x", "expect": "192.0.2.1"},
@@ -98,11 +97,6 @@ def test_sites() -> None:
     assert two.label("b") == "b (Friends place)" and two.label("a") == "a"
     with pytest.raises(ValidationError):
         Config.model_validate({"devices": {"a": {"host": "a", "site": "Not An Id"}}})
-
-
-def test_a_dns_expect_is_addresses() -> None:
-    with pytest.raises(ValueError):
-        Check.model_validate({"dns": "example.org", "expect": 200})
 
 
 def test_runs_on_names_a_vm_on_another_device() -> None:

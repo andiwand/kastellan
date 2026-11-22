@@ -163,17 +163,6 @@ async def test_a_device_skipped_or_gone_holds_the_end_until_forgotten(host) -> N
         await rotator.forget("gone")
 
 
-def test_parse_skips_what_isnt_a_key() -> None:
-    out = "\n".join(
-        [
-            "root\t/etc/dropbear/authorized_keys\tssh-rsa AAAAB3NzaC1yc2E= broken",
-            "a\t/h/.ssh/authorized_keys\troot:$6$hash:19000:0:99999:7:::",
-            "a\t/h/.ssh/authorized_keys\t",
-        ]
-    )
-    assert sshkeys.parse(out) == ([], False)
-
-
 def test_only_signed_in_admins_change_keys(tmp_path: Path) -> None:
     from fastapi.testclient import TestClient
 
@@ -222,6 +211,15 @@ def test_rows_are_lines_and_files_are_what_the_script_lists() -> None:
     ):
         assert sshkeys.parse(row)[0] == []
     assert len(sshkeys.parse(f"root\t{sshkeys.DROPBEAR}\t{key}\r")[0]) == 1
+    # What isn't a key (a broken one, a shadow line, nothing) is no row.
+    out = "\n".join(
+        [
+            "root\t/etc/dropbear/authorized_keys\tssh-rsa AAAAB3NzaC1yc2E= broken",
+            "a\t/h/.ssh/authorized_keys\troot:$6$hash:19000:0:99999:7:::",
+            "a\t/h/.ssh/authorized_keys\t",
+        ]
+    )
+    assert sshkeys.parse(out) == ([], False)
 
 
 async def test_removing_a_crlf_line(host) -> None:
@@ -260,23 +258,9 @@ async def test_a_changed_login_starts_over(host) -> None:
         await rotator.finish({"box": moved})  # the key went to the old login, not this one
 
 
-def test_the_collector_and_actor_keys_are_kastellans(tmp_path: Path) -> None:
-    from fastapi.testclient import TestClient
-
-    from kastellan.api import create_app
-    from kastellan.auth import hash_password
-    from kastellan.settings import Settings
-
-    h = {"X-Kastellan": "1"}
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        "devices:\n  box:\n    host: 127.0.0.1\n    ssh:\n      user: me\n"
-        f"users:\n  ada:\n    role: admin\n    password: {hash_password('admin pw')}\n"
-    )
+def test_the_collector_and_actor_keys_are_kastellans(tmp_path: Path, admin_client) -> None:
     keys = Keys(tmp_path / "ssh")
-    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
-        c.post("/api/auth/login", json={"user": "ada", "password": "admin pw"}, headers=h)
-        for which in ("collect", "act"):
-            body = {"user": "me", "file": "/x", "fingerprint": keys.hub_key(which).get_fingerprint()}
-            r = c.post("/api/devices/box/keys/remove", json=body, headers=h)
-            assert r.status_code == 400 and "Kastellan's own" in r.json()["detail"]
+    c = admin_client("devices:\n  box:\n    host: 127.0.0.1\n    ssh:\n      user: me\n")
+    for which in ("collect", "act"):
+        body = {"user": "me", "file": "/x", "fingerprint": keys.hub_key(which).get_fingerprint()}
+        assert c.post("/api/devices/box/keys/remove", json=body).status_code == 400

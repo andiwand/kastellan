@@ -1,4 +1,4 @@
-from kastellan.drivers.fritzbox import parse_description
+from kastellan.drivers.fritzbox import firmware_name, parse_description
 
 # Trimmed from a FRITZ!Box 7530 with FRITZ!OS 8.25 (the root device comes first).
 TR64 = """<?xml version="1.0"?>
@@ -17,21 +17,16 @@ TR64 = """<?xml version="1.0"?>
 </root>"""
 
 
-def test_fritzbox_description() -> None:
+def test_fritzbox_description_and_one_firmware_spelling() -> None:
     info = parse_description(TR64)
     assert (info.model, info.name, info.firmware) == ("FRITZ!Box 7530", "gw1", "FRITZ!OS 8.25")
     assert info.details == {"hardware": "164"}
     labor = parse_description(TR64.replace("164.08.25", "164.08.30-117523"))
     assert labor.firmware == "FRITZ!OS 8.30 (build 117523)"
-
-
-def test_fritzbox_firmware_one_spelling() -> None:
-    from kastellan.drivers.fritzbox import firmware_name
-
     # tr64desc's Display and TR-064's NewSoftwareVersion say the same thing: spelled alike, the
     # firmware log doesn't flip between "FRITZ!OS 8.25" and "FRITZ!OS 164.08.25" every poll.
-    assert firmware_name("164.08.25") == parse_description(TR64).firmware == "FRITZ!OS 8.25"
-    assert firmware_name("164.08.30-117523") == "FRITZ!OS 8.30 (build 117523)"
+    assert firmware_name("164.08.25") == info.firmware
+    assert firmware_name("164.08.30-117523") == labor.firmware
     assert firmware_name("8.25") == "FRITZ!OS 8.25"  # an unknown shape is kept as it is
     assert firmware_name(None) is None and firmware_name("") is None
 

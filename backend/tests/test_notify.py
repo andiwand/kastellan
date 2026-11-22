@@ -131,14 +131,6 @@ def test_channel_config(kw: dict, error: str) -> None:
 
 
 async def test_channels_may_name_secrets_instead_of_holding_them() -> None:
-    from datetime import UTC, datetime
-
-    import httpx
-
-    from kastellan import notify
-    from kastellan.alarms import Message, Severity
-    from kastellan.config import NotifyChannel
-
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:

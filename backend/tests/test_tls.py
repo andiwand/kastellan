@@ -205,14 +205,16 @@ def test_certificate_alarms_over_time(tmp_path: Path) -> None:
 
 
 async def test_a_slow_handshake_never_makes_a_service_down(tmp_path: Path) -> None:
-    """A slow embedded web UI: the certificate look runs out of time, the check is still up."""
+    """A slow embedded web UI: the certificate look (two handshakes) isn't done when the page is
+    (the check waits 0.4 s more for it), the check is still up; the look goes on, and a later run
+    has it."""
     ctx = self_signed(tmp_path, "slow.lan", 30)
     listener = socket.create_server(("127.0.0.1", 0))
     port = listener.getsockname()[1]
     stop = threading.Event()
 
     def serve(conn: socket.socket) -> None:
-        time.sleep(1.2)  # a slow device: every handshake takes this long
+        time.sleep(0.5)  # a slow device: every handshake takes this long (> the 0.4 s waited)
         try:
             with ctx.wrap_socket(conn, server_side=True) as s:
                 s.recv(4096)
@@ -235,8 +237,11 @@ async def test_a_slow_handshake_never_makes_a_service_down(tmp_path: Path) -> No
     try:
         result = await checks.run("127.0.0.1", check)
         assert result.up and result.detail == "HTTP 200"
-        # The look at the certificate goes on, and a later run has it.
-        await asyncio.sleep(3)
+        # The look at the certificate goes on (two handshakes), and a later run has it.
+        for _ in range(100):
+            if tls._cache:
+                break
+            await asyncio.sleep(0.05)
         again = await checks.run("127.0.0.1", check)
     finally:
         stop.set()

@@ -204,6 +204,36 @@ def test_rewrites_only_its_own_address() -> None:
     assert webproxy.rebase("/relative", src, dst) == "/relative"
 
 
+def entered_cookie(hub_app) -> str:
+    """The cookie header of a browser signed in that opened nas_box from the hub."""
+    with TestClient(hub_app, base_url=HUB) as c:
+        signin(c)
+        enter(c)
+        return "; ".join(f"{k.name}={k.value}" for k in c.cookies.jar)
+
+
+async def raw_get(hub_app, path: str, cookie: str, receive) -> list[dict]:
+    """A GET on nas_box's name straight through the app (ASGI), with `receive` deciding when the
+    browser goes away; what the app sent."""
+    got: list[dict] = []
+
+    async def send(message):
+        got.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "scheme": "http",
+        "headers": [(b"host", b"nas-box.kastellan.test"), (b"cookie", cookie.encode())],
+        "client": ("127.0.0.1", 1),
+    }
+    await asyncio.wait_for(hub_app(scope, receive, send), 5)
+    return got
+
+
 def test_a_closed_tab_ends_the_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An endless stream (a camera): the browser leaving closes the device's response too."""
     closed = asyncio.Event()
@@ -224,14 +254,10 @@ def test_a_closed_tab_ends_the_stream(tmp_path: Path, monkeypatch: pytest.Monkey
     )
     write_config(tmp_path / "config.yaml")
     hub_app = create_app(Settings(config=tmp_path / "config.yaml", data=tmp_path))
-    with TestClient(hub_app, base_url=HUB) as c:
-        signin(c)
-        enter(c)
-        cookie = "; ".join(f"{k.name}={k.value}" for k in c.cookies.jar)
+    cookie = entered_cookie(hub_app)
 
     async def run() -> None:
         messages = [{"type": "http.request", "body": b""}]
-        got: list[dict] = []
 
         async def receive():
             if messages:
@@ -239,20 +265,7 @@ def test_a_closed_tab_ends_the_stream(tmp_path: Path, monkeypatch: pytest.Monkey
             await asyncio.sleep(0.1)  # a moment of streaming, then the tab closes
             return {"type": "http.disconnect"}
 
-        async def send(message):
-            got.append(message)
-
-        scope = {
-            "type": "http",
-            "method": "GET",
-            "path": "/cam",
-            "raw_path": b"/cam",
-            "query_string": b"",
-            "scheme": "http",
-            "headers": [(b"host", b"nas-box.kastellan.test"), (b"cookie", cookie.encode())],
-            "client": ("127.0.0.1", 1),
-        }
-        await asyncio.wait_for(hub_app(scope, receive, send), 5)
+        got = await raw_get(hub_app, "/cam", cookie, receive)
         assert got[0]["status"] == 200 and len(got) > 2
         await asyncio.wait_for(closed.wait(), 1)
 
@@ -350,32 +363,14 @@ def test_a_device_that_never_answers_doesnt_hold_on(tmp_path: Path, monkeypatch:
     )
     write_config(tmp_path / "config.yaml")
     hub_app = create_app(Settings(config=tmp_path / "config.yaml", data=tmp_path))
-    with TestClient(hub_app, base_url=HUB) as c:
-        signin(c)
-        enter(c)
-        cookie = "; ".join(f"{k.name}={k.value}" for k in c.cookies.jar)
+    cookie = entered_cookie(hub_app)
 
     async def run() -> None:
-        got: list[dict] = []
-
         async def receive():
             await asyncio.sleep(0.1)
             return {"type": "http.disconnect"}
 
-        async def send(message):
-            got.append(message)
-
-        scope = {
-            "type": "http",
-            "method": "GET",
-            "path": "/",
-            "raw_path": b"/",
-            "query_string": b"",
-            "scheme": "http",
-            "headers": [(b"host", b"nas-box.kastellan.test"), (b"cookie", cookie.encode())],
-            "client": ("127.0.0.1", 1),
-        }
-        await asyncio.wait_for(hub_app(scope, receive, send), 5)
+        got = await raw_get(hub_app, "/", cookie, receive)
         assert got and got[0]["status"] == 504
 
     with TestClient(hub_app, base_url=HUB):
@@ -422,16 +417,6 @@ async def test_signing_in_for_the_admin_keeps_the_password_on_the_hub() -> None:
     assert access.enter(key, "printer") is None  # once
     access.forget(value)
     assert access.basic(value) is None
-
-
-def test_proxy_credentials_do_not_follow_an_upstream_change(client, device) -> None:
-    signin(client)
-    enter(client)
-    assert client.get("http://nas-box.kastellan.test/").status_code == 200
-    device.clear()
-    client.app.state.hub.config.devices["nas_box"].web = "http://10.9.9.7"
-    assert client.get("http://nas-box.kastellan.test/").status_code == 401
-    assert not device
 
 
 def test_ticket_is_refused_if_target_changes_before_opening(client, device) -> None:

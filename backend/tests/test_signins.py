@@ -125,43 +125,29 @@ def test_sources_are_flagged() -> None:
     assert summary["by_service"]["ssh"]["failed"] == 12 and summary["outside_ok"] == 2
 
 
-def test_the_access_page_and_vpn_servers_in_demo(tmp_path) -> None:
-    from fastapi.testclient import TestClient
+def test_the_access_page_vpn_servers_and_found_devices_in_demo(demo_client) -> None:
+    client = demo_client
+    body = client.get("/api/signins", params={"hours": 24}).json()
+    services = {e["service"] for e in body["events"]}
+    assert {"ssh", "vpn", "router"} <= services
+    flags = {s["address"]: s["flags"] for s in body["sources"]}
+    assert "outside-ok" not in flags["198.51.100.7"]  # the demo NAS sends unverified syslog
+    assert any(e["address"] == "198.51.100.7" and not e["verified"] for e in body["events"])
+    assert client.get("/api/signins", params={"hours": 0}).status_code == 422
+    servers = client.get("/api/vpn").json()["servers"]
+    assert {s["name"] for s in servers} >= {"home_udp", "wg-easy"}
 
-    from kastellan.api import create_app
-    from kastellan.settings import Settings
-
-    settings = Settings(config=tmp_path / "none.yaml", data=tmp_path, demo=True)
-    with TestClient(create_app(settings)) as client:
-        body = client.get("/api/signins", params={"hours": 24}).json()
-        services = {e["service"] for e in body["events"]}
-        assert {"ssh", "vpn", "router"} <= services
-        flags = {s["address"]: s["flags"] for s in body["sources"]}
-        assert "outside-ok" not in flags["198.51.100.7"]  # the demo NAS sends unverified syslog
-        assert any(e["address"] == "198.51.100.7" and not e["verified"] for e in body["events"])
-        assert client.get("/api/signins", params={"hours": 0}).status_code == 422
-        servers = client.get("/api/vpn").json()["servers"]
-        assert {s["name"] for s in servers} >= {"home_udp", "wg-easy"}
-
-
-def test_devices_found_on_the_network(tmp_path) -> None:
-    from fastapi.testclient import TestClient
-
-    from kastellan.api import create_app
-    from kastellan.settings import Settings
-
-    settings = Settings(config=tmp_path / "none.yaml", data=tmp_path, demo=True)
-    with TestClient(create_app(settings)) as client:
-        found = client.get("/api/discovered").json()
-        assert found, "the demo FRITZ!Box has clients Kastellan doesn't know"
-        assert isinstance(found, list)
-        if found:
-            mac = found[0]["mac"]
-            h = {"X-Kastellan": "1"}
-            assert client.post(f"/api/discovered/{mac}/ignore", headers=h).json() == {"ok": True}
-            assert mac not in {f["mac"] for f in client.get("/api/discovered").json()}
-        assert client.post("/api/discovered/nope/ignore", headers={"X-Kastellan": "1"}).status_code == 400
-        assert not (tmp_path / "discovery-ignored.json").exists()
+    # Devices found on the network: the demo FRITZ!Box has clients Kastellan doesn't know.
+    found = client.get("/api/discovered").json()
+    assert found
+    h = {"X-Kastellan": "1"}
+    mac = found[0]["mac"]
+    assert client.post(f"/api/discovered/{mac}/ignore", headers=h).json() == {"ok": True}
+    assert mac not in {f["mac"] for f in client.get("/api/discovered").json()}
+    assert client.post("/api/discovered/nope/ignore", headers=h).status_code == 400
+    assert not (
+        client.app.state.hub.settings.data / "discovery-ignored.json"
+    ).exists()  # the demo writes nothing
 
 
 def test_unverified_syslog_cannot_report_a_confirmed_outside_login() -> None:

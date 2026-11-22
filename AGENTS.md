@@ -521,6 +521,12 @@ cd frontend && npm run dev
 
 Node 24 (`frontend/.nvmrc`); older Node fails to install the toolchain.
 
+Tests: one test per behavior, through the public path; exact text only where it is a contract
+(a script, an access list, a status, an audit field). `tests/conftest.py` has `admin_client`
+(a hub with a signed-in admin), `demo_client` (one demo hub for the session) and `password_hash`
+(cached); use them instead of building an app by hand. Patch timeouts and waits, never sleep for
+real; the suite should stay around a minute.
+
 **The lockfile:** `npm install <pkg>` next to an existing `node_modules` drops other platforms'
 optional packages (`@emnapi/*`) from package-lock.json, and `npm ci` then fails on Linux (CI,
 Docker). After adding a package, regenerate it without node_modules:
