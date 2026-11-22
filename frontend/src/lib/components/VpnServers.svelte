@@ -41,7 +41,7 @@
 	const columns: Column<VpnServer>[] = [
 		{ key: 'server', label: 'Server', cell: server },
 		{ key: 'state', label: 'State', cell: stateCell, width: '8rem' },
-		{ key: 'where', label: 'Where', priority: 2, cell: where },
+		{ key: 'where', label: 'Where', priority: 2, wrap: true, cell: where },
 		{ key: 'listens', label: 'Listens', priority: 3, value: (s) => listen(s) },
 		{ key: 'clients', label: 'Connected now', priority: 2, cell: connected }
 	];

@@ -729,6 +729,13 @@ export interface SignIns {
 	events: SignIn[];
 	total: number;
 }
+/** The overview's numbers of Sign-ins (GET /api/signins/summary): how many addresses carry each flag. */
+export interface SignInsSummary {
+	hours: number;
+	summary: SignIns['summary'];
+	total: number;
+	flags: Partial<Record<SignInSource['flags'][number], number>>;
+}
 
 /** A VPN server Kastellan sees (vpn_servers.py): on a router, a FRITZ!Box or in a container. */
 export interface VpnServer {
@@ -1569,6 +1576,8 @@ export interface WifiNetworkEntry {
 	kind: 'openwrt' | 'fritzbox';
 	guest: boolean;
 	clients?: number;
+	security?: string; // the encryption in words: WPA2, WPA2/WPA3, open, ...
+	wps?: boolean; // a FRITZ!Box network with WPS on
 }
 
 export interface WifiNetwork {
@@ -1580,6 +1589,7 @@ export interface WifiNetwork {
 	same_encryption: boolean;
 	off: string[];
 	guest: boolean;
+	security?: string[]; // the encryptions in words, each once
 }
 
 export interface WifiRadio {
@@ -1597,6 +1607,25 @@ export interface WifiRadio {
 	scanned: number | null;
 	allowed: number[] | null;
 	country?: string | null;
+	state?: 'on' | 'off' | 'down';
+	off?: boolean;
+	mesh?: string | null; // the OpenWrt mesh (802.11s) this radio carries, by its id
+}
+
+/** Something off about the Wi-Fi, with what fixes it (wifi.findings). */
+export interface WifiFinding {
+	key: string;
+	level: 'warning' | 'info';
+	text: string;
+	fix: string;
+	devices: string[];
+	action:
+		| { kind: 'plan' | 'clients' | 'scan' | 'radios' }
+		| { kind: 'network'; ssid: string }
+		| { kind: 'wps-off' | 'setup'; device: string }
+		| { kind: 'roaming'; group: string }
+		| null;
+	alarms: string[]; // alarm keys that say the same: the alarm is shown instead
 }
 
 /** A Wi-Fi client and how its radio link is (wifi.diagnose). */
@@ -1651,7 +1680,13 @@ export interface RoamingView {
 
 /** A group's roaming check (roaming.py). */
 export interface GroupRoaming {
-	findings: { level: 'info' | 'warning'; text: string; fix: string; devices: string[] }[];
+	findings: {
+		kind?: string;
+		level: 'info' | 'warning';
+		text: string;
+		fix: string;
+		devices: string[];
+	}[];
 	members: Record<
 		string,
 		{
@@ -1690,6 +1725,7 @@ export interface WifiOverview {
 	scanning: string[];
 	scan_at: string | null; // the daily scan's local time, or null (only on request)
 	clients?: WifiClient[];
+	findings?: WifiFinding[];
 	countries?: string[];
 	country_note?: string | null;
 }
@@ -1780,6 +1816,7 @@ export const more = {
 	ignoreDiscovered: (mac: string) =>
 		call<{ ok: boolean }>('POST', `/discovered/${encodeURIComponent(mac)}/ignore`),
 	signins: (hours = 24) => get<SignIns>('/signins', { hours }),
+	signinsSummary: (hours = 24) => get<SignInsSummary>('/signins/summary', { hours }),
 	logs: (f: LogFilter) =>
 		call<{ lines: LogLine[]; levels: string[]; marks?: LogMark[] }>('GET', `/logs${logQuery(f)}`),
 	logFacets: (hours = 24) => get<LogFacets>('/logs/facets', { hours }),

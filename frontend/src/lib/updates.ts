@@ -1,4 +1,5 @@
 import type { Container, Device } from '#lib/api.js';
+import { updateState, type State } from './states';
 
 /** Everything with an update waiting, across the network, from what the devices report:
  * containers (registries), system packages (the collector), reboots after updates, OpenWrt
@@ -130,3 +131,86 @@ export const updateTarget = (to: string | null | undefined) => tagOf(to) ?? NEWE
  * asked first), not said to be not needed. */
 export const sameTagUpdates = (containers: Container[]) =>
 	containers.filter((c) => c.update && !c.unchecked && !c.skipped && !tagOf(c.update_to));
+
+/** How soon an update matters, for the Updates page's groups (in this order): security fixes
+ * and firmware out of support, then reboots (installed updates waiting to take effect), then
+ * every other update, then Kastellan's own helpers and abilities on devices. */
+export type Urgency = 'urgent' | 'reboot' | 'other' | 'kastellan';
+export const URGENCY: Record<Urgency, string> = {
+	urgent: 'Security and out of support',
+	reboot: 'Waiting for a reboot',
+	other: 'Other updates',
+	kastellan: 'Kastellan on your devices'
+};
+const RANK: Record<Urgency, number> = { urgent: 0, reboot: 1, other: 2, kastellan: 3 };
+
+export function urgencyOf(u: Update): Urgency {
+	if ((u.kind === 'firmware' && !u.supported) || (u.kind === 'packages' && u.security))
+		return 'urgent';
+	if (u.kind === 'reboot') return 'reboot';
+	if (u.kind === 'scripts' || u.kind === 'abilities') return 'kastellan';
+	return 'other';
+}
+
+/** The updates by urgency; within a group as updatesOf has them (internet-facing first). */
+export const byUrgency = (updates: Update[]) =>
+	updates
+		.map((u, i) => ({ u, i }))
+		.sort((a, b) => RANK[urgencyOf(a.u)] - RANK[urgencyOf(b.u)] || a.i - b.i)
+		.map(({ u }) => u);
+
+/** An update's State badge. */
+export function updateStateOf(u: Update): State {
+	if (u.kind === 'firmware' && !u.supported) return updateState.unsupported;
+	if (u.kind === 'packages' && u.security) return updateState.security;
+	if (u.kind === 'reboot') return updateState.reboot;
+	if (u.kind === 'abilities') return updateState.abilities;
+	return updateState.available;
+}
+
+/** The button that hides an update from the list (the "not needed" routes), and what it
+ * means. Always "Skip …", so it reads the same on every row. */
+export function skipOf(u: Update): { label: string; title: string } {
+	switch (u.kind) {
+		case 'container':
+			return { label: 'Skip this version', title: 'Hide it; a newer version shows again' };
+		case 'firmware':
+			return { label: 'Skip this version', title: 'Hide this release; a newer one shows again' };
+		case 'packages':
+			return {
+				label: 'Skip these updates',
+				title: 'Hide these packages; other package updates show again'
+			};
+		case 'reboot':
+			return {
+				label: 'Skip this reboot',
+				title: 'Stop asking; a reboot for other packages shows again'
+			};
+		case 'abilities':
+		case 'scripts':
+			return { label: 'Skip these abilities', title: 'Stop offering them for this device' };
+	}
+}
+
+/** What has to be set up on the device before Kastellan can do it from here (null: nothing):
+ * its actor for containers, packages and reboots, its OpenWrt login for firmware. */
+export function setupFor(u: Update): { label: string; href: string; title: string } | null {
+	const href = `/devices/${encodeURIComponent(u.device.id)}?tab=setup`;
+	if (u.kind === 'firmware')
+		return u.device.openwrt
+			? null
+			: {
+					label: 'Set up the OpenWrt login',
+					href,
+					title: 'Kastellan updates firmware through its login on the device'
+				};
+	if (u.kind === 'container' || u.kind === 'packages' || u.kind === 'reboot')
+		return u.device.act
+			? null
+			: {
+					label: 'Set up actions',
+					href,
+					title: `Kastellan's actor on ${u.device.name} runs updates and reboots; set it up first`
+				};
+	return null;
+}

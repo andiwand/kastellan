@@ -25,7 +25,10 @@
 			<h1 class="text-title">{title}</h1>
 			{#if summary}<p class="mt-1 max-w-2xl text-body text-muted">{summary}</p>{/if}
 		</div>
-		{#if actions}<div class="flex flex-wrap items-center gap-2">{@render actions()}</div>{/if}
+		<!-- On a phone the actions get their own row under the title, so neither is squeezed. -->
+		{#if actions}<div class="flex flex-wrap items-center gap-2 max-sm:w-full">
+				{@render actions()}
+			</div>{/if}
 	</div>
 	{#if tabs}<div class="mt-4">{@render tabs()}</div>{/if}
 	{#if controls}<div class="mt-4 flex flex-wrap items-center gap-3">{@render controls()}</div>{/if}

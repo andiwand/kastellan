@@ -75,7 +75,7 @@
 	type Event = SignIn & { i: number };
 	const sourceColumns: Column<SignInSource>[] = [
 		{ key: 'from', label: 'From', cell: sourceAddress },
-		{ key: 'why', label: 'Why', cell: sourceFlags },
+		{ key: 'why', label: 'Why', wrap: true, cell: sourceFlags },
 		{
 			key: 'where',
 			label: 'Where',

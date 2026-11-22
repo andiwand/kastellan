@@ -179,7 +179,13 @@ export const updateState = {
 		tone: 'critical',
 		title: 'It gets no more security fixes'
 	},
-	unknown: { word: 'Can’t be checked', tone: 'neutral' }
+	unknown: { word: 'Can’t be checked', tone: 'neutral' },
+	reboot: {
+		word: 'Reboot waiting',
+		tone: 'accent',
+		title: 'Installed updates take effect after a reboot'
+	},
+	abilities: { word: 'New abilities', tone: 'accent', title: 'Kastellan can do more there' }
 } satisfies Record<string, State>;
 
 /** A certificate Kastellan watches. */

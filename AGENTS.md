@@ -177,6 +177,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     Applying a channel plan scans again two minutes later. Clients with their radio link
     (`openwrt.client.assoc_client`: signal, SNR, rates both ways; FRITZ!Box: percent and speed)
     and what is off (`wifi.diagnose`); radios' regulatory `country` (one for all: `country_note`).
+    `wifi.findings`: the Wi-Fi page's Findings (sentences with a fix and an `action` kind:
+    passwords/encryption that differ, open or WPA networks, WPS, our radios' channels overlapping
+    over OpenWrt and FRITZ!Box (meshed radios excepted), FRITZ!Mesh weak links, weak clients,
+    no scan, read errors, and each group's `roaming.check` without its channel findings; `alarms`
+    names the alarm keys saying the same).
   - `roaming.py`: roaming in groups. `check` (group page): 802.11r with one mobility domain and
     k/v per shared network, channels apart (not for meshed radios), usteer on every member and
     each seeing the others (usteer `remote_info` hosts vs. the members' addresses), memory.
@@ -520,6 +525,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     (1 h · 24 h · 7 d · 30 d, in hours), `Tile`, `StateBadge`/`StateDot`. Type and spacing scale
     in `layout.css` (`text-title` 24, `text-section`/`text-body` 14, `text-cell` 13, `text-meta`
     12 px; `h-row` 44 px; `mt-section`).
+  - Wi-Fi (`src/lib/wifi.ts`: signal words Good/Fair/Weak, access point rows incl. FRITZ!Mesh
+    repeaters, channel use per band, `openFindings`): entity components `WifiFindings`,
+    `WifiClientsTable`, `AccessPointsTable`, `WifiNetworksTable`, `ChannelChart`, `ChannelPlan`,
+    each with a `device` filter for device pages.
   - Dialogs: `use:modal` (`src/lib/modal.ts`) opens a `<dialog>` and locks the page's scroll.
   - Components: `UptimeStrip` (one bar per bucket, hover tooltip), `LatencyChart` (line + area,
     crosshair), `StatusBadge`/`StatusDot` (a device or check status as `ui/StateBadge`/`StateDot`), `KindIcon`, `Logo`.
@@ -535,11 +544,18 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     and `/services`; `ActivityItem` (an up/down or a software update).
   - `UptimeStrip` merges neighbouring buckets (`mergeBuckets`) so a bar keeps ~5 px; it never
     overflows a narrow column.
-  - Routes: `/` overview, `/services` (every tcp/http check on every device), `/devices` (list, or networks with `?view=graph`; search and filters
-    apply to both, the networks view fades non-matches), `/groups`, `/updates`, `/vpn`, `/keys`,
-    `/internet`, `/wifi`, `/logs`, `/backups`,
-    `/settings` (tabs: forms, `?tab=access` Kastellan's SSH key, `?tab=file` config.yaml; `/config`
-    and `/access` redirect there), `/devices/[id]`. Watching and setting up are split everywhere
+  - Navigation (`src/lib/nav.ts`): the sidebar groups about ten places (Overview, Devices;
+    Network: Internet, Wi-Fi, VPN; Workloads: Services, Containers & VMs; Maintenance: Updates,
+    Backups, Logs, Sign-ins; Settings), badges from the attention model (`badgeOf`); the phone's
+    bottom bar has Overview, Devices, Internet, Wi-Fi and More (a sheet with the rest; its badge
+    carries the Updates count). Routes: `/` overview, `/services` (every tcp/http check on every device), `/devices` (list, or networks with `?view=graph`; search and filters
+    apply to both, the networks view fades non-matches), `/groups`, `/updates` (grouped by urgency:
+    security and out of support, reboots, the rest, Kastellan's helpers; `updates.ts` `byUrgency`),
+    `/vpn`, `/internet` (a sentence and the way out saying where it is slow or down: `internet.ts`
+    `diagnose`), `/wifi`, `/logs`, `/backups`, `/signins`, `/containers` (Containers & VMs:
+    `?tab=vms`; `/vms` redirects there),
+    `/settings` (tabs: forms, `?tab=access` Kastellan's SSH key, `?tab=keys` the key rings,
+    `?tab=file` config.yaml; `/config`, `/access` and `/keys` redirect there), `/devices/[id]`. Watching and setting up are split everywhere
     (`Tabs`): a device has Status / Setup / Config (`?tab=setup|config`, Config with a Form | YAML
     switch, `&view=yaml`), the VPN Clients / Setup, Groups Status / Setup; Setup and Config are
     for admins, observers see Status only. Adding a device is an inline form on `/devices`.

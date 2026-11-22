@@ -1,5 +1,15 @@
 import { expect, it } from 'vitest';
-import { containerAsk, sameTagUpdates, tagOf, updatesOf } from './updates';
+import {
+	byUrgency,
+	containerAsk,
+	sameTagUpdates,
+	setupFor,
+	skipOf,
+	tagOf,
+	updateStateOf,
+	updatesOf,
+	urgencyOf
+} from './updates';
 import type { Device } from './api';
 
 const device = (more: Partial<Device>) =>
@@ -76,4 +86,55 @@ it('takes a missing target (WUD) as a new build of the same tag', () => {
 	]);
 	expect(sameTagUpdates(host.containers!).map((c) => c.key)).toEqual(['a', 'b']);
 	expect(tagOf(null)).toBeUndefined();
+});
+
+it('puts security fixes and firmware out of support first, then reboots, then the rest', () => {
+	const host = device({
+		id: 'srv',
+		kind: 'linux',
+		act: true,
+		host_report: { updates: { available: 4, security: 1, reboot: true } },
+		containers: [
+			{ key: 'app', name: 'app', tag: '1', update: true, unchecked: null, update_to: '2' }
+		] as Device['containers']
+	} as Partial<Device>);
+	const ap = device({
+		router: { firmware: { current: '22.03', next_step: '23.05', supported: false } }
+	} as Partial<Device>);
+	const helper = device({ id: 'h', outdated_scripts: ['collector'] });
+	const rows = byUrgency(updatesOf([helper, host, ap]));
+	expect(rows.map((u) => [u.kind, urgencyOf(u)])).toEqual([
+		['firmware', 'urgent'],
+		['packages', 'urgent'],
+		['reboot', 'reboot'],
+		['container', 'other'],
+		['scripts', 'kastellan']
+	]);
+	expect(rows.map((u) => updateStateOf(u).word)).toEqual([
+		'Out of support',
+		'Security update',
+		'Reboot waiting',
+		'Update available',
+		'Update available'
+	]);
+});
+
+it('says what to set up instead of a blocker, and skips with one verb', () => {
+	const [pk] = updatesOf([
+		device({
+			id: 'srv',
+			name: 'Server',
+			host_report: { updates: { available: 2 } }
+		} as Partial<Device>)
+	]);
+	expect(setupFor(pk)).toMatchObject({ label: 'Set up actions', href: '/devices/srv?tab=setup' });
+	expect(setupFor({ ...pk, device: { ...pk.device, act: true } as Device })).toBeNull();
+	const fw = updatesOf([
+		device({
+			router: { firmware: { current: 'a', next_step: 'b', supported: true } }
+		} as Partial<Device>)
+	])[0];
+	expect(setupFor(fw)?.label).toBe('Set up the OpenWrt login');
+	expect(skipOf(fw).label).toBe('Skip this version');
+	expect(skipOf(pk).label).toMatch(/^Skip /);
 });

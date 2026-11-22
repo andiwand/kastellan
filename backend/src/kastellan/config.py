@@ -768,7 +768,7 @@ class RingSettings(BaseModel):
             if way == "env" and not re.match(r"^[A-Z_][A-Z0-9_]{0,63}$", source):
                 raise ValueError(f"unlock: env {source!r} isn't a variable name")
         if "config" in (self.unlock or []) and not self.key:
-            raise ValueError("unlock: config needs the ring's key (made on the Keys page)")
+            raise ValueError("unlock: config needs the ring's key (made under Settings → Keys)")
         return self
 
 

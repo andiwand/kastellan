@@ -9,13 +9,16 @@
 	import WebSetup from '#lib/components/WebSetup.svelte';
 	import Tabs from '#lib/components/Tabs.svelte';
 	import HubResources from '#lib/components/HubResources.svelte';
+	import KeysPanel from '#lib/components/KeysPanel.svelte';
+	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 
-	/** Kastellan's settings: as forms, its own SSH key (Access), what it costs the machine
-	 * (Resources), or config.yaml itself. */
-	type Tab = 'settings' | 'access' | 'web' | 'resources' | 'file';
+	/** Kastellan's settings: as forms, its own SSH key (Access), the key rings (Keys; /keys
+	 * redirects here), what it costs the machine (Resources), or config.yaml itself. */
+	type Tab = 'settings' | 'access' | 'keys' | 'web' | 'resources' | 'file';
+	const TABS: Tab[] = ['settings', 'access', 'keys', 'web', 'resources', 'file'];
 	const tab = $derived.by((): Tab => {
-		const t = page.url.searchParams.get('tab');
-		return t === 'file' || t === 'access' || t === 'web' || t === 'resources' ? t : 'settings';
+		const t = page.url.searchParams.get('tab') as Tab | null;
+		return t && TABS.includes(t) ? t : 'settings';
 	});
 
 	function show(t: Tab) {
@@ -26,27 +29,28 @@
 
 <svelte:head><title>Settings · Kastellan</title></svelte:head>
 
-<h1 class="text-2xl font-semibold tracking-tight">Settings</h1>
-<p class="mt-1 max-w-2xl text-sm text-muted">
-	Kastellan's own settings. Devices are set on their pages, groups on Groups, the VPN on VPN.
-</p>
-
-<div class="mt-5">
-	<Tabs
-		tabs={[
-			{ id: 'settings', label: 'Settings' },
-			{ id: 'access', label: 'Access' },
-			{ id: 'web', label: 'Names & HTTPS' },
-			{ id: 'resources', label: 'Resources' },
-			{ id: 'file', label: 'config.yaml', mono: true }
-		]}
-		current={tab}
-		onselect={show}
-	/>
-</div>
+<PageHeader
+	title="Settings"
+	summary="Kastellan's own settings. Devices are set on their pages, groups on Groups, the VPN on VPN."
+/>
+<!-- The tabs sit outside the header: each tab's content brings its own gap above. -->
+<Tabs
+	tabs={[
+		{ id: 'settings', label: 'Settings' },
+		{ id: 'access', label: 'Access' },
+		{ id: 'keys', label: 'Keys' },
+		{ id: 'web', label: 'Names & HTTPS' },
+		{ id: 'resources', label: 'Resources' },
+		{ id: 'file', label: 'config.yaml', mono: true }
+	]}
+	current={tab}
+	onselect={show}
+/>
 
 {#if tab === 'access'}
 	<AccessPanel />
+{:else if tab === 'keys'}
+	<KeysPanel />
 {:else if tab === 'web'}
 	<WebSetup />
 {:else if tab === 'resources'}

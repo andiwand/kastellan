@@ -13,6 +13,7 @@
 		mono?: boolean; // identifiers: an address, an image
 		width?: string; // a CSS width, e.g. '7rem'
 		grow?: boolean; // takes the width that is left; long text is cut with "…"
+		wrap?: boolean; // its text may wrap (other cells keep to one line, so a long column can't squeeze them)
 		title?: string; // the header's tooltip: what the column means
 		value?: (row: T) => string | number | null | undefined; // plain text ('–' when empty)
 		cell?: Snippet<[T]>; // anything else: a badge, a link, two lines
@@ -65,7 +66,7 @@
 			right ? 'text-right' : '',
 			c.numeric ? 'tabular' : '',
 			c.mono ? 'font-mono' : '',
-			c.grow ? 'w-full max-w-0' : ''
+			c.grow ? 'w-full max-w-0' : c.wrap ? '' : 'whitespace-nowrap'
 		].join(' ');
 	}
 	function toggle(row: T) {
@@ -123,7 +124,10 @@
 				>
 					{#each columns as c, j (c.key)}
 						<td class="px-3 py-2 align-middle first:pl-4 last:pr-4 {cellClass(c)}">
-							<div class={c.grow ? 'min-w-0 truncate' : ''}>
+							<div
+								class={c.grow ? 'min-w-0 truncate' : ''}
+								title={c.grow && !c.cell ? String(c.value?.(row) ?? '') || undefined : undefined}
+							>
 								{#if c.cell}
 									{@render c.cell(row)}
 								{:else}

@@ -127,7 +127,12 @@
 				<p class="text-xs text-muted">Loading…</p>
 			{:else if !ring.vault}
 				<p class="text-xs text-muted">
-					Logins are kept in the key rings: make them on the Keys page.
+					Logins are kept in the key rings: make them under <a
+						class="underline"
+						href="/settings?tab=keys"
+					>
+						Settings → Keys
+					</a>.
 				</p>
 			{:else if ring && !ring.ring_open}
 				<p class="text-xs text-muted">The People key ring is locked: sign in again to open it.</p>

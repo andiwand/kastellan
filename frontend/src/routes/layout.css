@@ -56,9 +56,9 @@
 		--warning-text: #fab219;
 		--critical: #d44848;
 		--critical-text: #f06a6a;
-		--offline: #4d5563;
+		--offline: #5a6372; /* neutral dots stay visible on surface-2 */
 		--empty: #232831;
-		--grid: #2c2c2a;
+		--grid: #262b33;
 		--good-soft: color-mix(in srgb, var(--good) 45%, var(--surface));
 		--terminal-bg: #0d1015;
 		--shadow: 0 1px 2px rgb(0 0 0 / 0.4);

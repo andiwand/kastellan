@@ -2,17 +2,20 @@
 	import './layout.css';
 	import { page } from '$app/state';
 	import { store } from '#lib/state.svelte.js';
-	import { attentionHeadline } from '#lib/glossary.js';
+	import { badgeOf, isActive, moreBadge, navFor, type NavItem } from '#lib/nav.js';
+	import { toneColor } from '#lib/states.js';
+	import { modal } from '#lib/modal.js';
 	import { ago } from '#lib/format.js';
 	import Logo from '#lib/components/Logo.svelte';
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
 	import MonitorSmartphone from '@lucide/svelte/icons/monitor-smartphone';
 	import Container from '@lucide/svelte/icons/container';
-	import ServerCog from '@lucide/svelte/icons/server-cog';
 	import AppWindow from '@lucide/svelte/icons/app-window';
 	import GlobeLock from '@lucide/svelte/icons/globe-lock';
 	import ShieldCheck from '@lucide/svelte/icons/shield-check';
 	import LockKeyhole from '@lucide/svelte/icons/lock-keyhole';
+	import Ellipsis from '@lucide/svelte/icons/ellipsis';
+	import X from '@lucide/svelte/icons/x';
 	import Settings from '@lucide/svelte/icons/settings';
 	import ScrollText from '@lucide/svelte/icons/scroll-text';
 	import Globe from '@lucide/svelte/icons/globe';
@@ -29,42 +32,46 @@
 
 	let { children }: LayoutProps = $props();
 	let pushOpen = $state(false); // notifications on this device (web push)
+	let moreOpen = $state(false); // the phone's More sheet
 
 	$effect(() => store.use());
 
-	// `admin`: only for admins (password hashes, keys, Wi-Fi settings). In menu order.
-	const nav: {
-		href: string;
-		label: string;
-		short?: string;
-		icon: typeof LayoutDashboard;
-		admin?: boolean;
-	}[] = [
-		{ href: '/', label: 'Overview', icon: LayoutDashboard },
-		{ href: '/devices', label: 'Devices', icon: MonitorSmartphone },
-		{ href: '/internet', label: 'Internet', icon: Globe },
-		{ href: '/wifi', label: 'Wi-Fi', icon: Wifi, admin: true },
-		{ href: '/containers', label: 'Containers', icon: Container },
-		{ href: '/vms', label: 'Virtual machines', short: 'VMs', icon: ServerCog },
-		{ href: '/services', label: 'Services', icon: AppWindow },
-		{ href: '/vpn', label: 'VPN', icon: GlobeLock },
-		{ href: '/signins', label: 'Sign-ins', icon: ShieldCheck, admin: true },
-		{ href: '/logs', label: 'Logs', icon: ScrollText, admin: true },
-		{ href: '/backups', label: 'Backups', icon: DatabaseBackup, admin: true },
-		{ href: '/updates', label: 'Updates', icon: CircleArrowUp },
-		{ href: '/keys', label: 'Keys', icon: LockKeyhole, admin: true },
-		{ href: '/settings', label: 'Settings', icon: Settings, admin: true }
-	];
-	const shownNav = $derived(nav.filter((i) => !i.admin || store.me?.role === 'admin'));
-	const active = (href: string) =>
-		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
-	// Every badge counts from the one attention model (attention.ts): Overview the issues (as
-	// its headline), Devices those whose state needs attention (its Problems filter), Updates
-	// every update waiting (its list).
-	const issues = $derived(store.attention.count);
-	const issueTone = $derived(store.attention.tone === 'critical' ? 'critical' : 'warning');
-	const attention = $derived(store.attention.problemDevices.length);
-	const waiting = $derived(store.attention.updates.length);
+	const ICON: Record<string, typeof LayoutDashboard> = {
+		overview: LayoutDashboard,
+		devices: MonitorSmartphone,
+		internet: Globe,
+		wifi: Wifi,
+		vpn: GlobeLock,
+		services: AppWindow,
+		containers: Container,
+		updates: CircleArrowUp,
+		backups: DatabaseBackup,
+		logs: ScrollText,
+		signins: ShieldCheck,
+		settings: Settings
+	};
+	const groups = $derived(navFor(store.me?.role === 'admin'));
+	const items = $derived(groups.flatMap((g) => g.items));
+	const phoneItems = $derived(items.filter((i) => i.phone));
+	const moreGroups = $derived(
+		groups
+			.map((g) => ({ ...g, items: g.items.filter((i) => !i.phone) }))
+			.filter((g) => g.items.length)
+	);
+	const active = (item: NavItem) => isActive(item, page.url.pathname);
+	const moreActive = $derived(moreGroups.some((g) => g.items.some(active)));
+	// Every badge counts from the one attention model (attention.ts, nav.ts).
+	const badge = (item: NavItem) => badgeOf(item.href, store.attention);
+	const more = $derived(
+		moreBadge(
+			moreGroups.flatMap((g) => g.items),
+			store.attention
+		)
+	);
+	$effect(() => {
+		void page.url.pathname;
+		moreOpen = false; // a place was chosen
+	});
 	// Before the first answer it is connecting, not unreachable (no red flash on every load).
 	const link = $derived(store.error ? 'down' : store.updated != null ? 'up' : 'connecting');
 </script>
@@ -92,61 +99,69 @@
 		<aside
 			class="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-line bg-surface lg:flex"
 		>
-			<a href="/" class="flex h-16 items-center gap-2.5 px-5">
+			<a href="/" class="flex h-16 shrink-0 items-center gap-2.5 px-5">
 				<Logo />
 				<span class="text-[15px] font-semibold tracking-tight">Kastellan</span>
 			</a>
-			<nav class="flex flex-col gap-0.5 px-3 pt-2" aria-label="Main">
-				{#each shownNav as item (item.href)}
-					<a
-						href={item.href}
-						class="group flex h-9 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors {active(
-							item.href
-						)
-							? 'bg-accent-soft text-accent'
-							: 'text-muted hover:bg-surface-2 hover:text-text'}"
-						aria-current={active(item.href) ? 'page' : undefined}
-					>
-						<item.icon class="size-4" strokeWidth={1.9} />
-						{item.label}
-						{#if item.href === '/' && issues}
-							<span
-								class="tabular ml-auto rounded-full px-1.5 text-[11px] leading-5 font-semibold"
-								style:background="color-mix(in srgb, var(--{issueTone}) 14%, transparent)"
-								style:color="var(--{issueTone}-text)"
-								title={attentionHeadline(issues)}
-							>
-								{issues}
-							</span>
-						{:else if item.href === '/devices' && attention}
-							<span
-								class="tabular ml-auto rounded-full px-1.5 text-[11px] leading-5 font-semibold"
-								style:background="color-mix(in srgb, var(--critical) 14%, transparent)"
-								style:color="var(--critical-text)"
-							>
-								{attention}
-							</span>
-						{:else if item.href === '/updates' && runner.working}
-							<span
-								class="tabular ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-accent"
-								title="Updates running"
-							>
+			<nav class="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-1 pb-3" aria-label="Main">
+				{#each groups as g, gi (gi)}
+					{#if g.label}
+						<p class="mt-4 mb-1 px-3 text-meta font-medium text-faint">{g.label}</p>
+					{:else if gi > 0}
+						<div class="mt-3"></div>
+					{/if}
+					{#each g.items as item (item.href)}
+						{@const Icon = ICON[item.icon]}
+						<a
+							href={item.href}
+							class="group flex h-9 shrink-0 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors {active(
+								item
+							)
+								? 'bg-accent-soft text-accent'
+								: 'text-muted hover:bg-surface-2 hover:text-text'}"
+							aria-current={active(item) ? 'page' : undefined}
+						>
+							<Icon class="size-4" strokeWidth={1.9} />
+							{item.label}
+							{#if item.href === '/updates' && runner.working}
 								<span
-									class="size-2.5 animate-spin rounded-full border-2 border-line border-t-accent"
-								></span>
-								{runner.progress.done + runner.progress.failed}/{runner.progress.total}
-							</span>
-						{:else if item.href === '/updates' && waiting}
-							<span
-								class="tabular ml-auto rounded-full bg-surface-3 px-1.5 text-[11px] leading-5 font-semibold text-muted"
-							>
-								{waiting}
-							</span>
-						{/if}
-					</a>
+									class="tabular ml-auto inline-flex items-center gap-1 text-[11px] font-semibold text-accent"
+									title="Updates running"
+								>
+									<span
+										class="size-2.5 animate-spin rounded-full border-2 border-line border-t-accent"
+									></span>
+									{runner.progress.done + runner.progress.failed}/{runner.progress.total}
+								</span>
+							{:else}
+								{@const b = badge(item)}
+								{#if b?.count}
+									<span
+										class="tabular ml-auto rounded-full px-1.5 text-[11px] leading-5 font-semibold {b.tone ===
+										'neutral'
+											? 'bg-surface-3 text-muted'
+											: ''}"
+										style:background={b.tone === 'neutral'
+											? undefined
+											: `color-mix(in srgb, ${toneColor[b.tone].fill} 14%, transparent)`}
+										style:color={b.tone === 'neutral' ? undefined : toneColor[b.tone].text}
+										title={b.title}
+									>
+										{b.count}
+									</span>
+								{:else if b}
+									<span
+										class="mr-1 ml-auto size-2 rounded-full"
+										style:background={toneColor[b.tone].fill}
+										title={b.title}
+									></span>
+								{/if}
+							{/if}
+						</a>
+					{/each}
 				{/each}
 			</nav>
-			<div class="mt-auto space-y-3 border-t border-line p-4 text-xs text-muted">
+			<div class="shrink-0 space-y-3 border-t border-line p-4 text-xs text-muted">
 				{#if store.health?.demo}
 					<p class="rounded-lg border border-dashed border-line-strong px-3 py-2 leading-relaxed">
 						<span class="font-medium text-text">Demo mode.</span> A made-up network with simulated results.
@@ -314,7 +329,11 @@
 						push){store.me?.role === 'admin' ? '.' : ': waiting for an admin to sign in.'}
 					</span>
 					{#if store.me?.role === 'admin'}
-						<a href="/keys" class="ml-auto text-sm font-medium" style:color="var(--warning-text)">
+						<a
+							href="/settings?tab=keys"
+							class="ml-auto text-sm font-medium"
+							style:color="var(--warning-text)"
+						>
 							Unlock
 						</a>
 					{/if}
@@ -330,7 +349,11 @@
 					<span>
 						<b style:color="var(--critical-text)">The key rings can't be read.</b> What needs them waits.
 					</span>
-					<a href="/keys" class="ml-auto text-sm font-medium" style:color="var(--critical-text)">
+					<a
+						href="/settings?tab=keys"
+						class="ml-auto text-sm font-medium"
+						style:color="var(--critical-text)"
+					>
 						Details
 					</a>
 				</div>
@@ -338,43 +361,148 @@
 			{@render children()}
 		</main>
 
-		<!-- Tab bar (narrow screens) -->
-		<!-- Ten places don't fit side by side on a phone: the bar scrolls sideways instead. -->
+		<!-- Tab bar (narrow screens): the four places most looked at on a phone, the rest under More. -->
 		<nav
-			class="fixed inset-x-0 bottom-0 z-30 flex [scrollbar-width:none] overflow-x-auto border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden"
+			class="fixed inset-x-0 bottom-0 z-30 flex border-t border-line bg-surface/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden"
 			aria-label="Main"
 		>
-			{#each shownNav as item (item.href)}
+			{#each phoneItems as item (item.href)}
+				{@const Icon = ICON[item.icon]}
+				{@const b = badge(item)}
 				<a
 					href={item.href}
-					class="relative flex h-16 min-w-[4.5rem] flex-1 shrink-0 flex-col items-center justify-center gap-1 px-1 text-[11px] font-medium {active(
-						item.href
+					class="relative flex h-16 min-w-0 flex-1 flex-col items-center justify-center gap-1 px-1 text-[11px] font-medium {active(
+						item
 					)
 						? 'text-accent'
 						: 'text-muted'}"
-					aria-current={active(item.href) ? 'page' : undefined}
+					aria-current={active(item) ? 'page' : undefined}
 				>
-					<item.icon class="size-5" strokeWidth={1.9} />
-					{item.short ?? item.label}
-					{#if item.href === '/' && issues}
+					<Icon class="size-5" strokeWidth={1.9} />
+					<span class="max-w-full truncate">{item.short ?? item.label}</span>
+					{#if b}
 						<span
 							class="absolute top-2 left-1/2 ml-2 size-2 rounded-full"
-							style:background="var(--{issueTone})"
-						></span>
-					{:else if item.href === '/devices' && attention}
-						<span
-							class="absolute top-2 left-1/2 ml-2 size-2 rounded-full"
-							style:background="var(--critical)"
-						></span>
-					{:else if item.href === '/updates' && runner.working}
-						<span
-							class="absolute top-2 left-1/2 ml-2 size-2.5 animate-spin rounded-full border-2 border-line border-t-accent"
-							title="Updates running"
+							style:background={toneColor[b.tone].fill}
+							title={b.title}
 						></span>
 					{/if}
 				</a>
 			{/each}
+			<button
+				class="relative flex h-16 min-w-0 flex-1 flex-col items-center justify-center gap-1 px-1 text-[11px] font-medium {moreActive ||
+				moreOpen
+					? 'text-accent'
+					: 'text-muted'}"
+				aria-haspopup="dialog"
+				aria-expanded={moreOpen}
+				onclick={() => (moreOpen = true)}
+			>
+				<Ellipsis class="size-5" strokeWidth={1.9} />
+				More
+				{#if runner.working}
+					<span
+						class="absolute top-2 left-1/2 ml-2 size-2.5 animate-spin rounded-full border-2 border-line border-t-accent"
+						title="Updates running"
+					></span>
+				{:else if more?.count}
+					<span
+						class="tabular absolute top-1.5 left-1/2 ml-1.5 min-w-4 rounded-full px-1 text-center text-[10px] leading-4 font-semibold {more.tone ===
+						'neutral'
+							? 'bg-surface-3 text-muted'
+							: ''}"
+						style:background={more.tone === 'neutral'
+							? undefined
+							: `color-mix(in srgb, ${toneColor[more.tone].fill} 22%, var(--surface))`}
+						style:color={more.tone === 'neutral' ? undefined : toneColor[more.tone].text}
+						title={more.title}
+					>
+						{more.count}
+					</span>
+				{:else if more}
+					<span
+						class="absolute top-2 left-1/2 ml-2 size-2 rounded-full"
+						style:background={toneColor[more.tone].fill}
+						title={more.title}
+					></span>
+				{/if}
+			</button>
 		</nav>
+		{#if moreOpen}
+			<!-- The rest of the places, as a sheet from the bottom. -->
+			<dialog
+				use:modal
+				onclose={() => (moreOpen = false)}
+				onclick={(e) => {
+					if (e.target === e.currentTarget) moreOpen = false; // the backdrop
+				}}
+				class="mx-0 mt-auto mb-0 max-h-[85dvh] w-full max-w-none overflow-y-auto rounded-t-2xl border border-b-0 border-line bg-surface p-0 text-text shadow-pop backdrop:bg-black/40 lg:hidden"
+				aria-label="More places"
+			>
+				<div class="flex items-center justify-between px-5 pt-4 pb-1">
+					<h2 class="text-section">More</h2>
+					<button
+						class="grid size-8 place-items-center rounded-lg text-muted hover:text-text"
+						onclick={() => (moreOpen = false)}
+					>
+						<X class="size-5" /><span class="sr-only">Close</span>
+					</button>
+				</div>
+				<nav class="px-3 pb-[calc(env(safe-area-inset-bottom)+1rem)]" aria-label="More">
+					{#each moreGroups as g, gi (gi)}
+						{#if g.label}
+							<p class="mt-3 mb-1 px-3 text-meta font-medium text-faint">{g.label}</p>
+						{:else}
+							<div class="mt-3 border-t border-line"></div>
+						{/if}
+						{#each g.items as item (item.href)}
+							{@const Icon = ICON[item.icon]}
+							{@const b = badge(item)}
+							<a
+								href={item.href}
+								class="flex h-11 items-center gap-3 rounded-lg px-3 text-body font-medium {active(
+									item
+								)
+									? 'bg-accent-soft text-accent'
+									: 'text-text hover:bg-surface-2'}"
+								aria-current={active(item) ? 'page' : undefined}
+								onclick={() => (moreOpen = false)}
+							>
+								<Icon class="size-5 text-muted" strokeWidth={1.9} />
+								{item.label}
+								{#if b?.count}
+									<span class="tabular ml-auto text-meta text-muted" title={b.title}>
+										{b.count}
+									</span>
+								{:else if b}
+									<span
+										class="mr-1 ml-auto size-2 rounded-full"
+										style:background={toneColor[b.tone].fill}
+										title={b.title}
+									></span>
+								{/if}
+							</a>
+						{/each}
+					{/each}
+					{#if store.health?.demo || (store.me && !store.me.signin)}
+						<div class="mt-4 space-y-2 border-t border-line px-3 pt-3 text-meta text-muted">
+							{#if store.health?.demo}
+								<p>
+									<span class="font-medium text-text">Demo mode.</span> A made-up network with simulated
+									results.
+								</p>
+							{/if}
+							{#if store.me && !store.me.signin}
+								<p>
+									<span class="font-medium text-text">Sign-in is off.</span> Anyone who reaches this page
+									is an admin; the terminal and remote desktop stay locked.
+								</p>
+							{/if}
+						</div>
+					{/if}
+				</nav>
+			</dialog>
+		{/if}
 	</div>
 	{#if pushOpen}<PushDialog onclose={() => (pushOpen = false)} />{/if}
 {/if}

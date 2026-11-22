@@ -13,10 +13,17 @@
 	import StateBadge from '#lib/components/ui/StateBadge.svelte';
 	import { count } from '#lib/glossary.js';
 	import Search from '@lucide/svelte/icons/search';
+	import VmsTable from '#lib/components/VmsTable.svelte';
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 
-	/** Every container on every host (Docker, through the collector or WUD), grouped by host:
-	 * what runs, what is stopped, what has a newer image; started, stopped, restarted and updated
-	 * where the host's actor allows it, through the same queue as the Updates page. */
+	/** Containers & VMs, a tab each (/vms redirects to the second).
+	 * Containers: every container on every host (Docker, through the collector or WUD), grouped
+	 * by host: what runs, what is stopped, what has a newer image; started, stopped, restarted
+	 * and updated where the host's actor allows it, through the same queue as the Updates page.
+	 * Virtual machines: every VM on every host (libvirt/KVM, through the host's collector);
+	 * started, shut down, restarted or forced off where the host's actor allows it. */
+	type Tab = 'containers' | 'vms';
 	type Filter = 'all' | 'running' | 'stopped' | 'updates';
 	let filter = $state<Filter>('all');
 	let query = $state('');
@@ -24,6 +31,14 @@
 
 	const admin = $derived(store.me?.role === 'admin' && !!store.me.user);
 	const hosts = $derived((store.devices ?? []).filter((d) => d.containers?.length));
+	const vmHosts = $derived((store.devices ?? []).filter((d) => d.vms?.length));
+	// VMs when asked for, or when there are VMs and no containers.
+	const tab = $derived<Tab>(
+		page.url.searchParams.get('tab') === 'vms' || (!hosts.length && vmHosts.length)
+			? 'vms'
+			: 'containers'
+	);
+	const vmCount = $derived(vmHosts.reduce((n, d) => n + (d.vms?.length ?? 0), 0));
 	const matches = (c: Container) =>
 		(filter === 'all' ||
 			(filter === 'running' && c.state === 'running') ||
@@ -60,14 +75,29 @@
 	];
 </script>
 
-<svelte:head><title>Containers · Kastellan</title></svelte:head>
+<svelte:head>
+	<title>{tab === 'vms' ? 'Virtual machines' : 'Containers'} · Kastellan</title>
+</svelte:head>
 
 <PageHeader
-	title="Containers"
-	summary="The Docker containers on every host: what runs, what is stopped, and what has a newer image."
+	title="Containers & VMs"
+	summary={tab === 'vms'
+		? 'The virtual machines on every host (libvirt, KVM), as each host’s collector reports them.'
+		: 'The Docker containers on every host: what runs, what is stopped, and what has a newer image.'}
 >
+	{#snippet tabs()}
+		<Tabs
+			label="Containers or virtual machines"
+			tabs={[
+				{ id: 'containers', label: 'Containers', count: all.length },
+				{ id: 'vms', label: 'Virtual machines', count: vmCount }
+			]}
+			current={tab}
+			onselect={(t: Tab) => goto(t === 'vms' ? '?tab=vms' : '?', { replace: true })}
+		/>
+	{/snippet}
 	{#snippet actions()}
-		{#if updatable.length}
+		{#if tab === 'containers' && updatable.length}
 			{#if asking}
 				<span class="flex flex-wrap items-center gap-2 text-xs">
 					Update {count(updatable.length, 'container')}? One after another on each host, hosts side
@@ -91,7 +121,7 @@
 		{/if}
 	{/snippet}
 	{#snippet controls()}
-		{#if hosts.length}
+		{#if tab === 'containers' && hosts.length}
 			<label class="relative w-full sm:w-auto sm:max-w-sm sm:flex-1">
 				<Search
 					class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint"
@@ -115,6 +145,27 @@
 
 {#if store.devices === null}
 	<div class="card h-48 animate-pulse"></div>
+{:else if tab === 'vms'}
+	{#each vmHosts as d, i (d.id)}
+		<Section
+			title={d.name}
+			href="/devices/{d.id}"
+			count={d.vms?.length}
+			first={i === 0}
+			id="host-{d.id}"
+		>
+			{#snippet meta()}
+				{#if d.host_checked}<span>
+						from its collector, {ago(d.host_checked, store.now)} · <ReadAgain device={d.id} />
+					</span>{/if}
+			{/snippet}
+			<VmsTable device={d.id} vms={d.vms ?? []} canAct={!!d.act && admin} />
+		</Section>
+	{:else}
+		<EmptyState
+			text="No virtual machines known yet. Kastellan sees a host's VMs through its collector (set it up on the host's page); the host needs libvirt (virsh)."
+		/>
+	{/each}
 {:else if hosts.length === 0}
 	<EmptyState
 		text="No containers known yet. Kastellan sees a host's containers through its collector (set it up on the host's page) or through WUD."

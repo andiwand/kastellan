@@ -16,11 +16,10 @@
 	import Lock from '@lucide/svelte/icons/lock';
 	import LockOpen from '@lucide/svelte/icons/lock-open';
 	import Plus from '@lucide/svelte/icons/plus';
-	import PageHeader from '#lib/components/ui/PageHeader.svelte';
 	import EmptyState from '#lib/components/ui/EmptyState.svelte';
 	import { WORD } from '#lib/glossary.js';
 
-	/** Key rings (vault.py): Kastellan's secrets and people's logins, encrypted, each ring opened
+	/** Settings' Keys tab. Key rings (vault.py): Kastellan's secrets and people's logins, encrypted, each ring opened
 	 * its own way (an admin signing in, a key file, an environment variable, a key in
 	 * config.yaml) and closed again as its policy says. Nothing in them is shown unless asked
 	 * for, with the password typed again. */
@@ -245,30 +244,29 @@
 	const ringName = (id: string) => vault?.rings.find((r) => r.id === id)?.name ?? id;
 </script>
 
-<svelte:head><title>Keys · Kastellan</title></svelte:head>
-
-<PageHeader
-	title="Keys"
-	summary="Key rings: passwords, tokens and keys, encrypted. Each ring opens its own way, as secure as you choose."
->
-	{#snippet actions()}
-		{#if anyOpen && canChange}
-			<button class="btn btn-sm" disabled={busy} onclick={() => run(() => api.vaultLock())}>
-				<Lock class="size-3.5" /> Lock all
-			</button>
-		{/if}
-	{/snippet}
-</PageHeader>
+<div class="mt-6 flex flex-wrap items-center justify-between gap-3">
+	<p class="max-w-2xl text-body text-muted">
+		Key rings: passwords, tokens and keys, encrypted. Each ring opens its own way, as secure as you
+		choose.
+	</p>
+	{#if anyOpen && canChange}
+		<button class="btn btn-sm" disabled={busy} onclick={() => run(() => api.vaultLock())}>
+			<Lock class="size-3.5" /> Lock all
+		</button>
+	{/if}
+</div>
 
 {#if !admin}
-	<EmptyState kind="unavailable" text={WORD.adminsOnly} />
+	<div class="mt-4"><EmptyState kind="unavailable" text={WORD.adminsOnly} /></div>
 {:else if error && !vault}
 	<!-- Without sign-in (or in demo mode) there are no key rings: a reason, not an error. -->
-	<EmptyState
-		kind={store.me?.user ? 'error' : 'unavailable'}
-		text={store.me?.user ? error : `Key rings need sign-in: ${error}.`}
-		onretry={store.me?.user ? load : undefined}
-	/>
+	<div class="mt-4">
+		<EmptyState
+			kind={store.me?.user ? 'error' : 'unavailable'}
+			text={store.me?.user ? error : `Key rings need sign-in: ${error}.`}
+			onretry={store.me?.user ? load : undefined}
+		/>
+	</div>
 {:else if vault}
 	{#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)" role="alert">
 			{error}
