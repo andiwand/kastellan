@@ -80,15 +80,18 @@
 			key: 'where',
 			label: 'Where',
 			priority: 2,
-			grow: true,
+			wrap: true,
 			value: (s) =>
 				`${s.services.map((x) => SERVICE[x] ?? x).join(', ')} on ${s.devices.map(name).join(', ')}`
 		},
 		{
+			// The longest and least telling: it takes the width that is left and is cut there; the
+			// whole list (up to 30) is its tooltip.
 			key: 'as',
 			label: 'As',
 			priority: 3,
-			value: (s) => s.users.slice(0, 5).join(', ') + (s.users.length > 5 ? ', …' : '')
+			grow: true,
+			value: (s) => s.users.slice(0, 30).join(', ') + (s.users.length > 30 ? ', …' : '')
 		},
 		{ key: 'ok', label: 'Signed in', numeric: true, priority: 3, value: (s) => s.ok },
 		{ key: 'failed', label: 'Failed', numeric: true, value: (s) => s.failed },
