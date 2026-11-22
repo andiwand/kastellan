@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0 (2026-11-22)
+
+Container updates to newer tags, "Not needed" for updates, and much less load on routers' web
+servers (kept connections, rarely changing settings read less often).
+
 ### Upgrading
 
 - Linux hosts: set up the actor and the collector again (Updates says where) for updates to a
