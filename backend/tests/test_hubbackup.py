@@ -566,6 +566,11 @@ def test_recovery_check_opens_the_saved_backup_not_the_live_ring(tmp_path):
         body = {"ring": "kastellan", "recovery": old_key}
         assert client.post("/api/hub-backup/check", json=body, headers=headers).status_code == 409
         assert client.post("/api/hub-backup", headers=headers).json()["local_ok"]
+        hub = client.app.state.hub
+        assert hub.hub_backup.status["versions"] == 1 == hub.hub_backup.generations()
+        vault.lock()  # counted without the key: from the last run's status
+        assert hub.hub_backup.generations() == 1
+        vault.unlock("admin", "password")
         new_key = vault.new_recovery("kastellan")
         assert client.post("/api/hub-backup/check", json=body, headers=headers).json()["right"]
         assert "recovery:kastellan" in client.get("/api/hub-backup").json()["checks"]

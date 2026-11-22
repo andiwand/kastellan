@@ -293,11 +293,9 @@ class HubBackup:
         self.status: dict[str, Any] = {}  # the last run: ok, error, copies per target
 
     def generations(self) -> int | None:
-        """How many backups are kept here (None while their key can't be read)."""
-        try:
-            return len(self.store.snapshots(ID))
-        except Exception:  # no key yet, a locked ring, an older index
-            return None
+        """How many backups are kept here, as the last one counted them (None before one)."""
+        n = (self.status or {}).get("versions")
+        return n if isinstance(n, int) else None
 
     def header(self) -> dict[str, Any] | None:
         try:
@@ -649,6 +647,9 @@ async def _run_once(hub: Any, by: str | None) -> dict[str, Any]:
             "local_ok": datetime.now(UTC).isoformat(timespec="seconds"),
             "new": new,
             "version": snap.id,
+            # How many are kept: read now, while the key is at hand (the index is sealed), so the
+            # Resources page can tell without it.
+            "versions": await blocking(lambda: len(hub.hub_backup.store.snapshots(ID))),
         }
         for t in cfg.targets:
             name = f"{t.device}:{t.path}" if t.device else t.path
