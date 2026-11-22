@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Upgrading
+
+- Set up the Linux collector again (Updates lists it) so containers say which service they
+  serve.
+
+### Added
+
+- A device's own services (an OpenWrt device's init scripts) are kept over time like checks:
+  each has its status, since when, and its uptime in the same row layout as the checks, under
+  the check it answers (dropbear under SSH) or below them. Not started at boot shows grey,
+  not red.
+- A check served by a container names it, and the container says which check it serves (by the
+  ports it publishes).
+
 ## 0.14.0 (2026-11-22)
 
 Vitals for every device, device pages by topic, "Not needed" for every kind of update, a view

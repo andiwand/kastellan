@@ -36,7 +36,8 @@ class Choice(BaseModel):
 
 
 class Install(Choice, Login):
-    pass
+    # Renewing what it has (Updates): the abilities left out weren't chosen against.
+    renew: bool = False
 
 
 class Action(BaseModel):
@@ -125,7 +126,8 @@ def router(hub: Hub) -> APIRouter:
         def after() -> dict[str, Any]:
             setup_run.add_device_key(hub, w.user, client_address(request.scope), id, "act", body.port)
             # What was offered and left out at this setup was a choice: not new any more.
-            hub.offered.passed(id, "actor", set(ADDED["actor"]) - set(body.abilities))
+            if not body.renew:
+                hub.offered.passed(id, "actor", set(ADDED["actor"]) - set(body.abilities))
             # Its scripts are new now: ask again, not in up to ten minutes (Updates says "older").
             setup_run.spawn(hub.poll_actor(id))
             return {}

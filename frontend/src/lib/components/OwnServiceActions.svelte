@@ -3,26 +3,18 @@
 	import { actionsOf, type OwnService } from '#lib/ownServices.js';
 	import LogsDialog from './LogsDialog.svelte';
 
-	/** One of the device's own services: its state, and what may be done (an OpenWrt service on
-	 * Kastellan's list: start, stop, restart, at boot; a failed systemd unit: its log). */
+	/** What may be done to one of the device's own services (an OpenWrt service on Kastellan's
+	 * list: start, stop, restart, at boot; a failed systemd unit: its log), and how it went. Its
+	 * state is the row's (ServicesTable). */
 	let {
 		device,
 		service,
-		canChange = false,
-		named = true
-	}: { device: string; service: OwnService; canChange?: boolean; named?: boolean } = $props();
+		canChange = false
+	}: { device: string; service: OwnService; canChange?: boolean } = $props();
 
 	let busy = $state<string | null>(null);
 	let note = $state<{ ok: boolean; text: string } | null>(null);
 	let logs = $state(false);
-
-	const color = $derived(
-		service.state === 'running'
-			? 'var(--good)'
-			: service.state === 'failed'
-				? 'var(--critical)'
-				: 'var(--line-strong)'
-	);
 
 	async function act(action: string) {
 		busy = action;
@@ -38,15 +30,7 @@
 	}
 </script>
 
-<span class="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
-	<span class="size-1.5 shrink-0 rounded-full" style:background={color}></span>
-	{#if named}<span class="font-mono">{service.name}</span>{/if}
-	<span
-		class="text-muted"
-		style:color={service.state === 'failed' ? 'var(--critical-text)' : undefined}
-	>
-		{service.state}{service.enabled === false ? ' · not at boot' : ''}
-	</span>
+<span class="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs empty:hidden">
 	{#if canChange && service.source === 'openwrt' && service.actable}
 		{#each actionsOf(service) as action (action)}
 			<button

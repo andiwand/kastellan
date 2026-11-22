@@ -137,10 +137,10 @@ def stores(hub: Hub, now: float | None = None) -> list[Store]:
         return str(path.relative_to(data)) if path.is_relative_to(data) else path.name
 
     checks = hub.history.folder
-    days = sorted(checks.glob("????-??-??.csv")) if checks.is_dir() else []
+    days = sorted(checks.glob("????-??-??.csv"))
     logs, vitals_db = hub.logs.path, hub.vitals.path
     net = hub.internet.folder
-    samples = sorted(net.glob("????-??-??.jsonl")) if net.is_dir() else []
+    samples = sorted(net.glob("????-??-??.jsonl"))
     backups = hub.device_backups.folder
     snaps = hub.device_backups.counts()
     backups_used = _size(backups)
@@ -150,6 +150,14 @@ def stores(hub: Hub, now: float | None = None) -> list[Store]:
     hub_copies = hub.hub_backup.folder
     out = [
         by_time("Check history", where(checks), _size(checks), _day_start(days), config.retention_days, now),
+        by_time(
+            "Service history",
+            where(hub.services.history.folder),
+            _size(hub.services.history.folder),
+            _day_start(sorted(hub.services.history.folder.glob("????-??-??.csv"))),
+            config.retention_days,
+            now,
+        ),
         by_time(
             "Central logs",
             where(logs),

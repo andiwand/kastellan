@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { Container } from '#lib/api.js';
+	import type { CheckStatus, Container } from '#lib/api.js';
+	import { serves } from '#lib/ownServices.js';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import JobStatus from './JobStatus.svelte';
 	import LogsDialog from './LogsDialog.svelte';
@@ -16,9 +17,16 @@
 	let {
 		device,
 		containers,
+		checks = [],
 		stale = false,
 		canAct = false
-	}: { device: string; containers: Container[]; stale?: boolean; canAct?: boolean } = $props();
+	}: {
+		device: string;
+		containers: Container[];
+		checks?: CheckStatus[]; // the device's: a container answering one names it
+		stale?: boolean;
+		canAct?: boolean;
+	} = $props();
 
 	let asking = $state<string | null>(null); // a job's key (or "all"): asked once before it runs
 	let logsOf = $state<string | null>(null); // the container whose log is open
@@ -147,7 +155,14 @@
 	<ul class="divide-y divide-line">
 		{#each sorted as c (c.key)}
 			<li class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-3 {cols}">
-				<p class="truncate text-sm font-medium">{c.name}</p>
+				<div class="min-w-0">
+					<p class="truncate text-sm font-medium">{c.name}</p>
+					{#if serves(c, checks).length}<p class="truncate text-xs text-faint">
+							serves {serves(c, checks)
+								.map((k) => k.name)
+								.join(', ')}
+						</p>{/if}
+				</div>
 				<p
 					class="col-span-2 row-start-2 truncate font-mono text-xs text-muted md:col-span-1 md:row-start-auto"
 					title="{c.image}:{c.tag} ({c.image_id})"

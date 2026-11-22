@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import httpx
@@ -50,6 +50,7 @@ class Container:
     # When update_to is a new major version: the newest tag within the running one (or None).
     update_within: str | None = None
     compose: str | None = None  # its compose file (or project), when compose made it
+    ports: list[int] = field(default_factory=list)  # the host's ports it publishes (collector)
 
     @property
     def running_version(self) -> str | None:
@@ -160,6 +161,7 @@ async def from_collector(items: list[Any], registries: Any) -> list[Container]:
                 previous=_text(item.get("previous"), 12) or None,
                 update_within=update.within,
                 compose=_text(item.get("compose"), 300) or None,
+                ports=[p for p in item.get("ports") or [] if type(p) is int],
             )
         )
     return sorted(out, key=lambda c: c.key.lower())

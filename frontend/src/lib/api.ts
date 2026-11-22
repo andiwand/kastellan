@@ -73,6 +73,7 @@ export interface Device {
 	host_report?: HostReport | null;
 	host_forecast?: Record<string, number> | null; // days until full, per mount (disks.py)
 	vitals?: Vitals | null; // CPU, memory, storage, temperature now (vitals.py)
+	services_since?: Record<string, { since: string; since_exact: boolean }>; // own services
 	updates_skipped?: ('firmware' | 'reboot' | 'packages')[]; // said to be not needed (skipped.py)
 	/** libvirt's virtual machines on the host, from its collector (null: it can't tell). */
 	vms?: Vm[] | null;
@@ -497,6 +498,7 @@ export interface Container {
 	unchecked: string | null;
 	previous?: string | null; // the image kept from before its last update (actor), short id
 	compose?: string | null; // its compose file (or project), when compose made it
+	ports?: number[]; // the host's ports it publishes (collector)
 	skipped?: boolean; // its update offer was said to be not needed (Updates leaves it out)
 }
 
@@ -929,6 +931,7 @@ export interface Series {
 	start: string;
 	step_seconds: number;
 	devices: Record<string, Record<string, Bucket[]>>;
+	services?: Record<string, Bucket[]>; // one device's: its own services (own_services.py)
 }
 
 /** Something that happened: a check went up or down, or a service's software changed. */

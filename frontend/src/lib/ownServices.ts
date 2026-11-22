@@ -1,4 +1,4 @@
-import type { CheckStatus, Device } from '#lib/api.js';
+import type { CheckStatus, Container, Device } from '#lib/api.js';
 
 /** A service the device itself reports: an OpenWrt init script (rc list), or a failed systemd
  * unit on a Linux host (its collector). Shown in the device's Services, under the check it
@@ -11,7 +11,8 @@ export interface OwnService {
 	actable: boolean; // Kastellan may start, stop, ... it (OpenWrt: on its services list)
 }
 
-const port = (c: CheckStatus): number | null => {
+/** The port a check asks (tcp, or an http URL's), or null. */
+export const port = (c: CheckStatus): number | null => {
 	if (c.type === 'tcp') return Number(c.target) || null;
 	if (c.type === 'http' && typeof c.target === 'string') {
 		try {
@@ -104,4 +105,21 @@ export function actionsOf(service: OwnService): string[] {
 	if (!protectedService && service.state === 'running') actions.push('stop');
 	if (!protectedService || !service.enabled) actions.push(service.enabled ? 'disable' : 'enable');
 	return actions;
+}
+
+/** The containers that publish the port a check asks: what serves it on the host. */
+export function servedBy(
+	check: CheckStatus,
+	containers: Container[] | null | undefined
+): Container[] {
+	const p = port(check);
+	return p == null ? [] : (containers ?? []).filter((c) => c.ports?.includes(p));
+}
+
+/** The checks a container answers (by a port it publishes). */
+export function serves(container: Container, checks: CheckStatus[]): CheckStatus[] {
+	return checks.filter((c) => {
+		const p = port(c);
+		return p != null && !!container.ports?.includes(p);
+	});
 }

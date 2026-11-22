@@ -392,8 +392,21 @@
 								<a class="btn btn-sm" href="/vpn?tab=setup">VPN setup</a>
 							{/if}
 							{#if u.names.includes('openwrt')}
-								<a class="btn btn-sm" href="/devices/{u.device.id}?tab=setup">OpenWrt setup</a>
+								<button
+									class="btn btn-sm"
+									title="Set up Kastellan's login there again with this Kastellan's helpers, keeping what it may do now (root's password, once)"
+									onclick={() => (renewing = { device: u.device.id, names: ['openwrt'] })}
+								>
+									Renew
+								</button>
 								{#if u.offered?.length}
+									<a
+										class="btn btn-sm"
+										href="/devices/{u.device.id}?tab=setup"
+										title="Tick the new abilities there"
+									>
+										Add abilities
+									</a>
 									<button
 										class="btn btn-sm"
 										title="Stop offering these new abilities"

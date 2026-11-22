@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import type { CheckStatus, Device } from './api';
-import { actionsOf, groupOwn, ownServicesOf } from './ownServices';
+import type { CheckStatus, Container, Device } from './api';
+import { actionsOf, groupOwn, ownServicesOf, servedBy, serves } from './ownServices';
 
 const check = (name: string, type: CheckStatus['type'], target: string | number | null) =>
 	({ name, type, target }) as CheckStatus;
@@ -52,4 +52,15 @@ it('keeps unusual names and external DNS lookups from breaking service grouping'
 	for (const name of ['uhttpd', 'rpcd', 'network', 'firewall'])
 		expect(actionsOf({ ...services[0], name })).toEqual(['restart']);
 	expect(actionsOf({ ...services[0], actable: false })).toEqual([]);
+});
+
+it('connects containers to the checks on the ports they publish', () => {
+	const ha = { name: 'homeassistant', key: 'homeassistant', ports: [8123] } as unknown as Container;
+	const db = { name: 'postgres', key: 'postgres', ports: [] } as unknown as Container;
+	const web = check('home assistant', 'http', 'http://homeserver.lan:8123');
+	const ssh = check('ssh', 'tcp', 22);
+	expect(servedBy(web, [ha, db]).map((c) => c.name)).toEqual(['homeassistant']);
+	expect(servedBy(ssh, [ha, db])).toEqual([]);
+	expect(serves(ha, [web, ssh]).map((c) => c.name)).toEqual(['home assistant']);
+	expect(servedBy(check('ping', 'ping', null), [ha])).toEqual([]);
 });

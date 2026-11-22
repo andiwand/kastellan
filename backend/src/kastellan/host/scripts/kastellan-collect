@@ -339,6 +339,8 @@ def docker():
             "digests": digests[image_id],
             "state": c.get("State", ""),
             "status": c.get("Status", ""),
+            # The host's ports it publishes: which service of the host it is (a check on one).
+            "ports": sorted({p["PublicPort"] for p in c.get("Ports") or [] if p.get("PublicPort")}),
         })
     return out
 

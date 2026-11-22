@@ -196,7 +196,7 @@ def collect(data: Path, config: Path, history: bool, logs: bool) -> list[tuple[d
         kept = []
         for directory in dirs:
             if directory.startswith((".", "hub-backup")) or (
-                Path(root) == data and directory in SKIP | ({"checks"} if not history else set())
+                Path(root) == data and directory in SKIP | ({"checks", "services"} if not history else set())
             ):
                 continue
             if (Path(root) / directory).is_symlink():

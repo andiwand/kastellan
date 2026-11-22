@@ -558,6 +558,7 @@
 						rest={own.rest}
 						onDevice={device}
 						canChange={canChangeOwn}
+						ownBuckets={(name) => series?.services?.[name] ?? []}
 					/>
 				</div>{/if}
 
@@ -572,7 +573,10 @@
 			{#if admin}<div id="config-backups"><ConfigBackups device={device.id} /></div>{/if}
 
 			{#if device.containers || device.containers_error}
-				<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">
+				<div
+					id="containers"
+					class="mt-8 mb-3 flex scroll-mt-4 flex-wrap items-baseline justify-between gap-2"
+				>
 					<h2 class="text-sm font-semibold">
 						Containers
 						{#if device.containers}<span class="tabular ml-1 font-normal text-faint">
@@ -599,6 +603,7 @@
 				{#if device.containers}<ContainersTable
 						device={device.id}
 						containers={device.containers}
+						checks={device.checks}
 						stale={!!device.containers_error}
 						canAct={!!device.act && signedAdmin}
 					/>{/if}

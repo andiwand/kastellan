@@ -182,6 +182,7 @@ def normalize(raw: Any) -> dict[str, Any]:
                         # The image kept from before its last update (short id), to go back to.
                         "previous": _text(c.get("previous"), 12),
                         "compose": _text(c.get("compose"), 300),
+                        "ports": [p for p in _list(c.get("ports"), 50) if type(p) is int and 0 < p < 65536],
                     }
                 )
             out["docker"] = containers

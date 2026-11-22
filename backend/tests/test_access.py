@@ -260,3 +260,9 @@ def test_installing_the_actor(tmp_path: Path, device, admin_client) -> None:
     assert hub.config.devices["sv1"].act is not None
     log = (tmp_path / "audit.log").read_text()
     assert "act.install" in log and "hunter2" not in log and '"update-container"' in log
+    # Left out at a setup: a choice (not offered again). A renewal keeps what it has and decides
+    # nothing about the abilities that came since.
+    assert hub.offered.new("sv1", "actor", ["update-container"]) == []
+    hub.offered.path.unlink()
+    assert c.post("/api/devices/sv1/act/install", json=choice | login | {"renew": True}).status_code == 200
+    assert "journal" in hub.offered.new("sv1", "actor", ["update-container"])

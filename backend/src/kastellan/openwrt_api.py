@@ -37,7 +37,8 @@ class ServiceAction(BaseModel):
 
 
 class Install(Choice, Login):
-    pass
+    # Renewing what it has (Updates): the abilities left out weren't chosen against.
+    renew: bool = False
 
 
 class WifiChange(BaseModel):
@@ -148,7 +149,8 @@ def router(hub: Hub) -> APIRouter:
             hub.pins.set(id, fp)  # read on the device itself, over SSH with a checked host key
             hub.drop_clients(id, fritz=False)  # a fresh session
             setup_run.add_device_key(hub, w.user, client_address(request.scope), id, "openwrt", 443, {})
-            hub.offered.passed(id, "openwrt", set(ADDED["openwrt"]) - set(body.abilities))
+            if not body.renew:
+                hub.offered.passed(id, "openwrt", set(ADDED["openwrt"]) - set(body.abilities))
             return {"certificate": fp}
 
         return setup_run.stream(conn, text, body, audit, after, keep=output)

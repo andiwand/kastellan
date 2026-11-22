@@ -71,6 +71,7 @@ from .openwrt import client as openwrt_client
 from .openwrt import setup as openwrt_setup
 from .openwrt.client import Ubus
 from .openwrt.firmware import Releases, advise
+from .own_services import ServiceStates
 from .pinned_http import Pins
 from .push import Push
 from .registry import NEWER_BUILD, Registries
@@ -144,6 +145,7 @@ class Hub:
         self._demo_dir = data if self.demo else None
         self.data = data  # where what Kastellan sees is kept (a temporary folder in demo mode)
         self.history = History(data / "checks")
+        self.services = ServiceStates(data / "services")  # devices' own services over time
         self.versions = Versions(data / "versions.log")
         # Sign-in state lives next to the real data even in demo mode: it is not made up.
         self.sessions = Sessions(settings.data / "sessions.json")
@@ -396,6 +398,7 @@ class Hub:
             self.monitor.prepare(config)
             try:
                 self.monitor.restore(self.history.read(datetime.now(UTC) - timedelta(days=1)))
+                self.services.restore_from(datetime.now(UTC))
                 self.versions.compact(max(config.retention_days, 365))
                 self.monitor.restore_software(self.versions.latest(), config)
             except Exception:
@@ -804,6 +807,7 @@ class Hub:
                         self.ovpn_status[vid] = {**was, "connected": [], "error": status.router_error}
                     return
                 status.router, status.router_checked, status.router_error = report, datetime.now(UTC), None
+                self.services.note(id, report, status.router_checked)
                 board = report["board"]
                 release = board.get("release") or {}
                 firmware = " ".join(x for x in (release.get("version"), release.get("revision")) if x)
@@ -829,15 +833,21 @@ class Hub:
 
         while True:
             if self.demo:  # the made-up network's made-up access points
+                now = datetime.now(UTC)
                 for id, report in demo.ROUTER.items():
                     if status := self.monitor.status.get(id):
-                        status.router, status.router_checked = report, datetime.now(UTC)
+                        if status.router is None:  # the first look: a day of the services' history
+                            for k in range(288, 0, -1):
+                                self.services.note(id, report, now - timedelta(minutes=5 * k))
+                        status.router, status.router_checked = report, now
+                        self.services.note(id, report, now)
                 checked = datetime.now(UTC).isoformat(timespec="seconds")
                 self.vpn_servers = {id: {**v, "checked": checked} for id, v in demo.VPN_SERVERS.items()}
                 self.bandwidth = {id: {**v, "checked": checked} for id, v in demo.BANDWIDTH.items()}
                 self.roaming = {id: {**v, "checked": checked} for id, v in demo.ROAMING.items()}
             else:
                 routers = [(id, d) for id, d in list(self.config.devices.items()) if d.openwrt]
+                self.services.forget({id for id, _ in routers})
                 await asyncio.gather(*(one(id, d) for id, d in routers), return_exceptions=True)
             await asyncio.sleep(ROUTER_EVERY)
 
@@ -1729,8 +1739,9 @@ class Hub:
     async def _prune(self) -> None:
         while True:
             try:
-                for path in self.history.prune(self.config.retention_days):
-                    log.info("history: deleted %s", path.name)
+                for history in (self.history, self.services.history):
+                    for path in history.prune(self.config.retention_days):
+                        log.info("history: deleted %s", path)
             except OSError as e:
                 log.warning("cannot prune the history: %s", e)
             await asyncio.sleep(PRUNE_EVERY)

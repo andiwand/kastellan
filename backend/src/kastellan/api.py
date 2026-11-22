@@ -320,6 +320,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "driver": device.driver,
                     "info": status.info if status else None,
                     "containers": hub.skipped.mark(id, status.containers) if status else None,
+                    "services_since": hub.services.since(id),
                     "updates_skipped": hub.skipped.device_skipped(id, status.router, status.host)
                     if status
                     else [],
@@ -430,7 +431,11 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         step = timedelta(hours=hours) / buckets
         start = datetime.now(UTC) - timedelta(hours=hours)
         data = stats.series(hub.history.read(start, device=device), start, step, buckets)
-        return {"start": start, "step_seconds": step.total_seconds(), "devices": data}
+        out = {"start": start, "step_seconds": step.total_seconds(), "devices": data}
+        if device is not None:  # a device's page: its own services too (own_services.py)
+            own = stats.series(hub.services.history.read(start, device=device), start, step, buckets)
+            out["services"] = own.get(device, {})
+        return out
 
     @app.get("/api/hub/resources")
     async def hub_resources(request: Request) -> dict[str, Any]:

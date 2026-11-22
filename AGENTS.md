@@ -326,6 +326,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `disks.py`: hourly disk usage per host and mount (`<data>/disk-usage.json`, 30 days), a line
     through the last 7 days (from the last clean-up) gives `host_forecast` (days until full);
     `host_problems` warns under `alarms.disk_days` (same key as the full-disk alarm).
+  - `own_services.py`: an OpenWrt device's services over time (`hub.services`): each router
+    poll writes their running state as History rows in `<data>/services` (same retention and
+    backup rule as the checks), and keeps since when; `/api/series?device=` adds `services`,
+    `/api/devices` `services_since`. ServicesTable shows them in the checks' columns, under
+    the check they answer (`ownServices.ts`). Containers carry `ports` (published, from the
+    collector): `servedBy`/`serves` connect them with checks on those ports.
   - `footprint.py` (`GET /api/hub/resources`, admins; Settings → Resources): the hub process's
     CPU (`os.times`, between reports) and memory (/proc; the peak elsewhere), the machine's, and
     the data store by store, each measured where its owner keeps it (`hub.data`: a temporary

@@ -59,6 +59,8 @@ CONFIG = {
             "parent": "fritzbox",
             "tags": ["mesh"],
             "openwrt": {},
+            # Its own services show under these: dropbear under ssh, uhttpd under luci.
+            "checks": ["ping", {"tcp": 22, "name": "ssh"}, {"http": "https://192.168.178.3", "name": "luci"}],
         },
         "repeater-attic": {
             "name": "Repeater attic",
@@ -227,6 +229,7 @@ def _c(
     previous=None,
     within=None,
     compose=None,
+    ports=(),
 ):
     return {
         "key": name,
@@ -244,6 +247,7 @@ def _c(
         "previous": previous,
         "update_within": within,
         "compose": compose,
+        "ports": list(ports),
     }
 
 
@@ -251,7 +255,12 @@ def _c(
 CONTAINERS = {
     "nas": [
         _c(
-            "jellyfin", "jellyfin/jellyfin", "10.10.7", update_to="10.11.0", compose="/srv/media/compose.yaml"
+            "jellyfin",
+            "jellyfin/jellyfin",
+            "10.10.7",
+            update_to="10.11.0",
+            compose="/srv/media/compose.yaml",
+            ports=[8096],
         ),
         _c("postgres", "library/postgres", "16.4", update_to="17.2", within="16.6"),
         _c("immich-server", "immich-app/immich-server", "v1.135.3"),
@@ -260,7 +269,9 @@ CONTAINERS = {
         _c("calibre-web", "linuxserver/calibre-web", "0.6.24", state="exited"),
     ],
     "homeserver": [
-        _c("homeassistant", "home-assistant/home-assistant", "2026.11.2", update_to="2026.11.3"),
+        _c(
+            "homeassistant", "home-assistant/home-assistant", "2026.11.2", update_to="2026.11.3", ports=[8123]
+        ),
         _c(
             "mosquitto",
             "library/eclipse-mosquitto",
@@ -268,7 +279,7 @@ CONTAINERS = {
             unchecked="only newer tags are checked, not new builds of :2",
         ),
         _c("zigbee2mqtt", "koenkk/zigbee2mqtt", "latest", update_to="newer build"),
-        _c("wg-easy", "wg-easy/wg-easy", "15.1.0"),
+        _c("wg-easy", "wg-easy/wg-easy", "15.1.0", ports=[51820, 51821]),
         _c(
             "wud",
             "getwud/wud",
