@@ -45,7 +45,6 @@
 		p >= CRIT ? 'var(--critical)' : p >= WARN ? 'var(--warning)' : 'var(--accent)';
 
 	const sys = $derived(report.system);
-	const memUsed = $derived(sys ? sys.memory.total - sys.memory.available : 0);
 	const disks = $derived(report.smart?.disks ?? []);
 	const hot = $derived(
 		[...(report.temperatures ?? [])].sort((a, b) => b.celsius - a.celsius).slice(0, 6)
@@ -69,14 +68,6 @@
 			<div>
 				<dt class="text-xs text-muted">Up</dt>
 				<dd class="tabular">{duration(sys.uptime)}</dd>
-			</div>
-			<div>
-				<dt class="text-xs text-muted">Load ({sys.cpus} cores)</dt>
-				<dd class="tabular">{sys.load.map((l) => l.toFixed(2)).join(' · ')}</dd>
-			</div>
-			<div>
-				<dt class="text-xs text-muted">Memory</dt>
-				<dd class="tabular">{bytes(memUsed)} of {bytes(sys.memory.total)}</dd>
 			</div>
 			<div>
 				<dt class="text-xs text-muted">Kernel</dt>

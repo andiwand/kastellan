@@ -53,6 +53,7 @@ class DeviceStatus:
     host_checked: datetime | None = None
     host_error: str | None = None
     host_forecast: dict[str, float] | None = None  # days until each filesystem is full (disks.py)
+    vitals: dict[str, Any] | None = None  # CPU, memory, storage, temperature now (vitals.py)
     router: dict[str, Any] | None = None  # an OpenWrt device's state (openwrt/client.py)
     router_checked: datetime | None = None
     router_error: str | None = None

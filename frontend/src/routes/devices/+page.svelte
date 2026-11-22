@@ -15,6 +15,7 @@
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
+	import VitalMeters from '#lib/components/VitalMeters.svelte';
 	import NetworkMap from '#lib/components/NetworkMap.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import List from '@lucide/svelte/icons/list';
@@ -214,13 +215,11 @@
 	{:else}
 		<div class="card mt-4 overflow-hidden">
 			<div
-				class="hidden grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_4.5rem] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted lg:grid"
+				class="hidden grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_8.5rem_4.5rem] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted lg:grid"
 			>
-				<span>Device</span><span>Status</span><span>Checks</span><span>Last 24 hours</span><span
-					class="text-right"
-				>
-					Ping
-				</span>
+				<span>Device</span><span>Status</span><span>Checks</span><span>Last 24 hours</span><span>
+					Vitals
+				</span><span class="text-right"> Ping </span>
 			</div>
 			{#if rows.length === 0}
 				<p class="px-5 py-10 text-center text-sm text-muted">
@@ -243,7 +242,7 @@
 						<li>
 							<a
 								href="/devices/{device.id}"
-								class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-5 py-3.5 transition-colors hover:bg-surface-2/70 lg:grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_4.5rem]"
+								class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-5 py-3.5 transition-colors hover:bg-surface-2/70 lg:grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_8.5rem_4.5rem]"
 							>
 								<div
 									class="flex min-w-0 items-center gap-3"
@@ -291,6 +290,9 @@
 									<span class="tabular w-14 shrink-0 text-right text-xs text-muted">
 										{percent(uptimeOf(buckets))}
 									</span>
+								</div>
+								<div class="{device.vitals ? '' : 'hidden lg:block'} col-span-2 lg:col-span-1">
+									<VitalMeters vitals={device.vitals} />
 								</div>
 								<span class="tabular hidden text-right text-sm lg:block">
 									{ping?.up ? ms(ping.latency_ms) : '–'}

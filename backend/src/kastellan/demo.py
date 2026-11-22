@@ -849,3 +849,31 @@ GROUP = {
         }
     ],
 }
+
+
+def vitals(id: str, t: float):
+    """The made-up devices' vitals at time t: a daily rhythm, a little noise, steady storage."""
+    import math
+    import random
+
+    from .vitals import Vitals
+
+    seed = sum(map(ord, id))
+    rnd = random.Random(int(t // 300) * 1000 + seed)  # the same value for the same 5 minutes
+    day = math.sin((t / 86400 + seed % 7 / 7) * 2 * math.pi)
+    router = id in ROUTER or id in FRITZ
+    cpu = max(1.0, (6 if router else 14) + (4 if router else 10) * day + rnd.uniform(-3, 6))
+    mem_total = (256 if router else 16384) * 1024 * 1024
+    mem = (0.38 if router else 0.52) + 0.06 * day + rnd.uniform(-0.01, 0.01) + seed % 5 / 100
+    disk_total = (64 if router else 2000) * 1024 * 1024 * (1 if router else 1024)
+    disk = (0.31 if router else 0.58) + seed % 9 / 100 + (t % (30 * 86400)) / (30 * 86400) * 0.02
+    return Vitals(
+        cpu=round(cpu, 1),
+        cores=2 if router else 8,
+        memory_used=int(mem * mem_total),
+        memory_total=mem_total,
+        storage_used=None if id in FRITZ else int(disk * disk_total),
+        storage_total=None if id in FRITZ else disk_total,
+        storage_mount=None if id in FRITZ else "/",
+        temperature=round((52 if router else 44) + 5 * day + rnd.uniform(-1, 1), 1),
+    )

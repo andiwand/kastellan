@@ -10,7 +10,8 @@
 		step,
 		height = 180,
 		format = ms,
-		label = 'Latency over time'
+		label = 'Latency over time',
+		fixedMax
 	}: {
 		buckets: Bucket[];
 		start: string;
@@ -18,6 +19,7 @@
 		height?: number;
 		format?: (v: number) => string;
 		label?: string;
+		fixedMax?: number; // the top of the scale (100 for percentages), instead of from the data
 	} = $props();
 
 	let width = $state(600);
@@ -27,6 +29,7 @@
 	const t0 = $derived(Date.parse(start));
 	const values = $derived(buckets.map((b) => b.latency_ms));
 	const max = $derived.by(() => {
+		if (fixedMax) return fixedMax;
 		const known = values.filter((v): v is number => v != null);
 		if (!known.length) return 1;
 		return niceMax(Math.max(...known) * 1.1);

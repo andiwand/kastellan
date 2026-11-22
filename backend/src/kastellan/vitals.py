@@ -1,0 +1,240 @@
+"""A device's vitals: how busy its CPU is, how full its memory and storage are, how warm it runs.
+One shape for every kind of device, from what each tells:
+
+- a Linux host's collector: CPU time counters (/proc/stat), memory, filesystems, temperatures;
+- an OpenWrt device: `system info` (memory, the root filesystem) and its read-only `vitals`
+  helper (CPU time counters, the hottest thermal zone);
+- a FRITZ!Box: its web interface's energy monitor (`ecoStat`: CPU use, RAM use, temperature).
+
+CPU time counters become a percentage between two readings (`Cpu`), so the value is the mean
+over the time between them, not a moment's. The hub keeps one sample per device at most every
+SAMPLE_EVERY seconds in SQLite (`Store`, KEEP_DAYS) for the charts and the devices list's trends.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import sqlite3
+import threading
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+KEEP_DAYS = 30
+SAMPLE_EVERY = 110  # seconds: at most one sample per device (routers are read every 120 s)
+FIELDS = ("cpu", "memory", "storage", "temperature")
+
+
+@dataclass
+class Vitals:
+    cpu: float | None = None  # percent busy, mean since the last reading
+    load: float | None = None  # 1-minute load average (where there is no CPU percentage yet)
+    cores: int | None = None
+    memory_used: int | None = None  # bytes
+    memory_total: int | None = None
+    storage_used: int | None = None  # bytes, of the fullest filesystem that counts
+    storage_total: int | None = None
+    storage_mount: str | None = None
+    temperature: float | None = None  # °C, the hottest sensor
+
+    @property
+    def memory(self) -> float | None:
+        return _pct(self.memory_used, self.memory_total)
+
+    @property
+    def storage(self) -> float | None:
+        return _pct(self.storage_used, self.storage_total)
+
+    def empty(self) -> bool:
+        return all(v is None for v in (self.cpu, self.load, self.memory, self.storage, self.temperature))
+
+    def view(self) -> dict[str, Any]:
+        return {**asdict(self), "memory": _round(self.memory), "storage": _round(self.storage)}
+
+
+def _pct(used: int | float | None, total: int | float | None) -> float | None:
+    if not isinstance(used, int | float) or not isinstance(total, int | float) or total <= 0:
+        return None
+    return max(0.0, min(100.0, 100 * used / total))
+
+
+def _round(v: float | None) -> float | None:
+    return None if v is None else round(v, 1)
+
+
+def _num(v: Any) -> float | None:
+    return float(v) if isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
+class Cpu:
+    """CPU percentages from time counters (user nice system idle iowait irq softirq steal), per
+    device: busy share of the time between this reading and the last one."""
+
+    def __init__(self) -> None:
+        self._last: dict[str, tuple[int, int]] = {}
+
+    def percent(self, device: str, counters: Any) -> float | None:
+        if not isinstance(counters, list) or len(counters) < 4:
+            return None
+        try:
+            values = [int(c) for c in counters[:8]]
+        except (TypeError, ValueError):
+            return None
+        total, idle = sum(values), values[3] + (values[4] if len(values) > 4 else 0)
+        last = self._last.get(device)
+        self._last[device] = (total, idle)
+        if last is None or total <= last[0] or idle < last[1]:
+            return None  # the first reading, or the device restarted (its counters began anew)
+        busy = 1 - (idle - last[1]) / (total - last[0])
+        return round(max(0.0, min(100.0, 100 * busy)), 1)
+
+    def forget(self, keep: set[str]) -> None:
+        self._last = {k: v for k, v in self._last.items() if k in keep}
+
+
+def from_host(device: str, report: dict[str, Any], cpu: Cpu) -> Vitals:
+    """A Linux host's collector report."""
+    sys = report.get("system") or {}
+    mem = sys.get("memory") or {}
+    v = Vitals(
+        cpu=cpu.percent(device, sys.get("cpu")),
+        load=_num((sys.get("load") or [None])[0]),
+        cores=sys.get("cpus") if isinstance(sys.get("cpus"), int) else None,
+    )
+    total, available = mem.get("total"), mem.get("available")
+    if isinstance(total, int) and isinstance(available, int) and total > 0:
+        v.memory_used, v.memory_total = total - available, total
+    fullest = None
+    for fs in report.get("filesystems") or []:
+        used, free = fs.get("used"), fs.get("available", fs.get("free"))
+        if not isinstance(used, int) or not isinstance(free, int) or used + free <= 0:
+            continue
+        if fullest is None or used / (used + free) > fullest[0]:
+            fullest = (used / (used + free), used, used + free, fs.get("mount"))
+    if fullest:
+        _, v.storage_used, v.storage_total, v.storage_mount = fullest
+    temps = [_num(t.get("celsius")) for t in report.get("temperatures") or [] if isinstance(t, dict)]
+    temps = [t for t in temps if t is not None and -40 < t < 150]
+    v.temperature = max(temps) if temps else None
+    return v
+
+
+def from_openwrt(device: str, router: dict[str, Any], helper: dict[str, Any] | None, cpu: Cpu) -> Vitals:
+    """An OpenWrt device's report (system info) and its vitals helper's answer (or None)."""
+    sys = router.get("system") or {}
+    mem = sys.get("memory") or {}
+    v = Vitals(load=_num((sys.get("load") or [None])[0]))
+    total = mem.get("total")
+    if isinstance(total, int) and total > 0:
+        available = mem.get("available")
+        if not isinstance(available, int):  # before OpenWrt 21.02: free + buffered (+ cached)
+            parts = [mem.get(k) for k in ("free", "buffered", "cached")]
+            available = sum(p for p in parts if isinstance(p, int)) or None
+        if isinstance(available, int):
+            v.memory_used, v.memory_total = max(0, total - available), total
+    root = router.get("storage") or {}
+    if isinstance(root.get("total"), int) and root["total"] > 0 and isinstance(root.get("used"), int):
+        # system info gives KiB
+        v.storage_used, v.storage_total, v.storage_mount = root["used"] * 1024, root["total"] * 1024, "/"
+    if helper:
+        v.cpu = cpu.percent(device, helper.get("cpu"))
+        t = _num(helper.get("temp"))
+        if t and t > 0:
+            v.temperature = round(t / 1000 if t > 1000 else t, 1)  # millidegrees on Linux
+    return v
+
+
+def from_fritz(eco: dict[str, Any] | None) -> Vitals:
+    """A FRITZ!Box's energy monitor (`data.lua` page `ecoStat`): each value a series of recent
+    readings, the newest last. `ramusage` has fixed, dynamic and free shares (percent)."""
+    v = Vitals()
+    if not isinstance(eco, dict):
+        return v
+
+    def newest(key: str, index: int = 0) -> float | None:
+        series = (eco.get(key) or {}).get("series") if isinstance(eco.get(key), dict) else None
+        if not isinstance(series, list) or len(series) <= index or not isinstance(series[index], list):
+            return None
+        values = [_num(x) for x in series[index]]
+        values = [x for x in values if x is not None]
+        return values[-1] if values else None
+
+    cpu = newest("cpuutil")
+    v.cpu = cpu if cpu is not None and 0 <= cpu <= 100 else None
+    temp = newest("cputemp")
+    v.temperature = temp if temp is not None and 0 < temp < 150 else None
+    free = newest("ramusage", 2)
+    if free is not None and 0 <= free <= 100:
+        v.memory_used, v.memory_total = round(100 - free), 100  # shares only: no bytes
+    return v
+
+
+class Store:
+    """Samples in SQLite (`<data>/vitals.db`). Blocking: the hub calls it in a thread."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self._conn: sqlite3.Connection | None = None
+        self._last: dict[str, float] = {}
+        self._pruned = 0.0
+
+    @property
+    def _db(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.path, os.O_CREAT | os.O_WRONLY, 0o600)
+            os.close(fd)
+            db = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS vitals (device TEXT NOT NULL, ts REAL NOT NULL,"
+                " cpu REAL, memory REAL, storage REAL, temperature REAL)"
+            )
+            db.execute("CREATE INDEX IF NOT EXISTS vitals_device_ts ON vitals (device, ts)")
+            self._conn = db
+        return self._conn
+
+    def add(self, device: str, v: Vitals, now: float | None = None) -> bool:
+        """Keep it, unless the device's last sample is newer than SAMPLE_EVERY."""
+        now = time.time() if now is None else now
+        if v.empty() or now - self._last.get(device, 0) < SAMPLE_EVERY:
+            return False
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO vitals VALUES (?, ?, ?, ?, ?, ?)",
+                (device, now, v.cpu, v.memory, v.storage, v.temperature),
+            )
+            self._last[device] = now
+            if now - self._pruned > 3600:
+                self._db.execute("DELETE FROM vitals WHERE ts < ?", (now - KEEP_DAYS * 86400,))
+                self._pruned = now
+        return True
+
+    def series(
+        self, devices: list[str] | None, since: float, step: float, buckets: int
+    ) -> dict[str, dict[str, list[float | None]]]:
+        """Per device and field, the mean of each of `buckets` slices of `step` seconds from
+        `since` (None where nothing was read)."""
+        where, args = "ts >= ? AND ts < ?", [since, since + step * buckets]
+        if devices is not None:
+            if not devices:
+                return {}
+            where += f" AND device IN ({','.join('?' * len(devices))})"
+            args += devices
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT device, CAST((ts - ?) / ? AS INTEGER) AS b, AVG(cpu), AVG(memory), AVG(storage),"
+                f" AVG(temperature) FROM vitals WHERE {where} GROUP BY device, b",
+                [since, step, *args],
+            ).fetchall()
+        out: dict[str, dict[str, list[float | None]]] = {}
+        for device, b, *values in rows:
+            if not 0 <= b < buckets:
+                continue
+            d = out.setdefault(device, {f: [None] * buckets for f in FIELDS})
+            for f, value in zip(FIELDS, values, strict=True):
+                d[f][b] = None if value is None else round(value, 1)
+        return out

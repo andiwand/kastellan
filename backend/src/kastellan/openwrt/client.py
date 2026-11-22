@@ -307,6 +307,8 @@ async def read(ubus: Ubus) -> dict[str, Any]:
             "kernel": board.get("kernel"),
             "rootfs_type": board.get("rootfs_type"),
         },
+        # The root filesystem (KiB: total, free, used, avail), for the vitals' storage.
+        "storage": {k: (info.get("root") or {}).get(k) for k in ("total", "used", "avail")},
         "system": {
             "uptime": info.get("uptime"),
             "load": [x / 65536 for x in (info.get("load") or [])[:3]],
@@ -562,6 +564,19 @@ async def openvpn_status(ubus: Ubus) -> str:
 
     res = await ubus.call("file", "exec", {"command": OPENVPN_STATUS, "params": []}, timeout=20)
     return str(res.get("stdout", ""))[:1048576]
+
+
+async def vitals(ubus: Ubus) -> dict[str, Any] | None:
+    """CPU time counters and the hottest temperature, from the read group's helper (None when
+    the login was set up before it, or its answer isn't readable)."""
+    from .setup import VITALS
+
+    try:
+        res = await ubus.call("file", "exec", {"command": VITALS, "params": []}, timeout=10)
+        data = json.loads(str(res.get("stdout", ""))[:2000])
+    except (UbusError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 async def bandwidth(ubus: Ubus) -> dict[str, dict[str, int]]:

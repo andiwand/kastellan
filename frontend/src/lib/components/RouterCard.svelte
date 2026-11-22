@@ -32,7 +32,6 @@
 			0
 		)
 	);
-	const mem = $derived(report.system.memory);
 
 	let busy = $state<string | null>(null);
 	const allowed = $derived(new Set(report.services_allowed ?? []));
@@ -86,13 +85,6 @@
 		<div>
 			<dt class="text-xs text-muted">Up</dt>
 			<dd class="tabular">{report.system.uptime != null ? duration(report.system.uptime) : '–'}</dd>
-		</div>
-		<div>
-			<dt class="text-xs text-muted">Load · memory free</dt>
-			<dd class="tabular">
-				{report.system.load.map((l) => l.toFixed(2)).join(' · ')}
-				{#if mem.total}· {Math.round((100 * (mem.available ?? mem.free ?? 0)) / mem.total)}%{/if}
-			</dd>
 		</div>
 	</dl>
 

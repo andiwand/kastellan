@@ -38,6 +38,7 @@ OPENVPN_STATUS = "/usr/libexec/kastellan/openvpn-status"
 # What setup installed (name=digest per script and the access list): renewal notices.
 VERSIONS = "/usr/libexec/kastellan/versions"
 BANDWIDTH = "/usr/libexec/kastellan/bandwidth"
+VITALS = "/usr/libexec/kastellan/vitals"
 SERVICE_NAME = r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
 # Kastellan's own way in: these may be restarted, never stopped or disabled.
 # (and what stopping would open up or cut off: the firewall, the network).
@@ -166,6 +167,19 @@ exec nlbw -c json -g mac 2>/dev/null
 """
 
 
+# Reading (always): the CPU's time counters (/proc/stat's first line: user nice system idle
+# iowait irq softirq steal) and the hottest thermal zone (millidegrees, 0 when none). No input.
+_VITALS_SCRIPT = r"""#!/bin/sh
+# Kastellan: CPU time and temperature, for the device's vitals. No input, nothing else.
+read -r _ u n s i w x y z _ < /proc/stat
+t=0
+for f in /sys/class/thermal/thermal_zone*/temp; do
+  [ -r "$f" ] && read -r v < "$f" && [ "$v" -gt "$t" ] 2>/dev/null && t=$v
+done
+echo "{\"cpu\":[${u:-0},${n:-0},${s:-0},${i:-0},${w:-0},${x:-0},${y:-0},${z:-0}],\"temp\":$t}"
+"""
+
+
 # Firmware and root's password go through rpcd's rpc-sys plugin, which LuCI doesn't always bring.
 _RPCSYS = [
     "# rpc-sys (firmware, root's password): installed if missing.",
@@ -212,7 +226,12 @@ def acl() -> dict:
                     "uci": ["get"],  # with the uci scope below: the DHCP pools only
                 },
                 "uci": ["dhcp"],
-                "file": {UPGRADABLE: ["exec"], SERVICES_ALLOW: ["read"], VERSIONS: ["read"]},
+                "file": {
+                    UPGRADABLE: ["exec"],
+                    VITALS: ["exec"],
+                    SERVICES_ALLOW: ["read"],
+                    VERSIONS: ["read"],
+                },
             },
         },
         "kastellan-reboot": {
@@ -295,6 +314,7 @@ def helper_digests() -> dict[str, str]:
         "service": d(_SERVICE_SCRIPT),
         "openvpn-status": d(_OPENVPN_STATUS_SCRIPT),
         "bandwidth": d(_BANDWIDTH_SCRIPT),
+        "vitals": d(_VITALS_SCRIPT),
     }
 
 
@@ -398,6 +418,10 @@ def install_script(chosen: set[str], password_hash: str, services: list[str] | N
         _BANDWIDTH_SCRIPT.rstrip("\n"),
         "KASTELLAN_BW_EOF",
         f"chmod 755 {BANDWIDTH}.new && mv {BANDWIDTH}.new {BANDWIDTH}",
+        f"cat > {VITALS}.new <<'KASTELLAN_VIT_EOF'",
+        _VITALS_SCRIPT.rstrip("\n"),
+        "KASTELLAN_VIT_EOF",
+        f"chmod 755 {VITALS}.new && mv {VITALS}.new {VITALS}",
         "# What was installed, for Kastellan to tell when setting up again renews it.",
         f"cat > {VERSIONS}.new <<'KASTELLAN_VER_EOF'",
         *(f"{k}={v}" for k, v in helper_digests().items()),

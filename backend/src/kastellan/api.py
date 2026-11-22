@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -339,6 +340,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "fritz_error": status.fritz_error if status else None,
                     "host_report": status.host if status else None,
                     "host_forecast": status.host_forecast if status else None,
+                    "vitals": status.vitals if status else None,
                     # libvirt's VMs on the host, from its collector (None: it can't tell)
                     "vms": vms_of(id),
                     "runs_on": runs_on(device),
@@ -415,6 +417,22 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         start = datetime.now(UTC) - timedelta(hours=hours)
         data = stats.series(hub.history.read(start, device=device), start, step, buckets)
         return {"start": start, "step_seconds": step.total_seconds(), "devices": data}
+
+    @app.get("/api/vitals")
+    async def vitals_series(
+        hours: Hours = 24, buckets: int = 48, device: str | None = None
+    ) -> dict[str, Any]:
+        """CPU, memory and storage (percent) and temperature (°C), the mean in each of `buckets`
+        slices of the last `hours`: one device's (charts), or every device's (the list's trends)."""
+        hours = min(max(hours, 1), 24 * 30)
+        buckets = min(max(buckets, 1), 500)
+        if device is not None and device not in hub.config.devices:
+            raise HTTPException(404, "no such device")
+        step = hours * 3600 / buckets
+        start = datetime.now(UTC) - timedelta(hours=hours)
+        devices = [device] if device else list(hub.config.devices)
+        data = await asyncio.to_thread(hub.vitals.series, devices, start.timestamp(), step, buckets)
+        return {"start": start, "step_seconds": step, "devices": data}
 
     @app.get("/api/activity")
     def activity(hours: Hours = 24, limit: int = 60) -> list[dict[str, Any]]:

@@ -6,11 +6,22 @@
 
 - OpenWrt routers: set up again (Updates lists the outdated script) so the package check no
   longer leaves its lists in the router's memory.
+- For CPU use and temperature, set up the OpenWrt login (its new `vitals` helper) and the Linux
+  collector again; until then OpenWrt shows its load, memory and storage.
+
+### Added
+
+- Vitals for every device that tells them: CPU, memory, storage and temperature as slim tiles
+  on the device page, each with its last 24 hours and a chart over a day, a week or a month, and
+  as small meters in the devices list. From the Linux collector, OpenWrt (`system info` and a
+  read-only helper) and a FRITZ!Box's energy monitor (its web interface, undocumented). Kept
+  every two minutes for 30 days (`<data>/vitals.db`).
 
 ### Changed
 
 - Updates no longer lists OpenWrt packages: they come with the next firmware, which Updates
   offers; the device page still names them.
+- Load and memory moved from the host and OpenWrt cards to the vitals.
 
 ### Fixed
 

@@ -72,6 +72,7 @@ export interface Device {
 	fritz_error?: string | null;
 	host_report?: HostReport | null;
 	host_forecast?: Record<string, number> | null; // days until full, per mount (disks.py)
+	vitals?: Vitals | null; // CPU, memory, storage, temperature now (vitals.py)
 	/** libvirt's virtual machines on the host, from its collector (null: it can't tell). */
 	vms?: Vm[] | null;
 	runs_on?: RunsOn | null;
@@ -858,6 +859,30 @@ export interface RingChoice {
 	stays_unlocked: string | null;
 	background: boolean | null;
 	make_keyfile: boolean;
+}
+
+/** A device's vitals now: percentages of what is used, with what they are of (vitals.py). */
+export interface Vitals {
+	cpu: number | null; // percent busy, mean since the reading before
+	load: number | null; // 1-minute load average (where there is no CPU percentage)
+	cores: number | null;
+	memory: number | null; // percent
+	memory_used: number | null; // bytes (FRITZ!Box: shares only, total 100)
+	memory_total: number | null;
+	storage: number | null; // percent, of the fullest filesystem
+	storage_used: number | null;
+	storage_total: number | null;
+	storage_mount: string | null;
+	temperature: number | null; // °C, the hottest sensor
+	checked: string;
+}
+
+export type VitalField = 'cpu' | 'memory' | 'storage' | 'temperature';
+
+export interface VitalsSeries {
+	start: string;
+	step_seconds: number;
+	devices: Record<string, Record<VitalField, (number | null)[]>>;
 }
 
 export interface Bucket {
@@ -1736,6 +1761,8 @@ export const more = {
 export const api = {
 	health: () => get<Health>('/health'),
 	devices: () => get<Device[]>('/devices'),
+	vitals: (hours: number, buckets: number, device?: string) =>
+		get<VitalsSeries>('/vitals', { hours, buckets, device }),
 	series: (hours: number, buckets: number, device?: string) =>
 		get<Series>('/series', { hours, buckets, device }),
 	changes: (hours = 24, device?: string, limit = 100) =>

@@ -35,6 +35,7 @@
 	import CollectorSetup from '#lib/components/CollectorSetup.svelte';
 	import ActorSetup from '#lib/components/ActorSetup.svelte';
 	import HostHealth from '#lib/components/HostHealth.svelte';
+	import VitalsPanel from '#lib/components/VitalsPanel.svelte';
 	import BackupsCard from '#lib/components/BackupsCard.svelte';
 	import ConfigBackups from '#lib/components/ConfigBackups.svelte';
 	import ReadAgain from '#lib/components/ReadAgain.svelte';
@@ -508,6 +509,9 @@
 	{:else}
 		{#if device.kind === 'ups'}
 			<UpsCard {device} canChange={store.editBlocked === null && store.me?.role === 'admin'} />
+		{/if}
+		{#if device.vitals}
+			{#key device.id}<VitalsPanel device={device.id} vitals={device.vitals} />{/key}
 		{/if}
 		<!-- Range (a UPS read through its host has no services of its own) -->
 		{#if device.checks.length}<div class="mt-8 flex items-center justify-between">

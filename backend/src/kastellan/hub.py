@@ -77,6 +77,9 @@ from .syslog_tls import Authority
 from .terminals import Terminals
 from .vault import AUTO, KASTELLAN, Damaged, Vault, WrongKey, policy
 from .versions import Versions
+from .vitals import Cpu as VitalsCpu
+from .vitals import Store as VitalsStore
+from .vitals import Vitals, from_fritz, from_host, from_openwrt
 from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status, server_meta, split_status
 from .vuln_policy import assess, auto_update_reason
 from .wifi import Scans
@@ -92,6 +95,7 @@ RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
 DRIVER_EVERY = 600
 FRITZ_EVERY = 60
+ECO_EVERY = 300  # seconds between reads of a FRITZ!Box's energy monitor (CPU, RAM, temperature)
 WG_EVERY = 600  # seconds between reads of a FRITZ!Box's WireGuard connections (web interface)
 WG_BACKOFF, WG_BACKOFF_MAX = 1800, 6 * 3600  # after a failure: 30 min, doubling, up to 6 h
 ACTIVE_WINDOW = 30 * 60  # a ring that stays open while admins are here: used within this
@@ -183,6 +187,9 @@ class Hub:
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)
         self.disks = DiskHistory(data)
+        self.vitals = VitalsStore(data / "vitals.db")  # CPU, memory, storage over time (vitals.py)
+        self._cpu = VitalsCpu()
+        self._eco_next: dict[str, tuple[float, int]] = {}  # FRITZ!Box energy monitor: next read
         self.backups = Backups(data)
         self.logs = LogStore(data / "logs.db")  # central logs (logs.py)
         self.log_status: dict[str, dict[str, Any]] = {}  # per device: how fetching its log went
@@ -526,6 +533,7 @@ class Hub:
         status.host, status.host_checked, status.host_error = report, now, None
         self.disks.note(id, report, now)
         status.host_forecast = self.disks.forecasts(id, now)
+        await self.note_vitals(id, status, from_host(id, report, self._cpu))
         items = report.get("docker")
         if isinstance(items, list):
             try:
@@ -534,6 +542,32 @@ class Hub:
             except Exception as e:
                 status.containers_error = _brief(e)
                 log.exception("%s: reading its containers failed", id)
+
+    async def _demo_vitals(self) -> None:
+        """The made-up devices' vitals now, and a week of them the first time (for the charts)."""
+        ids = [i for i in (*demo.HOST, *demo.ROUTER, *demo.FRITZ) if i in self.monitor.status]
+        now = time.time()
+        if not getattr(self, "_demo_filled", False):
+            self._demo_filled = True
+
+            def fill() -> None:
+                for i in ids:
+                    for k in range(7 * 24 * 4, 0, -1):  # every 15 minutes
+                        self.vitals.add(i, demo.vitals(i, now - k * 900), now=now - k * 900)
+
+            await asyncio.to_thread(fill)
+        for i in ids:
+            await self.note_vitals(i, self.monitor.status[i], demo.vitals(i, now))
+
+    async def note_vitals(self, id: str, status: DeviceStatus, v: Vitals) -> None:
+        """A device's vitals now (shown) and, now and then, kept (charted)."""
+        if v.empty():
+            return
+        status.vitals = {**v.view(), "checked": datetime.now(UTC).isoformat(timespec="seconds")}
+        try:
+            await asyncio.to_thread(self.vitals.add, id, v)
+        except Exception:
+            log.exception("%s: keeping its vitals failed", id)
 
     async def _poll_hosts(self) -> None:
         """The collector on every device with `collect:`, every COLLECT_EVERY seconds."""
@@ -549,6 +583,7 @@ class Hub:
                     if status := self.monitor.status.get(id):
                         status.host, status.host_checked = report, datetime.now(UTC)
                         status.host_forecast = demo.FORECASTS.get(id)
+                await self._demo_vitals()
             else:
                 hosts = [(id, d) for id, d in list(self.config.devices.items()) if d.collect]
                 self.disks.forget({id for id, _ in hosts})
@@ -654,10 +689,11 @@ class Hub:
     def drop_clients(self, id: str | None = None, ubus: bool = True, fritz: bool = True) -> None:
         """Forget the device clients (one device's, or all) and close their kept connections."""
         if fritz:
-            if id is None:
-                self._wg_next.clear()
-            else:
-                self._wg_next.pop(id, None)
+            for backoff in (self._wg_next, self._eco_next):  # a new login: try again now
+                if id is None:
+                    backoff.clear()
+                else:
+                    backoff.pop(id, None)
         for cache, wanted in ((self._ubus, ubus), (self._fritz, fritz)):
             if not wanted:
                 continue
@@ -780,6 +816,10 @@ class Hub:
                 status.info_checked = datetime.now(UTC)
                 if firmware:
                     self._note_firmware(id, f"OpenWrt {firmware}", datetime.now(UTC))
+                helper = None
+                with contextlib.suppress(Exception):
+                    helper = await openwrt_client.vitals(ubus)
+                await self.note_vitals(id, status, from_openwrt(id, report, helper, self._cpu))
                 vids = self.openvpns_on(id)
                 if vids or "openvpn" in (status.router_abilities or []):
                     await self._read_openvpn(vids, id, ubus)
@@ -886,6 +926,7 @@ class Hub:
             status.info_checked = datetime.now(UTC)
             if firmware:
                 self._note_firmware(id, firmware, datetime.now(UTC))
+            await self._fritz_vitals(id, status)
 
         while True:
             if self.demo:
@@ -896,6 +937,26 @@ class Hub:
                 boxes = [id for id, d in list(self.config.devices.items()) if d.fritzbox]
                 await asyncio.gather(*(one(id) for id in boxes), return_exceptions=True)
             await asyncio.sleep(FRITZ_EVERY)
+
+    async def _fritz_vitals(self, id: str, status: DeviceStatus) -> None:
+        """A FRITZ!Box's CPU, RAM and temperature from its energy monitor (the web interface's
+        `ecoStat`, undocumented): every ECO_EVERY, later and later after failures (like
+        WireGuard: each try may be a sign-in)."""
+        due, failures = self._eco_next.get(id, (0.0, 0))
+        if time.monotonic() < due:
+            return
+        try:
+            async with asyncio.timeout(10):
+                v = from_fritz(await self.fritz_web(id).data("ecoStat"))
+            if v.empty():
+                raise ValueError("the energy monitor said nothing readable")
+            self._eco_next[id] = (time.monotonic() + ECO_EVERY, 0)
+        except Exception as e:
+            log.info("%s: its energy monitor: %s", id, _brief(e))
+            wait = min(WG_BACKOFF_MAX, WG_BACKOFF * 2**failures)
+            self._eco_next[id] = (time.monotonic() + wait, failures + 1)
+            return
+        await self.note_vitals(id, status, v)
 
     def openvpns_on(self, device: str) -> list[str]:
         """The OpenVPN VPNs whose server is this device."""

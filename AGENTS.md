@@ -319,6 +319,15 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `disks.py`: hourly disk usage per host and mount (`<data>/disk-usage.json`, 30 days), a line
     through the last 7 days (from the last clean-up) gives `host_forecast` (days until full);
     `host_problems` warns under `alarms.disk_days` (same key as the full-disk alarm).
+  - `vitals.py`: CPU %, memory, storage (the fullest filesystem) and temperature in one shape
+    (`Vitals`) from the collector (`system.cpu`: /proc/stat counters), OpenWrt (`system info`'s
+    memory and root, and the read group's `vitals` helper: counters and the hottest thermal
+    zone) and a FRITZ!Box's energy monitor (web.py `data("ecoStat")`, every `ECO_EVERY`,
+    backing off like WireGuard). `Cpu` turns counters into a percentage between readings.
+    `hub.note_vitals` sets `status.vitals` (in /api/devices) and keeps a sample at most every
+    `SAMPLE_EVERY` in `<data>/vitals.db` (30 days); `/api/vitals` gives bucketed means for the
+    device page's tiles and charts (`VitalsPanel`) — the devices list (`VitalMeters`) uses only
+    the current values. Demo: `demo.vitals`, a week filled at start.
   - `host/actor.py` + `host/scripts/act-*` + `act_api.py`: the actor. `act-dispatch` (as
     kastellan-act, bound to the act key) accepts exact forms and execs `sudo -n python3 -I
     <ability> <arg>`; each ability is `act-common` + `act-<ability>`, root-owned, checks its

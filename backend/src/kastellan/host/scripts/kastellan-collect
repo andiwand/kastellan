@@ -52,6 +52,13 @@ def run(argv, timeout=20):
     return r.returncode, r.stdout
 
 
+def cpu_times():
+    try:
+        return [int(x) for x in read("/proc/stat").splitlines()[0].split()[1:9]]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 @section("system")
 def system():
     load = read("/proc/loadavg").split()
@@ -65,6 +72,9 @@ def system():
         "uptime": float(read("/proc/uptime").split()[0]),
         "load": [float(x) for x in load[:3]],
         "cpus": os.cpu_count(),
+        # CPU time counters (user nice system idle iowait irq softirq steal): the hub makes a
+        # percentage from two readings.
+        "cpu": cpu_times(),
         "memory": {"total": mem.get("MemTotal", 0), "available": mem.get("MemAvailable", 0)},
         "swap": {"total": mem.get("SwapTotal", 0), "free": mem.get("SwapFree", 0)},
     }
