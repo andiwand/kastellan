@@ -19,7 +19,7 @@ from .abilities import ADDED
 from .auth_api import client_address, require_admin, require_signin
 from .openwrt import client as ow
 from .openwrt import firmware as fw
-from .openwrt.setup import ABILITIES, install_script, md5crypt
+from .openwrt.setup import ABILITIES, SERVICES_ALLOW, install_script, md5crypt
 from .pinned_http import ChangedCertificate
 from .setup_run import Login
 
@@ -110,9 +110,21 @@ def router(hub: Hub) -> APIRouter:
             text = install_script(set(body.abilities), md5crypt(password_for(id)), body.services)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        permissions = await allowed(id) if device.openwrt else None
+        services: list[str] | None = []
+        if permissions and "services" in permissions:
+            try:
+                if hub.demo:
+                    services = ["uhttpd", "rpcd"]
+                else:
+                    data = await hub.ubus(id).call("file", "read", {"path": SERVICES_ALLOW})
+                    services = [s for s in data["data"].splitlines() if s]
+            except Exception:
+                services = None
         return {
             "configured": device.openwrt is not None,
-            "allowed": await allowed(id) if device.openwrt else None,
+            "allowed": permissions,
+            "services": services,
             "abilities": ABILITIES,
             "port": device.ssh.port if device.ssh else 22,
             "script": text,

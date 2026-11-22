@@ -13,7 +13,7 @@
 
 	/** A device's Wi-Fi on its page: the Wi-Fi page's findings, access points (its radios, and a
 	 * FRITZ!Box's mesh repeaters), clients and networks, kept to this device; then how clients
-	 * roam here (usteer). Read once from GET /api/wifi (admins), again after a radio changed.
+	 * roam here (usteer). Refreshed every minute and after a radio changed.
 	 * Names, passwords and channel plans are changed on the Wi-Fi page. Those who may only look see
 	 * what a phone nearby would: no clients. */
 	let { device }: { device: Device } = $props();
@@ -21,17 +21,24 @@
 	const admin = $derived(store.me?.role === 'admin');
 	let data = $state<WifiOverview | null>(null);
 	let error = $state<string | null>(null);
+	let latest = 0;
 	async function load() {
+		const mine = ++latest;
 		try {
-			data = await more.wifiOverview();
-			error = null;
+			const answer = await more.wifiOverview();
+			if (mine === latest) [data, error] = [answer, null];
 		} catch (e) {
-			error = (e as Error).message;
+			if (mine === latest) error = (e as Error).message;
 		}
 	}
 	// The page is keyed on the device: this runs once per device (and when one signs in).
 	$effect(() => {
 		load();
+		const timer = setInterval(load, 60_000);
+		return () => {
+			clearInterval(timer);
+			latest++;
+		};
 	});
 
 	const issues = $derived(issuesIn(store.attention, 'wifi'));
@@ -57,6 +64,9 @@
 	{:else if !data}
 		<div class="card h-32 animate-pulse"></div>
 	{:else}
+		{#if error}<p class="mb-3 text-meta text-muted">
+				Could not refresh Wi-Fi: {error}. Showing the last reading.
+			</p>{/if}
 		{#if anyFindings}
 			<div class="mb-4">
 				<WifiFindings findings={data.findings ?? []} {issues} device={device.id} />

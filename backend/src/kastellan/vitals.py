@@ -101,6 +101,9 @@ class Busy:
             return None  # the first reading, or the counter began anew (a restart)
         return round(max(0.0, min(100.0, 100 * (busy_ms - last[1]) / ((now - last[0]) * 1000))), 1)
 
+    def forget(self, keep: set[str]) -> None:
+        self._last = {k: v for k, v in self._last.items() if k[0] in keep}
+
 
 def disks_of(device: str, report: dict[str, Any], busy: Busy, now: float) -> list[DiskSample]:
     """A Linux host's disks from its collector report (activity, and SMART's temperature)."""
@@ -267,6 +270,12 @@ class Store:
                 self._conn.close()
                 self._conn = None
 
+    def _prune(self, now: float) -> None:
+        if now - self._pruned > 3600:
+            for table in ("vitals", "disks"):
+                self._db.execute(f"DELETE FROM {table} WHERE ts < ?", (now - KEEP_DAYS * 86400,))
+            self._pruned = now
+
     def add(self, device: str, v: Vitals, now: float | None = None) -> bool:
         """Keep it, unless the device's last sample is newer than SAMPLE_EVERY."""
         now = time.time() if now is None else now
@@ -280,10 +289,7 @@ class Store:
                 (device, now, v.cpu, v.memory, v.storage, v.temperature),
             )
             self._last[device] = now
-            if now - self._pruned > 3600:
-                for table in ("vitals", "disks"):
-                    self._db.execute(f"DELETE FROM {table} WHERE ts < ?", (now - KEEP_DAYS * 86400,))
-                self._pruned = now
+            self._prune(now)
         return True
 
     def series(
@@ -335,6 +341,7 @@ class Store:
                 ],
             )
             self._last_disks[device] = now
+            self._prune(now)
         return True
 
     def disk_series(

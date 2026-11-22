@@ -19,7 +19,7 @@
 	const columns: Column<Volume>[] = [
 		{ key: 'mount', label: 'Volume', grow: true, cell: mountCell },
 		{ key: 'used', label: 'Used', cell: usedCell, width: '10rem' },
-		{ key: 'free', label: 'Free', numeric: true, value: (v) => bytes(v.free) },
+		{ key: 'free', label: 'Free', numeric: true, priority: 2, value: (v) => bytes(v.free) },
 		{
 			key: 'size',
 			label: 'Size',
@@ -38,8 +38,9 @@
 </script>
 
 {#snippet mountCell(v: Volume)}
-	<span class="block truncate font-mono" title={v.device}>{v.mount}</span>
+	<span class="block truncate font-mono" title={v.mount}>{v.mount}</span>
 	<span class="block truncate text-meta text-muted">{v.device} · {v.type}</span>
+	<span class="block text-meta text-muted sm:hidden">{bytes(v.free)} free</span>
 {/snippet}
 
 {#snippet usedCell(v: Volume)}

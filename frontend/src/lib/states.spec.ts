@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import {
 	backupState,
+	configBackupState,
 	containerState,
 	deviceState,
 	signinState,
@@ -40,4 +41,10 @@ it('picks the worst tone', () => {
 	expect(worst([])).toBe('good');
 	expect(worst(['good', 'warning', 'neutral'])).toBe('warning');
 	expect(worst(['warning', 'critical'])).toBe('critical');
+});
+
+it('waits for a first configuration backup and reports failures despite older versions', () => {
+	expect(configBackupState({}).word).toBe('Waiting');
+	expect(configBackupState({}, true).word).toBe('OK');
+	expect(configBackupState({ error: 'offline' }, true).word).toBe('Failed');
 });

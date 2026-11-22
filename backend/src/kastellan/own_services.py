@@ -46,8 +46,13 @@ class ServiceStates:
 
     def note(self, device: str, router: dict[str, Any], now: datetime) -> None:
         """One look at a router's services: kept, and their state's start when it changed."""
+        if "services" not in router:
+            return
+        services = worth_seeing(router)
+        names = {name for name, _ in services}
+        self._state = {k: v for k, v in self._state.items() if k[0] != device or k[1] in names}
         rows = []
-        for name, running in worth_seeing(router):
+        for name, running in services:
             key = (device, name)
             known = self._state.get(key)
             if known is None or known[0] != running:

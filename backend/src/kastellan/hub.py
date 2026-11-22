@@ -294,6 +294,8 @@ class Hub:
                 self.drop_clients(id)
         if moved:
             self._cpu.forget(set(config.devices) - moved)
+            self._busy.forget(set(config.devices) - moved)
+            self.services.forget(set(config.devices) - moved)
         self.config, self.config_error, self.locked, self._loaded = config, None, None, True
         # Someone removed from config.yaml is signed out everywhere at once, and a terminal stays
         # open only for an admin whose password did not change.
@@ -532,7 +534,10 @@ class Hub:
         status.host_forecast = self.disks.forecasts(id, now)
         await self.note_vitals(id, status, from_host(id, report, self._cpu))
         samples = disks_of(id, report, self._busy, time.time())
-        await asyncio.to_thread(self.vitals.add_disks, id, samples)
+        try:
+            await asyncio.to_thread(self.vitals.add_disks, id, samples)
+        except Exception:
+            log.exception("%s: saving disk history failed", id)
         items = report.get("docker")
         if isinstance(items, list):
             try:

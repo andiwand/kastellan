@@ -44,6 +44,15 @@ export function radioState(r: Pick<WifiRadio, 'state'>): State {
 	return { word: 'On', tone: 'good' };
 }
 
+/** A shared SSID may be off on one radio and still on elsewhere on the same device. */
+export function networkState(n: WifiNetwork, device?: string): State {
+	const on = n.on.filter((e) => !device || e.device === device);
+	if (!on.length) return { word: 'Not read', tone: 'neutral' };
+	const off = on.filter((e) => e.disabled).length;
+	if (!off) return { word: 'On', tone: 'good' };
+	return { word: off === on.length ? 'Off' : 'Partly off', tone: 'neutral' };
+}
+
 /** One row of the access points table: a radio of an OpenWrt device or a FRITZ!Box, or a
  * FRITZ!Mesh repeater the box reports (not a Kastellan device: no radio of its own here). */
 export interface AccessPoint {

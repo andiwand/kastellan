@@ -162,8 +162,12 @@ def activity():
         except (OSError, ValueError, IndexError):
             continue
         if spinning and smartctl:
-            code, _ = run([smartctl, "-n", "standby", "-i", f"/dev/{name}"], timeout=10)
-            entry["asleep"] = bool(code & 2)  # -n standby: exit bit 1 when it sleeps (and wasn't asked)
+            try:
+                # Separate standby from open/identify failures (all default to exit 2).
+                code, _ = run([smartctl, "-n", "standby,99,98", "-i", f"/dev/{name}"], timeout=10)
+                entry["asleep"] = True if code == 99 else False if code == 0 else None
+            except (OSError, subprocess.TimeoutExpired):
+                entry["asleep"] = None
         out.append(entry)
     return out
 
@@ -361,7 +365,7 @@ def docker():
             "state": c.get("State", ""),
             "status": c.get("Status", ""),
             # The host's ports it publishes: which service of the host it is (a check on one).
-            "ports": sorted({p["PublicPort"] for p in c.get("Ports") or [] if p.get("PublicPort")}),
+            "ports": sorted({p["PublicPort"] for p in c.get("Ports") or [] if p.get("PublicPort") and p.get("Type") == "tcp"}),
         })
     return out
 

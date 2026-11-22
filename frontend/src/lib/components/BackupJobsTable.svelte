@@ -50,7 +50,7 @@
 		].join('\n');
 
 	const columns: Column<Backup>[] = $derived([
-		{ key: 'name', label: 'Job', cell: jobName },
+		{ key: 'name', label: 'Job', grow: true, cell: jobName },
 		{ key: 'state', label: 'State', cell: jobState, width: '8rem' },
 		{
 			key: 'ok',
@@ -87,7 +87,7 @@
 </script>
 
 {#snippet jobName(b: Backup)}
-	<span class="block font-medium">{b.name}</span>
+	<span class="block truncate font-medium" title={b.name}>{b.name}</span>
 	{#if !device}
 		<a href="/devices/{b.device}" class="block truncate text-meta text-muted hover:underline">
 			{name(b.device)}
@@ -109,6 +109,7 @@
 
 <!-- Under the row: making its token, then the command with it (once). -->
 {#snippet belowRow(b: Backup)}
+	{#if admin}<div class="pb-3 sm:hidden">{@render jobActions(b)}</div>{/if}
 	{#if asking === b.id}
 		<p class="flex flex-wrap items-center gap-2 pb-3 text-meta">
 			{b.token
@@ -134,7 +135,7 @@
 	{rows}
 	key={(b) => b.id}
 	below={belowRow}
-	hasBelow={(b) => asking === b.id || shown?.id === b.id}
+	hasBelow={(b) => admin || asking === b.id || shown?.id === b.id}
 	label="Backup jobs"
 	empty="No backup jobs."
 />

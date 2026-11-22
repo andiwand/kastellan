@@ -26,6 +26,8 @@
 	let field = $state<Field>('busy');
 	let range = $state(RANGES[0].hours);
 	let chart = $state<{ hours: number; series: DiskSeries } | null>(null);
+	let error = $state<string | null>(null);
+	let refresh = $state(0);
 
 	async function loadDay() {
 		try {
@@ -36,17 +38,34 @@
 	}
 	onMount(() => {
 		loadDay();
-		const t = setInterval(loadDay, 300_000); // a sample every two minutes at most
+		const t = setInterval(() => {
+			loadDay();
+			refresh++;
+		}, 300_000);
 		return () => clearInterval(t);
 	});
 	$effect(() => {
 		const r = RANGES.find((x) => x.hours === range)!;
+		void refresh;
+		chart = null;
+		error = null;
 		if (!open) return;
-		api.disks(device, r.hours, r.buckets).then((series) => (chart = { hours: r.hours, series }));
+		let current = true;
+		api.disks(device, r.hours, r.buckets).then(
+			(series) => {
+				if (current) chart = { hours: r.hours, series };
+			},
+			(e) => {
+				if (current) error = (e as Error).message;
+			}
+		);
+		return () => {
+			current = false;
+		};
 	});
 
 	const names = $derived(Object.keys(day?.disks ?? {}).sort());
-	const last = (values: (number | null)[]) => [...values].reverse().find((v) => v != null) ?? null;
+	const last = (values: (number | null)[]) => values.at(-1) ?? null;
 	function shade(busy: number | null, asleep: number | null): string {
 		if (busy == null && asleep == null) return 'var(--empty)';
 		if (asleep != null && asleep >= 50) return 'var(--line-strong)';
@@ -76,12 +95,15 @@
 				<li>
 					<button
 						type="button"
-						class="grid w-full grid-cols-[4.5rem_minmax(0,1fr)_8rem] items-center gap-3 rounded-md text-left text-sm hover:bg-surface-2/60"
+						class="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md text-left text-sm hover:bg-surface-2/60 sm:grid-cols-[4.5rem_minmax(0,1fr)_8rem]"
 						aria-expanded={open === name}
 						onclick={() => (open = open === name ? null : name)}
 					>
 						<span class="font-mono text-xs">{name}</span>
-						<span class="flex h-4 gap-px" aria-label="{name} over the day">
+						<span
+							class="col-span-2 row-start-2 flex h-4 gap-px sm:col-span-1 sm:row-start-auto"
+							aria-label="{name} over the day"
+						>
 							{#each d.busy as b, i (i)}
 								<span
 									class="flex-1 rounded-[1px]"
@@ -124,7 +146,9 @@
 						onselect={(h) => (range = h)}
 					/>
 				</div>
-				{#if chart && chart.hours === range && values.some((v) => v != null)}
+				{#if error}
+					<p class="mt-3 text-sm text-muted">Cannot read disk history: {error}</p>
+				{:else if chart && chart.hours === range && values.some((v) => v != null)}
 					<div class="mt-3">
 						<LatencyChart
 							buckets={buckets(values)}
@@ -132,13 +156,14 @@
 							step={chart.series.step_seconds}
 							format={format(field)}
 							fixedMax={field === 'temperature' ? undefined : 100}
+							fixedMin={field === 'temperature'
+								? Math.min(0, ...values.filter((v): v is number => v != null))
+								: 0}
 							label="{open}: {field}"
 						/>
 					</div>
 				{:else if chart && chart.hours === range}
-					<p class="mt-3 text-sm text-muted">
-						{field === 'asleep' ? 'It never sleeps, or doesn’t spin.' : 'Nothing read yet.'}
-					</p>
+					<p class="mt-3 text-sm text-muted">No readings in this period.</p>
 				{:else}
 					<p class="mt-3 text-sm text-muted">Loading…</p>
 				{/if}

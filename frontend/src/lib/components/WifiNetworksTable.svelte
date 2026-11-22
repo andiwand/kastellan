@@ -2,7 +2,7 @@
 	import type { WifiClient, WifiNetwork } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { bandLabel } from '#lib/format.js';
-	import type { State } from '#lib/states.js';
+	import { networkState } from '#lib/wifi.js';
 	import Table, { type Column } from './ui/Table.svelte';
 	import StateBadge from './ui/StateBadge.svelte';
 
@@ -30,13 +30,6 @@
 	const canChange = $derived(store.editBlocked === null && !!onaction);
 	const clientsOf = (n: WifiNetwork) =>
 		clients.filter((c) => c.ssid === n.ssid && (!device || c.device === device)).length;
-	function stateOf(n: WifiNetwork): State {
-		const off = device ? (n.off.includes(device) ? 1 : 0) : n.off.length;
-		const all = device ? 1 : n.devices.length;
-		if (!off) return { word: 'On', tone: 'good' };
-		if (off >= all) return { word: 'Off', tone: 'neutral' };
-		return { word: 'Partly off', tone: 'neutral', title: `Off on ${n.off.map(name).join(', ')}` };
-	}
 	const security = (n: WifiNetwork) =>
 		(n.security ?? [...new Set(n.on.map((e) => e.security ?? e.encryption ?? '?'))]).join(' / ');
 	const password = (n: WifiNetwork) =>
@@ -76,7 +69,7 @@
 	<span class="block truncate text-meta text-muted">{n.bands.map(bandLabel).join(' · ')}</span>
 {/snippet}
 
-{#snippet stateCell(n: WifiNetwork)}<StateBadge state={stateOf(n)} quiet />{/snippet}
+{#snippet stateCell(n: WifiNetwork)}<StateBadge state={networkState(n, device)} quiet />{/snippet}
 
 {#snippet details(n: WifiNetwork)}
 	<ul class="space-y-1 text-meta">

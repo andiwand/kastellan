@@ -134,7 +134,7 @@
 						{/if}
 					</div>
 					<div class="flex items-end justify-between gap-2">
-						<span class="tabular text-xl leading-none font-semibold">
+						<span class="tabular shrink-0 text-xl leading-none font-semibold whitespace-nowrap">
 							{#if v == null && f === 'cpu'}
 								<span class="text-base">load {vitals.load?.toFixed(2)}</span>
 							{:else}

@@ -53,8 +53,8 @@
 
 	const columns: Column<Row>[] = [
 		{ key: 'pick', label: '', width: '2.5rem', cell: pick },
-		{ key: 'ap', label: 'Access point', cell: apCell },
-		{ key: 'now', label: 'Now', width: '6rem', cell: nowCell },
+		{ key: 'ap', label: 'Access point', grow: true, cell: apCell },
+		{ key: 'now', label: 'Now', priority: 2, width: '6rem', cell: nowCell },
 		{ key: 'then', label: 'Suggested', width: '7rem', cell: thenCell },
 		{ key: 'why', label: 'Why', priority: 3, grow: true, cell: whyCell }
 	];
@@ -70,7 +70,7 @@
 	/>
 {/snippet}
 {#snippet apCell(r: Row)}
-	<span class="block truncate font-medium">{name(r.device)}</span>
+	<span class="block font-medium max-sm:whitespace-normal">{name(r.device)}</span>
 	<span class="block text-meta text-muted">{bandLabel(r.band)}</span>
 {/snippet}
 {#snippet nowCell(r: Row)}
@@ -78,9 +78,12 @@
 {/snippet}
 {#snippet thenCell(r: Row)}
 	{#if r.change}
+		<span class="tabular text-muted sm:hidden">{r.current ?? 'auto'} → </span>
 		<span class="tabular font-medium">{r.channel}</span>
-		{#if r.htmode}<span class="text-meta text-muted"> · {width(r)} MHz</span>{/if}
-	{:else}<span class="text-muted">stays</span>{/if}
+		{#if r.htmode}<span class="block text-meta text-muted sm:inline"> · {width(r)} MHz</span>{/if}
+	{:else}<span class="text-muted">
+			<span class="sm:hidden">{r.current ?? 'auto'} · </span>stays
+		</span>{/if}
 {/snippet}
 {#snippet whyCell(r: Row)}
 	<span class="block text-meta whitespace-normal text-muted">{r.reason}</span>

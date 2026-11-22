@@ -90,7 +90,7 @@
 	{/if}
 {/snippet}
 {#snippet configState(c: DeviceBackupSummary)}
-	<StateBadge state={configBackupState(c.status)} />
+	<StateBadge state={configBackupState(c.status, !!c.latest)} />
 {/snippet}
 {#snippet configActions(c: DeviceBackupSummary)}
 	<span class="inline-flex gap-2">
@@ -103,10 +103,15 @@
 	</span>
 {/snippet}
 
+{#snippet belowRow(c: DeviceBackupSummary)}
+	<div class="flex flex-wrap justify-end gap-2 pb-3 sm:hidden">{@render configActions(c)}</div>
+{/snippet}
+
 <Table
 	{columns}
 	{rows}
 	key={(c) => c.device}
+	below={belowRow}
 	label="Device configurations"
 	empty="No configuration backups."
 />

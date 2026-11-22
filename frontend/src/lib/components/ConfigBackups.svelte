@@ -120,7 +120,7 @@
 	<Section title="Configuration backups" count={data.versions.length || null}>
 		{#snippet meta()}
 			<span class="inline-flex flex-wrap items-center gap-x-1.5">
-				<StateBadge state={configBackupState(data!.status)} quiet />
+				<StateBadge state={configBackupState(data!.status, !!data!.versions.length)} quiet />
 				{#if data!.status.error}
 					<span>{data!.status.error}</span>
 				{:else if data!.status.ok}

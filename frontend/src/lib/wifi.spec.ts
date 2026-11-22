@@ -7,6 +7,7 @@ import {
 	channelUse,
 	clientMatches,
 	covers,
+	networkState,
 	openFindings,
 	radioState,
 	signalState,
@@ -28,6 +29,20 @@ const radio = (over: Partial<WifiRadio>): WifiRadio => ({
 	scanned: null,
 	allowed: null,
 	...over
+});
+
+it('keeps a network partly on when one radio of its access point is disabled', () => {
+	const network = {
+		on: [
+			{ device: 'ap', disabled: true },
+			{ device: 'ap', disabled: false },
+			{ device: 'box', disabled: true }
+		]
+	} as WifiNetwork;
+	expect(networkState(network).word).toBe('Partly off');
+	expect(networkState(network, 'ap').word).toBe('Partly off');
+	expect(networkState(network, 'box').word).toBe('Off');
+	expect(networkState(network, 'missing').word).toBe('Not read');
 });
 
 describe('signal in words', () => {

@@ -35,8 +35,7 @@
 				out.push({
 					what: 'collector',
 					title: 'Renew the collector',
-					intro:
-						"Kastellan logs in once with your login and installs this Kastellan's collector as root, in place of the older one.",
+					intro: 'Install the current collector as root using your login.',
 					path: `/devices/${enc}/collect/install`,
 					script: s.script,
 					port: s.port
@@ -55,9 +54,9 @@
 				out.push({
 					what: 'actor',
 					title: 'Renew the actor',
-					intro: `Kastellan logs in once with your login and installs this Kastellan's actor as root, with what it allows now: ${
+					intro: `Install the current actor as root, keeping these permissions: ${
 						abilities.join(', ') || 'nothing but listing'
-					}. New abilities (going back after an update, reading logs) are ticked on the device's Setup.`,
+					}. Enable new abilities in Setup.`,
 					path: `/devices/${enc}/act/install`,
 					body: { abilities, allowed, renew: true },
 					script: s.script,
@@ -71,18 +70,16 @@
 						"Cannot read what Kastellan's login there may do. Try again when the device is reachable."
 					);
 				const abilities = current.allowed;
-				const services = abilities.includes('services')
-					? (store.byId.get(device)?.router?.services_allowed ?? [])
-					: [];
+				if (abilities.includes('services') && current.services == null)
+					throw new Error(
+						'Cannot read the service permissions. Try again when the device is reachable.'
+					);
+				const services = current.services ?? [];
 				const s = await api.openwrtScript(device, abilities, services);
 				out.push({
 					what: 'openwrt',
 					title: 'Renew the OpenWrt login',
-					intro: `Kastellan logs in once as root (SSH) and sets up its login there again with this Kastellan's helpers and access list, keeping what it may do now: reading${abilities
-						.map((a) => `, ${a}`)
-						.join(
-							''
-						)}. New abilities are ticked on the device's Setup. Root's password is used for this one connection and never stored.`,
+					intro: `Install the current helpers over SSH as root, keeping these permissions: ${['reading', ...abilities].join(', ')}. Enable new abilities in Setup.`,
 					path: `/devices/${enc}/openwrt/install`,
 					body: { abilities, services, renew: true },
 					script: s.script,

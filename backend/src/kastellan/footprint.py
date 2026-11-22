@@ -18,6 +18,7 @@ import resource
 import shutil
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -69,7 +70,7 @@ def _oldest(path: Path, query: str) -> float | None:
     if not path.exists():
         return None
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
             row = db.execute(query).fetchone()
     except sqlite3.Error:
         return None

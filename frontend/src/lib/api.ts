@@ -237,6 +237,7 @@ export interface RouterReport {
 export interface OpenWrtSetup {
 	configured: boolean;
 	allowed: string[] | null; // the abilities the device grants now
+	services: string[] | null; // its live service allow list (null: unreadable)
 	abilities: Record<string, string>;
 	port: number;
 	script: string;

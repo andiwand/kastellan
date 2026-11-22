@@ -11,6 +11,8 @@ import { ms, percent } from './format';
 import { count } from './glossary';
 import { statusOf } from './status';
 import {
+	backupState,
+	configBackupState,
 	internetState,
 	signinFlag,
 	toneRank,
@@ -195,13 +197,19 @@ function backupsRow(input: AreaInput): AreaRow | null {
 	if (jobs === 'error') return { ...row, state: withIssues(NOT_READ, issues), value: null };
 	const list = Array.isArray(configs) ? configs : [];
 	const total = jobs.length + list.length;
-	if (!total && !issues.length) return null;
+	const states = [
+		...jobs.map((b) => backupState[b.state]),
+		...list.map((c) => configBackupState(c.status, !!c.latest)),
+		...(input.admin && !Array.isArray(configs) ? [configs === 'error' ? NOT_READ : CHECKING] : [])
+	];
+	if (!total && !issues.length && !states.length) return null;
+	const state = states.sort((a, b) => toneRank[a.tone] - toneRank[b.tone])[0] ?? OK;
 	const ok =
 		jobs.filter((b) => b.state === 'ok').length +
 		list.filter((c) => c.latest && !c.status.error).length;
 	return {
 		...row,
-		state: withIssues(OK, issues),
+		state: withIssues(state, issues),
 		value: total ? `${ok} of ${total}` : null,
 		sub: total ? 'backups OK' : undefined,
 		sentence: sentenceOf(issues)

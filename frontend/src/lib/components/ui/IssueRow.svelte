@@ -29,7 +29,7 @@
 	const word = $derived(tone === 'critical' ? 'Critical' : tone === 'warning' ? 'Warning' : 'Note');
 </script>
 
-<li class="flex items-start gap-3 px-4 py-3">
+<li class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 px-4 py-3 sm:flex">
 	<span class="mt-1.5"><StateDot {tone} label={word} /></span>
 	<div class="min-w-0 flex-1">
 		<p class="text-body font-medium">
@@ -50,9 +50,16 @@
 			</p>
 		{/if}
 	</div>
-	{#if action}<div class="flex shrink-0 items-center gap-2">{@render action()}</div>{/if}
+	{#if action}<div
+			class="col-span-2 col-start-2 flex shrink-0 flex-wrap items-center gap-2 empty:hidden"
+		>
+			{@render action()}
+		</div>{/if}
 	{#if href}
-		<a {href} class="-mr-1 grid size-7 shrink-0 place-items-center text-faint hover:text-text">
+		<a
+			{href}
+			class="col-start-3 row-start-1 -mr-1 grid size-7 shrink-0 place-items-center text-faint hover:text-text"
+		>
 			<ChevronRight class="size-4" />
 			<span class="sr-only">Open</span>
 		</a>

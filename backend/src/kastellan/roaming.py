@@ -64,8 +64,17 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
     per member: usteer's state, who it sees, its memory."""
     findings: list[dict[str, Any]] = []
 
-    def say(kind: str, level: str, text: str, fix: str = "", devices: list[str] | None = None) -> None:
-        findings.append({"kind": kind, "level": level, "text": text, "fix": fix, "devices": devices or []})
+    def say(
+        kind: str,
+        level: str,
+        text: str,
+        fix: str = "",
+        devices: list[str] | None = None,
+        ssid: str | None = None,
+    ) -> None:
+        findings.append(
+            {"kind": kind, "level": level, "text": text, "fix": fix, "devices": devices or [], "ssid": ssid}
+        )
 
     def names(ids: Any) -> str:
         return ", ".join(hub.config.label(i) if i in hub.config.devices else i for i in ids)
@@ -83,6 +92,7 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
                 f"{n['ssid']}: fast roaming (802.11r) is off on {names(no_ft)}",
                 "Roaming assistance turns it on with one mobility domain for all",
                 no_ft,
+                n["ssid"],
             )
         elif len(domains) > 1:
             say(
@@ -91,6 +101,7 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
                 f"{n['ssid']}: different mobility domains ({', '.join(sorted(str(d) for d in domains))})",
                 "One domain for the whole network: clients only fast-roam within one",
                 sorted({e["device"] for e in on}),
+                n["ssid"],
             )
         no_kv = sorted({e["device"] for e in on if not (e.get("k") and e.get("v"))})
         if no_kv and not no_ft:
@@ -100,6 +111,7 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
                 f"{n['ssid']}: neighbour reports and steering (802.11k/v) are off on {names(no_kv)}",
                 "They help clients pick the better access point (needs wpad, not wpad-basic)",
                 no_kv,
+                n["ssid"],
             )
     # Channels: neighbours on the same (or, at 2.4 GHz, overlapping) channel.
     meshed = {

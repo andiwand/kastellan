@@ -113,7 +113,7 @@
 </script>
 
 {#snippet apCell(a: AccessPoint)}
-	<span class="block truncate font-medium">
+	<span class="block truncate font-medium max-sm:whitespace-normal" title={a.name}>
 		{#if a.device}<a class="hover:underline" href="/devices/{encodeURIComponent(a.device)}">
 				{a.name}
 			</a>{:else}{a.name}{/if}
@@ -153,8 +153,8 @@
 		<dt class="text-muted">Radio</dt>
 		<dd class="font-mono">{r.radio}{r.htmode ? ` · ${r.htmode}` : ''}</dd>
 		{#if a.networks.length}
-			<dt class="text-muted sm:hidden lg:block">Networks</dt>
-			<dd class="sm:hidden lg:block">{a.networks.join(', ')}</dd>
+			<dt class="text-muted lg:hidden">Networks</dt>
+			<dd class="lg:hidden">{a.networks.join(', ')}</dd>
 		{/if}
 		<dt class="text-muted">Hears</dt>
 		<dd>

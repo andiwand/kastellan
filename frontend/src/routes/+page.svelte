@@ -36,30 +36,28 @@
 	let configBackups = $state<Read<DeviceBackupSummary[]>>(null);
 	let signins = $state<Read<SignInsSummary>>(null);
 
-	async function read<T>(load: () => Promise<T>, keep: (v: Read<T>) => void, had: Read<T>) {
+	async function read<T>(load: () => Promise<T>, keep: (v: Read<T>) => void) {
 		try {
 			keep(await load());
 		} catch {
-			if (had === null) keep('error'); // a later failure keeps what was read
+			keep('error');
 		}
 	}
 	function readAreas(slow = false) {
 		if (!admin) {
-			read(api.backups, (v) => (backups = v), backups);
+			read(api.backups, (v) => (backups = v));
 			return;
 		}
 		read(
 			() => more.internet(24),
-			(v) => (internet = v),
-			internet
+			(v) => (internet = v)
 		);
-		read(api.backups, (v) => (backups = v), backups);
-		read(more.deviceBackups, (v) => (configBackups = v), configBackups);
+		read(api.backups, (v) => (backups = v));
+		read(more.deviceBackups, (v) => (configBackups = v));
 		if (slow || signins === null)
 			read(
 				() => more.signinsSummary(24),
-				(v) => (signins = v),
-				signins
+				(v) => (signins = v)
 			);
 	}
 	onMount(() => {

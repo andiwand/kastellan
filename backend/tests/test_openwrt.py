@@ -31,6 +31,25 @@ VERSIONS = {
 }
 
 
+def test_renewal_reads_the_live_service_permissions(admin_client, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from kastellan.openwrt.setup import SERVICES_ALLOW
+
+    c = admin_client("devices:\n  ap:\n    host: 192.0.2.1\n    openwrt: {}\n")
+    hub = c.app.state.hub
+    access = {"access-group": {"kastellan-services": {}, "kastellan-wifi": {}}}
+    call = AsyncMock(side_effect=[access, {"data": "uhttpd\nrpcd\n"}, access, RuntimeError("offline")])
+    monkeypatch.setattr(hub, "ubus", lambda _: SimpleNamespace(call=call))
+    r = c.post("/api/devices/ap/openwrt/script", json={"abilities": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["services"] == ["uhttpd", "rpcd"]
+    call.assert_awaited_with("file", "read", {"path": SERVICES_ALLOW})
+    r = c.post("/api/devices/ap/openwrt/script", json={"abilities": []})
+    assert r.json()["allowed"] == ["services", "wifi"] and r.json()["services"] is None
+
+
 def test_md5crypt_matches_crypt() -> None:
     assert md5crypt("password", "saltsalt") == "$1$saltsalt$qjXMvbEw8oaL.CzflDtaK/"
     assert md5crypt("hello world", "abcdefgh") == "$1$abcdefgh$gJuEE5kgk4GxZUtJo4ZFv1"

@@ -112,6 +112,7 @@
 	const range = $derived(ranges.find((r) => r.hours === hours) ?? ranges[1]);
 	let series = $state<Series | null>(null);
 	let changes = $state<Change[]>([]);
+	let loadError = $state<string | null>(null);
 	let chosen = $state<string | null>(null);
 	let wifiOpen = $state(false);
 	let firmwareOpen = $state(false);
@@ -122,18 +123,20 @@
 	$effect.pre(() => {
 		void id;
 		[chosen, wifiOpen, firmwareOpen, fritzUpdate, fritzNote] = [null, false, false, null, null];
+		[series, changes, loadError] = [null, [], null];
 	});
 	async function updateFritz() {
+		const target = id;
 		try {
-			await more.fritzFirmware(id);
-			fritzUpdate = 'started';
+			await more.fritzFirmware(target);
+			if (id === target) fritzUpdate = 'started';
 		} catch (e) {
+			if (id !== target) return;
 			fritzUpdate = null;
 			fritzNote = (e as Error).message;
 		}
 	}
 
-	let loadError = $state<string | null>(null);
 	let latest = 0;
 	async function load() {
 		// Only the newest request may write: an older one finishing late must not win.
@@ -153,7 +156,10 @@
 		void id;
 		load();
 		const timer = setInterval(load, 30000);
-		return () => clearInterval(timer);
+		return () => {
+			clearInterval(timer);
+			latest++;
+		};
 	});
 
 	const checkSeries = $derived(series?.devices[id] ?? {});

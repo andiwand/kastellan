@@ -254,7 +254,13 @@ def test_the_collector_tells_a_kept_previous_image() -> None:
     a, b = "sha256:" + "a" * 64, "sha256:" + "b" * 64
     answers = {
         "/containers/json": [
-            {"Names": ["/app"], "Image": "me/app:1", "ImageID": b, "State": "running"},
+            {
+                "Names": ["/app"],
+                "Image": "me/app:1",
+                "ImageID": b,
+                "State": "running",
+                "Ports": [{"PublicPort": 8080, "Type": "tcp"}, {"PublicPort": 5353, "Type": "udp"}],
+            },
             {"Names": ["/db"], "Image": "db:2", "ImageID": a, "State": "exited"},
         ],
         "/images/json": [{"Id": a, "RepoTags": ["kastellan-previous:app", "kastellan-previous:db"]}],
@@ -280,7 +286,38 @@ def test_the_collector_tells_a_kept_previous_image() -> None:
         server.shutdown()
         shutil.rmtree(folder, ignore_errors=True)
     assert docker["app"]["previous"] == "a" * 12
+    assert docker["app"]["ports"] == [8080]
     assert docker["db"]["previous"] is None  # it runs that one: nothing to go back to
+
+
+def test_disk_power_errors_do_not_look_asleep_or_lose_busy_samples() -> None:
+    import ast
+    from types import SimpleNamespace
+
+    # Exercise the standalone collector function with fake sysfs and smartctl.
+    tree = ast.parse(collector.script())
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "activity")
+    function.decorator_list = []
+    codes = {"sleep": 99, "awake": 0, "unsupported": 98, "failed": 2, "timeout": None}
+
+    def run(args, timeout):
+        assert args[1:4] == ["-n", "standby,99,98", "-i"]
+        code = codes[args[-1].split("/")[-1]]
+        if code is None:
+            raise subprocess.TimeoutExpired(args, timeout)
+        return code, ""
+
+    scope = {
+        "disks": lambda: list(codes),
+        "read": lambda path: "1" if path.endswith("rotational") else "0 " * 9 + "123",
+        "run": run,
+        "os": SimpleNamespace(path=SimpleNamespace(exists=lambda _: True)),
+        "subprocess": subprocess,
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "collector", "exec"), scope)
+    rows = scope["activity"]()
+    assert [d["asleep"] for d in rows] == [True, False, None, None, None]
+    assert all(d["busy_ms"] == 123 for d in rows)
 
 
 def test_reading_a_host_again(monkeypatch, admin_client) -> None:
@@ -288,14 +325,20 @@ def test_reading_a_host_again(monkeypatch, admin_client) -> None:
 
     async def fake_collect(keys, device):
         asked.append(device.host)
-        return {"version": 1, "errors": {}}
+        return {"version": 1, "errors": {}, "docker": []}
 
     monkeypatch.setattr(collector, "collect", fake_collect)
     c = admin_client(
         "devices:\n  nas:\n    host: 127.0.0.1\n    collect: {user: kastellan-collect}\n"
         "  cam:\n    host: 127.0.0.2\n"
     )
+
+    def failed_history(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(c.app.state.hub.vitals, "add_disks", failed_history)
     r = c.post("/api/devices/nas/collect/now")
     assert r.status_code == 200 and r.json()["checked"] and "127.0.0.1" in asked
+    assert c.app.state.hub.monitor.status["nas"].containers == []
     assert c.post("/api/devices/nas/collect/now").status_code == 429  # just read
     assert c.post("/api/devices/cam/collect/now").status_code == 409

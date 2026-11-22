@@ -26,6 +26,15 @@ def test_since_when_and_after_a_restart(tmp_path: Path) -> None:
     again = ServiceStates(tmp_path)  # a restart: the history says it
     again.restore_from(T0 + timedelta(minutes=3))
     assert again.since("ap") == since
+    again.note("ap", {}, T0 + timedelta(minutes=4))  # unreadable, not removed
+    assert again.since("ap") == since
+    again.note("ap", report(dropbear=True), T0 + timedelta(minutes=5))
+    assert "uhttpd" not in again.since("ap")
+    again.note("ap", report(dropbear=True, uhttpd=True), T0 + timedelta(minutes=6))
+    assert again.since("ap")["uhttpd"] == {
+        "since": (T0 + timedelta(minutes=6)).isoformat(),
+        "since_exact": False,
+    }
     again.forget(set())
     assert again.since("ap") == {}
 

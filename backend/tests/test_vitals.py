@@ -1,5 +1,6 @@
 """Vitals: one shape from hosts, OpenWrt and FRITZ!Boxes; CPU from counters; kept for charts."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from kastellan import vitals
@@ -171,10 +172,14 @@ async def test_empty_readings_and_replaced_devices_clear_current_vitals(tmp_path
         assert status.vitals is None
         await hub.note_vitals("nas", status, Vitals(cpu=50))
         assert hub._cpu.percent("nas", [100, 0, 100, 800]) is None
+        assert hub._busy.percent("nas", "sda", 1000, 100) is None
+        hub.services.note("nas", {"services": [{"name": "test", "running": True}]}, datetime.now(UTC))
         config.write_text("devices: {nas: {host: 127.0.0.2}}")
         hub.reload()
         assert hub.monitor.status["nas"].vitals is None
         assert hub._cpu.percent("nas", [150, 0, 150, 900]) is None
+        assert hub._busy.percent("nas", "sda", 31_000, 160) is None
+        assert hub.services.since("nas") == {}
     finally:
         await hub.stop()
 
@@ -210,6 +215,10 @@ def test_disks_busy_asleep_and_warm(tmp_path: Path) -> None:
     assert store.disk_series("h", t0, 600, 2) == {
         "sda": {"busy": [10.0, None], "asleep": [50.0, None], "temperature": [35.0, None]}
     }
+    # Disk-only reports still enforce retention.
+    assert store.add_disks("h", samples, now=t0 + 31 * 86400)
+    assert store.disk_series("h", t0, 600, 2) == {}
+    store.close()
 
 
 def test_the_disks_route(admin_client) -> None:

@@ -44,6 +44,15 @@
 	const shown = $derived(use.find((u) => u.channel === hover) ?? null);
 	const cols = $derived(`repeat(${use.length}, minmax(0, 1fr))`);
 	const dense = $derived(use.length > 16);
+	// Leave space between axis labels; every channel remains available by hovering or tapping.
+	function labelClass(i: number, channel: number): string {
+		const besideOwn = own.has(use[i - 1]?.channel) || own.has(use[i + 1]?.channel);
+		return [
+			own.has(channel) ? 'font-semibold text-text' : '',
+			dense && !own.has(channel) && (besideOwn || i % 2) ? 'sm:invisible' : '',
+			i % (dense ? 4 : 2) ? 'max-sm:invisible' : ''
+		].join(' ');
+	}
 </script>
 
 <div class="card p-4">
@@ -98,13 +107,7 @@
 				style:grid-template-columns={cols}
 			>
 				{#each use as u, i (u.channel)}
-					<span
-						class="tabular {own.has(u.channel) ? 'font-semibold text-text' : ''} {dense &&
-						i % 2 &&
-						!own.has(u.channel)
-							? 'max-sm:invisible'
-							: ''}"
-					>
+					<span class="tabular {labelClass(i, u.channel)}">
 						{u.channel}
 					</span>
 				{/each}

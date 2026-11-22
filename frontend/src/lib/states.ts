@@ -115,10 +115,15 @@ export const backupState: Record<Backup['state'], State> = {
 };
 
 /** A device configuration backup Kastellan takes itself (devbackups.py). */
-export function configBackupState(status: { error?: string | null; denied?: boolean }): State {
+export function configBackupState(
+	status: { error?: string | null; denied?: boolean; ok?: string },
+	hasVersion = !!status.ok
+): State {
 	if (status.error && status.denied)
 		return { word: 'Not allowed', tone: 'neutral', title: status.error };
 	if (status.error) return { word: 'Failed', tone: 'warning', title: status.error };
+	if (!hasVersion)
+		return { word: 'Waiting', tone: 'neutral', title: 'No backup has been taken yet' };
 	return { word: 'OK', tone: 'good' };
 }
 

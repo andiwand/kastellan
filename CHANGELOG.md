@@ -47,6 +47,15 @@
 ### Fixed
 
 - Renewing the actor from Updates marked its new abilities as not needed.
+- OpenWrt renewal reads the live service permissions and refuses to continue if they cannot
+  be read, instead of silently removing them.
+- Disk read failures no longer look like sleeping disks. History expires after 30 days even
+  without other vitals; history errors no longer prevent container refreshes.
+- Wi-Fi findings stay distinct for each network; device Wi-Fi refreshes while open. Device
+  navigation clears the previous device's history, and backup summaries show failures and
+  missing first backups correctly.
+- Backup actions and disk activity strips remain visible on phones. Disk charts handle
+  failed requests and rapid range changes.
 
 ## 0.14.0 (2026-11-22)
 

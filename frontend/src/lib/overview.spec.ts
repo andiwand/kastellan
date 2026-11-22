@@ -156,6 +156,15 @@ it('leaves out areas with nothing to show', () => {
 	expect(rows.map((r) => r.id)).toEqual(['internet', 'signins', 'updates']);
 });
 
+it('shows backup failures before alarms arrive and unreadable configuration backups', () => {
+	expect(byId(areasOf(input({ backups: [job('failed')] }))).backups.state.word).toBe('Failed');
+	expect(byId(areasOf(input({ backups: [job('waiting')] }))).backups.state.word).toBe('Waiting');
+	expect(byId(areasOf(input({ configBackups: 'error' }))).backups.state.word).toBe('Not read');
+	expect(byId(areasOf(input({ backups: [], configBackups: null }))).backups.state.word).toBe(
+		'Checking'
+	);
+});
+
 it('takes the state and the sentence from the issues, and links to the single one', () => {
 	const hs = device('homeserver', { vitals: vitals(92, '/srv/media') });
 	const rows = byId(

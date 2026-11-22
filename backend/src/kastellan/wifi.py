@@ -844,7 +844,8 @@ def findings(
                 else []
             )
             say(
-                f"roaming:{gid}:{kind}:{'+'.join(f.get('devices') or [])}",
+                f"roaming:{gid}:{kind}:{'+'.join(f.get('devices') or [])}"
+                + (f":{f['ssid']}" if f.get("ssid") is not None else ""),
                 f.get("level") or "info",
                 f["text"],
                 f.get("fix") or "",

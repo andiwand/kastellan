@@ -54,3 +54,17 @@ def test_the_report(admin_client, tmp_path: Path) -> None:
     assert r["disk"]["free"] > 0 and r["forecast"]["used"] >= 4000
     c.post("/api/auth/logout")
     assert c.get("/api/hub/resources").status_code in (401, 403)
+
+
+def test_database_paths_with_uri_characters(tmp_path: Path) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    from kastellan.footprint import _oldest
+
+    path = tmp_path / "vitals#?.db"
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("CREATE TABLE vitals (ts REAL)")
+        db.execute("INSERT INTO vitals VALUES (1234)")
+        db.commit()
+    assert _oldest(path, "SELECT MIN(ts) FROM vitals") == 1234
