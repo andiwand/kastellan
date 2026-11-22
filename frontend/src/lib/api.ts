@@ -5,6 +5,7 @@ export interface CheckStatus {
 	type: 'ping' | 'tcp' | 'http' | 'dns' | 'dhcp';
 	target: string | number | null;
 	exposed?: boolean; // reachable from the internet (this service)
+	alarm?: 'critical' | 'warning' | 'off'; // how its alarm says it is down; off: none
 	up?: boolean | null;
 	latency_ms?: number | null;
 	detail?: string;
@@ -977,6 +978,7 @@ export interface CheckForm {
 	interval?: number | null;
 	timeout?: number | null;
 	exposed?: boolean; // this service is reachable from the internet
+	alarm?: 'critical' | 'warning' | 'off'; // how a message says it is down (default critical)
 }
 
 /** A device as config.yaml has it: what the form edits; the rest of it stays as it is. */
@@ -1727,6 +1729,7 @@ export interface WifiOverview {
 	clients?: WifiClient[];
 	findings?: WifiFinding[];
 	countries?: string[];
+	over_the_air?: boolean; // for those who may only look: what a phone nearby would see
 	country_note?: string | null;
 }
 

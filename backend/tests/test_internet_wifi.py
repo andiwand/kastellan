@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from pathlib import Path
 
@@ -675,3 +676,15 @@ def test_the_demo_wifi_page_finds_what_its_groups_page_says(demo_client) -> None
     assert {r["mesh"] for r in body["radios"] if r["kind"] == "openwrt" and r["band"] == "5g"} == {
         "castle-mesh"
     }
+
+
+def test_those_who_may_only_look_see_the_wifi_as_a_phone_nearby_would(demo_client) -> None:
+    full = demo_client.get("/api/wifi").json()
+    seen = wifi.over_the_air(copy.deepcopy(full))
+    assert seen["networks"] and seen["radios"] and seen["clients"] == [] and seen["plans"] == []
+    assert not any("key" in e for n in seen["networks"] for e in n["on"])
+    assert not any("same_key" in n for n in seen["networks"])
+    assert all(r["clients"] is None for r in seen["radios"])
+    kept = {f["key"].split(":")[0] for f in seen["findings"]}
+    assert "wps" in kept and "channel" in kept
+    assert not kept & {"key", "clients", "roaming", "error", "mesh"}

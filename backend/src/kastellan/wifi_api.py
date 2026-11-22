@@ -1,5 +1,6 @@
 """The Wi-Fi page over HTTP (wifi.py): networks by name across every access point, the radios,
-scans and the channel plan. Seeing: admins. Changing and scanning: signed-in admins, as
+scans and the channel plan. Seeing: admins all of it, others what a phone nearby would see
+(wifi.over_the_air). Changing and scanning: signed-in admins, as
 streamed jobs (one access point after the other, each with its rollback), audited without
 passwords."""
 
@@ -18,7 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import demo_more, roaming, setup_run, wifi
-from .auth_api import client_address, require_admin, require_signin
+from .auth_api import client_address, require_admin, require_signin, who
 from .fritzbox import client as fb
 from .openwrt import client as ow
 from .openwrt import sync
@@ -208,7 +209,7 @@ def router(hub: Hub) -> APIRouter:
 
     @api.get("")
     async def overview(request: Request) -> dict[str, Any]:
-        require_admin(request)
+        admin = who(request).is_admin
         fritz = fritz_networks()
         if hub.demo:
             survey, keys = demo_more.WIFI_SURVEY, {}
@@ -280,7 +281,7 @@ def router(hub: Hub) -> APIRouter:
             scanned=bool(all_scans),
             names={id: hub.config.label(id) for id in hub.config.devices},
         )
-        return {
+        view = {
             "networks": networks,
             "clients": clients,
             "countries": countries,
@@ -293,6 +294,7 @@ def router(hub: Hub) -> APIRouter:
             "scanning": sorted(hub.wifi_scanning),
             "scan_at": hub.config.wifi.scan_at,
         }
+        return view if admin else wifi.over_the_air(view)
 
     @api.post("/networks/change")
     async def change(body: NetworkChange, request: Request) -> StreamingResponse:

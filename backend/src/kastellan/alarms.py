@@ -3,7 +3,8 @@
 Rules (defaults in config.yaml's `alarms:`):
 
 - critical: a device that should always be on is down for `down_after` seconds (3 min);
-- warning: a service (a non-ping check) of such a device is down that long;
+- a service (a non-ping check) of such a device is down that long: critical, or as its check
+  says (`alarm: warning` or `off`);
 - certificates of watched https checks (`tls`, by default names on the internet): critical when
   not valid (expired, wrong name, not trusted), warning `cert_days` (14) before they end;
 - vulnerabilities: see vuln_policy.py (exploited or critical on an exposed device: critical);
@@ -251,7 +252,7 @@ def evaluate(
             continue
         st = status.get(id)
         for check in device.checks:
-            if check.type == "ping" or st is None:
+            if check.type == "ping" or check.alarm == "off" or st is None:
                 continue
             c = st.checks.get(check.name)
             if check.watch_cert and c and c.cert and not c.cert.valid:
@@ -267,7 +268,7 @@ def evaluate(
                 problems.append(
                     Problem(
                         f"service:{id}:{check.name}",
-                        Severity.WARNING,
+                        Severity(check.alarm),
                         id,
                         name,
                         f"{name} is down",

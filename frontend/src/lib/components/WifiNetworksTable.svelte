@@ -15,11 +15,13 @@
 		networks,
 		clients = [],
 		device,
-		onaction
+		onaction,
+		overTheAir = false
 	}: {
 		networks: WifiNetwork[];
 		clients?: WifiClient[];
 		device?: string;
+		overTheAir?: boolean; // only what a phone nearby sees: no passwords, no clients
 		onaction?: (kind: 'change' | 'add' | 'remove', net: WifiNetwork) => void;
 	} = $props();
 
@@ -40,7 +42,7 @@
 	const password = (n: WifiNetwork) =>
 		n.on.length < 2 ? null : n.same_key == null ? 'not compared' : n.same_key ? 'one' : 'differ';
 
-	const columns: Column<WifiNetwork>[] = [
+	const all: Column<WifiNetwork>[] = [
 		{ key: 'ssid', label: 'Network', grow: true, cell: ssidCell },
 		{ key: 'security', label: 'Encryption', priority: 2, value: security },
 		{
@@ -59,6 +61,9 @@
 		{ key: 'clients', label: 'Clients', numeric: true, width: '4.5rem', value: clientsOf },
 		{ key: 'state', label: 'State', width: '7rem', cell: stateCell }
 	];
+	const columns = $derived(
+		overTheAir ? all.filter((c) => c.key !== 'password' && c.key !== 'clients') : all
+	);
 </script>
 
 {#snippet ssidCell(n: WifiNetwork)}

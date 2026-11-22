@@ -126,7 +126,9 @@
 
 <PageHeader
 	title="Wi-Fi"
-	summary="Networks, access points and clients from every OpenWrt device and FRITZ!Box."
+	summary={data?.over_the_air
+		? 'Networks and access points as a phone nearby would see them. Admins see the clients too.'
+		: 'Networks, access points and clients from every OpenWrt device and FRITZ!Box.'}
 >
 	{#snippet actions()}
 		<button
@@ -165,13 +167,13 @@
 			sub={count(data.radios.length, 'radio')}
 			href="#access-points"
 		/>
-		<Tile
-			label="Clients"
-			value={clients.length}
-			state={weak ? { word: `${weak} weak`, tone: 'warning' } : undefined}
-			sub={weak ? 'with a weak or slow link' : 'none with a weak link'}
-			href="#clients"
-		/>
+		{#if !data.over_the_air}<Tile
+				label="Clients"
+				value={clients.length}
+				state={weak ? { word: `${weak} weak`, tone: 'warning' } : undefined}
+				sub={weak ? 'with a weak or slow link' : 'none with a weak link'}
+				href="#clients"
+			/>{/if}
 		<Tile
 			label="Busiest channel"
 			value={top?.channel ?? null}
@@ -200,16 +202,26 @@
 		id="access-points"
 		meta={data.countries?.length ? `Country ${data.countries.join(', ')}` : undefined}
 	>
-		<AccessPointsTable radios={data.radios} networks={data.networks} onchanged={load} />
+		<AccessPointsTable
+			radios={data.radios}
+			networks={data.networks}
+			onchanged={load}
+			overTheAir={data.over_the_air}
+		/>
 	</Section>
 
 	<Section
 		title="Networks"
 		count={data.networks.length}
 		id="networks"
-		meta="Passwords are compared by fingerprint, never shown"
+		meta={data.over_the_air ? undefined : 'Passwords are compared by fingerprint, never shown'}
 	>
-		<WifiNetworksTable networks={data.networks} {clients} onaction={canChange ? open : undefined} />
+		<WifiNetworksTable
+			networks={data.networks}
+			{clients}
+			onaction={canChange ? open : undefined}
+			overTheAir={data.over_the_air}
+		/>
 	</Section>
 
 	{#if bands.length}
@@ -233,7 +245,7 @@
 		</Section>
 	{/if}
 
-	{#if data.radios.length}
+	{#if data.radios.length && !data.over_the_air}
 		<Section
 			title="Channel plan"
 			id="channel-plan"

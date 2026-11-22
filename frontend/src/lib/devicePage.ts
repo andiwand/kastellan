@@ -168,8 +168,9 @@ export function systemOf(d: Device): { label: string; value: string } | null {
 
 /** "NAS: jellyfin is down" on the NAS's own page is "jellyfin is down". */
 export function shortTitle(title: string, name: string): string {
-	const prefix = `${name}: `;
-	if (!title.startsWith(prefix)) return title;
+	// "NAS: jellyfin is down" and "Repeater attic runs 23.05.2" both lose the name.
+	const prefix = [`${name}: `, `${name} `].find((p) => title.startsWith(p));
+	if (!prefix) return title;
 	const rest = title.slice(prefix.length);
 	return rest.charAt(0).toUpperCase() + rest.slice(1);
 }

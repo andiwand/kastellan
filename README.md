@@ -95,7 +95,9 @@ editor. See [config.example.yaml](config.example.yaml) for sites, DNS, UPSes and
 
 HTTP checks accept status codes below 500 unless `expect` specifies a code. TLS verification
 is off by default for local self-signed devices; enable `verify: true` to require it. Certificate
-alarms watch public names and checks with `verify: true` or `tls: true`.
+alarms watch public names and checks with `verify: true` or `tls: true`. A service that is down
+raises an urgent alarm; `alarm: warning` makes it a warning, `alarm: off` raises none (the page
+still shows it down).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

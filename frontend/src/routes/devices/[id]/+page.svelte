@@ -446,7 +446,7 @@
 				{:else if s === 'wifi'}
 					<DeviceWifi {device} />
 				{:else if s === 'network'}
-					<div id="network" class="scroll-mt-6"><NetworkSection {device} internet={false} /></div>
+					<div id="network" class="scroll-mt-6"><NetworkSection {device} /></div>
 				{:else if s === 'vitals' && device.vitals}
 					<VitalsPanel device={device.id} vitals={device.vitals} />
 				{:else if s === 'storage' && device.host_report}

@@ -8,7 +8,7 @@
 	/** A FRITZ!Box's internet connection, as it says: connected or not and for how long, its
 	 * public address, the line's speed in use and (DSL) what it synced at, its noise margin and
 	 * errors; then the ways in from the internet (port forwards, remote access, MyFRITZ!:
-	 * WaysInTable). The Network section leaves these out on such a page (internet={false}). */
+	 * WaysInTable). */
 	let { fritz }: { fritz: FritzReport } = $props();
 
 	const net = $derived(fritz.internet);

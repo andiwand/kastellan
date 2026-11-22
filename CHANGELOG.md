@@ -25,6 +25,10 @@
   - Updates are grouped by urgency with clear verbs; the Internet page says where slowness is.
   - The sidebar is grouped; Containers and VMs share a page, Keys moved into Settings (old
     addresses redirect); a phone shows five places and More.
+- A service that is down now raises an urgent alarm, as its red badge says. Each check can say
+  otherwise (`alarm: warning` or `alarm: off`, also in the device form).
+- Those who may only look see the Wi-Fi as a phone nearby would: networks, access points,
+  channels and what they hear, without clients or password comparisons.
 
 ### Added
 

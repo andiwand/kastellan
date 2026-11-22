@@ -106,6 +106,9 @@ class Check(BaseModel):
     # Reachable from the internet (a port forward, a reverse proxy): this service, not the whole
     # device. Vulnerabilities in what it runs count as urgent (vuln_policy.py).
     exposed: bool = False
+    # How a message says it is down: critical (urgent, the default), warning, or off (no
+    # message; the page still shows it down, but it isn't counted among what needs attention).
+    alarm: Literal["critical", "warning", "off"] = "critical"
 
     @model_validator(mode="before")
     @classmethod

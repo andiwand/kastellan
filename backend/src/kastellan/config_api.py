@@ -77,6 +77,7 @@ class CheckForm(BaseModel):
     interval: float | None = Field(default=None, ge=5, le=86400)
     timeout: float | None = Field(default=None, gt=0, le=60)
     exposed: bool = False
+    alarm: Literal["critical", "warning", "off"] = "critical"
 
 
 class RunsOnForm(BaseModel):
@@ -646,6 +647,7 @@ def router(hub: Hub) -> APIRouter:
                     "interval": c.interval,
                     "timeout": c.timeout,
                     "exposed": c.exposed,
+                    "alarm": c.alarm,
                 }
             )
         return {

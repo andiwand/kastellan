@@ -117,7 +117,7 @@ export function hrefOf(area: Area, device: string | null): string {
 }
 
 /** An alarm's tone. A service that is down is down: critical, as its check's badge says, even
- * though the hub sends it as a warning (its device is still up, so the message isn't urgent). */
+ * when its check sends the message as a warning (`alarm: warning`). */
 export function alarmTone(a: Pick<Alarm, 'key' | 'severity'>): IssueTone {
 	return a.severity === 'critical' || a.key.startsWith('service:') ? 'critical' : 'warning';
 }
@@ -168,7 +168,7 @@ export function attentionOf(devices: Device[], alarms: Alarms | null, now = Date
 			continue;
 		}
 		for (const c of d.checks) {
-			if (checkStatusOf(d, c) !== 'down') continue;
+			if (checkStatusOf(d, c) !== 'down' || c.alarm === 'off') continue; // off: not asked to be told
 			if (keys.has(`service:${d.id}:${c.name}`) || keys.has(`cert:${d.id}:${c.name}`)) continue;
 			issues.push({
 				key: `service:${d.id}:${c.name}`,

@@ -14,7 +14,8 @@
 	/** A device's Wi-Fi on its page: the Wi-Fi page's findings, access points (its radios, and a
 	 * FRITZ!Box's mesh repeaters), clients and networks, kept to this device; then how clients
 	 * roam here (usteer). Read once from GET /api/wifi (admins), again after a radio changed.
-	 * Names, passwords and channel plans are changed on the Wi-Fi page. */
+	 * Names, passwords and channel plans are changed on the Wi-Fi page. Those who may only look see
+	 * what a phone nearby would: no clients. */
 	let { device }: { device: Device } = $props();
 
 	const admin = $derived(store.me?.role === 'admin');
@@ -30,7 +31,7 @@
 	}
 	// The page is keyed on the device: this runs once per device (and when one signs in).
 	$effect(() => {
-		if (admin) load();
+		load();
 	});
 
 	const issues = $derived(issuesIn(store.attention, 'wifi'));
@@ -50,10 +51,8 @@
 	<a class="hover:text-text" href="/wifi">Names, passwords and channels: Wi-Fi page</a>
 {/snippet}
 
-<Section title="Wi-Fi" id="wifi" actions={admin ? toWifi : undefined}>
-	{#if !admin}
-		<EmptyState kind="unavailable" text="Admins see the radios, clients and networks." />
-	{:else if error && !data}
+<Section title="Wi-Fi" id="wifi" actions={toWifi}>
+	{#if error && !data}
 		<EmptyState kind="error" text={error} onretry={load} />
 	{:else if !data}
 		<div class="card h-32 animate-pulse"></div>
@@ -68,8 +67,11 @@
 			networks={data.networks}
 			device={device.id}
 			onchanged={load}
+			overTheAir={data.over_the_air}
 		/>
-		{#if clients.length}
+		{#if data.over_the_air}
+			<!-- no clients: only admins see who is on it -->
+		{:else if clients.length}
 			<h3 class="mt-6 mb-2 text-meta font-medium text-muted">
 				Clients <span class="tabular ml-1 font-normal text-faint">{clients.length}</span>
 			</h3>
@@ -81,9 +83,14 @@
 			<h3 class="mt-6 mb-2 text-meta font-medium text-muted">
 				Networks <span class="tabular ml-1 font-normal text-faint">{networks.length}</span>
 			</h3>
-			<WifiNetworksTable networks={data.networks} clients={data.clients ?? []} device={device.id} />
+			<WifiNetworksTable
+				networks={data.networks}
+				clients={data.clients ?? []}
+				device={device.id}
+				overTheAir={data.over_the_air}
+			/>
 		{/if}
-		{#if device.router}
+		{#if device.router && admin}
 			<div class="card mt-6 px-4 pb-4 empty:hidden"><RoamingInfo device={device.id} /></div>
 		{/if}
 	{/if}

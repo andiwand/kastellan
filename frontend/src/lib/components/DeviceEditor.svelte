@@ -457,6 +457,20 @@
 									</span>
 								</label>
 							{/if}
+							{#if check.type !== 'ping'}
+								<label class="mt-2 flex items-center gap-1.5 text-xs text-muted">
+									When it is down
+									<select
+										class="h-7 rounded-md border border-line bg-surface px-1.5 text-xs"
+										value={check.alarm ?? 'critical'}
+										onchange={(e) => (check.alarm = e.currentTarget.value as CheckForm['alarm'])}
+									>
+										<option value="critical">an urgent alarm</option>
+										<option value="warning">a warning</option>
+										<option value="off">no alarm</option>
+									</select>
+								</label>
+							{/if}
 							{#if check.type === 'http'}
 								<div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
 									<label class="flex items-center gap-1.5">

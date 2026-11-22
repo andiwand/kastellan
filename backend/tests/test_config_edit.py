@@ -233,11 +233,14 @@ def test_form_saves_and_preserves_check_options(hub_client) -> None:
     del f["id"]
     f["checks"][1]["contains"] = "Ready for requests"
     f["checks"][1]["exposed"] = True  # reachable from the internet
+    f["checks"][1]["alarm"] = "warning"
     f["checks"].append({"type": "dhcp"})
     assert c.put("/api/devices/router", json=f, headers=H).status_code == 200
-    assert "exposed: true" in config.read_text().split("users:")[0]
+    devices = config.read_text().split("users:")[0]
+    assert "exposed: true" in devices and "alarm: warning" in devices and "critical" not in devices
     f = c.get("/api/devices/router/form").json()
     assert f["checks"][1]["contains"] == "Ready for requests" and f["checks"][1]["exposed"] is True
+    assert [ch["alarm"] for ch in f["checks"]] == ["critical", "warning", "critical"]
     assert f["checks"][2]["type"] == "dhcp"
     router = next(d for d in c.get("/api/devices").json() if d["id"] == "router")
     assert [ch["exposed"] for ch in router["checks"]] == [False, True, False]

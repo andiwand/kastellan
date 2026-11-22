@@ -37,6 +37,7 @@ it('keeps about ten places, five of them in the phone bar', () => {
 	const observer = navFor(false).flatMap((g) => g.items.map((i) => i.href));
 	expect(observer).not.toContain('/settings');
 	expect(observer).toContain('/updates');
+	expect(observer).toContain('/wifi'); // what a phone nearby would see
 });
 
 it('marks old addresses as their new place', () => {

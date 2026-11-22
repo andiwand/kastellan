@@ -438,6 +438,32 @@ class Scans:
         return out
 
 
+# Findings anyone in reach could see with a phone: what the access points send out (encryption,
+# WPS, country, channels), not what only their settings or their clients say.
+OVER_THE_AIR = ("encryption:", "open:", "wpa:", "wps:", "country", "channel:", "grid:", "wide:")
+
+
+def over_the_air(view: dict[str, Any]) -> dict[str, Any]:
+    """The Wi-Fi overview as far as a phone scanning nearby would see it, for those who may only
+    look: networks with their bands and encryption, the access points' radios and channels, what
+    they hear around them. No clients, no password comparison, no read errors, no plans."""
+    networks = [
+        {k: v for k, v in n.items() if k != "same_key"}
+        | {"on": [{k: v for k, v in e.items() if k != "key"} for e in n.get("on") or []]}
+        for n in view["networks"]
+    ]
+    for r in view["radios"]:
+        r["clients"] = None
+    return view | {
+        "networks": networks,
+        "clients": [],
+        "findings": [f for f in view["findings"] if f["key"].startswith(OVER_THE_AIR)],
+        "errors": {},
+        "plans": [],
+        "over_the_air": True,
+    }
+
+
 def lineup(
     openwrt: dict[str, Any],
     fritz: dict[str, list[dict[str, Any]]],

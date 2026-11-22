@@ -31,7 +31,7 @@ export const NAV: NavGroup[] = [
 		label: 'Network',
 		items: [
 			{ href: '/internet', label: 'Internet', icon: 'internet', phone: true },
-			{ href: '/wifi', label: 'Wi-Fi', icon: 'wifi', admin: true, phone: true },
+			{ href: '/wifi', label: 'Wi-Fi', icon: 'wifi', phone: true },
 			{ href: '/vpn', label: 'VPN', icon: 'vpn' }
 		]
 	},

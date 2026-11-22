@@ -178,10 +178,24 @@ def _check_node(check: dict[str, Any]) -> Any:
         target = None
     default_name = kind if kind in ("ping", "dhcp") else f"{kind}:{target}"
     extras: dict[str, Any] = {}
-    for key in ("name", "expect", "contains", "server", "verify", "tls", "interval", "timeout", "exposed"):
+    keys = (
+        "name",
+        "expect",
+        "contains",
+        "server",
+        "verify",
+        "tls",
+        "interval",
+        "timeout",
+        "exposed",
+        "alarm",
+    )
+    for key in keys:
         value = check.get(key)
         if value in (None, "", []) or (key in ("verify", "exposed") and value is False):
             continue
+        if key == "alarm" and value == "critical":
+            continue  # the default: not written
         if key == "expect" and isinstance(value, list):
             value = value[0] if len(value) == 1 else CommentedSeq(value)  # dns: one address, or a list
         if (key == "name" and value == default_name) or (key == "timeout" and value == DEFAULT_TIMEOUT):

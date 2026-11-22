@@ -193,6 +193,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             "type": check.type,
             "target": check.target,
             "exposed": check.exposed,
+            "alarm": check.alarm,
         }
         if status is None:
             return view

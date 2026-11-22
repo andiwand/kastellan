@@ -15,11 +15,13 @@
 		radios,
 		networks = [],
 		device,
-		onchanged
+		onchanged,
+		overTheAir = false
 	}: {
 		radios: WifiRadio[];
 		networks?: WifiNetwork[];
 		device?: string;
+		overTheAir?: boolean; // only what a phone nearby sees: no client counts
 		onchanged?: () => void; // after a radio was changed: read again
 	} = $props();
 
@@ -80,10 +82,17 @@
 		'h-9 rounded-lg border border-line bg-surface px-3 text-sm outline-none focus:border-accent';
 	const label = 'flex flex-col gap-1 text-meta font-medium text-muted';
 
-	const columns: Column<AccessPoint>[] = [
+	const all: Column<AccessPoint>[] = [
 		{ key: 'ap', label: 'Access point', grow: true, cell: apCell },
 		{ key: 'channel', label: 'Channel', cell: channelCell, width: '7.5rem' },
-		{ key: 'clients', label: 'Clients', numeric: true, width: '4.5rem', value: (a) => a.clients },
+		{
+			key: 'clients',
+			label: 'Clients',
+			numeric: true,
+			priority: 2,
+			width: '4.5rem',
+			value: (a) => a.clients
+		},
 		{
 			key: 'busy',
 			label: 'Busy',
@@ -100,6 +109,7 @@
 		},
 		{ key: 'state', label: 'State', width: '6.5rem', cell: stateCell }
 	];
+	const columns = $derived(overTheAir ? all.filter((c) => c.key !== 'clients') : all);
 </script>
 
 {#snippet apCell(a: AccessPoint)}

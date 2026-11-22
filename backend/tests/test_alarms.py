@@ -66,9 +66,14 @@ def test_not_before_down_after_and_not_from_old_results() -> None:
     assert problems({"router": ["ping"]}, checked=NOW - timedelta(hours=1)) == []
 
 
-def test_service_down_is_a_warning() -> None:
+def test_a_service_down_alarms_as_its_check_says() -> None:
     found = problems({"nas": ["web/ui"]})
-    assert [(p.key, p.severity) for p in found] == [("service:nas:web/ui", Severity.WARNING)]
+    assert [(p.key, p.severity) for p in found] == [("service:nas:web/ui", Severity.CRITICAL)]
+    for alarm, expected in (("warning", [Severity.WARNING]), ("off", [])):
+        config = CONFIG.model_copy(deep=True)
+        config.devices["nas"].checks[1].alarm = alarm
+        found = evaluate(config, status({"nas": ["web/ui"]}), NOW, {}, STARTED)
+        assert [p.severity for p in found] == expected
 
 
 def test_a_muted_device_still_covers_what_is_behind_it() -> None:

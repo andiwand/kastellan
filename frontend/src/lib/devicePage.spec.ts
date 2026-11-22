@@ -128,6 +128,7 @@ it('names the firmware, else the kernel', () => {
 it('leaves the device name out of its own issues', () => {
 	expect(shortTitle('NAS: jellyfin is down', 'NAS')).toBe('Jellyfin is down');
 	expect(shortTitle('Internet is down', 'NAS')).toBe('Internet is down');
+	expect(shortTitle('Repeater attic runs 23.05.2', 'Repeater attic')).toBe('Runs 23.05.2');
 });
 
 it('links an issue to its section on this page', () => {
