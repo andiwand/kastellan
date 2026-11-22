@@ -31,6 +31,7 @@ from . import (
     dhcp,
     discovery,
     docker,
+    footprint,
     hubbackup,
     internet_api,
     logs_poll,
@@ -141,6 +142,7 @@ class Hub:
             # The made-up history never lands next to a real one.
             data = Path(tempfile.mkdtemp(prefix="kastellan-demo-"))
         self._demo_dir = data if self.demo else None
+        self.data = data  # where what Kastellan sees is kept (a temporary folder in demo mode)
         self.history = History(data / "checks")
         self.versions = Versions(data / "versions.log")
         # Sign-in state lives next to the real data even in demo mode: it is not made up.
@@ -179,6 +181,7 @@ class Hub:
         self.tickets = Tickets()  # one-time remote desktop tickets (desktop_api)
         self.alarms = Alarms(data)
         self.disks = DiskHistory(data)
+        self.resources = footprint.Resources()  # the hub's own CPU, memory and data folder
         self.vitals = VitalsStore(data / "vitals.db")  # CPU, memory, storage over time (vitals.py)
         self._cpu = VitalsCpu()
         self._eco_next: dict[str, tuple[float, int]] = {}  # FRITZ!Box energy monitor: next read

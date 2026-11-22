@@ -8,12 +8,14 @@
 	import AccessPanel from '#lib/components/AccessPanel.svelte';
 	import WebSetup from '#lib/components/WebSetup.svelte';
 	import Tabs from '#lib/components/Tabs.svelte';
+	import HubResources from '#lib/components/HubResources.svelte';
 
-	/** Kastellan's settings: as forms, its own SSH key (Access), or config.yaml itself. */
-	type Tab = 'settings' | 'access' | 'web' | 'file';
+	/** Kastellan's settings: as forms, its own SSH key (Access), what it costs the machine
+	 * (Resources), or config.yaml itself. */
+	type Tab = 'settings' | 'access' | 'web' | 'resources' | 'file';
 	const tab = $derived.by((): Tab => {
 		const t = page.url.searchParams.get('tab');
-		return t === 'file' || t === 'access' || t === 'web' ? t : 'settings';
+		return t === 'file' || t === 'access' || t === 'web' || t === 'resources' ? t : 'settings';
 	});
 
 	function show(t: Tab) {
@@ -35,6 +37,7 @@
 			{ id: 'settings', label: 'Settings' },
 			{ id: 'access', label: 'Access' },
 			{ id: 'web', label: 'Names & HTTPS' },
+			{ id: 'resources', label: 'Resources' },
 			{ id: 'file', label: 'config.yaml', mono: true }
 		]}
 		current={tab}
@@ -46,6 +49,8 @@
 	<AccessPanel />
 {:else if tab === 'web'}
 	<WebSetup />
+{:else if tab === 'resources'}
+	<HubResources />
 {:else if store.editBlocked !== null}
 	<div class="card mt-6 p-5 text-sm text-muted">
 		The config can't be changed from here: {store.editBlocked}.

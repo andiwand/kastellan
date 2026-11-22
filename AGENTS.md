@@ -326,6 +326,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `disks.py`: hourly disk usage per host and mount (`<data>/disk-usage.json`, 30 days), a line
     through the last 7 days (from the last clean-up) gives `host_forecast` (days until full);
     `host_problems` warns under `alarms.disk_days` (same key as the full-disk alarm).
+  - `footprint.py` (`GET /api/hub/resources`, admins; Settings → Resources): the hub process's
+    CPU (`os.times`, between reports) and memory (/proc; the peak elsewhere), the machine's, and
+    the data store by store, each measured where its owner keeps it (`hub.data`: a temporary
+    folder in demo mode). Kept for a time: rate = size over its span, levels off at rate × days;
+    kept by count (`counts()`, `generations()`): at that many versions; the audit and alarm logs
+    only grow and say when the disk fills. No psutil: the standard library and /proc.
   - `vitals.py`: CPU %, memory, storage (the fullest filesystem) and temperature in one shape
     (`Vitals`) from the collector (`system.cpu`: /proc/stat counters), OpenWrt (`system info`'s
     memory and root, and the read group's `vitals` helper: counters and the hottest thermal

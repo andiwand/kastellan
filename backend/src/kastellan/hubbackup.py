@@ -292,6 +292,13 @@ class HubBackup:
         self.operation = asyncio.Lock()
         self.status: dict[str, Any] = {}  # the last run: ok, error, copies per target
 
+    def generations(self) -> int | None:
+        """How many backups are kept here (None while their key can't be read)."""
+        try:
+            return len(self.store.snapshots(ID))
+        except Exception:  # no key yet, a locked ring, an older index
+            return None
+
     def header(self) -> dict[str, Any] | None:
         try:
             return json.loads((self.folder / HEADER).read_text())

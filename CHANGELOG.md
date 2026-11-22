@@ -19,6 +19,10 @@
 - "Not needed" for an OpenWrt firmware step, a wanted reboot and a host's system updates on
   Updates: each stays away until it changes (a newer release, a reboot for other packages,
   other updates); a silenced reboot sends no notification.
+- Settings → Resources: what Kastellan costs the machine it runs on (its CPU and memory next to
+  the machine's, its part of the disk) and its data store by store: size, growth a day, how
+  much is kept, and where each levels off and when; what only grows (the audit and alarm logs)
+  says when the disk would be full.
 
 ### Changed
 

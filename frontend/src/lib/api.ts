@@ -881,6 +881,39 @@ export interface Vitals {
 
 export type VitalField = 'cpu' | 'memory' | 'storage' | 'temperature';
 
+/** One part of Kastellan's data folder (footprint.py): its size, rate and where it levels off. */
+export interface DataStore {
+	name: string;
+	path: string;
+	used: number; // bytes
+	per_day: number | null; // bytes a day (null: not known yet)
+	kept: string; // in words: "14 days", "60 versions", "everything"
+	steady: number | null; // bytes once it levels off (null: it doesn't)
+	days_to_steady: number | null; // until then (0: it has)
+}
+
+/** What Kastellan costs the machine it runs on (GET /api/hub/resources). */
+export interface HubResources {
+	time: number;
+	hub: { cpu: number | null; memory: number | null; memory_is_peak: boolean }; // cpu: % of one core
+	machine: {
+		cores: number | null;
+		cpu: number | null; // all cores, 0-100
+		memory_total: number | null;
+		memory_available: number | null;
+	};
+	disk: { path: string; total: number | null; free: number | null };
+	stores: DataStore[];
+	forecast: {
+		used: number;
+		per_day: number;
+		steady: number;
+		growing_per_day: number; // what never levels off
+		days_to_steady: number | null;
+		days_until_full: number | null;
+	};
+}
+
 export interface VitalsSeries {
 	start: string;
 	step_seconds: number;
@@ -1812,6 +1845,7 @@ export const more = {
 export const api = {
 	health: () => get<Health>('/health'),
 	devices: () => get<Device[]>('/devices'),
+	hubResources: () => get<HubResources>('/hub/resources'),
 	vitals: (hours: number, buckets: number, device?: string) =>
 		get<VitalsSeries>('/vitals', { hours, buckets, device }),
 	series: (hours: number, buckets: number, device?: string) =>

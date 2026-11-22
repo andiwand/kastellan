@@ -432,6 +432,13 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         data = stats.series(hub.history.read(start, device=device), start, step, buckets)
         return {"start": start, "step_seconds": step.total_seconds(), "devices": data}
 
+    @app.get("/api/hub/resources")
+    async def hub_resources(request: Request) -> dict[str, Any]:
+        """What Kastellan costs the machine: its CPU and memory, and its data folder store by
+        store, with where each levels off (footprint.py). Admins: it shows the folder's layout."""
+        require_admin(request)
+        return await asyncio.to_thread(hub.resources.report, hub)
+
     @app.get("/api/vitals")
     async def vitals_series(
         hours: Hours = 24, buckets: int = 48, device: str | None = None

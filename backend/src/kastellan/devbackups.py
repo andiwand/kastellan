@@ -234,6 +234,20 @@ class Store:
             for s in data.get("snapshots", [])
         ]
 
+    def counts(self) -> dict[str, Any]:
+        """How many versions are kept: in all, the most of one device, and since when."""
+        versions, most, oldest = 0, 0, None
+        for index in self.folder.glob("*.json") if self.folder.is_dir() else []:
+            try:
+                snaps = json.loads(index.read_text()).get("snapshots", [])
+                taken = [datetime.fromisoformat(x["taken"]).timestamp() for x in snaps]
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
+            versions, most = versions + len(snaps), max(most, len(snaps))
+            if taken:
+                oldest = min(taken) if oldest is None else min(oldest, *taken)
+        return {"versions": versions, "most": most, "oldest": oldest}
+
     def _save(self, device: str, snaps: list[Snapshot]) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
         os.chmod(self.folder, 0o700)

@@ -42,6 +42,7 @@ Implementation details and release history belong in [AGENTS.md](AGENTS.md) and
 - Helper version checks (collector, actor, OpenWrt, VPN scripts); container tag upgrades and
   same-major alternatives; "Not needed" for container, firmware, reboot and system updates.
 - Vitals (CPU, memory, storage, temperature) for Linux, OpenWrt and FRITZ!Box, with 30-day charts.
+- Kastellan's own footprint: its CPU and memory, its data per store and where it levels off.
 - Device pages by topic for every kind: services (with the device's own), software, Wi-Fi,
   network, storage and hardware.
 - Kept TLS connections and slower reads of rarely changing data, sparing small routers.
