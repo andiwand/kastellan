@@ -134,6 +134,12 @@ def test_the_access_page_vpn_servers_and_found_devices_in_demo(demo_client) -> N
     assert "outside-ok" not in flags["198.51.100.7"]  # the demo NAS sends unverified syslog
     assert any(e["address"] == "198.51.100.7" and not e["verified"] for e in body["events"])
     assert client.get("/api/signins", params={"hours": 0}).status_code == 422
+    # The overview's summary: the same numbers, no addresses or events.
+    brief = client.get("/api/signins/summary", params={"hours": 24}).json()
+    assert brief["summary"] == body["summary"] and brief["total"] == body["total"]
+    assert set(brief) == {"hours", "summary", "total", "flags"}
+    flagged = [f for s in body["sources"] for f in s["flags"]]
+    assert sum(brief["flags"].values()) == len(flagged)
     servers = client.get("/api/vpn").json()["servers"]
     assert {s["name"] for s in servers} >= {"home_udp", "wg-easy"}
 
@@ -166,3 +172,4 @@ def test_signins_are_private_while_signin_is_off(tmp_path) -> None:
     path.write_text("devices: {}\n")
     with TestClient(create_app(Settings(config=path, data=tmp_path))) as client:
         assert client.get("/api/signins").status_code == 403
+        assert client.get("/api/signins/summary").status_code == 403

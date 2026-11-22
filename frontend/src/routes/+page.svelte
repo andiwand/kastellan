@@ -1,90 +1,143 @@
 <script lang="ts">
-	import InternetSummary from '#lib/components/InternetSummary.svelte';
+	import { onMount, untrack } from 'svelte';
 	import { store } from '#lib/state.svelte.js';
-	import { deviceBuckets, statusOf, uptimeOf, type Status } from '#lib/status.js';
-	import { ago, ms, percent } from '#lib/format.js';
+	import { api, more, type Backup, type DeviceBackupSummary } from '#lib/api.js';
+	import type { InternetView, SignInsSummary } from '#lib/api.js';
+	import { statusOf, type Status } from '#lib/status.js';
+	import { ago } from '#lib/format.js';
 	import { attentionHeadline, count } from '#lib/glossary.js';
-	import KindIcon from '#lib/components/KindIcon.svelte';
-	import StatusBadge from '#lib/components/StatusBadge.svelte';
+	import { areasOf, fleetCounts, internetStrip, type AreaId, type Read } from '#lib/overview.js';
+	import DeviceList from '#lib/components/DeviceList.svelte';
+	import ActivityEntryItem from '#lib/components/ActivityEntryItem.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
 	import IssueRow from '#lib/components/ui/IssueRow.svelte';
 	import Section from '#lib/components/ui/Section.svelte';
-	import CircleCheck from '@lucide/svelte/icons/circle-check';
-	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-	import ActivityEntryItem from '#lib/components/ActivityEntryItem.svelte';
-	import { api } from '#lib/api.js';
+	import StateBadge from '#lib/components/ui/StateBadge.svelte';
+	import StateDot from '#lib/components/ui/StateDot.svelte';
+	import EmptyState from '#lib/components/ui/EmptyState.svelte';
+	import ChevronRight from '@lucide/svelte/icons/chevron-right';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import Globe from '@lucide/svelte/icons/globe';
+	import Wifi from '@lucide/svelte/icons/wifi';
+	import HardDrive from '@lucide/svelte/icons/hard-drive';
+	import DatabaseBackup from '@lucide/svelte/icons/database-backup';
+	import LogIn from '@lucide/svelte/icons/log-in';
+	import Download from '@lucide/svelte/icons/download';
 
 	const devices = $derived(store.devices ?? []);
-	const counts = $derived(
-		devices.reduce((c, d) => ((c[statusOf(d)] += 1), c), {
-			up: 0,
-			degraded: 0,
-			down: 0,
-			offline: 0,
-			waiting: 0
-		} as Record<Status, number>)
-	);
 	// One list, one count (attention.ts): the headline is the list's length.
 	const attention = $derived(store.attention);
-	const tone = $derived(attention.tone);
-	const checkCount = $derived(devices.reduce((n, d) => n + d.checks.length, 0));
+	const admin = $derived(store.me?.role === 'admin');
+	const fleet = $derived(fleetCounts(devices));
+
+	// What the areas need beyond the store, read now and then.
+	let internet = $state<Read<InternetView>>(null);
+	let backups = $state<Read<Backup[]>>(null);
+	let configBackups = $state<Read<DeviceBackupSummary[]>>(null);
+	let signins = $state<Read<SignInsSummary>>(null);
+
+	async function read<T>(load: () => Promise<T>, keep: (v: Read<T>) => void, had: Read<T>) {
+		try {
+			keep(await load());
+		} catch {
+			if (had === null) keep('error'); // a later failure keeps what was read
+		}
+	}
+	function readAreas(slow = false) {
+		if (!admin) {
+			read(api.backups, (v) => (backups = v), backups);
+			return;
+		}
+		read(
+			() => more.internet(24),
+			(v) => (internet = v),
+			internet
+		);
+		read(api.backups, (v) => (backups = v), backups);
+		read(more.deviceBackups, (v) => (configBackups = v), configBackups);
+		if (slow || signins === null)
+			read(
+				() => more.signinsSummary(24),
+				(v) => (signins = v),
+				signins
+			);
+	}
+	onMount(() => {
+		let n = 0;
+		// Sign-ins read the logs: every fifth time (5 min), the rest every minute.
+		const t = setInterval(() => readAreas(++n % 5 === 0), 60_000);
+		return () => clearInterval(t);
+	});
+	// Again once it is known who is looking (admins see more).
+	const who = $derived(store.me ? (store.me.role ?? 'nobody') : null);
+	$effect(() => {
+		if (who) untrack(() => readAreas(true));
+	});
+
+	const areas = $derived(
+		areasOf({ attention, devices, admin, internet, backups, configBackups, signins })
+	);
+	const strip = $derived(internet && internet !== 'error' ? internetStrip(internet) : null);
+	const icons: Record<AreaId, typeof Globe> = {
+		internet: Globe,
+		wifi: Wifi,
+		storage: HardDrive,
+		backups: DatabaseBackup,
+		signins: LogIn,
+		updates: Download
+	};
+
+	// Devices: the ones with problems (the Devices badge's), then the rest on request.
+	let showAll = $state(false);
+	const rank: Record<Status, number> = { down: 0, degraded: 1, waiting: 2, up: 3, offline: 4 };
+	const byState = (list: typeof devices) =>
+		[...list].sort((a, b) => rank[statusOf(a)] - rank[statusOf(b)] || a.name.localeCompare(b.name));
+	const problems = $derived(byState(attention.problemDevices));
+	const rest = $derived(byState(devices.filter((d) => !attention.problemDevices.includes(d))));
+	const deviceSections = $derived([
+		{
+			site: '',
+			name: '',
+			rows: [...problems, ...(showAll ? rest : [])].map((device) => ({ device, depth: 0 }))
+		}
+	]);
+
 	let ackError = $state<string | null>(null);
-	// Known vulnerabilities that matter: exploited or critical, confirmed.
-	const urgentVulns = $derived(
-		devices.flatMap((d) =>
-			(d.vulns?.items ?? []).flatMap((i) =>
-				i.findings
-					.filter((f) => f.confidence === 'exact' && (f.exploited || f.severity === 'critical'))
-					.map((f) => ({ device: d, f, product: i.product }))
-			)
-		)
-	);
-	// Every update waiting (the same list and count as the Updates page and its badge).
-	const updates = $derived(attention.updates);
-	const containerUpdates = $derived(updates.filter((u) => u.kind === 'container'));
-	const unchecked = $derived(
-		devices.reduce(
-			(n, d) =>
-				n +
-				(d.containers ?? []).filter((c) => c.unchecked && c.unchecked !== 'not checked yet').length,
-			0
-		)
-	);
-
-	const alwaysOn = $derived(devices.filter((d) => d.always_on));
-	const fleetUptime = $derived.by(() => {
-		if (!store.series) return null;
-		const values = alwaysOn
-			.map((d) => uptimeOf(deviceBuckets(store.series!.devices[d.id])))
-			.filter((v): v is number => v != null);
-		return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
-	});
-	const medianLatency = $derived.by(() => {
-		const values = devices
-			.map((d) => d.checks.find((c) => c.type === 'ping' && c.up)?.latency_ms)
-			.filter((v): v is number => v != null)
-			.sort((a, b) => a - b);
-		return values.length ? values[Math.floor(values.length / 2)] : null;
-	});
-
-	const sorted = $derived(
-		[...devices].sort((a, b) => {
-			const rank: Record<Status, number> = { down: 0, degraded: 1, waiting: 2, up: 3, offline: 4 };
-			return rank[statusOf(a)] - rank[statusOf(b)] || a.name.localeCompare(b.name);
-		})
-	);
+	async function acknowledge(key: string) {
+		try {
+			await api.acknowledge(key);
+			ackError = null;
+		} catch (e) {
+			ackError = (e as Error).message;
+		}
+		store.refreshHistory();
+	}
 </script>
+
+{#snippet fine()}
+	<button
+		onclick={() => (showAll = !showAll)}
+		aria-expanded={showAll}
+		class="flex w-full items-center gap-2 px-5 py-3 text-left text-body text-muted transition-colors hover:bg-surface-2/70 hover:text-text"
+	>
+		<ChevronDown class="size-4 shrink-0 transition-transform {showAll ? 'rotate-180' : ''}" />
+		{#if showAll}
+			Show only the ones with problems
+		{:else}
+			{problems.length
+				? `${rest.length} more, all fine`
+				: `${count(rest.length, 'device')}, all fine`}
+		{/if}
+	</button>
+{/snippet}
 
 <svelte:head><title>Overview · Kastellan</title></svelte:head>
 
 {#if store.devices === null}
 	<div class="space-y-4">
-		<div class="h-36 animate-pulse rounded-2xl bg-surface-2"></div>
-		<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-			{#each [0, 1, 2] as i (i)}<div
-					class="h-32 animate-pulse rounded-2xl bg-surface-2"
-				></div>{/each}
-		</div>
+		<div class="h-14 w-80 max-w-full animate-pulse rounded-xl bg-surface-2"></div>
+		<div class="h-48 animate-pulse rounded-2xl bg-surface-2"></div>
+		<div class="h-64 animate-pulse rounded-2xl bg-surface-2"></div>
 	</div>
 {:else if devices.length === 0}
 	<div class="card mx-auto max-w-lg px-8 py-12 text-center">
@@ -96,219 +149,151 @@
 		</p>
 	</div>
 {:else}
-	<!-- The headline: is everything all right? -->
-	<section class="card relative overflow-hidden p-6 sm:p-8">
-		<div
-			class="pointer-events-none absolute -top-24 -right-24 size-72 rounded-full opacity-[0.12] blur-3xl"
-			style:background="var(--{tone})"
-		></div>
-		<div class="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-			<div class="flex items-start gap-4">
-				<div
-					class="grid size-12 shrink-0 place-items-center rounded-2xl"
-					style:background="color-mix(in srgb, var(--{tone}) 13%, transparent)"
-					style:color="var(--{tone}-text)"
+	<!-- The verdict: is everything all right? -->
+	<header class="mb-6">
+		<h1 class="flex items-center gap-3 text-title">
+			<StateDot
+				tone={attention.tone}
+				label={attention.count ? 'Needs attention' : 'All good'}
+				size="size-2.5"
+			/>
+			{attentionHeadline(attention.count)}
+		</h1>
+		<p class="tabular mt-1 text-body text-muted">
+			{fleet.online} of {count(fleet.devices, 'device')} online{#if fleet.services}
+				· {fleet.servicesUp} of {count(fleet.services, 'service')} up{/if}
+			· {count(attention.updates.length, 'update')} waiting
+			<span class="text-faint">
+				· updated {ago(store.updated ? new Date(store.updated).toISOString() : null, store.now)}
+			</span>
+		</p>
+	</header>
+
+	<div class="grid gap-x-8 xl:grid-cols-[minmax(0,1fr)_20rem]">
+		<div class="min-w-0">
+			{#if attention.count}
+				<Section
+					title="Needs attention"
+					count={attention.count}
+					first
+					meta={store.alarms?.channels
+						? `alarms sent to ${count(store.alarms.channels, 'channel')}`
+						: 'no notify: channels in config.yaml'}
 				>
-					{#if attention.count}<TriangleAlert class="size-6" />{:else}<CircleCheck
-							class="size-6"
-						/>{/if}
-				</div>
-				<div>
-					<h1 class="text-2xl font-semibold tracking-tight sm:text-[28px]">
-						{attentionHeadline(attention.count)}
-					</h1>
-					<p class="mt-1.5 text-sm text-muted">
-						{devices.length} devices · {checkCount} checks · updated {ago(
-							store.updated ? new Date(store.updated).toISOString() : null,
-							store.now
-						)}
-					</p>
-				</div>
-			</div>
-			<dl class="grid grid-cols-3 gap-6 sm:gap-10">
-				<div>
-					<dt class="text-xs text-muted">Online</dt>
-					<dd class="tabular mt-1 text-2xl font-semibold tracking-tight">
-						{counts.up + counts.degraded}<span class="text-base font-normal text-faint">
-							/{devices.length}
-						</span>
-					</dd>
-				</div>
-				<div>
-					<dt class="text-xs text-muted">Uptime 24 h</dt>
-					<dd class="tabular mt-1 text-2xl font-semibold tracking-tight">
-						{percent(fleetUptime)}
-					</dd>
-				</div>
-				<div>
-					<dt class="text-xs text-muted">Median ping</dt>
-					<dd class="tabular mt-1 text-2xl font-semibold tracking-tight">{ms(medianLatency)}</dd>
-				</div>
-			</dl>
-		</div>
+					{#if ackError}
+						<p class="mb-2 text-meta" style:color="var(--critical-text)">{ackError}</p>
+					{/if}
+					<ul class="card divide-y divide-line">
+						{#each attention.issues as issue (issue.key)}
+							{@const alarm = issue.alarm}
+							<IssueRow
+								tone={issue.tone}
+								title={issue.title}
+								detail={issue.detail}
+								meta={issue.since ? ago(issue.since, store.now) : undefined}
+								href={issue.href}
+								note={alarm?.acknowledged_by
+									? `${alarm.acknowledged_by} is on it${alarm.acknowledged_note ? `: ${alarm.acknowledged_note}` : ''}`
+									: alarm?.held
+										? 'in maintenance · not sent'
+										: undefined}
+							>
+								{#snippet action()}
+									{#if alarm && !alarm.acknowledged_by}
+										<button
+											onclick={() => acknowledge(alarm.key)}
+											disabled={!admin}
+											title={admin ? 'Say you are on it: no more reminders' : 'Admins only'}
+											class="btn btn-sm text-muted disabled:opacity-50"
+										>
+											Acknowledge
+										</button>
+									{:else if issue.area === 'updates' && !alarm}
+										<a href="/updates" class="btn btn-sm text-muted">Updates</a>
+									{/if}
+								{/snippet}
+							</IssueRow>
+						{/each}
+					</ul>
+				</Section>
+			{/if}
 
-		{#if urgentVulns.length}
-			<div class="relative mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-				<span class="font-medium">
-					{urgentVulns.length} serious {urgentVulns.length === 1
-						? 'vulnerability'
-						: 'vulnerabilities'}:
-				</span>
-				{#each urgentVulns.slice(0, 4) as { device, f, product } (`${device.id}/${f.id}/${product}`)}
-					<a href="/devices/{device.id}" class="text-muted hover:text-text">
-						{device.name}: {f.id}{f.exploited ? ' (exploited)' : ''}
-					</a>
-				{/each}
-			</div>
-		{/if}
-		{#if updates.length || unchecked}
-			<div class="relative mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-				{#if updates.length}
-					<a href="/updates" class="font-medium hover:underline">
-						{count(updates.length, 'update')} waiting{containerUpdates.length ? ':' : ''}
-					</a>
-					{#each containerUpdates.slice(0, 6) as u (`${u.device.id}/${u.key}`)}
-						<a href="/devices/{u.device.id}" class="text-muted hover:text-text">
-							{u.name} <span class="text-faint">→</span>
-							{u.to}
-						</a>
-					{/each}
-				{/if}
-				{#if unchecked}
-					<span class="text-xs text-faint">
-						{unchecked}
-						{unchecked === 1 ? "container's" : "containers'"} updates can't be checked
-					</span>
-				{/if}
-			</div>
-		{/if}
-	</section>
-
-	{#if attention.count}
-		<div class="mt-6">
-			<Section
-				title="Needs attention"
-				count={attention.count}
-				first
-				meta={store.alarms?.channels
-					? `alarms sent to ${count(store.alarms.channels, 'channel')}`
-					: 'no notify: channels in config.yaml'}
-			>
-				{#if ackError}
-					<p class="mb-2 text-xs" style:color="var(--critical-text)">{ackError}</p>
-				{/if}
+			<Section title="Areas" first={!attention.count}>
 				<ul class="card divide-y divide-line">
-					{#each attention.issues as issue (issue.key)}
-						{@const alarm = issue.alarm}
-						<IssueRow
-							tone={issue.tone}
-							title={issue.title}
-							detail={issue.detail}
-							meta={issue.since ? ago(issue.since, store.now) : undefined}
-							href={issue.href}
-							note={alarm?.acknowledged_by
-								? `${alarm.acknowledged_by} is on it${alarm.acknowledged_note ? `: ${alarm.acknowledged_note}` : ''}`
-								: alarm?.held
-									? 'in maintenance · not sent'
-									: undefined}
-						>
-							{#snippet action()}
-								{#if alarm && !alarm.acknowledged_by && store.me?.role === 'admin'}
-									<button
-										onclick={async () => {
-											try {
-												await api.acknowledge(alarm.key);
-											} catch (e) {
-												ackError = (e as Error).message;
-											}
-											store.refreshHistory();
-										}}
-										class="btn btn-sm text-muted"
-									>
-										Acknowledge
-									</button>
-								{/if}
-							{/snippet}
-						</IssueRow>
+					{#each areas as area (area.id)}
+						{@const Icon = icons[area.id]}
+						<li>
+							<a
+								href={area.href}
+								class="grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 px-4 py-3 transition-colors hover:bg-surface-2/70 sm:grid-cols-[1.25rem_7rem_8.5rem_minmax(0,1fr)_auto]"
+							>
+								<Icon class="size-4 text-muted" />
+								<span class="text-body font-medium">{area.label}</span>
+								<span class="justify-self-end sm:justify-self-start">
+									<StateBadge state={area.state} quiet />
+								</span>
+								<span
+									class="col-span-2 col-start-2 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 sm:col-span-1 sm:col-start-auto"
+								>
+									{#if area.value != null}<span class="tabular text-body font-semibold">
+											{area.value}
+										</span>{/if}
+									{#if area.sub}<span class="text-meta text-muted">{area.sub}</span>{/if}
+									{#if area.sentence}<span class="basis-full text-meta text-text">
+											{area.sentence}
+										</span>{/if}
+									{#if area.id === 'internet' && strip}
+										<span class="mt-1 block basis-full sm:max-w-80">
+											<UptimeStrip
+												buckets={strip.buckets}
+												start={strip.start}
+												step={strip.step}
+												height="h-3"
+												label="Internet"
+											/>
+										</span>
+									{/if}
+								</span>
+								<ChevronRight
+									class="hidden size-4 text-faint sm:col-start-5 sm:row-start-1 sm:block"
+								/>
+							</a>
+						</li>
 					{/each}
 				</ul>
 			</Section>
+
+			<Section
+				title="Devices"
+				href="/devices"
+				count={problems.length || null}
+				meta={problems.length ? 'with problems' : undefined}
+			>
+				<DeviceList
+					sections={deviceSections}
+					flat
+					compact
+					footer={rest.length ? fine : undefined}
+				/>
+			</Section>
 		</div>
-	{/if}
 
-	<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">
-		<!-- Devices -->
-		<section>
-			<div class="mb-3 flex items-baseline justify-between">
-				<h2 class="text-sm font-semibold">Devices</h2>
-				<a href="/devices" class="text-xs font-medium text-accent hover:underline">All devices</a>
-			</div>
-			<div class="grid gap-3 sm:grid-cols-2">
-				{#each sorted as device (device.id)}
-					{@const status = statusOf(device)}
-					{@const buckets = deviceBuckets(store.series?.devices[device.id])}
-					{@const ping = device.checks.find((c) => c.up && c.latency_ms != null)}
-					<a
-						href="/devices/{device.id}"
-						class="card group block p-4 transition-all hover:-translate-y-px hover:border-line-strong hover:shadow-pop"
-					>
-						<div class="flex items-start gap-3">
-							<div
-								class="grid size-9 shrink-0 place-items-center rounded-xl bg-surface-2 text-muted transition-colors group-hover:text-text"
-							>
-								<KindIcon kind={device.kind} />
-							</div>
-							<div class="min-w-0 flex-1">
-								<p class="truncate text-sm font-medium">{device.name}</p>
-								<p class="truncate font-mono text-xs text-faint">{device.host}</p>
-							</div>
-							<StatusBadge {status} />
+		<aside class="mt-section min-w-0 xl:mt-0">
+			<div class="xl:sticky xl:top-6">
+				<Section title="Last 24 hours" first>
+					{#if store.activity.length === 0}
+						<EmptyState text="No outages, no updates. A quiet day." />
+					{:else}
+						<div class="card p-1.5">
+							<ol class="max-h-[40rem] overflow-y-auto">
+								{#each store.activity.slice(0, 40) as entry, i (i)}
+									<li><ActivityEntryItem {entry} /></li>
+								{/each}
+							</ol>
 						</div>
-						<div class="mt-4">
-							{#if store.series && buckets.length}
-								<UptimeStrip
-									{buckets}
-									start={store.series.start}
-									step={store.series.step_seconds}
-									alwaysOn={device.always_on}
-									height="h-5"
-								/>
-							{:else}
-								<div class="h-5 rounded bg-surface-2"></div>
-							{/if}
-						</div>
-						<div class="tabular mt-2.5 flex justify-between text-[11px] text-faint">
-							<span>
-								{device.always_on
-									? `24 h · ${percent(uptimeOf(buckets))}`
-									: `on ${Math.round((uptimeOf(buckets) ?? 0) * 100)} % of the day`}
-							</span>
-							<span>
-								{ping ? ms(ping.latency_ms) : status === 'offline' ? 'asleep or off' : ''}
-							</span>
-						</div>
-					</a>
-				{/each}
+					{/if}
+				</Section>
 			</div>
-		</section>
-
-		<!-- Activity -->
-		<section>
-			<InternetSummary />
-			<h2 class="mb-3 text-sm font-semibold">Last 24 hours</h2>
-			<div class="card p-2">
-				{#if store.activity.length === 0}
-					<p class="px-3 py-6 text-center text-sm text-muted">
-						No outages, no updates. A quiet day.
-					</p>
-				{:else}
-					<ol class="max-h-[34rem] overflow-y-auto">
-						{#each store.activity.slice(0, 40) as entry, i (i)}
-							<li><ActivityEntryItem {entry} /></li>
-						{/each}
-					</ol>
-				{/if}
-			</div>
-		</section>
+		</aside>
 	</div>
 {/if}

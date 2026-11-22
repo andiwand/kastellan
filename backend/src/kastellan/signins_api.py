@@ -67,6 +67,22 @@ def router(hub: Hub) -> APIRouter:
         response.headers["Cache-Control"] = "no-store"
         return await asyncio.to_thread(compute, hub, hours)
 
+    @api.get("/summary")
+    async def brief(
+        request: Request, response: Response, hours: float = Query(default=24, gt=0, le=24 * 31)
+    ) -> dict[str, Any]:
+        """Admins only: the overview's numbers, without the addresses and the events."""
+        require_admin(request)
+        if not hub.demo:
+            require_signin(request)
+        response.headers["Cache-Control"] = "no-store"
+        out = await asyncio.to_thread(compute, hub, hours)
+        flags: dict[str, int] = {}
+        for s in out["sources"]:
+            for f in s["flags"]:
+                flags[f] = flags.get(f, 0) + 1
+        return {"hours": hours, "summary": out["summary"], "total": out["total"], "flags": flags}
+
     return api
 
 
