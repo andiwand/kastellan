@@ -5,6 +5,10 @@
 	import JobDialog from './JobDialog.svelte';
 	import X from '@lucide/svelte/icons/x';
 	import Plus from '@lucide/svelte/icons/plus';
+	import Check from '@lucide/svelte/icons/check';
+	import StateDot from './ui/StateDot.svelte';
+	import EmptyState from './ui/EmptyState.svelte';
+	import type { Tone } from '#lib/states.js';
 
 	/** A group's SSH files side by side, changed on all at once: fetch, edit, push. A column per
 	 * device and user (several users per device: root on some, a name on others); a row per key
@@ -179,16 +183,13 @@
 		return null;
 	}
 
-	const STATE: Record<string, { text: string; color: string; bg?: string }> = {
-		same: { text: 'yes', color: 'var(--good-text)' },
-		differs: { text: 'differs', color: 'var(--warning-text)' },
-		missing: { text: '—', color: 'var(--faint)' },
-		adds: { text: 'adds', color: 'var(--accent)', bg: 'var(--accent-soft)' },
-		removes: {
-			text: 'removes',
-			color: 'var(--critical-text)',
-			bg: 'color-mix(in srgb, var(--critical-text) 10%, transparent)'
-		}
+	// A cell: a word in text colours; a dot carries the state, a soft fill marks a pending edit.
+	const STATE: Record<string, { text: string; dot?: Tone; muted?: boolean; bg?: string }> = {
+		same: { text: 'yes', muted: true },
+		differs: { text: 'differs', dot: 'warning' },
+		missing: { text: '—', muted: true },
+		adds: { text: 'adds', dot: 'accent', bg: 'var(--accent-soft)' },
+		removes: { text: 'removes', dot: 'critical', bg: 'var(--surface-3)' }
 	};
 </script>
 
@@ -234,7 +235,9 @@
 		Each device's file for these users, read over its <code>ssh:</code> login (another user's needs root
 		or sudo there).
 	</p>
-	{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
+	{#if error}<div class="mt-2">
+			<EmptyState kind="error" text={error} onretry={fetchAll} />
+		</div>{/if}
 
 	{#if data}
 		{#if data.no_ssh.length}
@@ -251,11 +254,11 @@
 							<th class="px-2 py-2 text-center font-medium whitespace-nowrap" title={c.path ?? ''}>
 								{name(c.device)}<br /><span class="font-normal text-faint">{c.user}</span>
 								{#if c.error}<span
-										class="mx-auto block max-w-36 truncate font-normal"
-										style:color="var(--warning-text)"
+										class="mx-auto flex max-w-36 items-center justify-center gap-1 font-normal"
 										title={c.error}
 									>
-										{c.error}
+										<StateDot tone="warning" label="Not read" size="size-1.5" />
+										<span class="truncate">{c.error}</span>
 									</span>{:else if !c.exists}<span class="block font-normal text-faint">
 										no file yet
 									</span>{/if}
@@ -277,7 +280,8 @@
 								{#if row.kastellan}<span class="ml-1 text-[10px] text-muted">
 										· {row.kastellan}, kept
 									</span>{/if}
-								{#if row.conflict}<span class="block text-[10px]" style:color="var(--warning-text)">
+								{#if row.conflict}<span class="flex items-center gap-1 text-[10px] text-muted">
+										<StateDot tone="warning" label="Conflict" size="size-1.5" />
 										different keys for this host
 									</span>{/if}
 							</td>
@@ -286,14 +290,19 @@
 								<td class="px-1 py-1 text-center">
 									{#if s}
 										<button
-											class="w-full rounded px-1 py-0.5 disabled:cursor-default"
-											style:color={s.color}
+											class="inline-flex w-full items-center justify-center gap-1 rounded px-1 py-0.5 disabled:cursor-default {s.muted
+												? 'text-muted'
+												: ''}"
 											style:background={s.bg ?? 'transparent'}
 											disabled={!canChange || !!row.kastellan}
 											title={row.kastellan ? "Kastellan's own: rotate it instead" : 'Change here'}
 											onclick={() => toggleCell(row, c.id)}
 										>
-											{s.text}
+											{#if s.dot}<StateDot tone={s.dot} label={s.text} size="size-1.5" />{/if}
+											{#if s.text === 'yes'}<Check
+													class="size-3.5"
+													aria-label="yes"
+												/>{:else}{s.text}{/if}
 										</button>
 									{/if}
 								</td>
@@ -307,11 +316,7 @@
 											add where missing
 										</button>
 										·
-										<button
-											class="underline"
-											style:color="var(--critical-text)"
-											onclick={() => removeEverywhere(row)}
-										>
+										<button class="text-muted underline" onclick={() => removeEverywhere(row)}>
 											remove everywhere
 										</button>
 									{/if}
@@ -327,7 +332,12 @@
 							{#each data.columns as c (c.id)}
 								<td class="px-1 py-1 text-center">
 									{#if !c.error && pending[c.id]?.add.includes(line)}
-										<span class="rounded px-1 py-0.5" style:color="var(--accent)">adds</span>
+										<span
+											class="inline-flex items-center gap-1 rounded px-1 py-0.5"
+											style:background="var(--accent-soft)"
+										>
+											<StateDot tone="accent" label="adds" size="size-1.5" />adds
+										</span>
 									{/if}
 								</td>
 							{/each}
@@ -367,7 +377,8 @@
 					Review and push{count ? ` (${count})` : ''}
 				</button>
 			</form>
-			{#if pasteError}<p class="mt-1 text-xs" style:color="var(--critical-text)">
+			{#if pasteError}<p class="mt-1 text-xs text-muted">
+					<StateDot tone="warning" label="Not a line" size="size-1.5" />
 					{pasteError}
 				</p>{/if}
 		{/if}
@@ -403,7 +414,10 @@
 					<span class="text-muted">· {c?.user}</span>:
 					{summary(id, p)}
 					{#if caution(id, p)}
-						<span class="block text-xs" style:color="var(--warning-text)">{caution(id, p)}</span>
+						<span class="flex items-baseline gap-1.5 text-xs text-muted">
+							<StateDot tone="warning" label="Worth a look" size="size-1.5" />
+							{caution(id, p)}
+						</span>
 					{/if}
 				</li>
 			{/each}

@@ -1,133 +1,137 @@
 <script lang="ts">
-	import type { Finding, Vulns } from '#lib/api.js';
+	import type { Vulns } from '#lib/api.js';
 	import { ago } from '#lib/format.js';
 	import { store } from '#lib/state.svelte.js';
-	import ShieldAlert from '@lucide/svelte/icons/shield-alert';
-	import ShieldCheck from '@lucide/svelte/icons/shield-check';
-	import Shield from '@lucide/svelte/icons/shield';
+	import { count } from '#lib/glossary.js';
+	import { severityState, vulnRows, type VulnRow } from '#lib/vulns.js';
+	import Table, { type Column } from './ui/Table.svelte';
+	import StateBadge from './ui/StateBadge.svelte';
+	import StateDot from './ui/StateDot.svelte';
 	import ExternalLink from '@lucide/svelte/icons/external-link';
 
-	/** Known vulnerabilities in what a device runs, most serious first, honest about doubt. */
+	/** Known vulnerabilities in what a device runs, one table grouped by product (most findings
+	 * first), within each the exploited and most serious first; honest about doubt (a fix the
+	 * distribution may have made, an unknown patch level) and about what couldn't be looked up.
+	 * Phones keep the CVE and its severity. */
 	let { vulns, exposed }: { vulns: Vulns; exposed: boolean } = $props();
 
-	const order = ['critical', 'high', 'medium', 'low', 'unknown'];
-	const rank = (f: Finding) => (f.exploited ? -1 : order.indexOf(f.severity));
-	const items = $derived(
-		vulns.items
-			.map((i) => ({ ...i, findings: [...i.findings].sort((a, b) => rank(a) - rank(b)) }))
-			.sort((a, b) => b.findings.length - a.findings.length)
-	);
-	const count = $derived(items.reduce((n, i) => n + i.findings.length, 0));
-	const tone: Record<string, string> = {
-		critical: 'var(--critical-text)',
-		high: 'var(--warning-text)',
-		medium: 'var(--muted)',
-		low: 'var(--faint)',
-		unknown: 'var(--faint)'
-	};
-	let open = $state<Record<string, boolean>>({});
+	let all = $state(false);
+	const list = $derived(vulnRows(vulns, all));
+	const columns: Column<VulnRow>[] = [
+		{ key: 'id', label: 'Vulnerability', cell: idCell },
+		{ key: 'severity', label: 'Severity', cell: severityCell, width: '7rem' },
+		{
+			key: 'score',
+			label: 'Score',
+			numeric: true,
+			priority: 3,
+			title: 'CVSS',
+			value: (f) => (f.score != null ? f.score.toFixed(1) : null)
+		},
+		{ key: 'note', label: 'Note', priority: 2, cell: noteCell },
+		{ key: 'summary', label: 'What it is', priority: 3, grow: true, value: (f) => f.summary }
+	];
 </script>
 
-<div class="card p-4">
-	<div class="flex flex-wrap items-baseline justify-between gap-2">
-		<p class="flex items-center gap-2 text-sm font-medium">
-			{#if count}
-				<ShieldAlert class="size-4" style="color: var(--warning-text)" />
-				{count} known {count === 1 ? 'vulnerability' : 'vulnerabilities'}
-			{:else if vulns.items.length}
-				<ShieldCheck class="size-4" style="color: var(--good-text)" />
-				None known for {vulns.items.map((i) => i.product).join(', ')}
-			{:else}
-				<Shield class="size-4 text-faint" />
-				Nothing here could be looked up
-			{/if}
-			{#if exposed}<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs font-normal">
-					internet-facing
-				</span>{/if}
-		</p>
-		<p class="text-xs text-muted">NVD, OSV, CISA KEV · {ago(vulns.checked, store.now)}</p>
-	</div>
+{#snippet idCell(f: VulnRow)}
+	<a
+		href={f.url}
+		target="_blank"
+		rel="noopener noreferrer"
+		class="inline-flex items-center gap-1 font-mono hover:underline"
+		title={f.summary}
+	>
+		{f.id}<ExternalLink class="size-3 text-faint" />
+	</a>
+{/snippet}
 
-	{#each items as item (item.where)}
-		{#if item.findings.length}
-			<div class="mt-4">
-				<p class="text-xs text-muted">
-					<span class="font-medium text-text">{item.product}</span> · {item.where}
-				</p>
-				<ul class="mt-1.5 divide-y divide-line rounded-lg border border-line">
-					{#each open[item.where] ? item.findings : item.findings.slice(0, 5) as f (f.id)}
-						<li class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2 text-sm">
-							<a
-								href={f.url}
-								target="_blank"
-								rel="noopener noreferrer"
-								class="inline-flex items-center gap-1 font-mono text-xs hover:underline"
-							>
-								{f.id}<ExternalLink class="size-3 text-faint" />
-							</a>
-							<span class="text-xs font-medium capitalize" style:color={tone[f.severity]}>
-								{f.severity}{f.score != null ? ` ${f.score.toFixed(1)}` : ''}
-							</span>
-							{#if f.exploited}
-								<span
-									class="rounded px-1.5 text-[11px] font-semibold"
-									style:background="color-mix(in srgb, var(--critical) 14%, transparent)"
-									style:color="var(--critical-text)"
-									title="In CISA's catalogue of vulnerabilities exploited in the wild"
-								>
-									exploited
-								</span>
-							{/if}
-							{#if f.confidence === 'patch'}
-								<span
-									class="text-[11px] text-faint"
-									title="NVD distinguishes patch levels that this banner omits. Check the full version on the device."
-								>
-									patch level unknown: check the device
-								</span>
-							{:else if f.confidence !== 'exact'}
-								<span
-									class="text-[11px] text-faint"
-									title="The distribution may have fixed this without changing the upstream version; check its security notice"
-								>
-									maybe fixed by your distribution
-								</span>
-							{/if}
-							{#if f.fixed_in}<span class="text-[11px] text-muted">fixed in {f.fixed_in}</span>{/if}
-							<span class="w-full truncate text-xs text-muted" title={f.summary}>{f.summary}</span>
-						</li>
-					{/each}
-				</ul>
-				{#if item.findings.length > 5 && !open[item.where]}
-					<button
-						class="mt-1 text-xs font-medium text-accent hover:underline"
-						onclick={() => (open[item.where] = true)}
-					>
-						Show all {item.findings.length}
-					</button>
-				{/if}
-			</div>
+{#snippet severityCell(f: VulnRow)}
+	<StateBadge state={severityState(f)} quiet />
+{/snippet}
+
+{#snippet noteCell(f: VulnRow)}
+	<span class="inline-flex flex-wrap items-center gap-x-2 text-meta text-muted">
+		{#if f.exploited}<span
+				class="font-medium text-text"
+				title="In CISA's catalogue of vulnerabilities exploited in the wild"
+			>
+				exploited
+			</span>{/if}
+		{#if f.confidence === 'patch'}
+			<span
+				title="NVD distinguishes patch levels that this banner omits. Check the full version on the device."
+			>
+				patch level unknown
+			</span>
+		{:else if f.confidence !== 'exact'}
+			<span
+				title="The distribution may have fixed this without changing the upstream version; check its security notice"
+			>
+				maybe fixed by your distribution
+			</span>
 		{/if}
-	{/each}
+		{#if f.fixed_in}<span>fixed in {f.fixed_in}</span>{/if}
+	</span>
+{/snippet}
 
+<div class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+	<p class="flex items-center gap-2 text-body font-medium">
+		{#if list.total}
+			<StateDot tone="warning" label="Known vulnerabilities" />
+			{count(list.total, 'known vulnerability', 'known vulnerabilities')}
+		{:else if vulns.items.length}
+			<StateDot tone="good" label="None known" />
+			None known for {vulns.items.map((i) => i.product).join(', ')}
+		{:else}
+			<StateDot tone="neutral" label="Not looked up" />
+			Nothing here could be looked up
+		{/if}
+		{#if exposed}<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-meta font-normal">
+				internet-facing
+			</span>{/if}
+	</p>
+	<p class="text-meta text-muted">NVD, OSV, CISA KEV · {ago(vulns.checked, store.now)}</p>
+</div>
+
+{#if list.total}
+	<Table
+		{columns}
+		rows={list.rows}
+		key={(f) => f.key}
+		group={(f) => `${f.product} · ${f.where}`}
+		label="Known vulnerabilities"
+	/>
+	{#if list.hidden}
+		<button
+			class="mt-2 text-meta font-medium text-accent hover:underline"
+			onclick={() => (all = true)}
+		>
+			Show all {list.total}
+		</button>
+	{/if}
+{/if}
+
+<div class="mt-3 space-y-1.5 text-meta text-muted">
 	{#if vulns.unknown.length}
-		<p class="mt-3 text-xs" style:color="var(--warning-text)">
-			Couldn't be looked up just now: {vulns.unknown.map((u) => u.product).join(', ')}
-			{#if Object.keys(vulns.errors).length}({Object.values(vulns.errors).join('; ')}){/if}. That's
-			not the same as safe.
+		<p class="flex items-baseline gap-1.5">
+			<StateDot tone="warning" label="Not looked up" size="size-1.5" />
+			<span>
+				Couldn't be looked up just now: {vulns.unknown.map((u) => u.product).join(', ')}
+				{#if Object.keys(vulns.errors).length}({Object.values(vulns.errors).join('; ')}){/if}.
+				That's not the same as safe.
+			</span>
 		</p>
 	{/if}
 	{#if vulns.kev}
-		<p class="mt-2 text-xs" style:color="var(--warning-text)">
-			{vulns.kev}: the "exploited" marks may be out of date.
+		<p class="flex items-baseline gap-1.5">
+			<StateDot tone="warning" label="Out of date" size="size-1.5" />
+			<span>{vulns.kev}: the "exploited" marks may be out of date.</span>
 		</p>
 	{/if}
 	{#if vulns.not_looked_up?.length}
-		<p class="mt-2 text-xs text-muted">
-			Not looked up (a moving tag, no exact version): {vulns.not_looked_up.join(', ')}.
-		</p>
+		<p>Not looked up (a moving tag, no exact version): {vulns.not_looked_up.join(', ')}.</p>
 	{/if}
-	<p class="mt-3 text-[11px] text-faint">
+	<p class="text-faint">
 		Only what Kastellan can identify is looked up: services that name their version, firmware,
 		images with an exact tag. NVD lags behind with recent CVEs.
 	</p>

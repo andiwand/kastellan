@@ -4,22 +4,27 @@
 	import JobDialog from '#lib/components/JobDialog.svelte';
 	import GroupDialog from '#lib/components/GroupDialog.svelte';
 	import GroupSsh from '#lib/components/GroupSsh.svelte';
-	import StatusDot from '#lib/components/StatusDot.svelte';
-	import KindIcon from '#lib/components/KindIcon.svelte';
+	import DeviceList from '#lib/components/DeviceList.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
+	import Table, { type Column } from '#lib/components/ui/Table.svelte';
+	import StateBadge from '#lib/components/ui/StateBadge.svelte';
+	import StateDot from '#lib/components/ui/StateDot.svelte';
+	import EmptyState from '#lib/components/ui/EmptyState.svelte';
 	import { settings, copy } from '#lib/settings.svelte.js';
-	import { statusOf } from '#lib/status.js';
 	import Plus from '@lucide/svelte/icons/plus';
 	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import Tabs from '#lib/components/Tabs.svelte';
 	import MaintenanceButton from '#lib/components/MaintenanceButton.svelte';
-	import Wrench from '@lucide/svelte/icons/wrench';
 
-	/** The Devices page's Groups tab (?section=groups). Groups of devices (`groups:` in config.yaml), any kind. For their OpenWrt members: Wi-Fi
-	 * networks lined up by name, the mesh, root's password, each changed on all at once; for
-	 * those with `ssh:`, their authorized_keys and known_hosts (GroupSsh). The devices are the
-	 * truth: nothing of that is stored, it is read from them. */
+	/** The Devices page's Groups tab (?section=groups). Groups of devices (`groups:` in
+	 * config.yaml), any kind, each with its members as the devices list. Status: the members, and
+	 * where their Wi-Fi is (/wifi shows the networks, mesh and roaming with what is off). Setup:
+	 * for OpenWrt members, Wi-Fi networks lined up by name, the mesh, roaming assistance and
+	 * root's password, each changed on all at once; for those with `ssh:`, their authorized_keys
+	 * and known_hosts (GroupSsh). The devices are the truth: nothing of that is stored, it is read
+	 * from them. */
 	let groups = $state<
 		{ id: string; name: string; devices: string[]; openwrt: string[]; ssh: string[] }[] | null
 	>(null);
@@ -78,7 +83,7 @@
 		error = null;
 		try {
 			groups = await api.groups();
-			await Promise.all(groups.filter((g) => g.openwrt.length).map((g) => survey(g.id)));
+			surveys = {};
 		} catch (e) {
 			error = (e as Error).message;
 		}
@@ -94,6 +99,11 @@
 
 	$effect(() => {
 		if (store.me?.role === 'admin' && groups === null) load();
+	});
+	// The members are read (their Wi-Fi, mesh, radios) for Setup only: Status links to /wifi.
+	$effect(() => {
+		if (!setup || !groups) return;
+		for (const g of groups) if (g.openwrt.length && !untrack(() => surveys[g.id])) survey(g.id);
 	});
 
 	function show(o: Open) {
@@ -132,7 +142,73 @@
 		['none', 'Open']
 	];
 	const ENCRYPTION_NAME = Object.fromEntries(ENCRYPTIONS);
+
+	type Net = GroupSurvey['networks'][number] & { group: string };
+	type Mesh = GroupSurvey['mesh'][number] & { group: string; survey: GroupSurvey };
+	const onText = (devices: string[], missing: string[]) =>
+		devices.map(name).join(', ') +
+		(missing.length ? ` · not on ${missing.map(name).join(', ')}` : '');
+	const sameKey = (same: boolean) =>
+		same ? { word: 'Same', tone: 'good' as const } : { word: 'Differs', tone: 'warning' as const };
+	const networkColumns: Column<Net>[] = $derived([
+		{ key: 'ssid', label: 'Network', cell: ssidCell },
+		{ key: 'on', label: 'On', grow: true, priority: 2, value: (n) => onText(n.devices, n.missing) },
+		{
+			key: 'bands',
+			label: 'Bands',
+			priority: 3,
+			value: (n) => [...new Set(n.on.map((e) => e.band).filter(Boolean))].join(' + ')
+		},
+		{
+			key: 'encryption',
+			label: 'Encryption',
+			priority: 3,
+			value: (n) =>
+				[...new Set(n.on.map((e) => ENCRYPTION_NAME[e.encryption ?? ''] ?? e.encryption))].join(
+					' / '
+				)
+		},
+		{ key: 'key', label: 'Password', cell: netKeyCell, title: 'Compared, never shown' },
+		...(canChange
+			? [{ key: 'act', label: '', align: 'right', cell: netAction } as Column<Net>]
+			: [])
+	]);
+	const meshColumns: Column<Mesh>[] = $derived([
+		{ key: 'id', label: 'Mesh', value: (m) => m.mesh_id || '(no id)' },
+		{ key: 'on', label: 'On', grow: true, priority: 2, value: (m) => onText(m.devices, m.missing) },
+		{ key: 'key', label: 'Password', cell: meshKeyCell, title: 'Compared, never shown' },
+		...(canChange
+			? [{ key: 'act', label: '', align: 'right', cell: meshAction } as Column<Mesh>]
+			: [])
+	]);
 </script>
+
+{#snippet ssidCell(n: Net)}
+	<span class="block truncate font-medium">{n.ssid}</span>
+	<span class="block truncate text-meta text-muted sm:hidden">{onText(n.devices, n.missing)}</span>
+{/snippet}
+{#snippet netKeyCell(n: Net)}
+	<span class="inline-flex flex-wrap items-center gap-1.5">
+		<StateBadge state={sameKey(n.same_key)} quiet />
+		{#if !n.same_encryption}<StateBadge word="Encryption differs" tone="warning" quiet />{/if}
+	</span>
+{/snippet}
+{#snippet netAction(n: Net)}
+	<button class={small} onclick={() => show({ kind: 'network', group: n.group, ssid: n.ssid })}>
+		Change on all
+	</button>
+{/snippet}
+{#snippet meshKeyCell(m: Mesh)}
+	<StateBadge state={sameKey(m.same_key)} quiet />
+{/snippet}
+{#snippet meshAction(m: Mesh)}
+	<button
+		class={small}
+		onclick={() => show({ kind: 'mesh', group: m.group, survey: m.survey, existing: true })}
+	>
+		Set on all
+	</button>
+{/snippet}
 
 <div class="flex flex-wrap items-end justify-between gap-4">
 	<div>
@@ -160,28 +236,32 @@
 	/>
 </div>
 
-{#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
+{#if error}<div class="mt-4"><EmptyState kind="error" text={error} onretry={load} /></div>{/if}
 {#if groups && !groups.length}
-	<div class="card mt-6 p-8 text-center text-sm text-muted">
-		No groups yet{setup ? '' : ' (make one on Setup)'}. A group gathers devices that belong
-		together: the access points, the servers of a rack, the cameras.
+	<div class="mt-6">
+		<EmptyState
+			text="No groups yet{setup
+				? ''
+				: ' (make one on Setup)'}. A group gathers devices that belong together: the access points, the servers of a rack, the cameras."
+		/>
 	</div>
 {/if}
 
-{#each groups ?? [] as g (g.id)}
+{#each groups ?? [] as g, i (g.id)}
 	{@const s = surveys[g.id]}
-	<section class="card mt-6 p-5">
-		<div class="flex flex-wrap items-center justify-between gap-2">
-			<h2 class="text-base font-semibold">
-				{g.name} <span class="ml-1 text-xs font-normal text-faint">{g.devices.length}</span>
-			</h2>
+	{@const members = g.devices
+		.map((id) => store.byId.get(id))
+		.filter((d) => d !== undefined)
+		.map((device) => ({ device, depth: 0 }))}
+	<Section title={g.name} count={g.devices.length} id="group-{g.id}" first={i === 0}>
+		{#snippet actions()}
 			{#if !setup && store.me?.role === 'admin'}
 				<MaintenanceButton kind="groups" id={g.id} devices={g.devices} />
 			{/if}
 			{#if setup && canChange && store.editBlocked === null}
 				<div class="flex items-center gap-2">
 					{#if deleting === g.id}
-						<span class="text-xs">Delete this group? The devices stay.</span>
+						<span class="text-meta">Delete this group? The devices stay.</span>
 						<button
 							class="btn btn-sm"
 							style:color="var(--critical-text)"
@@ -198,192 +278,117 @@
 					{/if}
 				</div>
 			{/if}
-		</div>
+		{/snippet}
 		{#if deleting === g.id && deleteError}
-			<p class="mt-2 text-xs" style:color="var(--critical-text)">{deleteError}</p>
+			<div class="mb-3"><EmptyState kind="error" text={deleteError} /></div>
 		{/if}
-		<ul class="mt-4 grid gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
-			{#each g.devices as id (id)}
-				{@const d = store.byId.get(id)}
-				<li>
-					<a
-						class="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm hover:bg-surface-2"
-						href="/devices/{id}"
-					>
-						{#if d}<StatusDot status={statusOf(d)} size="size-2" />{/if}
-						<KindIcon kind={d?.kind ?? 'other'} class="size-4 shrink-0 text-muted" />
-						<span class="truncate">{name(id)}</span>
-						{#if store.alarms?.maintenance?.[id]}
-							<Wrench class="size-3.5 shrink-0 text-faint" aria-label="in maintenance" />
-						{/if}
-					</a>
-				</li>
-			{/each}
-		</ul>
+		<DeviceList
+			sections={[{ site: g.id, name: '', rows: members }]}
+			flat
+			compact
+			empty="No members known."
+		/>
 
-		{#if g.openwrt.length}
-			<div class="mt-5 border-t border-line pt-4">
-				<div class="flex flex-wrap items-baseline justify-between gap-2">
-					<h3 class="text-sm font-semibold">
-						OpenWrt <span class="text-xs font-normal text-muted">
-							· {g.openwrt.length === g.devices.length
-								? 'all members'
-								: g.openwrt.map(name).join(', ')}
-						</span>
+		{#if g.openwrt.length && !setup}
+			<p class="mt-3 text-meta text-muted">
+				Its Wi-Fi networks, mesh and roaming are on
+				<a href="/wifi" class="font-medium text-text hover:underline">Wi-Fi</a>; they are changed on
+				all members at once on Setup.
+			</p>
+		{/if}
+
+		{#if g.openwrt.length && setup}
+			<div class="mt-5">
+				<div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+					<h3 class="text-meta font-medium text-muted">
+						OpenWrt · {g.openwrt.length === g.devices.length
+							? 'all members'
+							: g.openwrt.map(name).join(', ')}
 					</h3>
-					<button class="text-xs text-muted underline" onclick={() => survey(g.id)}>
+					<button
+						class="text-meta text-muted underline hover:text-text"
+						onclick={() => survey(g.id)}
+					>
 						read again
 					</button>
 				</div>
 				{#if !s}
-					<p class="mt-3 text-sm text-muted">Reading the devices…</p>
+					<p class="text-body text-muted">Reading the devices…</p>
 				{:else if 'error' in s}
-					<p class="mt-3 text-sm" style:color="var(--critical-text)">{s.error}</p>
+					<EmptyState kind="error" text={s.error} onretry={() => survey(g.id)} />
 				{:else}
 					{#each Object.entries(s.errors) as [id, why] (id)}
-						<p class="mt-2 text-xs" style:color="var(--warning-text)">
-							{name(id)}: {why}{why.includes('not allowed')
-								? ' (tick Wi-Fi in its OpenWrt setup)'
-								: ''}
+						<p class="mb-2 flex items-baseline gap-1.5 text-meta text-muted">
+							<StateDot tone="warning" label="Not read" size="size-1.5" />
+							<span>
+								{name(id)}: {why}{why.includes('not allowed')
+									? ' (tick Wi-Fi in its OpenWrt setup)'
+									: ''}
+							</span>
 						</p>
 					{/each}
 
-					<h3 class="mt-5 text-xs font-medium text-muted">Wi-Fi networks</h3>
-					<ul class="mt-2 divide-y divide-line">
-						{#each s.networks as net (net.ssid)}
-							<li class="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
-								<span class="font-medium">{net.ssid}</span>
-								<span class="text-xs text-muted">
-									{net.devices.map(name).join(', ')}
-									· {[...new Set(net.on.map((e) => e.band).filter(Boolean))].join(' + ')}
-									· {[
-										...new Set(
-											net.on.map((e) => ENCRYPTION_NAME[e.encryption ?? ''] ?? e.encryption)
-										)
-									].join(' / ')}
-								</span>
-								<span class="text-xs">
-									{#if !net.same_key}<span style:color="var(--warning-text)">passwords differ</span>
-									{:else}<span style:color="var(--good-text)">same password</span>{/if}
-									{#if !net.same_encryption}<span style:color="var(--warning-text)">
-											· encryption differs
-										</span>{/if}
-									{#if net.missing.length}<span class="text-muted">
-											· not on {net.missing.map(name).join(', ')}
-										</span>{/if}
-								</span>
-								{#if setup && canChange}
-									<button
-										class="{small} ml-auto"
-										onclick={() => show({ kind: 'network', group: g.id, ssid: net.ssid })}
-									>
-										Change on all
-									</button>
-								{/if}
-							</li>
-						{:else}
-							<li class="py-2 text-sm text-muted">None read.</li>
-						{/each}
-					</ul>
+					<h4 class="mt-3 mb-2 text-meta font-medium text-muted">Wi-Fi networks</h4>
+					<Table
+						columns={networkColumns}
+						rows={s.networks.map((n) => ({ ...n, group: g.id }))}
+						key={(n) => n.ssid}
+						label="Wi-Fi networks of {g.name}"
+						empty="None read."
+					/>
 
-					<h3 class="mt-5 text-xs font-medium text-muted">Mesh</h3>
-					<ul class="mt-2 divide-y divide-line">
-						{#each s.mesh as m (m.mesh_id)}
-							<li class="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
-								<span class="font-medium">{m.mesh_id || '(no id)'}</span>
-								<span class="text-xs text-muted">{m.devices.map(name).join(', ')}</span>
-								<span class="text-xs">
-									{#if !m.same_key}<span style:color="var(--warning-text)">passwords differ</span>
-									{:else}<span style:color="var(--good-text)">same password</span>{/if}
-									{#if m.missing.length}<span class="text-muted">
-											· not on {m.missing.map(name).join(', ')}
-										</span>{/if}
-								</span>
-								{#if setup && canChange}
-									<button
-										class="{small} ml-auto"
-										onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: true })}
-									>
-										Set on all
-									</button>
-								{/if}
-							</li>
-						{:else}
-							<li class="flex items-center py-2 text-sm text-muted">
+					<h4 class="mt-5 mb-2 text-meta font-medium text-muted">Mesh</h4>
+					<Table
+						columns={meshColumns}
+						rows={s.mesh.map((m) => ({ ...m, group: g.id, survey: s }))}
+						key={(m) => m.mesh_id}
+						label="Mesh of {g.name}"
+					>
+						{#snippet empty()}
+							<span class="inline-flex flex-wrap items-center gap-3">
 								No mesh.
-								{#if setup && canChange}
+								{#if canChange}
 									<button
-										class="{small} ml-auto"
+										class={small}
 										onclick={() => show({ kind: 'mesh', group: g.id, survey: s, existing: false })}
 									>
 										Set one up
 									</button>
 								{/if}
-							</li>
-						{/each}
-					</ul>
-
-					{#if s.roaming}
-						{@const r = s.roaming}
-						<h3 class="mt-5 text-xs font-medium text-muted">Roaming</h3>
-						<p class="mt-1 text-xs text-muted">
-							The access points decide (usteer, 802.11r/k/v); Kastellan checks they work together.
-						</p>
-						<ul class="mt-2 space-y-1 text-sm">
-							{#each r.findings as f, i (i)}
-								<li>
-									<span
-										class="text-xs font-medium"
-										style:color={f.level === 'warning' ? 'var(--warning-text)' : 'var(--muted)'}
-									>
-										{f.level === 'warning' ? '!' : 'i'}
-									</span>
-									{f.text}
-									{#if f.fix}<span class="block pl-3 text-xs text-muted">{f.fix}</span>{/if}
-								</li>
-							{:else}
-								<li class="text-xs" style:color="var(--good-text)">
-									No issues found in the available readings.
-								</li>
-							{/each}
-						</ul>
-						<div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
-							{#each Object.entries(r.members) as [id, m] (id)}
-								<span>
-									{name(id)}: usteer
-									<span
-										style:color={m.usteer === 'running'
-											? 'var(--good-text)'
-											: m.usteer === 'unknown'
-												? undefined
-												: 'var(--warning-text)'}
-									>
-										{m.usteer}
-									</span>{#if m.sees.length}, sees {m.sees.map(name).join(', ')}{/if}
-								</span>
-							{/each}
-						</div>
-						{#if setup && canChange && Object.keys(r.changes).length}
-							<button
-								class="{small} mt-2"
-								onclick={() => show({ kind: 'roaming', group: g.id, survey: s })}
-							>
-								Roaming assistance…
-							</button>
-						{/if}
-					{/if}
-
-					{#if setup && canChange}
-						<div class="mt-5 flex items-center justify-between border-t border-line pt-4 text-sm">
-							<span>
-								<span class="text-xs font-medium text-muted">Root's password</span><br />
-								<span class="text-xs text-muted">
-									The same on every member (their "password" ability).
-								</span>
 							</span>
-							<button class={small} onclick={() => show({ kind: 'root', group: g.id })}>
-								Set on all
-							</button>
+						{/snippet}
+					</Table>
+
+					{#if canChange}
+						<div class="card mt-5 divide-y divide-line">
+							{#if s.roaming && Object.keys(s.roaming.changes).length}
+								<div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+									<span>
+										<span class="text-body font-medium">Roaming</span>
+										<span class="block text-meta text-muted">
+											802.11r/k/v on the shared networks, one access point at a time. What it finds
+											is on <a href="/wifi" class="underline hover:text-text">Wi-Fi</a>.
+										</span>
+									</span>
+									<button
+										class={small}
+										onclick={() => show({ kind: 'roaming', group: g.id, survey: s })}
+									>
+										Roaming assistance…
+									</button>
+								</div>
+							{/if}
+							<div class="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+								<span>
+									<span class="text-body font-medium">Root's password</span>
+									<span class="block text-meta text-muted">
+										The same on every member (their "password" ability).
+									</span>
+								</span>
+								<button class={small} onclick={() => show({ kind: 'root', group: g.id })}>
+									Set on all
+								</button>
+							</div>
 						</div>
 					{/if}
 				{/if}
@@ -392,7 +397,7 @@
 		{#if setup && g.ssh.length && store.me?.role === 'admin' && !store.health?.demo}
 			<GroupSsh group={g.id} {canChange} />
 		{/if}
-	</section>
+	</Section>
 {/each}
 
 {#if editing}
@@ -468,16 +473,16 @@
 				<input class={input} type="password" autocomplete="new-password" bind:value={key2} />
 			</label>
 		</div>
-		{#if key && !keyOk(key)}<p class="text-xs" style:color="var(--warning-text)">
+		{#if key && !keyOk(key)}<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				8 to 63 characters.
-			</p>{:else if key && key2 && key !== key2}<p
-				class="text-xs"
-				style:color="var(--warning-text)"
-			>
+			</p>{:else if key && key2 && key !== key2}<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				The two differ.
 			</p>{/if}
 		{#if key && !encryption && openNow(o.group, o.ssid)}
-			<p class="text-xs" style:color="var(--warning-text)">
+			<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				It is open now: choose an encryption for the password to count.
 			</p>
 		{/if}
@@ -556,12 +561,11 @@
 				/>
 			</label>
 		</div>
-		{#if key && !keyOk(key)}<p class="text-xs" style:color="var(--warning-text)">
+		{#if key && !keyOk(key)}<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				8 to 63 characters.
-			</p>{:else if key && key2 && key !== key2}<p
-				class="text-xs"
-				style:color="var(--warning-text)"
-			>
+			</p>{:else if key && key2 && key !== key2}<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				The two differ.
 			</p>{/if}
 		<fieldset class="flex flex-col gap-2">
@@ -575,7 +579,8 @@
 							its mesh “{has.id || 'no id'}” on {has.radio}: set to this
 						</span>
 					{:else if s.can_mesh[id] === false}
-						<span class="text-xs" style:color="var(--warning-text)">
+						<span class="text-xs text-muted">
+							<StateDot tone="warning" label="Can't" size="size-1.5" />
 							its Wi-Fi software can't do mesh (install wpad-mesh-mbedtls)
 						</span>
 					{:else if s.errors[id]}
@@ -601,7 +606,8 @@
 			{/each}
 		</fieldset>
 		{#if bands.length > 1}
-			<p class="text-xs" style:color="var(--warning-text)">
+			<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				The mesh radios are on different bands ({bands.join(', ')}); choose radios of one band.
 			</p>
 		{/if}
@@ -617,7 +623,8 @@
 			/>
 		</label>
 		{#if bands[0] === '5g' && ch >= 52 && ch <= 144}
-			<p class="text-xs" style:color="var(--warning-text)">
+			<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				Channel {ch} is a DFS channel: radios listen first (a minute or more) and may have to move, which
 				breaks the mesh. 36–48 are safer.
 			</p>
@@ -648,12 +655,11 @@
 				<input class={input} type="password" autocomplete="new-password" bind:value={key2} />
 			</label>
 		</div>
-		{#if key && key.length < 8}<p class="text-xs" style:color="var(--warning-text)">
+		{#if key && key.length < 8}<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				At least 8 characters.
-			</p>{:else if key && key2 && key !== key2}<p
-				class="text-xs"
-				style:color="var(--warning-text)"
-			>
+			</p>{:else if key && key2 && key !== key2}<p class="text-xs text-muted">
+				<StateDot tone="warning" label="Check this" size="size-1.5" />
 				The two differ.
 			</p>{/if}
 	</JobDialog>

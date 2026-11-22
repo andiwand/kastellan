@@ -29,7 +29,10 @@
 	 * One look (44 px rows, 13 px cells, muted 12 px header), columns that drop by priority on
 	 * narrow screens, optional group rows (`group`: rows must come sorted by it), a link per row
 	 * (`href`: the whole row opens it), and expandable rows (`expand`: details under the row,
-	 * opened by its chevron). Entity tables (one per kind of thing) are built on this. */
+	 * opened by its chevron), and `below`: a line under a row that the row's own state shows (the
+	 * question before an action, a job's progress; it brings its own bottom space, e.g. `pb-3`),
+	 * when `hasBelow` says so. Entity tables (one
+	 * per kind of thing) are built on this. */
 	let {
 		columns,
 		rows,
@@ -37,6 +40,8 @@
 		href,
 		expand,
 		expandable,
+		below,
+		hasBelow,
 		group,
 		empty = 'Nothing here.',
 		label,
@@ -48,6 +53,8 @@
 		href?: (row: T) => string | null | undefined;
 		expand?: Snippet<[T]>;
 		expandable?: (row: T) => boolean;
+		below?: Snippet<[T]>;
+		hasBelow?: (row: T) => boolean;
 		group?: (row: T) => string;
 		empty?: string | Snippet;
 		label?: string; // what the table lists, for screen readers
@@ -116,8 +123,9 @@
 					</tr>
 				{/if}
 				{@const link = href?.(row)}
+				{@const after = !!below && (hasBelow?.(row) ?? true)}
 				<tr
-					class="h-row border-b border-line last:border-0 {link
+					class="h-row {after ? '' : 'border-b border-line last:border-0'} {link
 						? 'cursor-pointer transition-colors hover:bg-surface-2/60'
 						: ''}"
 					onclick={(e) => rowClick(e, row)}
@@ -160,6 +168,12 @@
 						</td>
 					{/if}
 				</tr>
+				{#if after}
+					<tr class="border-b border-line last:border-0">
+						<!-- No padding of its own: what it shows sets its space (it may show nothing on wide screens). -->
+						<td colspan={span} class="px-4">{@render below!(row)}</td>
+					</tr>
+				{/if}
 				{#if expand && open.has(key(row))}
 					<tr class="border-b border-line bg-surface-2/40 last:border-0">
 						<td colspan={span} class="px-4 py-3">{@render expand(row)}</td>

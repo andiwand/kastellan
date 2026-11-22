@@ -56,7 +56,7 @@
 	const row = 'flex justify-between gap-4 py-1.5';
 </script>
 
-<div class="card mt-6 p-5">
+<div class="card p-5">
 	<div class="flex flex-wrap items-baseline justify-between gap-2">
 		<p class="flex items-center gap-2">
 			<StateBadge word={upsLabel[now] ?? now} tone={statusTone[upsStatus[now] ?? 'waiting']} />

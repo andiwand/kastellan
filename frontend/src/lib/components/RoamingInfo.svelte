@@ -59,10 +59,7 @@
 			{#each view.clients as c (c.mac)}
 				<li class="flex justify-between gap-2 py-0.5">
 					<span class="truncate">{c.name ?? c.mac}</span>
-					<span
-						class="tabular"
-						style:color={c.signal != null && c.signal < -75 ? 'var(--warning-text)' : undefined}
-					>
+					<span class="tabular">
 						{c.signal ?? '–'} dBm{#if c.connected != null}<span class="text-faint">
 								· {duration(c.connected / 1000)}
 							</span>{/if}

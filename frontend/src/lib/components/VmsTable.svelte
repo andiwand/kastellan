@@ -9,10 +9,13 @@
 	import { store } from '#lib/state.svelte.js';
 	import { statusOf } from '#lib/status.js';
 	import StatusDot from './StatusDot.svelte';
+	import Table, { type Column } from './ui/Table.svelte';
 
 	/** A host's virtual machines (libvirt, from its collector): state, CPUs, memory, whether it
-	 * starts with the host. With `canAct`, a signed-in admin can start, shut down, restart or force
-	 * them off through the host's actor (only what the host allows), through the update queue. */
+	 * starts with the host, the device it is (when known). With `canAct`, a signed-in admin can
+	 * start, shut down, restart or force them off on their row through the host's actor (only what
+	 * the host allows), through the update queue. The same table on /containers?tab=vms (one per
+	 * host), the host's page and the VM's own page. Phones keep the VM, its state and its actions. */
 	let { device, vms, canAct = false }: { device: string; vms: Vm[]; canAct?: boolean } = $props();
 
 	type Kind = VmAction;
@@ -56,82 +59,106 @@
 	}
 
 	const sorted = $derived([...vms].sort((a, b) => a.name.localeCompare(b.name)));
+	const askingOf = (vm: Vm) => actions(vm).find((a) => asking === keyOf(job(vm, a.kind)));
+	const hasActions = (vm: Vm) => canAct && actions(vm).length > 0;
+
+	const columns: Column<Vm>[] = $derived([
+		{ key: 'name', label: 'Virtual machine', grow: true, cell: nameCell },
+		{ key: 'state', label: 'State', cell: stateCell, width: '8rem' },
+		{ key: 'vcpus', label: 'vCPUs', priority: 2, numeric: true, value: (vm) => vm.vcpus },
+		{ key: 'memory', label: 'Memory', priority: 2, numeric: true, value: (vm) => bytes(vm.memory) },
+		...(canAct
+			? [
+					{
+						key: 'actions',
+						label: '',
+						priority: 3,
+						align: 'right',
+						cell: actionsCell
+					} satisfies Column<Vm>
+				]
+			: [])
+	]);
 </script>
 
-<div class="card overflow-hidden">
-	<div
-		class="hidden grid-cols-[minmax(0,1.4fr)_8rem_5rem_6rem_minmax(0,1fr)] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted md:grid"
-	>
-		<span>Virtual machine</span><span>State</span><span>vCPUs</span><span>Memory</span><span></span>
-	</div>
-	<ul class="divide-y divide-line">
-		{#each sorted as vm (vm.name)}
-			<li
-				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-3 md:grid-cols-[minmax(0,1.4fr)_8rem_5rem_6rem_minmax(0,1fr)]"
+{#snippet nameCell(vm: Vm)}
+	<span class="block truncate font-medium">{vm.name}</span>
+	{#if vm.autostart || (vm.device && store.byId.get(vm.device))}
+		<span class="flex min-w-0 items-center gap-1.5 text-meta text-muted">
+			{#if vm.device && store.byId.get(vm.device)}
+				{@const linked = store.byId.get(vm.device)!}
+				<a href="/devices/{linked.id}" class="flex min-w-0 items-center gap-1.5 hover:text-text">
+					<StatusDot status={statusOf(linked)} size="size-1.5" />
+					<span class="truncate">{linked.name}</span>
+				</a>
+				{#if vm.autostart}·{/if}
+			{/if}
+			{#if vm.autostart}<span class="truncate">starts with the host</span>{/if}
+		</span>
+	{/if}
+	{#if canAct && !VM_NAME.test(vm.name)}<span
+			class="block truncate text-meta text-muted"
+			title="Kastellan acts on names of letters, digits and _ . + -, never a number or a UUID"
+		>
+			shown only: Kastellan can't act on this name
+		</span>{/if}
+{/snippet}
+
+{#snippet stateCell(vm: Vm)}
+	<StateBadge state={vmState(vm.state, vm.autostart)} />
+{/snippet}
+
+{#snippet buttons(vm: Vm)}
+	{#each actions(vm) as a (a.kind)}
+		<button
+			class="btn btn-sm {a.strong ? '' : 'text-muted'}"
+			style:color={a.strong ? 'var(--critical-text)' : undefined}
+			disabled={busy(job(vm, a.kind))}
+			onclick={() => (asking = keyOf(job(vm, a.kind)))}
+		>
+			{a.label}
+		</button>
+	{/each}
+{/snippet}
+
+{#snippet actionsCell(vm: Vm)}
+	<span class="inline-flex justify-end gap-1">{@render buttons(vm)}</span>
+{/snippet}
+
+<!-- Under the row: the actions on narrower screens, the question before one runs, its progress. -->
+{#snippet belowRow(vm: Vm)}
+	{@const a = askingOf(vm)}
+	{@const last = lastOf(vm)}
+	{#if hasActions(vm)}
+		<div class="flex flex-wrap justify-end gap-1 pb-3 lg:hidden">{@render buttons(vm)}</div>
+	{/if}
+	{#if a}
+		<p class="flex flex-wrap items-center gap-2 pb-3 text-meta">
+			{a.ask}
+			<button
+				class="btn btn-sm {a.strong ? '' : 'btn-primary'}"
+				style:color={a.strong ? 'var(--critical-text)' : undefined}
+				onclick={() => {
+					runner.add([job(vm, a.kind)]);
+					asking = null;
+				}}
 			>
-				<p class="min-w-0 truncate text-sm font-medium">
-					{vm.name}
-					{#if vm.autostart}<span class="ml-1 text-xs font-normal text-faint">
-							starts with the host
-						</span>{/if}
-					{#if vm.device && store.byId.get(vm.device)}
-						{@const linked = store.byId.get(vm.device)!}
-						<a
-							href="/devices/{linked.id}"
-							class="mt-0.5 flex items-center gap-1.5 text-xs font-normal text-muted hover:text-text"
-						>
-							<StatusDot status={statusOf(linked)} size="size-1.5" />
-							{linked.name}
-						</a>
-					{/if}
-					{#if canAct && !VM_NAME.test(vm.name)}<span
-							class="block text-xs font-normal text-faint"
-							title="Kastellan acts on names of letters, digits and _ . + -, never a number or a UUID"
-						>
-							shown only: Kastellan can't act on this name
-						</span>{/if}
-				</p>
-				<span><StateBadge state={vmState(vm.state, vm.autostart)} /></span>
-				<span class="hidden text-xs text-muted md:block">{vm.vcpus ?? '–'}</span>
-				<span class="hidden text-xs text-muted md:block">{bytes(vm.memory)}</span>
-				<span class="col-span-full flex justify-end gap-1 md:col-span-1">
-					{#if canAct}
-						{#each actions(vm) as a (a.kind)}
-							<button
-								class="btn btn-sm {a.strong ? '' : 'text-muted'}"
-								style:color={a.strong ? 'var(--critical-text)' : undefined}
-								disabled={busy(job(vm, a.kind))}
-								onclick={() => (asking = keyOf(job(vm, a.kind)))}
-							>
-								{a.label}
-							</button>
-						{/each}
-					{/if}
-				</span>
-				{#each actions(vm) as a (a.kind)}
-					{#if asking === keyOf(job(vm, a.kind))}
-						<p class="col-span-full flex flex-wrap items-center gap-2 text-xs">
-							{a.ask}
-							<button
-								class="btn btn-sm {a.strong ? '' : 'btn-primary'}"
-								style:color={a.strong ? 'var(--critical-text)' : undefined}
-								onclick={() => {
-									runner.add([job(vm, a.kind)]);
-									asking = null;
-								}}
-							>
-								{a.label}
-							</button>
-							<button class="btn btn-sm" onclick={() => (asking = null)}>Not now</button>
-						</p>
-					{/if}
-				{/each}
-				{#if lastOf(vm)}
-					{@const last = lastOf(vm)!}
-					<div class="col-span-full">
-						<JobStatus job={last.state} dismiss={() => runner.dismiss(last.job)} />
-					</div>{/if}
-			</li>
-		{/each}
-	</ul>
-</div>
+				{a.label}
+			</button>
+			<button class="btn btn-sm" onclick={() => (asking = null)}>Not now</button>
+		</p>
+	{/if}
+	{#if last}
+		<div class="pb-3"><JobStatus job={last.state} dismiss={() => runner.dismiss(last.job)} /></div>
+	{/if}
+{/snippet}
+
+<Table
+	{columns}
+	rows={sorted}
+	key={(vm) => vm.name}
+	below={belowRow}
+	hasBelow={(vm) => hasActions(vm) || !!askingOf(vm) || !!lastOf(vm)}
+	label="Virtual machines"
+	empty="No virtual machines."
+/>

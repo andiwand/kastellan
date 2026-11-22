@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { api, type DataStore, type HubResources } from '#lib/api.js';
 	import { bytes } from '#lib/format.js';
+	import Table, { type Column } from './ui/Table.svelte';
+	import EmptyState from './ui/EmptyState.svelte';
 
 	/** What Kastellan costs the machine: its own CPU and memory next to the machine's, and its
 	 * data folder store by store, with where each levels off and when the disk would be full. */
@@ -42,13 +44,31 @@
 			? r.machine.memory_total - r.machine.memory_available
 			: null
 	);
+	const columns: Column<DataStore>[] = [
+		{ key: 'name', label: 'Data', grow: true, cell: storeName },
+		{ key: 'used', label: 'Now', numeric: true, value: (s) => bytes(s.used) },
+		{
+			key: 'day',
+			label: 'A day',
+			numeric: true,
+			priority: 2,
+			value: (s) => (s.per_day != null ? bytes(s.per_day) : null)
+		},
+		{ key: 'kept', label: 'Kept', priority: 3, value: (s) => s.kept },
+		{ key: 'steady', label: 'Levels off at', priority: 2, value: levels }
+	];
 	const diskUsed = $derived(
 		r?.disk.total != null && r.disk.free != null ? r.disk.total - r.disk.free : null
 	);
 </script>
 
+{#snippet storeName(s: DataStore)}
+	<span class="block truncate">{s.name}</span>
+	{#if s.path}<span class="block truncate font-mono text-meta text-faint">{s.path}</span>{/if}
+{/snippet}
+
 {#if error}
-	<p class="mt-6 text-sm" style:color="var(--critical-text)">{error}</p>
+	<div class="mt-6"><EmptyState kind="error" text={error} onretry={load} /></div>
 {/if}
 {#if r}
 	{@const f = r.forecast}
@@ -120,34 +140,8 @@
 		</div>
 	</div>
 
-	<div class="card mt-3 overflow-x-auto">
-		<table class="w-full min-w-[40rem] text-sm">
-			<thead>
-				<tr class="border-b border-line text-left text-xs text-faint">
-					<th class="px-4 py-2 font-medium">Data</th>
-					<th class="px-2 py-2 text-right font-medium">Now</th>
-					<th class="px-2 py-2 text-right font-medium">A day</th>
-					<th class="px-2 py-2 font-medium">Kept</th>
-					<th class="px-4 py-2 font-medium">Levels off at</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each r.stores as s (s.name)}
-					<tr class="border-b border-line last:border-0">
-						<td class="px-4 py-2">
-							{s.name}
-							{#if s.path}<span class="ml-1 font-mono text-xs text-faint">{s.path}</span>{/if}
-						</td>
-						<td class="tabular px-2 py-2 text-right">{bytes(s.used)}</td>
-						<td class="tabular px-2 py-2 text-right text-muted">
-							{s.per_day != null ? bytes(s.per_day) : '–'}
-						</td>
-						<td class="px-2 py-2 text-muted">{s.kept}</td>
-						<td class="tabular px-4 py-2 text-muted">{levels(s)}</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
+	<div class="mt-3">
+		<Table {columns} rows={r.stores} key={(s) => s.name} label="Kastellan's data" />
 	</div>
 	<p class="mt-2 text-xs text-faint">
 		A day: what each part filled per day so far. Parts kept for a time level off at that rate times

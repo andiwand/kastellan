@@ -1,15 +1,22 @@
 <script lang="ts">
 	import RangePicker from '#lib/components/ui/RangePicker.svelte';
-	const HOSTS = ['server', 'pc', 'laptop', 'other'];
+	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
+	import StateDot from '#lib/components/ui/StateDot.svelte';
+	import { issuesOf } from '#lib/attention.js';
+	import { HOSTS, presentOf, sectionsOf } from '#lib/devicePage.js';
+	import DeviceFacts from '#lib/components/DeviceFacts.svelte';
+	import DeviceAttention from '#lib/components/DeviceAttention.svelte';
+	import DeviceWifi from '#lib/components/DeviceWifi.svelte';
+	import RouterInternet from '#lib/components/RouterInternet.svelte';
 	import { page } from '$app/state';
 	import { api, more, type Change, type Series } from '#lib/api.js';
 	import { scriptName } from '#lib/updates.js';
 	import { store } from '#lib/state.svelte.js';
-	import { statusOf, upsLabel, upsStatus } from '#lib/status.js';
+	import { statusOf } from '#lib/status.js';
 	import { ago, dayClock } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
-	import StatusDot from '#lib/components/StatusDot.svelte';
 	import LatencyChart from '#lib/components/LatencyChart.svelte';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import ExternalLink from '@lucide/svelte/icons/external-link';
@@ -19,8 +26,6 @@
 	import BellOff from '@lucide/svelte/icons/bell-off';
 	import Wrench from '@lucide/svelte/icons/wrench';
 	import MaintenanceButton from '#lib/components/MaintenanceButton.svelte';
-	import Copy from '@lucide/svelte/icons/copy';
-	import Check from '@lucide/svelte/icons/check';
 	import ActivityItem from '#lib/components/ActivityItem.svelte';
 	import ServicesTable from '#lib/components/ServicesTable.svelte';
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
@@ -36,10 +41,8 @@
 	import CollectorSetup from '#lib/components/CollectorSetup.svelte';
 	import ActorSetup from '#lib/components/ActorSetup.svelte';
 	import SoftwareSection from '#lib/components/SoftwareSection.svelte';
-	import WifiSection from '#lib/components/WifiSection.svelte';
 	import NetworkSection from '#lib/components/NetworkSection.svelte';
 	import StorageSection from '#lib/components/StorageSection.svelte';
-	import ReadingsLine from '#lib/components/ReadingsLine.svelte';
 	import { groupOwn, ownServicesOf, type OwnService } from '#lib/ownServices.js';
 	import VitalsPanel from '#lib/components/VitalsPanel.svelte';
 	import BackupsCard from '#lib/components/BackupsCard.svelte';
@@ -59,7 +62,6 @@
 	const id = $derived(page.params.id ?? '');
 	const device = $derived(store.byId.get(id));
 	const status = $derived(device ? statusOf(device) : 'waiting');
-	const parent = $derived(device?.parent ? store.byId.get(device.parent) : undefined);
 	const children = $derived((store.devices ?? []).filter((d) => d.parent === id));
 	// Watching it (Status) is for everyone; setting it up (Setup) and changing its part of
 	// config.yaml (Config: a form or the text) are for admins. Old links (?tab=edit|file) still
@@ -111,7 +113,6 @@
 	let series = $state<Series | null>(null);
 	let changes = $state<Change[]>([]);
 	let chosen = $state<string | null>(null);
-	let copied = $state(false);
 	let wifiOpen = $state(false);
 	let firmwareOpen = $state(false);
 	let fritzUpdate = $state<'asking' | 'started' | null>(null);
@@ -162,141 +163,44 @@
 			: (device?.checks.find((c) => c.type === 'ping')?.name ?? device?.checks[0]?.name ?? null)
 	);
 
-	async function copyHost() {
-		if (!device) return;
-		await navigator.clipboard.writeText(device.host);
-		copied = true;
-		setTimeout(() => (copied = false), 1500);
-	}
-	const kindLabel: Record<string, string> = {
-		router: 'Router',
-		'access-point': 'Access point',
-		switch: 'Switch',
-		server: 'Server',
-		pc: 'PC',
-		laptop: 'Laptop',
-		printer: 'Printer',
-		camera: 'Camera',
-		ups: 'UPS',
-		other: 'Device'
-	};
+	// What needs attention about it, and its sections in its kind's order (devicePage.ts).
+	const issues = $derived(issuesOf(store.attention, id));
+	const sections = $derived(
+		device ? sectionsOf(device.kind, presentOf(device, own.rest.length)) : []
+	);
 </script>
 
 <svelte:head><title>{device?.name ?? 'Device'} · Kastellan</title></svelte:head>
 
-<a href="/devices" class="inline-flex items-center gap-1.5 text-sm text-muted hover:text-text">
+<a href="/devices" class="mb-4 inline-flex items-center gap-1.5 text-sm text-muted hover:text-text">
 	<ArrowLeft class="size-4" /> Devices
 </a>
 
 {#if store.devices && !device}
-	<div class="card mt-6 px-6 py-10 text-center text-sm text-muted">
+	<div class="card mt-2 px-6 py-10 text-center text-sm text-muted">
 		There is no device <code class="font-mono">{id}</code> in config.yaml.
 	</div>
 {:else if device}
 	<!-- Keyed: another device's page starts afresh, never keeping (or saving) this one's forms,
 	     questions or answers. -->
 	{#key device.id}
-		<header class="mt-4 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-			<div class="flex min-w-0 flex-1 items-start gap-4">
-				<div class="card grid size-14 shrink-0 place-items-center rounded-2xl text-muted">
-					<KindIcon kind={device.kind} class="size-6" />
-				</div>
-				<div class="min-w-0">
-					<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-						<h1 class="text-2xl font-semibold tracking-tight">{device.name}</h1>
-						<StatusBadge {status} />
-						{#if store.alarms?.maintenance?.[device.id]}
-							{@const m = store.alarms.maintenance[device.id]}
-							<span
-								class="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted"
-								title="Problems show but are sent only if still there when it ends"
-							>
-								<Wrench class="size-3.5" />
-								{m.reason} · until {dayClock(m.until)}
-							</span>
-						{/if}
-					</div>
-					<div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
-						{#if device.host}
-							<button
-								onclick={copyHost}
-								class="inline-flex items-center gap-1.5 font-mono text-[13px] hover:text-text"
-								title="Copy the address"
-							>
-								{device.host}
-								{#if copied}<Check class="size-3.5" style="color: var(--good-text)" />{:else}<Copy
-										class="size-3.5 text-faint"
-									/>{/if}
-							</button>
-							<span class="text-faint">·</span>
-						{/if}
-						<span>{kindLabel[device.kind] ?? device.kind}</span>
-						{#if parent}
-							<span class="text-faint">·</span>
-							<span>
-								via <a href="/devices/{parent.id}" class="text-text hover:underline">
-									{parent.name}
-								</a>
-							</span>
-						{/if}
-						{#if device.powered_by}
-							{@const u = store.byId.get(device.powered_by.ups)}
-							<span class="text-faint">·</span>
-							<span>
-								on <a class="text-text hover:underline" href="/devices/{device.powered_by.ups}">
-									{u?.name ?? device.powered_by.ups}
-								</a>
-								<span class="inline-flex items-center gap-1.5">
-									·<StatusDot
-										status={upsStatus[device.powered_by.state] ?? 'waiting'}
-										size="size-1.5"
-									/>
-									{upsLabel[device.powered_by.state] ?? device.powered_by.state}
-								</span>
-							</span>
-						{/if}
-						<!-- The UPS it is powered by is said above; one it only reads, here. -->
-						{#each (device.reads_ups ?? []).filter((r) => r.device !== device.powered_by?.ups) as r (r.device)}
-							<span class="text-faint">·</span>
-							<span>
-								reads <a class="text-text hover:underline" href="/devices/{r.device}">
-									{store.byId.get(r.device)?.name ?? r.device}
-								</a>
-								<span class="inline-flex items-center gap-1.5">
-									·<StatusDot status={upsStatus[r.state] ?? 'waiting'} size="size-1.5" />
-									{upsLabel[r.state] ?? r.state}
-								</span>
-							</span>
-						{/each}
-						{#if device.runs_on}
-							{@const host = store.byId.get(device.runs_on.host)}
-							<span class="text-faint">·</span>
-							<span>
-								virtual machine on <a
-									class="text-text hover:underline"
-									href="/devices/{device.runs_on.host}"
-								>
-									{host?.name ?? device.runs_on.host}
-								</a>
-								<span>· {device.runs_on.state || 'not reported'}</span>
-							</span>
-						{/if}
-						{#if device.info?.model}
-							<span class="text-faint">·</span>
-							<span>{device.info.model}</span>
-						{/if}
-						{#if device.info?.firmware}
-							<span class="text-faint">·</span>
-							<span title="Reported by the device">{device.info.firmware}</span>
-						{/if}
-						{#each device.tags as tag (tag)}
-							<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs">{tag}</span>
-						{/each}
-					</div>
-				</div>
-			</div>
-			<!-- The actions wrap within at most about half the width: the name keeps the rest. -->
-			<div class="flex flex-wrap gap-2 self-start lg:max-w-[55%] lg:justify-end">
+		<!-- The name, its state and what can be done; the facts are under it (DeviceFacts). On a
+		     phone the actions get a row of their own. -->
+		<PageHeader title={device.name}>
+			{#snippet badges()}
+				<StatusBadge {status} />
+				{#if store.alarms?.maintenance?.[device.id]}
+					{@const m = store.alarms.maintenance[device.id]}
+					<span
+						class="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted"
+						title="Problems show but are sent only if still there when it ends"
+					>
+						<Wrench class="size-3.5" />
+						{m.reason} · until {dayClock(m.until)}
+					</span>
+				{/if}
+			{/snippet}
+			{#snippet actions()}
 				<!-- Getting to it, acting on it, then its alarms. -->
 				{#if device.ssh_port && signedAdmin}
 					<a href="/devices/{device.id}/terminal" class="btn-header">
@@ -388,30 +292,29 @@
 					</button>
 					<MaintenanceButton kind="devices" id={device.id} devices={[device.id]} />
 				{/if}
-			</div>
-		</header>
-
-		{#if admin}
-			<div class="mt-6">
-				<Tabs
-					tabs={[
-						{ id: 'status', label: 'Status' },
-						...(device.host ? [{ id: 'setup' as const, label: 'Setup' }] : []),
-						{ id: 'config', label: 'Config' }
-					]}
-					current={tab}
-					onselect={(t) => show(t)}
-				/>
-			</div>
-		{/if}
+			{/snippet}
+			{#snippet tabs()}
+				{#if admin}
+					<Tabs
+						tabs={[
+							{ id: 'status', label: 'Status' },
+							...(device.host ? [{ id: 'setup' as const, label: 'Setup' }] : []),
+							{ id: 'config', label: 'Config' }
+						]}
+						current={tab}
+						onselect={(t) => show(t)}
+					/>
+				{/if}
+			{/snippet}
+		</PageHeader>
 
 		{#if tab === 'config'}
 			{#if store.editBlocked !== null}
-				<div class="card mt-6 p-5 text-sm text-muted">
+				<div class="card p-5 text-sm text-muted">
 					Its config can't be changed from here: {store.editBlocked}.
 				</div>
 			{:else}
-				<div class="mt-6 flex flex-wrap items-center gap-3">
+				<div class="flex flex-wrap items-center gap-3">
 					<Tabs
 						tabs={[
 							{ id: 'form', label: 'Form' },
@@ -434,7 +337,7 @@
 			{/if}
 		{:else if tab === 'setup'}
 			{#if store.me}
-				<p class="mt-6 mb-4 max-w-2xl text-sm text-muted">
+				<p class="mb-4 max-w-2xl text-sm text-muted">
 					How Kastellan reaches this device and what it may do there. Each part is set up once, with
 					your login (used for that one connection) or with commands to run yourself.
 				</p>
@@ -523,197 +426,197 @@
 				{/if}
 			{/if}
 		{:else}
-			{#if device.kind === 'ups'}
-				<UpsCard {device} canChange={store.editBlocked === null} />
-			{/if}
-			<ReadingsLine {device} />
-			{#if device.vitals}
-				<VitalsPanel device={device.id} vitals={device.vitals} />
-			{/if}
-			<!-- Range (a UPS read through its host has no services of its own) -->
-			{#if device.checks.length || own.rest.length}<div
-					class="mt-8 flex scroll-mt-6 items-center justify-between"
-					id="services"
-				>
-					<h2 class="text-sm font-semibold">Services</h2>
-					<RangePicker
-						value={hours}
-						options={ranges.map((r) => r.hours)}
-						onchange={(h) => (hours = h)}
-					/>
-				</div>
+			<DeviceAttention {issues} device={device.id} name={device.name} shown={sections} />
+			<DeviceFacts {device} />
 
-				{#if loadError}
-					<p class="mt-3 text-sm" style:color="var(--critical-text)">
-						Cannot load the history: {loadError}. Showing what was loaded before.
-					</p>
-				{/if}
-
-				<div class="mt-3">
-					<ServicesTable
-						rows={device.checks.map((check) => ({ device: device!, check }))}
-						buckets={(_, name) => checkSeries[name] ?? []}
-						start={series?.start ?? null}
-						step={series?.step_seconds ?? 0}
-						rangeLabel={range.label}
-						own={own.byCheck}
-						rest={own.rest}
-						onDevice={device}
-						canChange={canChangeOwn}
-						ownBuckets={(name) => series?.services?.[name] ?? []}
-					/>
-				</div>{/if}
-
-			<SoftwareSection {device} canAct={!!device.act && signedAdmin} />
-			<WifiSection {device} canChange={signedAdmin} />
-			<NetworkSection {device} />
-			{#if device.host_report}
-				<StorageSection
-					device={device.id}
-					report={device.host_report}
-					forecast={device.host_forecast ?? {}}
-				/>
-			{/if}
-
-			<BackupsCard device={device.id} />
-			{#if admin}<div id="config-backups"><ConfigBackups device={device.id} /></div>{/if}
-
-			{#if device.containers || device.containers_error}
-				<div
-					id="containers"
-					class="mt-8 mb-3 flex scroll-mt-4 flex-wrap items-baseline justify-between gap-2"
-				>
-					<h2 class="text-sm font-semibold">
-						Containers
-						{#if device.containers}<span class="tabular ml-1 font-normal text-faint">
-								{device.containers.length}
-							</span>{/if}
-					</h2>
-					<p class="text-xs text-muted">
-						{#if device.containers_error}
-							<span style:color="var(--warning-text)">{device.containers_error}</span>
-							{#if device.containers_checked}
-								· last read {ago(device.containers_checked, store.now)}
-							{/if}
-						{:else}
-							from {device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
-								device.containers_checked,
-								store.now
-							)}
-						{/if}
-						{#if device.collect && device.host_report?.docker}· <ReadAgain
-								device={device.id}
-							/>{/if}
-					</p>
-				</div>
-				{#if device.containers}<ContainersTable
+			<!-- What the device is for first (sectionsOf): the same order on every device of a kind,
+			     empty sections left out. -->
+			{#each sections as s (s)}
+				{#if s === 'ups'}
+					<Section title="Power" id="ups">
+						<UpsCard {device} canChange={store.editBlocked === null} />
+					</Section>
+				{:else if s === 'internet' && device.fritz}
+					<Section title="Internet" id="internet">
+						{#snippet actions()}<a class="hover:text-text" href="/internet">
+								Internet page
+							</a>{/snippet}
+						<RouterInternet fritz={device.fritz} />
+					</Section>
+				{:else if s === 'wifi'}
+					<DeviceWifi {device} />
+				{:else if s === 'network'}
+					<div id="network" class="scroll-mt-6"><NetworkSection {device} internet={false} /></div>
+				{:else if s === 'vitals' && device.vitals}
+					<VitalsPanel device={device.id} vitals={device.vitals} />
+				{:else if s === 'storage' && device.host_report}
+					<StorageSection
 						device={device.id}
-						containers={device.containers}
-						checks={device.checks}
-						stale={!!device.containers_error}
-						canAct={!!device.act && signedAdmin}
-					/>{/if}
-			{/if}
+						report={device.host_report}
+						forecast={device.host_forecast ?? {}}
+					/>
+				{:else if s === 'services'}
+					<Section title="Services" id="services">
+						{#snippet actions()}
+							<RangePicker
+								value={hours}
+								options={ranges.map((r) => r.hours)}
+								onchange={(h) => (hours = h)}
+							/>
+						{/snippet}
+						{#if loadError}
+							<p class="mb-3 text-sm" style:color="var(--critical-text)">
+								Cannot load the history: {loadError}. Showing what was loaded before.
+							</p>
+						{/if}
+						<ServicesTable
+							rows={device.checks.map((check) => ({ device: device!, check }))}
+							buckets={(_, name) => checkSeries[name] ?? []}
+							start={series?.start ?? null}
+							step={series?.step_seconds ?? 0}
+							rangeLabel={range.label}
+							own={own.byCheck}
+							rest={own.rest}
+							onDevice={device}
+							canChange={canChangeOwn}
+							ownBuckets={(name) => series?.services?.[name] ?? []}
+						/>
+					</Section>
+				{:else if s === 'containers'}
+					<Section
+						title="Containers"
+						id="containers"
+						count={device.containers?.length}
+						meta={containersMeta}
+					>
+						{#if device.containers}<ContainersTable
+								device={device.id}
+								containers={device.containers}
+								checks={device.checks}
+								stale={!!device.containers_error}
+								canAct={!!device.act && signedAdmin}
+							/>{/if}
+					</Section>
+				{:else if s === 'vm' && device.runs_on}
+					{@const host = store.byId.get(device.runs_on.host)}
+					{@const vm = host?.vms?.find((v) => v.name === device.runs_on?.vm)}
+					{#if host && vm}
+						<Section title="Its virtual machine" meta="on {host.name}" href="/devices/{host.id}">
+							<VmsTable device={host.id} vms={[vm]} canAct={!!host.act && signedAdmin} />
+						</Section>
+					{/if}
+				{:else if s === 'vms' && device.vms}
+					<Section title="Virtual machines" id="vms" count={device.vms.length}>
+						<VmsTable device={device.id} vms={device.vms} canAct={!!device.act && signedAdmin} />
+					</Section>
+				{:else if s === 'software'}
+					<SoftwareSection {device} canAct={!!device.act && signedAdmin} />
+				{:else if s === 'backups'}
+					<BackupsCard device={device.id} />
+					{#if admin}<div id="config-backups" class="scroll-mt-6">
+							<ConfigBackups device={device.id} />
+						</div>{/if}
+				{:else if s === 'vulnerabilities' && device.vulns}
+					<Section title="Vulnerabilities" id="vulnerabilities">
+						<VulnsList vulns={device.vulns} exposed={device.exposed} />
+					</Section>
+				{:else if s === 'history'}
+					<!-- Nothing checked (a UPS read through its host): no response time, only its activity. -->
+					<div
+						class="mt-section grid min-w-0 grid-cols-1 gap-8 {device.checks.length
+							? 'xl:grid-cols-[minmax(0,1fr)_20rem]'
+							: ''}"
+					>
+						{#if device.checks.length}<section class="min-w-0">
+								<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+									<h2 class="text-section">Response time</h2>
+									{#if device.checks.length > 1}
+										<div class="flex flex-wrap gap-1">
+											{#each device.checks as check (check.name)}
+												<button
+													onclick={() => (chosen = check.name)}
+													class="h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors {latencyCheck ===
+													check.name
+														? 'border-accent bg-accent-soft text-accent'
+														: 'border-line text-muted hover:text-text'}"
+												>
+													{check.name}
+												</button>
+											{/each}
+										</div>
+									{/if}
+								</div>
+								<div class="card px-2 pt-4 pb-1">
+									{#if series && latencyCheck && checkSeries[latencyCheck]}
+										<LatencyChart
+											buckets={checkSeries[latencyCheck]}
+											start={series.start}
+											step={series.step_seconds}
+											height={220}
+										/>
+									{:else}
+										<div class="h-[220px] animate-pulse rounded-lg bg-surface-2"></div>
+									{/if}
+								</div>
+							</section>{/if}
 
-			{#if device.runs_on}
-				{@const host = store.byId.get(device.runs_on.host)}
-				{@const vm = host?.vms?.find((v) => v.name === device.runs_on?.vm)}
-				{#if host && vm}
-					<h2 class="mt-8 mb-3 text-sm font-semibold">
-						Its virtual machine <span class="font-normal text-faint">on {host.name}</span>
-					</h2>
-					<VmsTable device={host.id} vms={[vm]} canAct={!!host.act && signedAdmin} />
-				{/if}
-			{/if}
+						<section>
+							<h2 class="mb-3 text-section">Activity</h2>
+							<div class="card p-2">
+								{#if changes.length === 0}
+									<p class="px-3 py-6 text-center text-sm text-muted">
+										No changes in the last {range.label}.
+									</p>
+								{:else}
+									<ol class="max-h-[22rem] overflow-y-auto">
+										{#each changes as change (`${change.kind}/${change.time}/${change.check}`)}
+											<li><ActivityItem {change} {device} /></li>
+										{/each}
+									</ol>
+								{/if}
+							</div>
 
-			{#if device.vms?.length}
-				<h2 class="mt-8 mb-3 text-sm font-semibold">
-					Virtual machines <span class="tabular ml-1 font-normal text-faint">
-						{device.vms.length}
-					</span>
-				</h2>
-				<VmsTable device={device.id} vms={device.vms} canAct={!!device.act && signedAdmin} />
-			{/if}
-
-			{#if device.vulns}
-				<h2 class="mt-8 mb-3 scroll-mt-6 text-sm font-semibold" id="vulnerabilities">
-					Vulnerabilities
-				</h2>
-				<VulnsList vulns={device.vulns} exposed={device.exposed} />
-			{/if}
-
-			<!-- Nothing checked (a UPS read through its host): no response time, only its activity. -->
-			<div
-				class="mt-8 grid min-w-0 grid-cols-1 gap-8 {device.checks.length
-					? 'xl:grid-cols-[minmax(0,1fr)_20rem]'
-					: ''}"
-			>
-				{#if device.checks.length}<section class="min-w-0">
-						<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-							<h2 class="text-sm font-semibold">Response time</h2>
-							{#if device.checks.length > 1}
-								<div class="flex flex-wrap gap-1">
-									{#each device.checks as check (check.name)}
-										<button
-											onclick={() => (chosen = check.name)}
-											class="h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors {latencyCheck ===
-											check.name
-												? 'border-accent bg-accent-soft text-accent'
-												: 'border-line text-muted hover:text-text'}"
+							{#if children.length}
+								<h2 class="mt-8 mb-3 text-section">Connected through it</h2>
+								<div class="card divide-y divide-line">
+									{#each children as child (child.id)}
+										<a
+											href="/devices/{child.id}"
+											class="flex items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-surface-2/70"
 										>
-											{check.name}
-										</button>
+											<KindIcon kind={child.kind} class="size-4 text-muted" />
+											<span class="flex-1 truncate">{child.name}</span>
+											<StatusBadge status={statusOf(child)} />
+										</a>
 									{/each}
 								</div>
 							{/if}
-						</div>
-						<div class="card px-2 pt-4 pb-1">
-							{#if series && latencyCheck && checkSeries[latencyCheck]}
-								<LatencyChart
-									buckets={checkSeries[latencyCheck]}
-									start={series.start}
-									step={series.step_seconds}
-									height={220}
-								/>
-							{:else}
-								<div class="h-[220px] animate-pulse rounded-lg bg-surface-2"></div>
-							{/if}
-						</div>
-					</section>{/if}
-
-				<section>
-					<h2 class="mb-3 text-sm font-semibold">Activity</h2>
-					<div class="card p-2">
-						{#if changes.length === 0}
-							<p class="px-3 py-6 text-center text-sm text-muted">
-								No changes in the last {range.label}.
-							</p>
-						{:else}
-							<ol class="max-h-[22rem] overflow-y-auto">
-								{#each changes as change (`${change.kind}/${change.time}/${change.check}`)}
-									<li><ActivityItem {change} {device} /></li>
-								{/each}
-							</ol>
-						{/if}
+						</section>
 					</div>
-
-					{#if children.length}
-						<h2 class="mt-8 mb-3 text-sm font-semibold">Connected through it</h2>
-						<div class="card divide-y divide-line">
-							{#each children as child (child.id)}
-								<a
-									href="/devices/{child.id}"
-									class="flex items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-surface-2/70"
-								>
-									<KindIcon kind={child.kind} class="size-4 text-muted" />
-									<span class="flex-1 truncate">{child.name}</span>
-									<StatusBadge status={statusOf(child)} />
-								</a>
-							{/each}
-						</div>
-					{/if}
-				</section>
-			</div>
+				{/if}
+			{/each}
 		{/if}
 	{/key}
 {/if}
+
+{#snippet containersMeta()}
+	{#if device}
+		{#if device.containers_error}
+			<span class="inline-flex items-center gap-1.5">
+				<StateDot tone="warning" label="Not read" />
+				{device.containers_error}
+			</span>
+			{#if device.containers_checked}
+				<span>last read {ago(device.containers_checked, store.now)}</span>
+			{/if}
+		{:else}
+			<span>
+				from {device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
+					device.containers_checked,
+					store.now
+				)}
+			</span>
+		{/if}
+		{#if device.collect && device.host_report?.docker}<ReadAgain device={device.id} />{/if}
+	{/if}
+{/snippet}

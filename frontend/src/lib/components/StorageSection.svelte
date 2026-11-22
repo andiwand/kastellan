@@ -1,142 +1,71 @@
 <script lang="ts">
-	import StateBadge from './ui/StateBadge.svelte';
-	import StateDot from './ui/StateDot.svelte';
-	import { diskState, raidState } from '#lib/states.js';
 	import type { HostReport } from '#lib/api.js';
-	import { store } from '#lib/state.svelte.js';
 	import DiskActivity from './DiskActivity.svelte';
-	import { bytes } from '#lib/format.js';
-	import { diskLimits, toneColor, toneOf } from '#lib/vitals.js';
+	import VolumesTable from './VolumesTable.svelte';
+	import DisksTable from './DisksTable.svelte';
+	import Section from './ui/Section.svelte';
+	import Table, { type Column } from './ui/Table.svelte';
+	import StateDot from './ui/StateDot.svelte';
 
-	/** A Linux host's storage and hardware, from its collector: each filesystem's space (and when
-	 * it is full at the rate it fills), RAID arrays and disk health (SMART), its temperatures.
-	 * The fullest filesystem is also among the vitals. */
+	/** A Linux host's storage and hardware, from its collector: its volumes (how full, when full
+	 * at the rate they fill), its RAID arrays and disks (health from SMART, temperature), its
+	 * hottest sensors, and its disks over time (DiskActivity). The fullest volume is also among
+	 * the vitals. */
 	let {
 		device,
 		report,
 		forecast = {}
 	}: { device: string; report: HostReport; forecast?: Record<string, number> } = $props();
 
-	// The same limits the alarms use (config.yaml's alarms:).
-	const disk = $derived(diskLimits(store.alarms));
-	const percent = (used: number, free: number) => (used + free ? (100 * used) / (used + free) : 0);
-	const disks = $derived(report.smart?.disks ?? []);
+	type Sensor = { key: string; sensor: string; celsius: number; limit: number | null };
 	const hot = $derived(
-		[...(report.temperatures ?? [])].sort((a, b) => b.celsius - a.celsius).slice(0, 6)
+		[...(report.temperatures ?? [])]
+			.sort((a, b) => b.celsius - a.celsius)
+			.slice(0, 6)
+			.map((t, i) => ({ ...t, key: `${i}:${t.sensor}` }))
 	);
+	const hasDisks = $derived(!!(report.raid?.length || report.smart?.disks.length));
+	const sensorColumns: Column<Sensor>[] = [
+		{ key: 'sensor', label: 'Sensor', grow: true, value: (t) => t.sensor },
+		{ key: 'celsius', label: 'Temperature', numeric: true, cell: celsiusCell },
+		{
+			key: 'limit',
+			label: 'Limit',
+			numeric: true,
+			priority: 2,
+			value: (t) => (t.limit != null ? `${t.limit.toFixed(0)} °C` : null)
+		}
+	];
 </script>
 
-{#if report.filesystems?.length || report.raid?.length || disks.length || hot.length || report.activity?.length}
-	<section class="mt-8 scroll-mt-6" id="storage">
-		<h2 class="text-sm font-semibold">Storage and hardware</h2>
+{#snippet celsiusCell(t: Sensor)}
+	<span class="inline-flex items-center gap-1.5">
+		{#if t.limit != null && t.celsius >= t.limit}<StateDot
+				tone="warning"
+				label="At its limit"
+				size="size-1.5"
+			/>{/if}
+		{t.celsius.toFixed(0)} °C
+	</span>
+{/snippet}
+
+{#if report.filesystems?.length || hasDisks || hot.length || report.activity?.length}
+	<Section title="Storage and hardware" id="storage">
 		{#if report.filesystems?.length}
-			<div class="card mt-3 p-4">
-				<h3 class="text-xs font-medium text-muted">Space</h3>
-				<ul class="mt-2 space-y-2">
-					{#each report.filesystems as fs, i (i)}
-						{@const p = percent(fs.used, fs.available)}
-						<li
-							class="grid grid-cols-[minmax(0,1fr)_2.5rem_minmax(0,1.8fr)] items-center gap-3 text-sm sm:grid-cols-[minmax(0,10rem)_1fr_auto]"
-						>
-							<span class="truncate font-mono text-xs" title={fs.device}>{fs.mount}</span>
-							<span class="h-1 overflow-hidden rounded-full bg-[var(--empty)]">
-								<span
-									class="block h-full rounded-full"
-									style:width="{p}%"
-									style:background={toneColor[toneOf(p, disk)]}
-								></span>
-							</span>
-							<span class="tabular text-xs text-muted">
-								{p.toFixed(0)}% · {bytes(fs.available)} free
-								{#if forecast[fs.mount] != null}
-									{@const days = forecast[fs.mount]}
-									<span title="At the rate it filled over the last days">
-										· full {days < 1 ? 'within a day' : `in ~${Math.round(days)} d`}
-									</span>{#if days < (store.alarms?.limits?.disk_days ?? 14)}<span
-											class="ml-1.5 inline-block align-middle"
-										>
-											<StateDot tone="warning" label="Full soon" size="size-1.5" />
-										</span>{/if}
-								{/if}
-							</span>
-						</li>
-					{/each}
-				</ul>
-			</div>
+			<h3 class="mb-2 text-meta font-medium text-muted">Volumes</h3>
+			<VolumesTable {report} {forecast} />
 		{/if}
-
-		<div class="mt-3 grid gap-3 empty:hidden sm:grid-cols-2">
-			{#if report.raid?.length || disks.length}
-				<div class="card p-4">
-					<h3 class="text-xs font-medium text-muted">Disks</h3>
-					<ul class="mt-2 space-y-1.5 text-sm">
-						{#each report.raid ?? [] as md, i (i)}
-							{@const bad = !md.active || md.status.includes('_') || md.failed.length > 0}
-							<li class="flex flex-wrap items-baseline gap-x-2">
-								<span class="font-mono text-xs">{md.name}</span>
-								<span class="text-muted">{md.level} of {md.devices.join(', ')}</span>
-								<StateBadge state={raidState(bad)} quiet />
-								<span class="font-mono text-xs text-faint">[{md.status}]</span>
-								{#if md.progress}<span class="text-xs text-muted">
-										{md.progress.what}
-										{md.progress.percent}%
-									</span>{/if}
-							</li>
-						{/each}
-						{#each disks as d, i (i)}
-							{@const wear =
-								(d.reallocated ?? 0) +
-								(d.pending ?? 0) +
-								(d.uncorrectable ?? 0) +
-								(d.nvme_media_errors ?? 0)}
-							<li class="flex flex-wrap items-baseline gap-x-2">
-								<span class="font-mono text-xs">{d.disk}</span>
-								<span class="truncate text-muted">{d.model ?? ''}</span>
-								{#if d.asleep}
-									<span class="text-faint">asleep (not woken to read it)</span>
-								{:else if d.error}
-									<span class="text-faint">{d.error}</span>
-								{:else if d.passed != null || wear > 0}
-									<StateBadge state={diskState(d.passed, wear)} quiet />
-								{:else}
-									<span class="text-faint">health unknown</span>
-								{/if}
-								{#if d.temperature != null}<span class="tabular text-xs text-muted">
-										{d.temperature} °C
-									</span>{/if}
-								{#if d.power_on_hours != null}<span class="tabular text-xs text-faint">
-										{Math.round((d.power_on_hours / 24 / 365) * 10) / 10} years on
-									</span>{/if}
-							</li>
-						{/each}
-						{#if report.smart && !report.smart.available}
-							<li class="text-xs text-faint">Disk health needs smartmontools on the host.</li>
-						{/if}
-					</ul>
-				</div>
-			{/if}
-
-			{#if hot.length}
-				<div class="card p-4">
-					<h3 class="text-xs font-medium text-muted">Temperatures</h3>
-					<ul class="mt-2 space-y-1 text-sm">
-						{#each hot as t, i (i)}
-							<li class="flex justify-between gap-3">
-								<span class="truncate text-muted">{t.sensor}</span>
-								<span class="tabular inline-flex items-center gap-1.5">
-									{#if t.limit != null && t.celsius >= t.limit}<StateDot
-											tone="warning"
-											label="At its limit"
-											size="size-1.5"
-										/>{/if}
-									{t.celsius.toFixed(0)} °C{t.limit != null ? ` / ${t.limit.toFixed(0)}` : ''}
-								</span>
-							</li>
-						{/each}
-					</ul>
-				</div>
-			{/if}
-		</div>
+		{#if hasDisks}
+			<h3 class="mt-5 mb-2 text-meta font-medium text-muted">Disks</h3>
+			<DisksTable {report} />
+		{/if}
+		{#if report.smart && !report.smart.available}
+			<p class="mt-2 text-meta text-muted">Disk health needs smartmontools on the host.</p>
+		{/if}
+		{#if hot.length}
+			<h3 class="mt-5 mb-2 text-meta font-medium text-muted">Temperatures</h3>
+			<Table columns={sensorColumns} rows={hot} key={(t) => t.key} label="Temperatures" />
+		{/if}
 		<DiskActivity {device} />
-	</section>
+	</Section>
 {/if}

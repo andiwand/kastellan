@@ -6,9 +6,16 @@
 	import Download from '@lucide/svelte/icons/download';
 	import GitCompare from '@lucide/svelte/icons/git-compare';
 	import Lock from '@lucide/svelte/icons/lock';
+	import { configBackupState } from '#lib/states.js';
+	import type { BackupVersion } from '#lib/api.js';
+	import Section from './ui/Section.svelte';
+	import Table, { type Column } from './ui/Table.svelte';
+	import StateBadge from './ui/StateBadge.svelte';
+	import EmptyState from './ui/EmptyState.svelte';
 
-	/** A device's configuration backups (devbackups.py): each version once ("the same since"),
-	 * what changed between two (secrets masked), and the download to restore it. Admins. */
+	/** A device's configuration backups (devbackups.py): its state, then a table of versions,
+	 * each once ("the same until"), with what changed since the one before (secrets masked) and
+	 * the download to restore it on its row. Admins. */
 	let { device }: { device: string } = $props();
 
 	let data = $state<DeviceBackups | null>(null);
@@ -60,78 +67,88 @@
 		'fritzbox-export':
 			'Extract the ZIP, then restore the .export in FRITZ!OS → System → Backup → Restore. Use the password in export-password.txt.'
 	};
+
+	type Row = BackupVersion & { older: string | null };
+	const rows = $derived(
+		(data?.versions ?? []).map((v, i, all) => ({ ...v, older: all[i + 1]?.id ?? null }))
+	);
+	const columns: Column<Row>[] = [
+		{ key: 'taken', label: 'Taken', value: (v) => dayClock(v.taken, store.now) },
+		{
+			key: 'files',
+			label: 'Files',
+			priority: 2,
+			grow: true,
+			value: (v) => `${v.files} ${v.files === 1 ? 'file' : 'files'}, ${bytes(v.size)}`
+		},
+		{
+			key: 'same',
+			label: 'The same until',
+			priority: 3,
+			title: 'When it was last read and found unchanged',
+			value: (v) => (v.checked !== v.taken ? ago(v.checked, store.now) : null)
+		},
+		{ key: 'by', label: 'By', priority: 3, value: (v) => v.by },
+		{ key: 'actions', label: '', align: 'right', cell: versionActions }
+	];
 </script>
 
+{#snippet versionActions(v: Row)}
+	{#if signedIn}
+		<span class="inline-flex items-center gap-3 text-meta">
+			{#if v.older}
+				<button
+					class="inline-flex items-center gap-1 text-muted hover:text-text"
+					onclick={() => compare(v.older!, v.id)}
+				>
+					<GitCompare class="size-3.5" /> what changed
+				</button>
+			{/if}
+			<a
+				class="inline-flex items-center gap-1 text-muted hover:text-text"
+				href={more.backupDownload(device, v.id)}
+				download
+				title="Everything, passwords and keys too"
+			>
+				<Download class="size-3.5" /> download
+			</a>
+		</span>
+	{/if}
+{/snippet}
+
 {#if data && (data.kind || data.versions.length)}
-	<section class="card mt-8 p-5">
-		<div class="flex flex-wrap items-baseline justify-between gap-2">
-			<h2 class="text-sm font-semibold">Configuration backups</h2>
-			<p class="text-xs text-muted">
-				{#if data.status.error}
-					<span style:color={data.status.denied ? undefined : 'var(--warning-text)'}>
-						{data.status.error}
-					</span>
-				{:else if data.status.ok}
-					taken {ago(data.status.ok, store.now)}, every {data.every_hours} h
+	<Section title="Configuration backups" count={data.versions.length || null}>
+		{#snippet meta()}
+			<span class="inline-flex flex-wrap items-center gap-x-1.5">
+				<StateBadge state={configBackupState(data!.status)} quiet />
+				{#if data!.status.error}
+					<span>{data!.status.error}</span>
+				{:else if data!.status.ok}
+					taken {ago(data!.status.ok, store.now)}, every {data!.every_hours} h
 				{:else}
-					every {data.every_hours} h
+					every {data!.every_hours} h
 				{/if}
-				{#if data.kind && store.me?.role === 'admin'}
-					·
-					<button
-						class="underline hover:text-text disabled:opacity-50"
-						disabled={busy}
-						onclick={now}
-					>
-						{busy ? 'backing up…' : 'back up now'}
-					</button>
-				{/if}
-			</p>
-		</div>
-		{#if data.kind}<p class="mt-1 text-xs text-faint">{KIND[data.kind] ?? data.kind}</p>{/if}
-		{#if note}<p class="mt-2 text-xs text-muted">{note}</p>{/if}
+			</span>
+		{/snippet}
+		{#snippet actions()}
+			{#if data!.kind && store.me?.role === 'admin'}
+				<button class="btn btn-sm" disabled={busy} onclick={now}>
+					{busy ? 'Backing up…' : 'Back up now'}
+				</button>
+			{/if}
+		{/snippet}
+		{#if data.kind}<p class="mb-2 text-meta text-muted">{KIND[data.kind] ?? data.kind}</p>{/if}
+		{#if note}<p class="mb-2 text-meta text-muted">{note}</p>{/if}
 		{#if data.versions.length}
-			<ol class="mt-3 divide-y divide-line text-sm">
-				{#each data.versions as v, i (v.id)}
-					<li class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
-						<span class="tabular">{dayClock(v.taken)}</span>
-						<span class="text-xs text-muted">
-							{v.files}
-							{v.files === 1 ? 'file' : 'files'}, {bytes(v.size)}
-							{#if v.checked !== v.taken}· the same until {ago(v.checked, store.now)}{/if}
-							{#if v.by}· by {v.by}{/if}
-						</span>
-						<span class="ml-auto flex items-center gap-3 text-xs">
-							{#if i < data.versions.length - 1 && signedIn}
-								<button
-									class="inline-flex items-center gap-1 text-muted hover:text-text"
-									onclick={() => compare(data!.versions[i + 1].id, v.id)}
-								>
-									<GitCompare class="size-3.5" /> what changed
-								</button>
-							{/if}
-							{#if signedIn}
-								<a
-									class="inline-flex items-center gap-1 text-muted hover:text-text"
-									href={more.backupDownload(device, v.id)}
-									download
-									title="Everything, passwords and keys too"
-								>
-									<Download class="size-3.5" /> download
-								</a>
-							{/if}
-						</span>
-					</li>
-				{/each}
-			</ol>
-			<p class="mt-2 flex items-center gap-1.5 text-xs text-faint">
+			<Table {columns} {rows} key={(v) => v.id} label="Configuration backup versions" />
+			<p class="mt-2 flex items-center gap-1.5 text-meta text-faint">
 				<Lock class="size-3" /> Kept encrypted; a version the same as the one before isn't kept twice.
 			</p>
 		{:else if !data.status.error}
-			<p class="mt-3 text-sm text-muted">No version yet: the first is taken within minutes.</p>
+			<EmptyState text="No version yet: the first is taken within minutes." />
 		{/if}
-		{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
-	</section>
+		{#if error}<div class="mt-2"><EmptyState kind="error" text={error} onretry={load} /></div>{/if}
+	</Section>
 {/if}
 
 {#if diff}

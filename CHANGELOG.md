@@ -7,6 +7,25 @@
 - Set up the Linux collector again (Updates lists it) so containers say which service they
   serve and disks report their activity.
 
+### Changed
+
+- The interface, reworked for one way of showing things:
+  - Every count (the overview, the sidebar's badges, device pages) comes from one list of what
+    needs attention, so they agree; one set of state words with one look; status colour only
+    in dots, bars and charts; one time format.
+  - The overview is a status board: what needs attention with its fix, one row per area
+    (internet, Wi-Fi, storage, backups, sign-ins, updates), devices with problems first.
+  - Wi-Fi: findings first, then tables of clients (the FRITZ!Box's too), access points and
+    networks, a channel chart per band and channel suggestions as a before/after table.
+  - One table per kind of thing (containers, VMs, volumes, disks, backups, ways in,
+    vulnerabilities), the same on its page and on a device's page; on a phone, tables drop
+    columns instead of scrolling sideways.
+  - Device pages: the facts in one block, a line with the device's problems, and sections in an
+    order that starts with what the device is for.
+  - Updates are grouped by urgency with clear verbs; the Internet page says where slowness is.
+  - The sidebar is grouped; Containers and VMs share a page, Keys moved into Settings (old
+    addresses redirect); a phone shows five places and More.
+
 ### Added
 
 - A device's own services (an OpenWrt device's init scripts) are kept over time like checks:

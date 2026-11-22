@@ -529,17 +529,32 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     repeaters, channel use per band, `openFindings`): entity components `WifiFindings`,
     `WifiClientsTable`, `AccessPointsTable`, `WifiNetworksTable`, `ChannelChart`, `ChannelPlan`,
     each with a `device` filter for device pages.
+  - Other entity tables on `ui/Table` (one per kind of thing; the same on overview pages and
+    device pages): `ContainersTable`, `VmsTable` (actions on the row; the question, the
+    job's progress and, below `lg`, the buttons in the Table's `below` line), `VolumesTable`,
+    `DisksTable` (`lib/storage.ts`), `WaysInTable`, `RouterClientsTable` (`lib/router.ts`),
+    `BackupJobsTable`, `ConfigBackupsTable` (`device` filter), `VulnsList` (`lib/vulns.ts`).
   - Dialogs: `use:modal` (`src/lib/modal.ts`) opens a `<dialog>` and locks the page's scroll.
   - Components: `UptimeStrip` (one bar per bucket, hover tooltip), `LatencyChart` (line + area,
     crosshair), `StatusBadge`/`StatusDot` (a device or check status as `ui/StateBadge`/`StateDot`), `KindIcon`, `Logo`.
   - `NetworkMap`: the devices by network (networks.py): a zone per network, devices in two on the
     boundary (zones ordered so linked ones are neighbours; otherwise inside, "also ..."), the
     ways in from the internet listed in its zone.
-  - The device page's Status tab is by topic, the same for every kind of device: `ReadingsLine`
-    (uptime, sources, what couldn't be read), `VitalsPanel`, Services (`ServicesTable` with the
-    device's own services from `lib/ownServices.ts`: OpenWrt init scripts and failed systemd units
-    under the check they answer, the rest as rows), `SoftwareSection`, `WifiSection`,
-    `NetworkSection`, `StorageSection`, then backups, containers and VMs.
+  - The device page (`PageHeader`: name, State, maintenance, actions; Status / Setup / Config):
+    the Status tab opens with `DeviceAttention` (one line of the device's issues from
+    `store.attention`, each linking to its section here: `devicePage.ts` `issueHref`) and
+    `DeviceFacts` (KeyValues: kind, model, firmware or kernel, address, up for, connected
+    through, site, power, readings with their source and age; "Not read · Set up" once when a
+    reading could be set up and isn't). Then sections in a fixed order by kind
+    (`devicePage.ts` `sectionsOf`, empty ones hidden): a router Internet (`RouterInternet`,
+    FRITZ!Box), Wi-Fi (`DeviceWifi`: the Wi-Fi page's findings and tables filtered to the
+    device, from GET /api/wifi, admins; `RoamingInfo`), Network (`NetworkSection
+    internet={false}`); an access point Wi-Fi first; a host Vitals, Storage, Services,
+    Containers, VMs, Backups; a UPS Power; others Services, Vitals; response time and activity
+    last. Anchors: `#services`, `#storage`, `#software`, `#backups`, `#vulnerabilities`,
+    `#wifi`, `#internet`, `#network`, `#ups`, `#containers`, `#vms`, `#config-backups`. Services
+    is `ServicesTable` with the device's own services from `lib/ownServices.ts` (OpenWrt init
+    scripts and failed systemd units under the check they answer, the rest as rows).
   - `ServicesTable` (service, software, status, response, for, uptime), used by the device page
     and `/services`; `ActivityItem` (an up/down or a software update).
   - `UptimeStrip` merges neighbouring buckets (`mergeBuckets`) so a bar keeps ~5 px; it never
