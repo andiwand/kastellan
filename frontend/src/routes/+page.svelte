@@ -1,18 +1,18 @@
 <script lang="ts">
 	import InternetSummary from '#lib/components/InternetSummary.svelte';
 	import { store } from '#lib/state.svelte.js';
-	import { deviceBuckets, needsAttention, statusOf, uptimeOf, type Status } from '#lib/status.js';
-	import { ago, ms, percent, stateFor } from '#lib/format.js';
+	import { deviceBuckets, statusOf, uptimeOf, type Status } from '#lib/status.js';
+	import { ago, ms, percent } from '#lib/format.js';
+	import { attentionHeadline, count } from '#lib/glossary.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
-	import StatusDot from '#lib/components/StatusDot.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
+	import IssueRow from '#lib/components/ui/IssueRow.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
 	import CircleCheck from '@lucide/svelte/icons/circle-check';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ActivityEntryItem from '#lib/components/ActivityEntryItem.svelte';
 	import { api } from '#lib/api.js';
-	import { updatesOf } from '#lib/updates.js';
 
 	const devices = $derived(store.devices ?? []);
 	const counts = $derived(
@@ -24,15 +24,9 @@
 			waiting: 0
 		} as Record<Status, number>)
 	);
-	const problems = $derived(
-		devices
-			.filter(needsAttention)
-			.flatMap((d) => d.checks.filter((c) => c.up === false).map((c) => ({ device: d, check: c })))
-			.sort((a, b) => Date.parse(b.check.since ?? '') - Date.parse(a.check.since ?? ''))
-	);
-	const attention = $derived(devices.filter(needsAttention).length);
-	// Amber while things only limp along, red once something that should be on is down.
-	const tone = $derived(counts.down ? 'critical' : counts.degraded ? 'warning' : 'good');
+	// One list, one count (attention.ts): the headline is the list's length.
+	const attention = $derived(store.attention);
+	const tone = $derived(attention.tone);
 	const checkCount = $derived(devices.reduce((n, d) => n + d.checks.length, 0));
 	let ackError = $state<string | null>(null);
 	// Known vulnerabilities that matter: exploited or critical, confirmed.
@@ -45,8 +39,9 @@
 			)
 		)
 	);
-	// Container updates over all Docker hosts, and what can't be checked.
-	const updates = $derived(updatesOf(devices).filter((u) => u.kind === 'container'));
+	// Every update waiting (the same list and count as the Updates page and its badge).
+	const updates = $derived(attention.updates);
+	const containerUpdates = $derived(updates.filter((u) => u.kind === 'container'));
 	const unchecked = $derived(
 		devices.reduce(
 			(n, d) =>
@@ -114,15 +109,13 @@
 					style:background="color-mix(in srgb, var(--{tone}) 13%, transparent)"
 					style:color="var(--{tone}-text)"
 				>
-					{#if attention}<TriangleAlert class="size-6" />{:else}<CircleCheck class="size-6" />{/if}
+					{#if attention.count}<TriangleAlert class="size-6" />{:else}<CircleCheck
+							class="size-6"
+						/>{/if}
 				</div>
 				<div>
 					<h1 class="text-2xl font-semibold tracking-tight sm:text-[28px]">
-						{#if attention}
-							{attention} {attention === 1 ? 'device needs' : 'devices need'} attention
-						{:else}
-							Everything is running
-						{/if}
+						{attentionHeadline(attention.count)}
 					</h1>
 					<p class="mt-1.5 text-sm text-muted">
 						{devices.length} devices · {checkCount} checks · updated {ago(
@@ -154,32 +147,9 @@
 			</dl>
 		</div>
 
-		{#if problems.length}
-			<ul class="relative mt-6 divide-y divide-line rounded-xl border border-line bg-surface-2/60">
-				{#each problems as { device, check } (`${device.id}/${check.name}`)}
-					<li>
-						<a
-							href="/devices/{device.id}"
-							class="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-surface-2"
-						>
-							<StatusDot status={statusOf(device)} size="size-2" />
-							<span class="min-w-0 flex-1 truncate text-sm">
-								<span class="font-medium">{device.name}</span>
-								<span class="text-muted">· {check.name}</span>
-								<span class="text-faint"> — {check.detail}</span>
-							</span>
-							<span class="tabular shrink-0 text-xs text-muted">
-								{check.since ? `for ${stateFor(check, store.now)}` : ''}
-							</span>
-							<ChevronRight class="size-4 shrink-0 text-faint" />
-						</a>
-					</li>
-				{/each}
-			</ul>
-		{/if}
 		{#if urgentVulns.length}
 			<div class="relative mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-				<span class="font-medium" style:color="var(--critical-text)">
+				<span class="font-medium">
 					{urgentVulns.length} serious {urgentVulns.length === 1
 						? 'vulnerability'
 						: 'vulnerabilities'}:
@@ -194,11 +164,10 @@
 		{#if updates.length || unchecked}
 			<div class="relative mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
 				{#if updates.length}
-					<span class="font-medium text-accent">
-						{updates.length}
-						{updates.length === 1 ? 'container update' : 'container updates'}:
-					</span>
-					{#each updates.slice(0, 6) as u (`${u.device.id}/${u.key}`)}
+					<a href="/updates" class="font-medium hover:underline">
+						{count(updates.length, 'update')} waiting{containerUpdates.length ? ':' : ''}
+					</a>
+					{#each containerUpdates.slice(0, 6) as u (`${u.device.id}/${u.key}`)}
 						<a href="/devices/{u.device.id}" class="text-muted hover:text-text">
 							{u.name} <span class="text-faint">→</span>
 							{u.to}
@@ -215,66 +184,56 @@
 		{/if}
 	</section>
 
-	{#if store.alarms?.open.length}
-		<section class="mt-6">
-			<div class="mb-3 flex items-baseline justify-between">
-				<h2 class="text-sm font-semibold">Alarms</h2>
-				<p class="text-xs text-muted">
-					{store.alarms.channels
-						? `sent to ${store.alarms.channels} ${store.alarms.channels === 1 ? 'channel' : 'channels'}`
-						: 'no notify: channels in config.yaml'}
-				</p>
-			</div>
-			{#if ackError}
-				<p class="mb-2 text-xs" style:color="var(--critical-text)">{ackError}</p>
-			{/if}
-			<ul class="card divide-y divide-line">
-				{#each store.alarms.open as alarm (alarm.key)}
-					<li class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
-						<StatusDot status={alarm.severity === 'critical' ? 'down' : 'degraded'} size="size-2" />
-						<a
-							href="/devices/{alarm.device}"
-							class="min-w-0 flex-1 truncate font-medium hover:underline"
+	{#if attention.count}
+		<div class="mt-6">
+			<Section
+				title="Needs attention"
+				count={attention.count}
+				first
+				meta={store.alarms?.channels
+					? `alarms sent to ${count(store.alarms.channels, 'channel')}`
+					: 'no notify: channels in config.yaml'}
+			>
+				{#if ackError}
+					<p class="mb-2 text-xs" style:color="var(--critical-text)">{ackError}</p>
+				{/if}
+				<ul class="card divide-y divide-line">
+					{#each attention.issues as issue (issue.key)}
+						{@const alarm = issue.alarm}
+						<IssueRow
+							tone={issue.tone}
+							title={issue.title}
+							detail={issue.detail}
+							meta={issue.since ? ago(issue.since, store.now) : undefined}
+							href={issue.href}
+							note={alarm?.acknowledged_by
+								? `${alarm.acknowledged_by} is on it${alarm.acknowledged_note ? `: ${alarm.acknowledged_note}` : ''}`
+								: alarm?.held
+									? 'in maintenance · not sent'
+									: undefined}
 						>
-							{alarm.title}
-						</a>
-						{#if alarm.held}
-							<span
-								class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs text-muted"
-								title="Opened during maintenance: sent only if still there when it ends"
-							>
-								maintenance · not sent
-							</span>
-						{/if}
-						{#if alarm.acknowledged_by}
-							<span class="text-xs text-muted">
-								{alarm.acknowledged_by} is on it{alarm.acknowledged_note
-									? `: ${alarm.acknowledged_note}`
-									: ''}
-							</span>
-						{:else if store.me?.role === 'admin'}
-							<button
-								onclick={async () => {
-									try {
-										await api.acknowledge(alarm.key);
-									} catch (e) {
-										ackError = (e as Error).message;
-									}
-									store.refreshHistory();
-								}}
-								class="h-7 rounded-lg border border-line px-2.5 text-xs font-medium hover:border-line-strong"
-							>
-								Acknowledge
-							</button>
-						{/if}
-						<!-- A fixed width, so what stands before it lines up from row to row. -->
-						<span class="tabular ml-auto w-20 shrink-0 text-right text-xs text-faint">
-							{ago(alarm.since ?? alarm.opened, store.now)}
-						</span>
-					</li>
-				{/each}
-			</ul>
-		</section>
+							{#snippet action()}
+								{#if alarm && !alarm.acknowledged_by && store.me?.role === 'admin'}
+									<button
+										onclick={async () => {
+											try {
+												await api.acknowledge(alarm.key);
+											} catch (e) {
+												ackError = (e as Error).message;
+											}
+											store.refreshHistory();
+										}}
+										class="btn btn-sm text-muted"
+									>
+										Acknowledge
+									</button>
+								{/if}
+							{/snippet}
+						</IssueRow>
+					{/each}
+				</ul>
+			</Section>
+		</div>
 	{/if}
 
 	<div class="mt-8 grid gap-8 xl:grid-cols-[1fr_20rem]">

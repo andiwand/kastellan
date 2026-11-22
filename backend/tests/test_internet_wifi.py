@@ -529,3 +529,13 @@ def test_roaming_in_a_group() -> None:
         roaming.mobility_domain("Castle") == roaming.mobility_domain("Castle")
         and len(roaming.mobility_domain("x")) == 4
     )
+
+
+def test_the_demo_lists_every_wifi_client_its_radios_count(demo_client) -> None:
+    """One truth: the Clients table holds as many clients as the radios say they have, the
+    FRITZ!Box's too, named from its host list."""
+    body = demo_client.get("/api/wifi").json()
+    counted = sum(e.get("clients") or 0 for n in body["networks"] for e in n["on"] if e["kind"] == "fritzbox")
+    fritz = [c for c in body["clients"] if c["kind"] == "fritzbox"]
+    assert counted and len(fritz) == counted
+    assert all(c["name"] for c in fritz)

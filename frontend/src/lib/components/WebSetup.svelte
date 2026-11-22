@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { more, type WebSetupView } from '#lib/api.js';
+	import { day } from '#lib/format.js';
 	import { store } from '#lib/state.svelte.js';
 	import { onMount } from 'svelte';
 	import CodeBlock from './CodeBlock.svelte';
@@ -127,7 +128,7 @@
 			{/if}
 		</section>
 		{#if view.checked}
-			<p class="text-xs text-faint">Checked {new Date(view.checked).toLocaleString()}.</p>
+			<p class="text-xs text-faint">Checked {day(view.checked)}.</p>
 		{/if}
 	{/if}
 </div>

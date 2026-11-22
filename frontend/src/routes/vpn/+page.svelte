@@ -102,6 +102,10 @@
 		await act(() => api.deleteVpn(v.id, version));
 	}
 
+	// With servers seen but none managed, "no VPN" would contradict the list above it.
+	const noneYet = $derived(
+		servers?.length ? "Kastellan doesn't manage a VPN's clients yet." : 'No VPN yet.'
+	);
 	const wgClients = (v: Vpn) => v.clients as WgClient[];
 	const ovpnClients = (v: Vpn) => v.clients as OvpnClient[];
 	const input =
@@ -125,7 +129,7 @@
 	run the VPN itself.
 </p>
 
-{#if servers}<VpnServers {servers} {names} />{/if}
+{#if servers}<div class="mt-6"><VpnServers {servers} {names} /></div>{/if}
 
 {#each (store.devices ?? []).filter((d) => d.fritz?.wireguard) as d (d.id)}
 	<section class="card mt-5 p-4">
@@ -187,14 +191,14 @@
 {#if vpns && vpns.length === 0 && adding === null}
 	<div class="mt-6">
 		{#if canEdit && tab === 'setup'}
-			<p class="mb-3 text-sm text-muted">No VPN yet. Which kind is yours?</p>
+			<p class="mb-3 text-sm text-muted">{noneYet} Which kind is yours?</p>
 			{@render kindChoice()}
 		{:else if canEdit}
 			<p class="text-sm text-muted">
-				No VPN yet. <button class="underline" onclick={() => show('setup')}>Set one up</button>.
+				{noneYet} <button class="underline" onclick={() => show('setup')}>Set one up</button>.
 			</p>
 		{:else}
-			<p class="text-sm text-muted">No VPN set up.</p>
+			<p class="text-sm text-muted">{noneYet}</p>
 		{/if}
 	</div>
 {/if}

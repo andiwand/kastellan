@@ -2,8 +2,8 @@
 	import './layout.css';
 	import { page } from '$app/state';
 	import { store } from '#lib/state.svelte.js';
+	import { attentionHeadline } from '#lib/glossary.js';
 	import { ago } from '#lib/format.js';
-	import { needsAttention } from '#lib/status.js';
 	import Logo from '#lib/components/Logo.svelte';
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
 	import MonitorSmartphone from '@lucide/svelte/icons/monitor-smartphone';
@@ -19,7 +19,6 @@
 	import Wifi from '@lucide/svelte/icons/wifi';
 	import DatabaseBackup from '@lucide/svelte/icons/database-backup';
 	import CircleArrowUp from '@lucide/svelte/icons/circle-arrow-up';
-	import { updatesOf } from '#lib/updates.js';
 	import { runner } from '#lib/runner.svelte.js';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import LogOut from '@lucide/svelte/icons/log-out';
@@ -59,8 +58,13 @@
 	const shownNav = $derived(nav.filter((i) => !i.admin || store.me?.role === 'admin'));
 	const active = (href: string) =>
 		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
-	const attention = $derived((store.devices ?? []).filter(needsAttention).length);
-	const waiting = $derived(updatesOf(store.devices ?? []).length);
+	// Every badge counts from the one attention model (attention.ts): Overview the issues (as
+	// its headline), Devices those whose state needs attention (its Problems filter), Updates
+	// every update waiting (its list).
+	const issues = $derived(store.attention.count);
+	const issueTone = $derived(store.attention.tone === 'critical' ? 'critical' : 'warning');
+	const attention = $derived(store.attention.problemDevices.length);
+	const waiting = $derived(store.attention.updates.length);
 	// Before the first answer it is connecting, not unreachable (no red flash on every load).
 	const link = $derived(store.error ? 'down' : store.updated != null ? 'up' : 'connecting');
 </script>
@@ -105,7 +109,16 @@
 					>
 						<item.icon class="size-4" strokeWidth={1.9} />
 						{item.label}
-						{#if item.href === '/devices' && attention}
+						{#if item.href === '/' && issues}
+							<span
+								class="tabular ml-auto rounded-full px-1.5 text-[11px] leading-5 font-semibold"
+								style:background="color-mix(in srgb, var(--{issueTone}) 14%, transparent)"
+								style:color="var(--{issueTone}-text)"
+								title={attentionHeadline(issues)}
+							>
+								{issues}
+							</span>
+						{:else if item.href === '/devices' && attention}
 							<span
 								class="tabular ml-auto rounded-full px-1.5 text-[11px] leading-5 font-semibold"
 								style:background="color-mix(in srgb, var(--critical) 14%, transparent)"
@@ -343,7 +356,12 @@
 				>
 					<item.icon class="size-5" strokeWidth={1.9} />
 					{item.short ?? item.label}
-					{#if item.href === '/devices' && attention}
+					{#if item.href === '/' && issues}
+						<span
+							class="absolute top-2 left-1/2 ml-2 size-2 rounded-full"
+							style:background="var(--{issueTone})"
+						></span>
+					{:else if item.href === '/devices' && attention}
 						<span
 							class="absolute top-2 left-1/2 ml-2 size-2 rounded-full"
 							style:background="var(--critical)"

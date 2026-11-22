@@ -1,40 +1,34 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { more, type SignIn, type SignIns } from '#lib/api.js';
+	import { more, type SignIn, type SignInSource, type SignIns } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
+	import { dayClock } from '#lib/format.js';
+	import { count } from '#lib/glossary.js';
+	import { signinFlag, signinState, type State } from '#lib/states.js';
+	import Tabs from '#lib/components/Tabs.svelte';
+	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
+	import Table, { type Column } from '#lib/components/ui/Table.svelte';
+	import StateBadge from '#lib/components/ui/StateBadge.svelte';
+	import Tile from '#lib/components/ui/Tile.svelte';
+	import RangePicker from '#lib/components/ui/RangePicker.svelte';
+	import EmptyState from '#lib/components/ui/EmptyState.svelte';
+	import X from '@lucide/svelte/icons/x';
 
 	/** Who signs in where, and who tries: SSH, VPN, the routers' web interfaces and the hub,
 	 * from the central logs and the audit log (signins.py). Per address with flags, and the
 	 * events themselves. A VPN client's address suggests the path, not who it was. */
-	const RANGES = [
-		{ id: 1, label: '1 h' },
-		{ id: 24, label: '24 h' },
-		{ id: 168, label: '7 d' },
-		{ id: 720, label: '30 d' }
-	];
 	const SERVICE: Record<string, string> = {
 		ssh: 'SSH',
 		vpn: 'VPN',
 		router: 'Router login',
 		hub: 'Kastellan'
 	};
-	const FLAG: Record<string, { text: string; color: string; title: string }> = {
-		'new-outside': {
-			text: 'new from outside',
-			color: 'var(--critical-text)',
-			title: 'A success from an outside address that never succeeded before this week'
-		},
-		'outside-ok': {
-			text: 'signed in from outside',
-			color: 'var(--warning-text)',
-			title: 'A success from a public address'
-		},
-		repeated: {
-			text: 'many failures',
-			color: 'var(--warning-text)',
-			title: 'Ten or more failed or broken-off tries: a password guesser or a scanner'
-		}
-	};
+	const OUTCOMES = [
+		{ id: 'all', label: 'All' },
+		{ id: 'ok', label: 'Signed in' },
+		{ id: 'failed', label: 'Failed and broken off' }
+	] as const;
 
 	let hours = $state(24);
 	let data = $state<SignIns | null>(null);
@@ -58,22 +52,18 @@
 	}
 	onMount(load);
 
-	const name = (id: string) => store.devices?.find((d) => d.id === id)?.name ?? id;
-	const when = (ts: number) =>
-		new Date(ts * 1000).toLocaleString(undefined, {
-			month: 'short',
-			day: 'numeric',
-			hour: '2-digit',
-			minute: '2-digit'
-		});
+	const name = (id: string) =>
+		id === 'kastellan' ? 'Kastellan' : (store.devices?.find((d) => d.id === id)?.name ?? id);
 	const events = $derived(
-		(data?.events ?? []).filter(
-			(e: SignIn) =>
-				(showOwn || !e.own) &&
-				(!outsideOnly || e.outside) &&
-				(outcome === 'all' || (outcome === 'ok' ? e.outcome === 'ok' : e.outcome !== 'ok')) &&
-				(!address || e.address === address)
-		)
+		(data?.events ?? [])
+			.filter(
+				(e: SignIn) =>
+					(showOwn || !e.own) &&
+					(!outsideOnly || e.outside) &&
+					(outcome === 'all' || (outcome === 'ok' ? e.outcome === 'ok' : e.outcome !== 'ok')) &&
+					(!address || e.address === address)
+			)
+			.map((e, i) => ({ ...e, i }))
 	);
 	const sources = $derived(
 		(data?.sources ?? []).filter(
@@ -81,233 +71,185 @@
 		)
 	);
 	const flagged = $derived(sources.filter((s) => s.flags.length));
-	const color = (o: string) =>
-		o === 'ok' ? 'var(--good-text)' : o === 'failed' ? 'var(--critical-text)' : 'var(--muted)';
-	const chip =
-		'rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors hover:border-line-strong';
+
+	type Event = SignIn & { i: number };
+	const sourceColumns: Column<SignInSource>[] = [
+		{ key: 'from', label: 'From', cell: sourceAddress },
+		{ key: 'why', label: 'Why', cell: sourceFlags },
+		{
+			key: 'where',
+			label: 'Where',
+			priority: 2,
+			grow: true,
+			value: (s) =>
+				`${s.services.map((x) => SERVICE[x] ?? x).join(', ')} on ${s.devices.map(name).join(', ')}`
+		},
+		{
+			key: 'as',
+			label: 'As',
+			priority: 3,
+			value: (s) => s.users.slice(0, 5).join(', ') + (s.users.length > 5 ? ', …' : '')
+		},
+		{ key: 'ok', label: 'Signed in', numeric: true, priority: 3, value: (s) => s.ok },
+		{ key: 'failed', label: 'Failed', numeric: true, value: (s) => s.failed },
+		{
+			key: 'attempts',
+			label: 'Broken off',
+			numeric: true,
+			priority: 3,
+			title: 'Connections that ended before a login',
+			value: (s) => s.attempts
+		},
+		{ key: 'last', label: 'Last', numeric: true, priority: 2, value: (s) => dayClock(s.last) }
+	];
+	const eventColumns: Column<Event>[] = [
+		{ key: 'when', label: 'When', numeric: true, align: 'left', value: (e) => dayClock(e.ts) },
+		{ key: 'outcome', label: 'Outcome', cell: eventOutcome },
+		{
+			key: 'where',
+			label: 'Where',
+			priority: 2,
+			value: (e) => `${SERVICE[e.service] ?? e.service} · ${name(e.device)}`
+		},
+		{ key: 'account', label: 'Account', priority: 3, value: (e) => e.user },
+		{ key: 'from', label: 'From', priority: 2, cell: eventFrom }
+	];
 </script>
+
+{#snippet addressButton(at: string, outside: boolean)}
+	<button class="font-mono hover:underline" onclick={() => (address = at)}>{at}</button>
+	{#if outside}<span class="ml-1 rounded bg-surface-2 px-1 py-px text-meta text-muted">
+			outside
+		</span>{/if}
+{/snippet}
+{#snippet sourceAddress(s: SignInSource)}
+	{@render addressButton(s.address, s.outside)}
+{/snippet}
+{#snippet sourceFlags(s: SignInSource)}
+	<span class="flex flex-wrap gap-1">
+		{#each s.flags as f (f)}<StateBadge state={signinFlag[f]} />{/each}
+	</span>
+{/snippet}
+{#snippet eventOutcome(e: Event)}
+	<StateBadge state={signinState[e.outcome]} quiet />
+	{#if !e.verified}<span
+			class="ml-1 text-meta text-faint"
+			title="From syslog without TLS: it can't raise a successful-sign-in alert"
+		>
+			unverified
+		</span>{/if}
+{/snippet}
+{#snippet eventFrom(e: Event)}
+	{#if e.address}{@render addressButton(e.address, e.outside)}{/if}
+	{#if e.via}<span class="text-faint"> via VPN {e.via}</span>{/if}
+	{#if e.line}
+		<a
+			class="ml-1 text-faint hover:underline"
+			href="/logs?device={encodeURIComponent(e.device)}&q={encodeURIComponent(
+				e.address ?? e.user ?? ''
+			)}"
+		>
+			log
+		</a>
+	{/if}
+{/snippet}
 
 <svelte:head><title>Sign-ins · Kastellan</title></svelte:head>
 
-<div class="flex flex-wrap items-baseline justify-between gap-3">
-	<h1 class="text-2xl font-semibold tracking-tight">Sign-ins</h1>
-	<div class="flex flex-wrap gap-1.5">
-		{#each RANGES as r (r.id)}
-			<button
-				class="{chip} {hours === r.id ? 'border-accent text-accent' : 'border-line'}"
-				onclick={() => ((hours = r.id), load())}
-			>
-				{r.label}
-			</button>
-		{/each}
-	</div>
-</div>
-<p class="mt-1 max-w-3xl text-sm text-muted">
-	SSH, VPN, router and hub logins from the logs. VPN addresses suggest a path, not an identity.
-	Unverified syslog entries cannot trigger successful-sign-in alerts.
-</p>
+<PageHeader
+	title="Sign-ins"
+	summary="SSH, VPN, router and hub logins from the logs. A VPN address suggests a path, not who it was."
+>
+	{#snippet actions()}
+		<RangePicker
+			value={hours}
+			onchange={(h) => {
+				hours = h;
+				load();
+			}}
+		/>
+	{/snippet}
+</PageHeader>
 
 {#if error}
-	<p class="mt-4 text-sm" style:color="var(--critical-text)">{error}</p>
+	<EmptyState kind="error" text={error} onretry={load} />
 {/if}
 
 {#if data}
-	<div class="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+	<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
 		{#each Object.entries(SERVICE) as [id, label] (id)}
 			{@const c = data.summary.by_service[id] ?? { ok: 0, failed: 0, attempt: 0 }}
-			<div class="card p-3">
-				<div class="text-xs text-muted">{label}</div>
-				<div class="tabular mt-1 text-lg font-semibold">
-					<span style:color="var(--good-text)">{c.ok}</span>
-					<span class="text-sm font-normal text-faint">ok</span>
-					<span class="ml-1" style:color={c.failed ? 'var(--critical-text)' : undefined}>
-						{c.failed}
-					</span>
-					<span class="text-sm font-normal text-faint">failed</span>
-				</div>
-				{#if c.attempt}
-					<div class="text-xs text-faint">{c.attempt} broken off before a login</div>
-				{/if}
-			</div>
+			{@const state: State | undefined = c.failed
+				? { word: count(c.failed, 'failure'), tone: 'warning' }
+				: c.ok
+					? { word: 'No failures', tone: 'good' }
+					: undefined}
+			<Tile
+				{label}
+				value={c.ok}
+				unit="signed in"
+				{state}
+				sub={c.attempt ? `${c.attempt} broken off before a login` : undefined}
+			/>
 		{/each}
 	</div>
-	<p class="mt-2 text-xs text-muted">
-		{data.summary.outside_addresses} outside
-		{data.summary.outside_addresses === 1 ? 'address' : 'addresses'} tried;
-		{data.summary.outside_ok}
-		{data.summary.outside_ok === 1 ? 'success' : 'successes'} from outside.
+	<p class="mt-2 text-meta text-muted">
+		{count(data.summary.outside_addresses, 'outside address', 'outside addresses')} tried;
+		{count(data.summary.outside_ok, 'success', 'successes')} from outside. Syslog without TLS is unverified
+		and can't raise a successful-sign-in alert.
 	</p>
 
 	{#if flagged.length}
-		<section class="card mt-5 overflow-hidden">
-			<h2 class="px-4 pt-4 text-sm font-semibold">Worth a look</h2>
-			<div class="mt-2 overflow-x-auto">
-				<table class="w-full min-w-[52rem] text-sm">
-					<thead>
-						<tr class="border-b border-line text-left text-xs text-faint">
-							<th class="px-4 py-1.5 font-medium">From</th>
-							<th class="px-2 py-1.5 font-medium">Why</th>
-							<th class="px-2 py-1.5 font-medium">Where</th>
-							<th class="px-2 py-1.5 font-medium">As</th>
-							<th class="px-2 py-1.5 text-right font-medium">Ok</th>
-							<th class="px-2 py-1.5 text-right font-medium">Failed</th>
-							<th
-								class="px-2 py-1.5 text-right font-medium"
-								title="Connections that ended before a login"
-							>
-								Broken off
-							</th>
-							<th class="px-4 py-1.5 text-right font-medium">Last</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each flagged.slice(0, 30) as s (s.address)}
-							<tr class="border-b border-line align-baseline last:border-0">
-								<td class="px-4 py-1.5 whitespace-nowrap">
-									<button
-										class="font-mono text-xs hover:underline"
-										onclick={() => (address = s.address)}
-									>
-										{s.address}
-									</button>
-								</td>
-								<td class="px-2 py-1.5 text-xs whitespace-nowrap">
-									{#each s.flags as f, i (f)}
-										<span class="font-medium" style:color={FLAG[f].color} title={FLAG[f].title}>
-											{FLAG[f].text}
-										</span>{i < s.flags.length - 1 ? ', ' : ''}
-									{/each}
-								</td>
-								<td class="px-2 py-1.5 text-xs text-muted">
-									{s.services.map((x) => SERVICE[x] ?? x).join(', ')} on {s.devices
-										.map(name)
-										.join(', ')}
-								</td>
-								<td
-									class="max-w-[16rem] truncate px-2 py-1.5 text-xs text-muted"
-									title={s.users.join(', ')}
-								>
-									{s.users.slice(0, 5).join(', ')}{s.users.length > 5 ? ', …' : ''}
-								</td>
-								<td
-									class="tabular px-2 py-1.5 text-right text-xs"
-									style:color={s.ok ? 'var(--text)' : 'var(--faint)'}
-								>
-									{s.ok}
-								</td>
-								<td
-									class="tabular px-2 py-1.5 text-right text-xs"
-									style:color={s.failed ? 'var(--text)' : 'var(--faint)'}
-								>
-									{s.failed}
-								</td>
-								<td
-									class="tabular px-2 py-1.5 text-right text-xs"
-									style:color={s.attempts ? 'var(--text)' : 'var(--faint)'}
-								>
-									{s.attempts}
-								</td>
-								<td class="tabular px-4 py-1.5 text-right text-xs whitespace-nowrap text-muted">
-									{when(s.last)}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-		</section>
+		<Section title="Worth a look" count={flagged.length}>
+			<Table
+				columns={sourceColumns}
+				rows={flagged.slice(0, 30)}
+				key={(s) => s.address}
+				label="Addresses worth a look"
+			/>
+		</Section>
 	{/if}
 
-	<section class="card mt-5 overflow-hidden">
-		<div class="flex flex-wrap items-center gap-2 px-4 pt-4">
-			<h2 class="mr-auto text-sm font-semibold">Events</h2>
-			{#each [['all', 'All'], ['ok', 'Successes'], ['failed', 'Failures and tries']] as [id, label] (id)}
-				<button
-					class="{chip} {outcome === id ? 'border-accent text-accent' : 'border-line'}"
-					onclick={() => (outcome = id as typeof outcome)}
-				>
-					{label}
-				</button>
-			{/each}
-			<label class="flex items-center gap-1.5 text-xs">
+	<Section title="Events" count={events.length}>
+		{#snippet actions()}
+			<Tabs
+				small
+				label="Outcome"
+				tabs={[...OUTCOMES]}
+				current={outcome}
+				onselect={(o) => (outcome = o)}
+			/>
+			<label class="flex items-center gap-1.5 text-meta text-text">
 				<input type="checkbox" bind:checked={outsideOnly} /> From outside only
 			</label>
 			<label
-				class="flex items-center gap-1.5 text-xs"
-				title="Kastellan's own logins and checks (from {data.own.join(', ') || 'the hub'})"
+				class="flex items-center gap-1.5 text-meta text-text"
+				title="Kastellan's own logins and checks (from {data?.own.join(', ') || 'the hub'})"
 			>
 				<input type="checkbox" bind:checked={showOwn} /> Kastellan's own
 			</label>
 			{#if address}
-				<button class="{chip} border-accent text-accent" onclick={() => (address = null)}>
-					{address} ✕
+				<button
+					class="inline-flex h-7 items-center gap-1 rounded-lg border border-line px-2 font-mono text-meta text-text hover:border-line-strong"
+					onclick={() => (address = null)}
+					title="Show every address"
+				>
+					{address}
+					<X class="size-3.5" />
 				</button>
 			{/if}
-		</div>
-		{#if !events.length}
-			<p class="px-4 py-4 text-sm text-muted">
-				Nothing {busy ? 'yet' : 'in this time'}. Sign-ins show when the devices' logs reach
-				Kastellan (Logs → sources).
-			</p>
-		{:else}
-			<div class="mt-2 overflow-x-auto">
-				<table class="w-full min-w-[44rem] text-sm">
-					<thead>
-						<tr class="text-left text-xs text-faint">
-							<th class="px-4 py-1.5 font-medium">When</th>
-							<th class="px-2 py-1.5 font-medium">Outcome</th>
-							<th class="px-2 py-1.5 font-medium">Where</th>
-							<th class="px-2 py-1.5 font-medium">Account</th>
-							<th class="px-4 py-1.5 font-medium">From</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each events.slice(0, 500) as e, i (i)}
-							<tr class="border-t border-line">
-								<td class="tabular px-4 py-1.5 text-xs whitespace-nowrap text-muted">
-									{when(e.ts)}
-								</td>
-								<td class="px-2 py-1.5 text-xs font-medium" style:color={color(e.outcome)}>
-									{e.outcome === 'attempt' ? 'broken off' : e.outcome}
-									{#if !e.verified}<span class="text-faint"> · unverified</span>{/if}
-								</td>
-								<td class="px-2 py-1.5 text-xs">
-									{SERVICE[e.service] ?? e.service}
-									<span class="text-faint">
-										· {e.device === 'kastellan' ? 'Kastellan' : name(e.device)}
-									</span>
-								</td>
-								<td class="px-2 py-1.5 text-xs">{e.user ?? '–'}</td>
-								<td class="px-4 py-1.5 text-xs">
-									{#if e.address}
-										<button
-											class="font-mono hover:underline"
-											onclick={() => (address = e.address)}
-											style:color={e.outside ? 'var(--warning-text)' : undefined}
-										>
-											{e.address}
-										</button>
-									{/if}
-									{#if e.via}<span class="text-faint"> via VPN {e.via}</span>{/if}
-									{#if e.line}
-										<a
-											class="ml-1 text-faint hover:underline"
-											href="/logs?device={encodeURIComponent(e.device)}&q={encodeURIComponent(
-												e.address ?? e.user ?? ''
-											)}"
-										>
-											log
-										</a>
-									{/if}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-			{#if events.length > 500}
-				<p class="px-4 py-2 text-xs text-faint">The newest 500 of {events.length}.</p>
-			{/if}
+		{/snippet}
+		<Table
+			columns={eventColumns}
+			rows={events.slice(0, 500)}
+			key={(e) => String(e.i)}
+			label="Sign-in events"
+			empty="Nothing {busy
+				? 'yet'
+				: 'in this time'}. Sign-ins show when the devices' logs reach Kastellan (Logs → sources)."
+		/>
+		{#if events.length > 500}
+			<p class="mt-2 text-meta text-faint">The newest 500 of {events.length}.</p>
 		{/if}
-	</section>
+	</Section>
 {/if}

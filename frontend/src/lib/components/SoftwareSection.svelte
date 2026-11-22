@@ -1,4 +1,6 @@
 <script lang="ts">
+	import StateBadge from './ui/StateBadge.svelte';
+	import { updateState } from '#lib/states.js';
 	import type { Device } from '#lib/api.js';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import JobStatus from './JobStatus.svelte';
@@ -28,25 +30,32 @@
 </script>
 
 {#if shown}
-	<section class="mt-8">
+	<section class="mt-8 scroll-mt-6" id="software">
 		<h2 class="text-sm font-semibold">Software</h2>
 		<ul class="card mt-3 divide-y divide-line text-sm">
 			{#if device.router}
 				<li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-5 py-3">
 					<span class="font-medium">OpenWrt {release?.version ?? ''}</span>
 					{#if fw?.next_step}
-						<span style:color={fw.supported ? undefined : 'var(--warning-text)'}>
+						<StateBadge
+							state={fw.supported ? updateState.available : updateState.unsupported}
+							quiet
+						/>
+						<span>
 							{fw.supported
-								? `· ${fw.next_step} is out`
-								: `· ${fw.series} gets no more security fixes; next step ${fw.next_step}`}
+								? `${fw.next_step} is out`
+								: `${fw.series} gets no more security fixes; next step ${fw.next_step}`}
 						</span>
 						<span class="text-xs text-muted">(supported: {fw.stable} and {fw.oldstable})</span>
 					{:else if fw?.supported}
-						<span class="text-xs" style:color="var(--good-text)">· the newest release</span>
+						<StateBadge state={updateState.current} quiet />
 					{:else if fw}
-						<span class="text-xs" style:color="var(--warning-text)">
-							· not listed among supported releases
-						</span>
+						<StateBadge
+							word="Not listed"
+							tone="warning"
+							title="Not among the supported releases"
+							quiet
+						/>
 					{/if}
 					<span class="w-full text-xs text-muted">
 						{#if device.router.packages_skipped}
@@ -73,11 +82,10 @@
 						{device.info?.firmware ?? (fritz.firmware ? `FRITZ!OS ${fritz.firmware}` : 'FRITZ!OS')}
 					</span>
 					{#if fritz.update?.available}
-						<span style:color="var(--warning-text)">
-							· {fritz.update.version ?? 'an update'} is out
-						</span>
+						<StateBadge state={updateState.available} quiet />
+						<span>{fritz.update.version ?? 'an update'} is out</span>
 					{:else if fritz.update}
-						<span class="text-xs" style:color="var(--good-text)">· up to date</span>
+						<StateBadge state={updateState.current} quiet />
 					{/if}
 				</li>
 			{/if}
@@ -90,11 +98,20 @@
 							: updates.available === 0
 								? 'none pending'
 								: `${updates.available} pending`}
-						{#if updates.security}<span style:color="var(--warning-text)">
-								· {updates.security} for security
+						{#if updates.security}<span class="ml-1">
+								<StateBadge
+									word="{updates.security} for security"
+									tone={updateState.security.tone}
+									quiet
+								/>
 							</span>{/if}
-						{#if updates.reboot}<span style:color="var(--warning-text)">
-								· wants a reboot{canAct ? ' (Reboot at the top)' : ''}
+						{#if updates.reboot}<span class="ml-1">
+								<StateBadge
+									word="Wants a reboot"
+									tone="warning"
+									title={canAct ? 'Reboot is at the top of the page' : undefined}
+									quiet
+								/>
 							</span>{/if}
 					</span>
 					{#if canAct && updates.available}

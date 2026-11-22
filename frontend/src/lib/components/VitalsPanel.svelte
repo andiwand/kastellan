@@ -1,4 +1,5 @@
 <script lang="ts">
+	import RangePicker from './ui/RangePicker.svelte';
 	import { onMount } from 'svelte';
 	import { api, type Bucket, type VitalField, type Vitals, type VitalsSeries } from '#lib/api.js';
 	import { ago } from '#lib/format.js';
@@ -16,7 +17,6 @@
 		toneText
 	} from '#lib/vitals.js';
 	import LatencyChart from './LatencyChart.svelte';
-	import Tabs from './Tabs.svelte';
 
 	/** A device's vitals, whatever kind it is: a tile each for CPU, memory, storage and
 	 * temperature (the value, what it is of, a slim bar, the last 24 hours as a line). A tile
@@ -183,12 +183,10 @@
 			<div class="card mt-3 p-4">
 				<div class="flex flex-wrap items-center justify-between gap-2">
 					<h3 class="text-sm font-medium">{LABEL[f]} over time</h3>
-					<Tabs
-						small
-						label="Range"
-						tabs={RANGES.map((r) => ({ id: r.hours, label: r.label }))}
-						current={range}
-						onselect={(h) => (range = h)}
+					<RangePicker
+						value={range}
+						options={RANGES.map((r) => r.hours)}
+						onchange={(h) => (range = h)}
 					/>
 				</div>
 				{#if shown?.error}

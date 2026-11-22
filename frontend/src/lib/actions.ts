@@ -32,13 +32,3 @@ export function containerActions(
  * number or a UUID, which virsh would read as another domain's id. */
 export const VM_NAME =
 	/^(?!\d+$)(?![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$)[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}$/;
-
-/** A VM's state as a color, always shown with the word (status colors only for state). */
-export const vmTone = (state: string) =>
-	state === 'running'
-		? 'var(--good-text)'
-		: state === 'paused' || state === 'in shutdown'
-			? 'var(--warning-text)'
-			: state === 'crashed'
-				? 'var(--critical-text)'
-				: 'var(--muted)';

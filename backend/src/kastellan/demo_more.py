@@ -193,6 +193,45 @@ FRITZ = {
     }
 }
 
+# Who is on the FRITZ!Box's own Wi-Fi, per network index (as many as its "clients" counts say):
+# name, signal (percent), speed (Mbit/s). The names are in its host list, as on a real box. (The
+# phone and laptop in the living room are on the repeater there, not here.)
+_ASSOCIATED = {
+    1: [("Thermostat", 64, 72), ("Smart plug hall", 41, 65), ("Robot vacuum", 22, 39), ("Doorbell", 47, 72)],
+    2: [
+        ("Galaxy S24", 88, 1200),
+        ("ThinkPad", 74, 866),
+        ("iPad", 69, 780),
+        ("Living room TV", 81, 866),
+        ("Work laptop", 58, 573),
+        ("Ada's phone", 77, 1080),
+        ("Kindle", 35, 144),
+        ("Office printer", 52, 300),
+        ("Nintendo Switch", 61, 433),
+    ],
+    3: [("Visitor phone", 55, 144)],
+}
+
+
+def _fill_associated() -> None:
+    box = FRITZ["fritzbox"]
+    known = {c["name"] for c in box["clients"]}
+    n = 0
+    for w in box["wifi"]:
+        w["associated"] = []
+        for name, signal, speed in _ASSOCIATED.get(w["index"], []):
+            n += 1
+            host = next((c for c in box["clients"] if c["name"] == name), None)
+            mac = host["mac"] if host else f"3c:22:fb:20:{n:02x}:00"
+            address = host["address"] if host else f"192.168.{179 if w['guest'] else 178}.{60 + n}"
+            w["associated"].append({"mac": mac, "address": address, "signal": signal, "speed": speed})
+            if name not in known:
+                entry = {"name": name, "mac": mac, "address": address, "via": "802.11", "speed": speed}
+                box["clients"].append(entry | {"guest": w["guest"]})
+
+
+_fill_associated()
+
 
 # --- Wi-Fi ------------------------------------------------------------------------------------
 

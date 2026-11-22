@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { JobState } from '#lib/runner.svelte.js';
+	import { clock } from '#lib/format.js';
 	import { store } from '#lib/state.svelte.js';
 
 	/** Where a queued update or restart stands (runner.svelte.ts), the same everywhere: a line,
@@ -11,8 +12,6 @@
 		ms < 60_000
 			? `${Math.round(ms / 1000)} s`
 			: `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s`;
-	const clock = (at: number) =>
-		new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 	const last = $derived(job?.log.at(-1)?.text);
 </script>
 
@@ -46,7 +45,7 @@
 			<ol>
 				{#each job.log as line, i (i)}
 					<li class="flex gap-2">
-						<span class="tabular shrink-0 text-faint">{clock(line.at)}</span>
+						<span class="tabular shrink-0 text-faint">{clock(new Date(line.at), true)}</span>
 						<span class="min-w-0 break-words">{line.text}</span>
 					</li>
 				{/each}

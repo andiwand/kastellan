@@ -29,11 +29,12 @@ export const toneColor: Record<Tone, string> = {
 	critical: 'var(--critical)'
 };
 
-/** A value's text in its tone: plain (muted) until it is high. */
+/** A value's text: muted until it is high, then in full text colour; the bar beside it carries
+ * the tone (status colour never colours a number). */
 export const toneText: Record<Tone, string> = {
 	normal: 'var(--muted)',
-	warning: 'var(--warning-text)',
-	critical: 'var(--critical-text)'
+	warning: 'var(--text)',
+	critical: 'var(--text)'
 };
 
 export const LABEL: Record<VitalField, string> = {

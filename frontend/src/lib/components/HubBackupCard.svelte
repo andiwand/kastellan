@@ -1,4 +1,5 @@
 <script lang="ts">
+	import StateDot from './ui/StateDot.svelte';
 	import { onMount } from 'svelte';
 	import { more, type HubBackup } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
@@ -142,14 +143,16 @@
 		{:else}<p class="mt-1 text-xs text-muted">Needs sign-in to be on.</p>{/if}
 	{:else if view}
 		{#if view.legacy}
-			<p class="mt-3 text-sm" style:color="var(--warning-text)">
-				This backup uses the old folder format. Download a .kbak to keep it, then make a new
-				passphrase.
+			<p class="mt-3 flex items-center gap-2 text-sm">
+				<StateDot tone="warning" label="Warning" size="size-1.5" />
+				This backup uses the old folder format. Download a .kbak to keep it, then make a new passphrase.
 			</p>
 		{/if}
 		<p class="mt-4 text-sm">
 			{#if view.status.error}
-				<span style:color="var(--warning-text)">{view.status.error}</span>
+				<span class="inline-flex items-center gap-2">
+					<StateDot tone="warning" label="Warning" size="size-1.5" />{view.status.error}
+				</span>
 			{:else if view.status.local_ok || view.status.ok}
 				Backed up {ago(view.status.local_ok ?? view.status.ok!, store.now)}
 			{:else}
@@ -171,8 +174,8 @@
 						<span class="font-mono text-xs break-all">
 							{t.device ? `${t.device}:` : ''}{st?.path ?? t.path}
 						</span>
-						{#if st?.error}<span class="text-xs" style:color="var(--warning-text)">
-								· {st.error}
+						{#if st?.error}<span class="inline-flex items-center gap-1.5 text-xs">
+								· <StateDot tone="warning" label="Warning" size="size-1.5" />{st.error}
 							</span>{:else if st?.ok}<span class="text-xs text-muted">
 								· copied {ago(st.ok, store.now)}
 							</span>{/if}
@@ -180,9 +183,9 @@
 				{/each}
 			</ul>
 		{:else}
-			<p class="mt-1 text-sm" style:color="var(--warning-text)">
-				No external copy. Add a mounted folder or an SFTP destination in Settings → Kastellan's own
-				backup.
+			<p class="mt-1 flex items-center gap-2 text-sm">
+				<StateDot tone="warning" label="Warning" size="size-1.5" />
+				No external copy. Add a mounted folder or an SFTP destination in Settings → Kastellan's own backup.
 			</p>
 		{/if}
 
@@ -231,14 +234,24 @@
 					from the downloaded version. The Kastellan recovery check tests the latest local backup.
 				</li>
 			{:else}
-				<li style:color={old(view.checks.passphrase) ? 'var(--warning-text)' : undefined}>
+				<li class="flex items-center gap-2">
+					{#if old(view.checks.passphrase)}<StateDot
+							tone="warning"
+							label="Warning"
+							size="size-1.5"
+						/>{/if}
 					The backup's passphrase: {view.checks.passphrase
 						? `checked ${ago(view.checks.passphrase, store.now)}`
 						: 'never checked'}
 				</li>
 			{/if}
 			{#each view.rings as r (r)}
-				<li style:color={old(view.checks[`recovery:${r}`]) ? 'var(--warning-text)' : undefined}>
+				<li class="flex items-center gap-2">
+					{#if old(view.checks[`recovery:${r}`])}<StateDot
+							tone="warning"
+							label="Warning"
+							size="size-1.5"
+						/>{/if}
 					The {r} key ring's recovery key: {view.checks[`recovery:${r}`]
 						? `checked ${ago(view.checks[`recovery:${r}`], store.now)}`
 						: 'never checked'}
@@ -283,10 +296,12 @@
 				</div>
 			{/if}
 			{#if checkNote}
-				<p
-					class="mt-1 text-xs"
-					style:color={checkNote.ok ? 'var(--good-text)' : 'var(--critical-text)'}
-				>
+				<p class="mt-1 flex items-center gap-2 text-xs">
+					<StateDot
+						tone={checkNote.ok ? 'good' : 'critical'}
+						label={checkNote.ok ? 'OK' : 'Failed'}
+						size="size-1.5"
+					/>
 					{checkNote.text}
 				</p>
 			{/if}

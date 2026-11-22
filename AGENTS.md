@@ -497,9 +497,32 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     up / degraded / down / offline / waiting: a down device that isn't `always_on` is
     **offline**, not an alarm, and doesn't count as needing attention. `checkStatusOf` does the
     same for one check (a service down on a laptop that is on is down); use it, don't re-derive.
+  - `src/lib/attention.ts`: the one list of what needs attention (open alarms, down checks not
+    alarmed yet, security updates and firmware out of support) and every count from it:
+    `store.attention` has `issues`, `count` (the overview headline = the list's length), `tone`,
+    `problemDevices` (the Devices badge = the list's Problems filter) and `updates` (the Updates
+    page and badge). Read it; never recount alarms, down checks or updates on a page. An issue
+    has an `area` (storage, services, backups, …) and an `href` to the device page's section
+    (`#services`, `#storage`, `#software`, `#backups`, `#vulnerabilities`).
+  - `src/lib/states.ts`: the State vocabulary, one capitalized word and one tone (good, warning,
+    critical, neutral, accent) per state of each kind of thing (devices, containers, VMs, VPN
+    servers, backups, sign-ins, disks, the line, updates). Status colour only in the State badge,
+    dots, strips, bars and chart marks; never in running text, addresses or numbers.
+    `src/lib/glossary.ts`: the words for things (check, service, issue, alarm, …), `count()`,
+    `attentionHeadline()`. `src/lib/format.ts`: the one time format (`ago`, `clock` "14:05",
+    `date`, `day` "Nov 22, 14:05", `dayClock` for lists, `duration`, `stamp`, `hoursLabel`).
+  - `src/lib/components/ui/`: the building blocks every page uses: `PageHeader` (title, one line,
+    actions, controls or tabs), `Section` (heading outside the card, count, meta, actions, anchor
+    `id`), `KeyValues` (label/value pairs; "Not read · Set up" when missing), `Table` (the thin
+    table primitive: column priorities so phones drop columns instead of scrolling sideways,
+    row links, expandable rows, group rows; entity tables build on it), `IssueRow` (a problem as
+    a sentence with its fixing action), `EmptyState` (empty, unavailable, error), `RangePicker`
+    (1 h · 24 h · 7 d · 30 d, in hours), `Tile`, `StateBadge`/`StateDot`. Type and spacing scale
+    in `layout.css` (`text-title` 24, `text-section`/`text-body` 14, `text-cell` 13, `text-meta`
+    12 px; `h-row` 44 px; `mt-section`).
   - Dialogs: `use:modal` (`src/lib/modal.ts`) opens a `<dialog>` and locks the page's scroll.
   - Components: `UptimeStrip` (one bar per bucket, hover tooltip), `LatencyChart` (line + area,
-    crosshair), `StatusBadge`/`StatusDot` (color always with a word), `KindIcon`, `Logo`.
+    crosshair), `StatusBadge`/`StatusDot` (a device or check status as `ui/StateBadge`/`StateDot`), `KindIcon`, `Logo`.
   - `NetworkMap`: the devices by network (networks.py): a zone per network, devices in two on the
     boundary (zones ordered so linked ones are neighbours; otherwise inside, "also ..."), the
     ways in from the internet listed in its zone.

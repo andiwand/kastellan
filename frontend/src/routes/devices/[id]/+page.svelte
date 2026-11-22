@@ -1,13 +1,15 @@
 <script lang="ts">
+	import RangePicker from '#lib/components/ui/RangePicker.svelte';
 	const HOSTS = ['server', 'pc', 'laptop', 'other'];
 	import { page } from '$app/state';
 	import { api, more, type Change, type Series } from '#lib/api.js';
 	import { scriptName } from '#lib/updates.js';
 	import { store } from '#lib/state.svelte.js';
-	import { statusColor, statusOf, upsLabel, upsStatus } from '#lib/status.js';
+	import { statusOf, upsLabel, upsStatus } from '#lib/status.js';
 	import { ago, dayClock } from '#lib/format.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import StatusBadge from '#lib/components/StatusBadge.svelte';
+	import StatusDot from '#lib/components/StatusDot.svelte';
 	import LatencyChart from '#lib/components/LatencyChart.svelte';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import ExternalLink from '@lucide/svelte/icons/external-link';
@@ -24,7 +26,6 @@
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
 	import VmsTable from '#lib/components/VmsTable.svelte';
 	import UpsCard from '#lib/components/UpsCard.svelte';
-	import { vmTone } from '#lib/actions.js';
 	import VulnsList from '#lib/components/VulnsList.svelte';
 	import AccessSetup from '#lib/components/AccessSetup.svelte';
 	import DeviceEditor from '#lib/components/DeviceEditor.svelte';
@@ -245,21 +246,25 @@
 								on <a class="text-text hover:underline" href="/devices/{device.powered_by.ups}">
 									{u?.name ?? device.powered_by.ups}
 								</a>
-								<span
-									style:color={statusColor[upsStatus[device.powered_by.state] ?? 'waiting'].text}
-								>
-									· {upsLabel[device.powered_by.state] ?? device.powered_by.state}
+								<span class="inline-flex items-center gap-1.5">
+									·<StatusDot
+										status={upsStatus[device.powered_by.state] ?? 'waiting'}
+										size="size-1.5"
+									/>
+									{upsLabel[device.powered_by.state] ?? device.powered_by.state}
 								</span>
 							</span>
 						{/if}
-						{#each device.reads_ups ?? [] as r (r.device)}
+						<!-- The UPS it is powered by is said above; one it only reads, here. -->
+						{#each (device.reads_ups ?? []).filter((r) => r.device !== device.powered_by?.ups) as r (r.device)}
 							<span class="text-faint">·</span>
 							<span>
-								UPS <a class="text-text hover:underline" href="/devices/{r.device}">
+								reads <a class="text-text hover:underline" href="/devices/{r.device}">
 									{store.byId.get(r.device)?.name ?? r.device}
 								</a>
-								<span style:color={statusColor[upsStatus[r.state] ?? 'waiting'].text}>
-									· {upsLabel[r.state] ?? r.state}
+								<span class="inline-flex items-center gap-1.5">
+									·<StatusDot status={upsStatus[r.state] ?? 'waiting'} size="size-1.5" />
+									{upsLabel[r.state] ?? r.state}
 								</span>
 							</span>
 						{/each}
@@ -273,9 +278,7 @@
 								>
 									{host?.name ?? device.runs_on.host}
 								</a>
-								<span style:color={vmTone(device.runs_on.state ?? '')}>
-									· {device.runs_on.state || 'not reported'}
-								</span>
+								<span>· {device.runs_on.state || 'not reported'}</span>
 							</span>
 						{/if}
 						{#if device.info?.model}
@@ -529,15 +532,14 @@
 			{/if}
 			<!-- Range (a UPS read through its host has no services of its own) -->
 			{#if device.checks.length || own.rest.length}<div
-					class="mt-8 flex items-center justify-between"
+					class="mt-8 flex scroll-mt-6 items-center justify-between"
+					id="services"
 				>
 					<h2 class="text-sm font-semibold">Services</h2>
-					<Tabs
-						small
-						label="Range"
-						tabs={ranges.map((r) => ({ id: r.hours, label: r.label }))}
-						current={hours}
-						onselect={(h) => (hours = h)}
+					<RangePicker
+						value={hours}
+						options={ranges.map((r) => r.hours)}
+						onchange={(h) => (hours = h)}
 					/>
 				</div>
 
@@ -634,7 +636,9 @@
 			{/if}
 
 			{#if device.vulns}
-				<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
+				<h2 class="mt-8 mb-3 scroll-mt-6 text-sm font-semibold" id="vulnerabilities">
+					Vulnerabilities
+				</h2>
 				<VulnsList vulns={device.vulns} exposed={device.exposed} />
 			{/if}
 

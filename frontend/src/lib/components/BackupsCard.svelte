@@ -4,6 +4,8 @@
 	import { ago } from '#lib/format.js';
 	import { onMount } from 'svelte';
 	import CodeBlock from './CodeBlock.svelte';
+	import StateBadge from './ui/StateBadge.svelte';
+	import { backupState } from '#lib/states.js';
 
 	/** The backups of a device that report in (backups.py): when each last said it ran, and for
 	 * admins the command its job runs when done (with a token made for it, shown once). */
@@ -48,24 +50,18 @@
 			``,
 			`# e.g. restic backup /data && curl ... /ok || curl ... /fail`
 		].join('\n');
-	const TONE: Record<Backup['state'], [string, string]> = {
-		ok: ['var(--good-text)', 'ran'],
-		failed: ['var(--critical-text)', 'failed'],
-		late: ['var(--warning-text)', 'late'],
-		waiting: ['var(--muted)', 'waiting for its first report']
-	};
 	const admin = $derived(store.me?.role === 'admin');
 </script>
 
 {#if mine.length}
-	<section class="mt-8">
+	<section class="mt-8" id="backups">
 		<h2 class="mb-3 text-sm font-semibold">Backups</h2>
 		<ul class="card divide-y divide-line">
 			{#each mine as b (b.id)}
 				<li class="flex flex-col gap-2 px-5 py-3 text-sm">
 					<div class="flex flex-wrap items-center gap-x-3 gap-y-1">
 						<span class="font-medium">{b.name}</span>
-						<span class="text-xs" style:color={TONE[b.state][0]}>{TONE[b.state][1]}</span>
+						<StateBadge state={backupState[b.state]} />
 						<span class="text-xs text-muted">
 							{b.ok ? `last success ${ago(b.ok, store.now)}` : 'no success yet'}
 							· expected every {b.within_hours} h
@@ -80,8 +76,8 @@
 						{/if}
 					</div>
 					{#if b.state === 'failed' && b.message}
-						<p class="text-xs" style:color="var(--critical-text)">
-							{ago(b.failed, store.now)}: {b.message}
+						<p class="text-xs text-muted">
+							Failed {ago(b.failed, store.now)}: {b.message}
 						</p>
 					{/if}
 					{#if asking === b.id}

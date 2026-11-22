@@ -16,6 +16,9 @@
 	import Lock from '@lucide/svelte/icons/lock';
 	import LockOpen from '@lucide/svelte/icons/lock-open';
 	import Plus from '@lucide/svelte/icons/plus';
+	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import EmptyState from '#lib/components/ui/EmptyState.svelte';
+	import { WORD } from '#lib/glossary.js';
 
 	/** Key rings (vault.py): Kastellan's secrets and people's logins, encrypted, each ring opened
 	 * its own way (an admin signing in, a key file, an environment variable, a key in
@@ -244,23 +247,28 @@
 
 <svelte:head><title>Keys · Kastellan</title></svelte:head>
 
-<div class="flex flex-wrap items-baseline justify-between gap-3">
-	<h1 class="text-2xl font-semibold tracking-tight">Keys</h1>
-	{#if anyOpen && canChange}
-		<button class="btn btn-sm" disabled={busy} onclick={() => run(() => api.vaultLock())}>
-			<Lock class="size-3.5" /> Lock all
-		</button>
-	{/if}
-</div>
-<p class="mt-1 max-w-2xl text-sm text-muted">
-	Key rings: passwords, tokens and keys, encrypted. Nothing in them is on disk as plain text, nor
-	the keys that open them. Each ring opens its own way, as secure as you choose.
-</p>
+<PageHeader
+	title="Keys"
+	summary="Key rings: passwords, tokens and keys, encrypted. Each ring opens its own way, as secure as you choose."
+>
+	{#snippet actions()}
+		{#if anyOpen && canChange}
+			<button class="btn btn-sm" disabled={busy} onclick={() => run(() => api.vaultLock())}>
+				<Lock class="size-3.5" /> Lock all
+			</button>
+		{/if}
+	{/snippet}
+</PageHeader>
 
 {#if !admin}
-	<div class="card mt-6 p-5 text-sm text-muted">Admins only.</div>
+	<EmptyState kind="unavailable" text={WORD.adminsOnly} />
 {:else if error && !vault}
-	<p class="mt-6 text-sm" style:color="var(--critical-text)">{error}</p>
+	<!-- Without sign-in (or in demo mode) there are no key rings: a reason, not an error. -->
+	<EmptyState
+		kind={store.me?.user ? 'error' : 'unavailable'}
+		text={store.me?.user ? error : `Key rings need sign-in: ${error}.`}
+		onretry={store.me?.user ? load : undefined}
+	/>
 {:else if vault}
 	{#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)" role="alert">
 			{error}

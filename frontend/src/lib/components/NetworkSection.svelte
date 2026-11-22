@@ -1,4 +1,5 @@
 <script lang="ts">
+	import StateBadge from './ui/StateBadge.svelte';
 	import type { Device } from '#lib/api.js';
 	import { bitrate, duration, kbitrate } from '#lib/format.js';
 	import DhcpPool from './DhcpPool.svelte';
@@ -25,13 +26,11 @@
 				<div class="card p-4 text-sm">
 					<h3 class="text-xs font-medium text-muted">Internet</h3>
 					<p class="mt-1">
-						<span
-							style:color={net.connection === 'Connected'
-								? 'var(--good-text)'
-								: 'var(--critical-text)'}
-						>
-							{net.connection === 'Connected' ? 'Connected' : (net.connection ?? 'unknown')}
-						</span>
+						<StateBadge
+							word={net.connection ?? 'Unknown'}
+							tone={net.connection === 'Connected' ? 'good' : 'critical'}
+							quiet
+						/>
 						{#if net.connected_for}<span class="text-xs text-muted">
 								· for {duration(net.connected_for)}
 							</span>{/if}

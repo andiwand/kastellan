@@ -44,6 +44,9 @@
     --accent-2: #9db1ff;
     --accent-soft: rgb(123 151 255 / 0.13);
     --accent-ink: #0a0f24;
+    --good: #2a9d3a;
+    --warning: #d99a1a;
+    --critical: #d44848;
     --code-bg: #0d1015;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
     --shadow-xl: 0 50px 100px -40px rgb(0 0 0 / 0.9), 0 24px 48px -24px rgb(0 0 0 / 0.6);

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { modal } from '#lib/modal.js';
+	import { date } from '#lib/format.js';
 	import { api } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { pushState, thisEndpoint, turnOff, turnOn, type PushState } from '#lib/push.js';
@@ -121,7 +122,7 @@
 										· this one
 									</span>{/if}
 							</span>
-							<span class="text-faint">{new Date(s.created * 1000).toLocaleDateString()}</span>
+							<span class="text-faint">{date(s.created)}</span>
 							<button class="btn btn-sm" disabled={busy} onclick={() => remove(s.endpoint)}>
 								Remove
 							</button>

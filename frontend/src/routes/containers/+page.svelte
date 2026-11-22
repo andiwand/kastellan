@@ -7,7 +7,11 @@
 	import { sameTagUpdates } from '#lib/updates.js';
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
 	import ReadAgain from '#lib/components/ReadAgain.svelte';
-	import KindIcon from '#lib/components/KindIcon.svelte';
+	import PageHeader from '#lib/components/ui/PageHeader.svelte';
+	import Section from '#lib/components/ui/Section.svelte';
+	import EmptyState from '#lib/components/ui/EmptyState.svelte';
+	import StateBadge from '#lib/components/ui/StateBadge.svelte';
+	import { count } from '#lib/glossary.js';
 	import Search from '@lucide/svelte/icons/search';
 
 	/** Every container on every host (Docker, through the collector or WUD), grouped by host:
@@ -58,94 +62,95 @@
 
 <svelte:head><title>Containers · Kastellan</title></svelte:head>
 
-<div class="flex flex-wrap items-end justify-between gap-4">
-	<div>
-		<h1 class="text-2xl font-semibold tracking-tight">Containers</h1>
-		<p class="mt-1 max-w-2xl text-sm text-muted">
-			The Docker containers on every host: what runs, what is stopped, and what has a newer image.
-			Kastellan acts only where a host's actor allows it.
-		</p>
-	</div>
-	{#if updatable.length}
-		{#if asking}
-			<span class="flex flex-wrap items-center gap-2 text-xs">
-				Update {updatable.length}
-				{updatable.length === 1 ? 'container' : 'containers'}? One after another on each host, hosts
-				side by side.
-				<button
-					class="btn btn-sm btn-primary"
-					onclick={() => {
-						runner.add(updatable);
-						asking = false;
-					}}
-				>
-					Update {updatable.length}
+<PageHeader
+	title="Containers"
+	summary="The Docker containers on every host: what runs, what is stopped, and what has a newer image."
+>
+	{#snippet actions()}
+		{#if updatable.length}
+			{#if asking}
+				<span class="flex flex-wrap items-center gap-2 text-xs">
+					Update {count(updatable.length, 'container')}? One after another on each host, hosts side
+					by side.
+					<button
+						class="btn btn-sm btn-primary"
+						onclick={() => {
+							runner.add(updatable);
+							asking = false;
+						}}
+					>
+						Update {updatable.length}
+					</button>
+					<button class="btn btn-sm" onclick={() => (asking = false)}>Not now</button>
+				</span>
+			{:else}
+				<button class="btn btn-sm btn-primary" onclick={() => (asking = true)}>
+					Update all ({updatable.length})
 				</button>
-				<button class="btn btn-sm" onclick={() => (asking = false)}>Not now</button>
-			</span>
-		{:else}
-			<button class="btn btn-sm btn-primary" onclick={() => (asking = true)}>
-				Update all ({updatable.length})
-			</button>
+			{/if}
 		{/if}
-	{/if}
-</div>
+	{/snippet}
+	{#snippet controls()}
+		{#if hosts.length}
+			<label class="relative w-full sm:w-auto sm:max-w-sm sm:flex-1">
+				<Search
+					class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint"
+				/>
+				<input
+					bind:value={query}
+					type="search"
+					placeholder="Search name or image"
+					class="h-10 w-full rounded-xl border border-line bg-surface pr-3 pl-9 text-sm shadow-card outline-none placeholder:text-faint focus:border-accent"
+				/>
+			</label>
+			<Tabs
+				label="Show"
+				tabs={FILTERS.map((f) => ({ ...f, count: counts[f.id] }))}
+				current={filter}
+				onselect={(f) => (filter = f)}
+			/>
+		{/if}
+	{/snippet}
+</PageHeader>
 
 {#if store.devices === null}
-	<div class="card mt-6 h-48 animate-pulse"></div>
+	<div class="card h-48 animate-pulse"></div>
 {:else if hosts.length === 0}
-	<div class="card mt-6 px-5 py-8 text-sm text-muted">
-		No containers known yet. Kastellan sees a host's containers through its collector (set it up on
-		the host's page) or through WUD.
-	</div>
+	<EmptyState
+		text="No containers known yet. Kastellan sees a host's containers through its collector (set it up on the host's page) or through WUD."
+	/>
 {:else}
-	<div class="mt-6 flex flex-wrap items-center gap-3">
-		<label class="relative w-full sm:w-auto sm:max-w-sm sm:flex-1">
-			<Search
-				class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint"
+	{#each shown as h, i (h.device.id)}
+		<Section
+			title={h.device.name}
+			href="/devices/{h.device.id}"
+			first={i === 0}
+			id="host-{h.device.id}"
+		>
+			{#snippet meta()}
+				<span class="inline-flex flex-wrap items-center gap-x-1.5">
+					{#if h.device.containers_error}
+						<StateBadge word="Not read" tone="warning" quiet />
+						<span>{h.device.containers_error}</span>
+					{:else if h.device.containers_checked}
+						from {h.device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
+							h.device.containers_checked,
+							store.now
+						)}
+					{/if}
+					{#if h.device.collect && h.device.host_report?.docker}· <ReadAgain
+							device={h.device.id}
+						/>{/if}
+				</span>
+			{/snippet}
+			<ContainersTable
+				device={h.device.id}
+				containers={h.containers}
+				stale={!!h.device.containers_error}
+				canAct={canAct(h.device)}
 			/>
-			<input
-				bind:value={query}
-				type="search"
-				placeholder="Search name or image"
-				class="h-10 w-full rounded-xl border border-line bg-surface pr-3 pl-9 text-sm shadow-card outline-none placeholder:text-faint focus:border-accent"
-			/>
-		</label>
-		<Tabs
-			label="Show"
-			tabs={FILTERS.map((f) => ({ ...f, count: counts[f.id] }))}
-			current={filter}
-			onselect={(f) => (filter = f)}
-		/>
-	</div>
-
-	{#each shown as h (h.device.id)}
-		<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">
-			<a href="/devices/{h.device.id}" class="flex items-center gap-2 text-sm font-semibold">
-				<KindIcon kind={h.device.kind} class="size-4 text-muted" />
-				<span class="hover:underline">{h.device.name}</span>
-			</a>
-			<p class="text-xs text-muted">
-				{#if h.device.containers_error}
-					<span style:color="var(--warning-text)">{h.device.containers_error}</span>
-				{:else if h.device.containers_checked}
-					from {h.device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
-						h.device.containers_checked,
-						store.now
-					)}
-				{/if}
-				{#if h.device.collect && h.device.host_report?.docker}· <ReadAgain
-						device={h.device.id}
-					/>{/if}
-			</p>
-		</div>
-		<ContainersTable
-			device={h.device.id}
-			containers={h.containers}
-			stale={!!h.device.containers_error}
-			canAct={canAct(h.device)}
-		/>
+		</Section>
 	{:else}
-		<p class="card mt-6 px-5 py-8 text-sm text-muted">Nothing matches.</p>
+		<EmptyState text="Nothing matches." />
 	{/each}
 {/if}

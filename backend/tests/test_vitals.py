@@ -222,3 +222,15 @@ def test_the_disks_route(admin_client) -> None:
     r = c.get("/api/devices/nas/disks", params={"hours": 1, "buckets": 4}).json()
     assert r["disks"]["sda"]["busy"][-1] == 12.0
     assert c.get("/api/devices/nope/disks").status_code == 404
+
+
+def test_the_demo_hosts_storage_is_its_fullest_filesystem() -> None:
+    """The demo's Storage tile shows the volume its disk alarm is about, as from_host would."""
+    import time
+
+    from kastellan import demo
+
+    v = demo.vitals("homeserver", time.time())
+    assert v.storage_mount == "/srv/media"
+    assert v.storage is not None and round(v.storage) == 92
+    assert demo.vitals("homeserver", time.time() - 7 * 86400).storage < v.storage  # it fills

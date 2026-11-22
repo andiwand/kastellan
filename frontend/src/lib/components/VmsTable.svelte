@@ -3,7 +3,9 @@
 	import { bytes } from '#lib/format.js';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import JobStatus from './JobStatus.svelte';
-	import { VM_NAME, vmActions, vmTone, type VmAction } from '#lib/actions.js';
+	import { VM_NAME, vmActions, type VmAction } from '#lib/actions.js';
+	import { vmState } from '#lib/states.js';
+	import StateBadge from './ui/StateBadge.svelte';
 	import { store } from '#lib/state.svelte.js';
 	import { statusOf } from '#lib/status.js';
 	import StatusDot from './StatusDot.svelte';
@@ -53,20 +55,19 @@
 		return vmActions(vm.state).map((kind) => ({ kind, ...all[kind] }));
 	}
 
-	const tone = vmTone;
 	const sorted = $derived([...vms].sort((a, b) => a.name.localeCompare(b.name)));
 </script>
 
 <div class="card overflow-hidden">
 	<div
-		class="hidden grid-cols-[minmax(0,1.4fr)_7rem_5rem_6rem_minmax(0,1fr)] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted md:grid"
+		class="hidden grid-cols-[minmax(0,1.4fr)_8rem_5rem_6rem_minmax(0,1fr)] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted md:grid"
 	>
 		<span>Virtual machine</span><span>State</span><span>vCPUs</span><span>Memory</span><span></span>
 	</div>
 	<ul class="divide-y divide-line">
 		{#each sorted as vm (vm.name)}
 			<li
-				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-3 md:grid-cols-[minmax(0,1.4fr)_7rem_5rem_6rem_minmax(0,1fr)]"
+				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-3 md:grid-cols-[minmax(0,1.4fr)_8rem_5rem_6rem_minmax(0,1fr)]"
 			>
 				<p class="min-w-0 truncate text-sm font-medium">
 					{vm.name}
@@ -90,10 +91,7 @@
 							shown only: Kastellan can't act on this name
 						</span>{/if}
 				</p>
-				<span class="flex items-center gap-1.5 text-xs" style:color={tone(vm.state)}>
-					<span class="size-1.5 rounded-full" style:background={tone(vm.state)}></span>
-					{vm.state || 'unknown'}
-				</span>
+				<span><StateBadge state={vmState(vm.state, vm.autostart)} /></span>
 				<span class="hidden text-xs text-muted md:block">{vm.vcpus ?? '–'}</span>
 				<span class="hidden text-xs text-muted md:block">{bytes(vm.memory)}</span>
 				<span class="col-span-full flex justify-end gap-1 md:col-span-1">

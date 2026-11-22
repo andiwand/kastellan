@@ -1,5 +1,5 @@
 <script lang="ts">
-	import Tabs from '#lib/components/Tabs.svelte';
+	import RangePicker from '#lib/components/ui/RangePicker.svelte';
 	import { page } from '$app/state';
 	import {
 		api,
@@ -11,7 +11,7 @@
 	} from '#lib/api.js';
 	import { onMount } from 'svelte';
 	import { store } from '#lib/state.svelte.js';
-	import { ago } from '#lib/format.js';
+	import { ago, day, dayClock } from '#lib/format.js';
 	import Search from '@lucide/svelte/icons/search';
 	import Radio from '@lucide/svelte/icons/radio';
 	import Pause from '@lucide/svelte/icons/pause';
@@ -165,14 +165,7 @@
 		return list.includes(value) ? list.filter((x) => x !== value) : [...list, value];
 	}
 	const name = (id: string) => store.byId.get(id)?.name ?? id;
-	const time = (ts: number) => {
-		const d = new Date(ts * 1000);
-		const today = new Date().toDateString() === d.toDateString();
-		return (
-			(today ? '' : d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' ') +
-			d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-		);
-	};
+	const time = (ts: number) => dayClock(ts, Date.now(), true);
 	// Lines and the alarms and events between them, newest first.
 	type Row = { line: LogLine; mark?: undefined } | { mark: LogMark; line?: undefined };
 	const rows = $derived.by((): Row[] => {
@@ -266,7 +259,7 @@
 				onkeydown={(e) => e.key === 'Enter' && (query = text)}
 			/>
 		</label>
-		<Tabs small label="Range" tabs={RANGES} current={hours} onselect={(h) => (hours = h)} />
+		<RangePicker value={hours} options={RANGES.map((r) => r.id)} onchange={(h) => (hours = h)} />
 		<select
 			class="h-9 rounded-lg border border-line bg-surface px-2 text-sm"
 			bind:value={level}
@@ -385,7 +378,7 @@
 					<li
 						class="grid grid-cols-[auto_1fr] gap-x-3 px-4 py-1.5 sm:grid-cols-[8.5rem_9rem_8rem_1fr]"
 					>
-						<span class="tabular text-faint" title={new Date(l.ts * 1000).toLocaleString()}>
+						<span class="tabular text-faint" title={day(l.ts, Date.now(), true)}>
 							{time(l.ts)}
 						</span>
 						<a

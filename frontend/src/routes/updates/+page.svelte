@@ -1,4 +1,6 @@
 <script lang="ts">
+	import StateBadge from '#lib/components/ui/StateBadge.svelte';
+	import { updateState } from '#lib/states.js';
 	import { more } from '#lib/api.js';
 	const ABILITY: Record<string, string> = {
 		'rollback-container': 'going back to a container’s previous image',
@@ -13,7 +15,7 @@
 		roaming: 'Wi-Fi roaming'
 	};
 	import { store } from '#lib/state.svelte.js';
-	import { containerAsk, scriptName, tagOf, updatesOf, type Update } from '#lib/updates.js';
+	import { containerAsk, scriptName, tagOf, type Update } from '#lib/updates.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import FirmwareDialog from '#lib/components/FirmwareDialog.svelte';
 	import Check from '@lucide/svelte/icons/check';
@@ -23,7 +25,7 @@
 
 	/** Every update waiting on the network, in one list: what, where, from what to what, and the
 	 * action, where Kastellan may take it (the device's actor or OpenWrt login allows it). */
-	const updates = $derived(updatesOf(store.devices ?? []));
+	const updates = $derived(store.attention.updates); // the same list the badge counts
 	const canAct = $derived(store.me?.role === 'admin' && !!store.me.user);
 
 	let confirm = $state<string | null>(null); // one update, asked once before it runs
@@ -271,8 +273,12 @@
 							</span>{/if}
 					{:else if u.kind === 'packages'}
 						{u.count} system {u.count === 1 ? 'package' : 'packages'}
-						{#if u.security}<span class="text-xs" style:color="var(--warning-text)">
-								· {u.security} security
+						{#if u.security}<span class="ml-1">
+								<StateBadge
+									word="{u.security} for security"
+									tone={updateState.security.tone}
+									quiet
+								/>
 							</span>{/if}
 					{:else if u.kind === 'reboot'}
 						Wants a reboot
@@ -281,8 +287,8 @@
 							</span>{/if}
 					{:else if u.kind === 'firmware'}
 						OpenWrt <span class="text-muted">{u.from} → {u.to}</span>
-						{#if !u.supported}<span class="text-xs" style:color="var(--warning-text)">
-								· gets no more security fixes
+						{#if !u.supported}<span class="ml-1">
+								<StateBadge state={updateState.unsupported} quiet />
 							</span>{/if}
 					{:else if u.kind === 'scripts'}
 						Kastellan's {u.names.map(scriptName).join(' and ')} there

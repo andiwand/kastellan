@@ -49,8 +49,12 @@
 		--accent: #7b97ff;
 		--accent-soft: rgb(123 151 255 / 0.14);
 		--accent-ink: #0a0f24;
+		/* Status fills a little calmer than in light: a solid bar or block mustn't glow. */
+		--good: #2a9d3a;
 		--good-text: #3fcf5c;
+		--warning: #d99a1a;
 		--warning-text: #fab219;
+		--critical: #d44848;
 		--critical-text: #f06a6a;
 		--offline: #4d5563;
 		--empty: #232831;
@@ -79,6 +83,28 @@
 	--font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
 	--shadow-card: var(--shadow);
 	--shadow-pop: var(--shadow-lg);
+}
+
+/* The type and spacing scale (24 / 14 / 13 / 12 px; 44 px table rows): use these instead of
+   one-off sizes. text-title: a page's h1; text-section: a section's h2; text-body: running
+   text; text-cell: table cells and dense lists; text-meta: times, sources, counts beside a
+   heading. h-row: a table row; mt-section: the gap above a section. */
+@theme {
+	--text-title: 1.5rem;
+	--text-title--line-height: 2rem;
+	--text-title--letter-spacing: -0.015em;
+	--text-title--font-weight: 600;
+	--text-section: 0.875rem;
+	--text-section--line-height: 1.25rem;
+	--text-section--font-weight: 600;
+	--text-body: 0.875rem;
+	--text-body--line-height: 1.375rem;
+	--text-cell: 0.8125rem;
+	--text-cell--line-height: 1.125rem;
+	--text-meta: 0.75rem;
+	--text-meta--line-height: 1rem;
+	--spacing-row: 2.75rem;
+	--spacing-section: 2rem;
 }
 
 html {

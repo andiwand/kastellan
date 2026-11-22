@@ -38,18 +38,57 @@ export function percent(value: number | null | undefined): string {
 	return `${(Math.floor(value * 10000) / 100).toFixed(2)} %`;
 }
 
-export function clock(iso: string | Date): string {
-	return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+/* Times: one format everywhere. Relative while recent ("5 min ago", `ago`), the clock for
+   today ("14:05", `clock`), the day and the clock before that ("Nov 22, 14:05", `day`), both in
+   lists (`dayClock`: "14:05", "Yesterday 14:05", "Nov 22, 14:05"), durations ("3 h 05 min",
+   `duration`). Always 24-hour, month names in English; the year only when it isn't this one. */
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad = (n: number) => String(n).padStart(2, '0');
+const toDate = (t: string | number | Date) =>
+	t instanceof Date ? t : new Date(typeof t === 'number' ? t * 1000 : t);
+
+/** A time as "14:05" (`seconds`: "14:05:07"). Takes ISO text, a Date or Unix seconds. */
+export function clock(t: string | number | Date, seconds = false): string {
+	const d = toDate(t);
+	const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	return seconds ? `${hm}:${pad(d.getSeconds())}` : hm;
 }
 
-export function dayClock(iso: string | Date): string {
-	const d = new Date(iso);
-	const today = new Date();
-	const time = clock(d);
-	if (d.toDateString() === today.toDateString()) return time;
-	const yesterday = new Date(today.getTime() - 86400000);
-	if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
-	return `${d.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${time}`;
+/** A date as "Nov 22", or "Nov 22 2025" in another year. */
+export function date(t: string | number | Date, now = Date.now()): string {
+	const d = toDate(t);
+	const year = d.getFullYear() === new Date(now).getFullYear() ? '' : ` ${d.getFullYear()}`;
+	return `${MONTHS[d.getMonth()]} ${d.getDate()}${year}`;
+}
+
+/** A date and time as "Nov 22, 14:05" (`seconds`: "Nov 22, 14:05:07"). */
+export function day(t: string | number | Date, now = Date.now(), seconds = false): string {
+	return `${date(t, now)}, ${clock(t, seconds)}`;
+}
+
+/** A time in a list: "14:05" today, "Yesterday 14:05", else "Nov 22, 14:05". */
+export function dayClock(t: string | number | Date, now = Date.now(), seconds = false): string {
+	const d = toDate(t);
+	const today = new Date(now);
+	if (d.toDateString() === today.toDateString()) return clock(d, seconds);
+	const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+	if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${clock(d, seconds)}`;
+	return day(d, now, seconds);
+}
+
+/** A time a device writes as text ("2026-11-12 03:41:07 +0100", apcupsd) in our format
+ * ("Nov 12 2026, 03:41"); text that isn't a time stays as it is. */
+export function stamp(text: string, now = Date.now()): string {
+	const m = text.trim().match(/^(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d(?::\d\d)?)\s*([+-]\d\d):?(\d\d)?$/);
+	const t = m ? Date.parse(`${m[1]}T${m[2]}${m[3]}:${m[4] ?? '00'}`) : NaN;
+	return Number.isNaN(t) ? text : day(new Date(t), now);
+}
+
+/** A time range by its hours, as range pickers name it: "1 h", "24 h", "7 d", "30 d"; 0 is "All". */
+export function hoursLabel(hours: number): string {
+	if (hours === 0) return 'All';
+	return hours < 48 || hours % 24 ? `${hours} h` : `${hours / 24} d`;
 }
 
 /** How long a check has been in its state: "12 min", or "at least 3 h" when the state began

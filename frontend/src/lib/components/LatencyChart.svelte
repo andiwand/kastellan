@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Bucket } from '#lib/api.js';
-	import { clock, ms } from '#lib/format.js';
+	import { clock, date, ms } from '#lib/format.js';
 
 	/** Mean latency per bucket: a 2 px line over a soft area, with a crosshair and a tooltip.
 	 * With `format`, any other value per bucket (in `latency_ms`): Mbit/s, percent. */
@@ -82,7 +82,7 @@
 				i,
 				label:
 					total > 7 * 86400
-						? d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+						? date(d)
 						: every >= 86400
 							? d.toLocaleDateString([], { weekday: 'short' })
 							: clock(d)

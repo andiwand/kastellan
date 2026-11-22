@@ -10,6 +10,8 @@
 	import ArrowUpCircle from '@lucide/svelte/icons/circle-arrow-up';
 	import CircleHelp from '@lucide/svelte/icons/circle-help';
 	import Check from '@lucide/svelte/icons/check';
+	import StateBadge from './ui/StateBadge.svelte';
+	import { containerState } from '#lib/states.js';
 
 	/** A host's containers: what runs, and whether a newer image exists (or why that's unknown).
 	 * With `canAct`, a signed-in admin can update, restart, stop or start them through the host's
@@ -117,8 +119,8 @@
 	// column of their own on wide screens, below the row on narrower ones.
 	const cols = $derived(
 		canAct
-			? 'md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)] lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)_18rem]'
-			: 'md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)]'
+			? 'md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_7rem_minmax(0,1.2fr)] lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_7rem_minmax(0,1.2fr)_18rem]'
+			: 'md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_7rem_minmax(0,1.2fr)]'
 	);
 	const order = (c: Container) => (c.update ? 0 : c.unchecked ? 1 : 2);
 	const sorted = $derived(
@@ -169,12 +171,7 @@
 				>
 					{c.image}<span class="text-faint">:</span><span class="text-text">{c.tag}</span>
 				</p>
-				<span
-					class="hidden text-xs md:block"
-					style:color={c.state === 'running' ? 'var(--good-text)' : 'var(--muted)'}
-				>
-					{c.state}
-				</span>
+				<span class="hidden md:block"><StateBadge state={containerState(c.state)} /></span>
 				<span
 					class="col-span-2 row-start-3 flex min-w-0 flex-wrap items-center gap-1.5 text-xs md:col-span-1 md:row-start-auto"
 				>
@@ -204,11 +201,13 @@
 					{:else if stale}
 						<span class="text-muted">was up to date</span>
 					{:else}
-						<Check class="size-3.5 shrink-0" style="color: var(--good-text)" />
+						<Check class="size-3.5 shrink-0 text-faint" />
 						<span class="text-muted">up to date</span>
 					{/if}
 					{#if c.state !== 'running'}
-						<span class="ml-auto text-faint md:hidden">{c.state}</span>
+						<span class="ml-auto md:hidden">
+							<StateBadge state={containerState(c.state)} quiet />
+						</span>
 					{/if}
 				</span>
 				{#if canAct}

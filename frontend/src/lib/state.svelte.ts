@@ -9,6 +9,7 @@ import {
 	type Me,
 	type Series
 } from './api';
+import { attentionOf } from './attention';
 
 /** The app's live data: devices every 5 s, the last day's buckets and changes every 30 s. */
 class Store {
@@ -34,6 +35,8 @@ class Store {
 					: null
 	);
 	byId = $derived(new Map((this.devices ?? []).map((d) => [d.id, d])));
+	/** What needs attention, and every count from it (attention.ts): read it, don't recount. */
+	attention = $derived(attentionOf(this.devices ?? [], this.alarms));
 
 	#timers: ReturnType<typeof setInterval>[] = [];
 	#users = 0;

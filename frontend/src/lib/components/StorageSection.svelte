@@ -1,4 +1,7 @@
 <script lang="ts">
+	import StateBadge from './ui/StateBadge.svelte';
+	import StateDot from './ui/StateDot.svelte';
+	import { diskState, raidState } from '#lib/states.js';
 	import type { HostReport } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import DiskActivity from './DiskActivity.svelte';
@@ -24,7 +27,7 @@
 </script>
 
 {#if report.filesystems?.length || report.raid?.length || disks.length || hot.length || report.activity?.length}
-	<section class="mt-8">
+	<section class="mt-8 scroll-mt-6" id="storage">
 		<h2 class="text-sm font-semibold">Storage and hardware</h2>
 		{#if report.filesystems?.length}
 			<div class="card mt-3 p-4">
@@ -47,14 +50,13 @@
 								{p.toFixed(0)}% · {bytes(fs.available)} free
 								{#if forecast[fs.mount] != null}
 									{@const days = forecast[fs.mount]}
-									<span
-										style:color={days < (store.alarms?.limits?.disk_days ?? 14)
-											? 'var(--warning-text)'
-											: ''}
-										title="At the rate it filled over the last days"
-									>
+									<span title="At the rate it filled over the last days">
 										· full {days < 1 ? 'within a day' : `in ~${Math.round(days)} d`}
-									</span>
+									</span>{#if days < (store.alarms?.limits?.disk_days ?? 14)}<span
+											class="ml-1.5 inline-block align-middle"
+										>
+											<StateDot tone="warning" label="Full soon" size="size-1.5" />
+										</span>{/if}
 								{/if}
 							</span>
 						</li>
@@ -73,9 +75,8 @@
 							<li class="flex flex-wrap items-baseline gap-x-2">
 								<span class="font-mono text-xs">{md.name}</span>
 								<span class="text-muted">{md.level} of {md.devices.join(', ')}</span>
-								<span style:color={bad ? 'var(--critical-text)' : 'var(--good-text)'}>
-									{bad ? `degraded [${md.status}]` : `healthy [${md.status}]`}
-								</span>
+								<StateBadge state={raidState(bad)} quiet />
+								<span class="font-mono text-xs text-faint">[{md.status}]</span>
 								{#if md.progress}<span class="text-xs text-muted">
 										{md.progress.what}
 										{md.progress.percent}%
@@ -95,12 +96,8 @@
 									<span class="text-faint">asleep (not woken to read it)</span>
 								{:else if d.error}
 									<span class="text-faint">{d.error}</span>
-								{:else if d.passed === false}
-									<span style:color="var(--critical-text)">fails its health check</span>
-								{:else if wear > 0}
-									<span style:color="var(--warning-text)">wear: {wear} bad sectors/errors</span>
-								{:else if d.passed}
-									<span style:color="var(--good-text)">healthy</span>
+								{:else if d.passed != null || wear > 0}
+									<StateBadge state={diskState(d.passed, wear)} quiet />
 								{:else}
 									<span class="text-faint">health unknown</span>
 								{/if}
@@ -126,12 +123,12 @@
 						{#each hot as t, i (i)}
 							<li class="flex justify-between gap-3">
 								<span class="truncate text-muted">{t.sensor}</span>
-								<span
-									class="tabular"
-									style:color={t.limit != null && t.celsius >= t.limit
-										? 'var(--warning-text)'
-										: undefined}
-								>
+								<span class="tabular inline-flex items-center gap-1.5">
+									{#if t.limit != null && t.celsius >= t.limit}<StateDot
+											tone="warning"
+											label="At its limit"
+											size="size-1.5"
+										/>{/if}
 									{t.celsius.toFixed(0)} °C{t.limit != null ? ` / ${t.limit.toFixed(0)}` : ''}
 								</span>
 							</li>

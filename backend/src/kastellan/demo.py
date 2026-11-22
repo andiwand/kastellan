@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 import zlib
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
@@ -817,6 +818,15 @@ def vitals(id: str, t: float) -> Vitals:
     mem = (0.38 if router else 0.52) + 0.06 * day + rnd.uniform(-0.01, 0.01) + seed % 5 / 100
     disk_total = (64 if router else 2000) * 1024 * 1024 * (1 if router else 1024)
     disk = (0.31 if router else 0.58) + seed % 9 / 100 + (t % (30 * 86400)) / (30 * 86400) * 0.02
+    mount: str | None = "/"
+    if fullest := _fullest(id):
+        # A host with a collector report: its fullest filesystem, as vitals.from_host takes it,
+        # filling at the rate its forecast says (so the tile and the disk alarm agree).
+        used, total, mount = fullest
+        days = FORECASTS.get(id, {}).get(mount or "")
+        rate = (total - used) / (days * 86400) if days else 0.0
+        disk_total = total
+        disk = max(0.0, used - rate * max(0.0, time.time() - t)) / total
     return Vitals(
         cpu=round(cpu, 1),
         cores=2 if router else 8,
@@ -824,9 +834,19 @@ def vitals(id: str, t: float) -> Vitals:
         memory_total=mem_total,
         storage_used=None if id in FRITZ else int(disk * disk_total),
         storage_total=None if id in FRITZ else disk_total,
-        storage_mount=None if id in FRITZ else "/",
+        storage_mount=None if id in FRITZ else mount,
         temperature=round((52 if router else 44) + 5 * day + rnd.uniform(-1, 1), 1),
     )
+
+
+def _fullest(id: str) -> tuple[int, int, str | None] | None:
+    """The fullest filesystem in a made-up host's report: used and total bytes, and its mount."""
+    best = None
+    for fs in (HOST.get(id) or {}).get("filesystems") or []:
+        used, free = int(fs["used"]), int(fs["available"])
+        if best is None or used / (used + free) > best[0] / best[1]:
+            best = (used, used + free, fs.get("mount"))
+    return best
 
 
 def disks(id: str, t: float):

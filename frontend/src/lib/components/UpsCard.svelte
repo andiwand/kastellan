@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { api, type Device } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { ago, duration } from '#lib/format.js';
-	import { statusColor, statusOf, upsLabel, upsStatus } from '#lib/status.js';
+	import { ago, duration, stamp } from '#lib/format.js';
+	import { statusOf, upsLabel, upsStatus } from '#lib/status.js';
+	import { statusTone, toneColor } from '#lib/states.js';
+	import StateBadge from './ui/StateBadge.svelte';
 	import StatusDot from './StatusDot.svelte';
 
 	/** A UPS's page: how it is (as its host reads it), and the devices it powers, which an admin
@@ -11,7 +13,6 @@
 
 	const u = $derived(device.ups);
 	const now = $derived(u?.state ?? '');
-	const tone = $derived(statusColor[upsStatus[now] ?? 'waiting']);
 	const via = $derived(
 		(store.devices ?? []).find((d) => d.reads_ups?.some((r) => r.device === device.id))
 	);
@@ -46,17 +47,21 @@
 			busy = false;
 		}
 	}
+	// A full battery on mains is calm (as healthy cells in uptime strips); trouble takes its tone.
+	const barFill = $derived.by(() => {
+		const t = statusTone[upsStatus[now] ?? 'waiting'];
+		return t === 'good' ? 'var(--good-soft)' : toneColor[t].fill;
+	});
 	const others = $derived((store.devices ?? []).filter((d) => d.id !== device.id));
 	const row = 'flex justify-between gap-4 py-1.5';
 </script>
 
 <div class="card mt-6 p-5">
 	<div class="flex flex-wrap items-baseline justify-between gap-2">
-		<p class="flex items-center gap-2 text-sm font-semibold" style:color={tone.text}>
-			<span class="size-2 rounded-full" style:background={tone.fill}></span>
-			{upsLabel[now] ?? now}
+		<p class="flex items-center gap-2">
+			<StateBadge word={upsLabel[now] ?? now} tone={statusTone[upsStatus[now] ?? 'waiting']} />
 			{#if u?.flags.includes('replace_battery') && now !== 'replace_battery'}
-				<span class="text-xs font-normal" style:color="var(--warning-text)">· replace battery</span>
+				<StateBadge word={upsLabel.replace_battery} tone="warning" />
 			{/if}
 		</p>
 		<p class="text-xs text-muted">
@@ -74,7 +79,7 @@
 					<div
 						class="h-full rounded-full"
 						style:width="{u.charge}%"
-						style:background={tone.fill}
+						style:background={barFill}
 					></div>
 				</div>
 			</div>
@@ -103,7 +108,9 @@
 				{#if u.last_transfer}<p class={row}>
 						<span class="text-muted">Last on battery</span>
 						<span class="text-right">
-							{u.on_battery_since ?? ''}<span class="block text-xs text-muted">
+							{u.on_battery_since ? stamp(u.on_battery_since) : ''}<span
+								class="block text-xs text-muted"
+							>
 								{u.last_transfer}
 							</span>
 						</span>

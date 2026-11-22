@@ -465,10 +465,15 @@ def router(hub: Hub) -> APIRouter:
                             }
                         )
         for id, nets in fritz_networks().items():
+            # The Wi-Fi list has no names; the box's host list has them, by MAC address.
+            st = hub.monitor.status.get(id)
+            hosts = (st.fritz or {}).get("clients") or [] if st else []
+            names = {str(h.get("mac") or "").lower(): h.get("name") for h in hosts if h.get("mac")}
             for n in nets:
                 for c in n.get("associated") or []:
                     out.append(
                         {
+                            "name": names.get(str(c.get("mac") or "").lower()) or None,
                             **c,
                             "device": id,
                             "radio": f"wlan{n.get('index')}",

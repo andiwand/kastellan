@@ -1,5 +1,8 @@
 <script lang="ts">
-	import Tabs from '#lib/components/Tabs.svelte';
+	import RangePicker from '#lib/components/ui/RangePicker.svelte';
+	import StateBadge from '#lib/components/ui/StateBadge.svelte';
+	import StateDot from '#lib/components/ui/StateDot.svelte';
+	import { internetState } from '#lib/states.js';
 	import { more, type Bucket, type InternetView } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
 	import { bitrate, bytes, dayClock, duration, kbitrate } from '#lib/format.js';
@@ -54,12 +57,8 @@
 	const name = (id: string) => store.devices?.find((d) => d.id === id)?.name ?? id;
 	const pct = (v: number | null | undefined, digits = 2) =>
 		v == null ? '–' : `${(v * 100).toFixed(digits)} %`;
-	const STATE: Record<string, [string, string]> = {
-		up: ['var(--good-text)', 'Online'],
-		degraded: ['var(--warning-text)', 'Slow or losing packets'],
-		down: ['var(--critical-text)', 'Down'],
-		unknown: ['var(--muted)', 'Unknown']
-	};
+	const lineState = (s: string | undefined) =>
+		internetState[(s ?? 'unknown') as keyof typeof internetState] ?? internetState.unknown;
 	const step = $derived(view && view.series.length > 1 ? view.series[1].t - view.series[0].t : 60);
 	const start = $derived(
 		view?.series.length ? new Date(view.series[0].t * 1000).toISOString() : ''
@@ -96,13 +95,7 @@
 				</a>{:else}the hub's gateway{/if}.
 		</p>
 	</div>
-	<Tabs
-		small
-		label="Range"
-		tabs={RANGES.map((r) => ({ id: r.hours, label: r.label }))}
-		current={hours}
-		onselect={(h) => (hours = h)}
-	/>
+	<RangePicker value={hours} options={RANGES.map((r) => r.hours)} onchange={(h) => (hours = h)} />
 </div>
 
 {#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
@@ -117,9 +110,7 @@
 	<!-- Now -->
 	<section class="card mt-6 p-5">
 		<div class="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-			<span class="text-lg font-semibold" style:color={STATE[now?.state ?? 'unknown'][0]}>
-				{STATE[now?.state ?? 'unknown'][1]}
-			</span>
+			<StateBadge state={lineState(now?.state)} pulse={now?.state === 'down'} />
 			{#if now?.state === 'down' && now.why}<span class="text-sm">{now.why}</span>{/if}
 			{#if view.outage}
 				<span class="text-sm text-muted">for {duration(view.outage.seconds)}</span>
@@ -274,7 +265,7 @@
 							class="flex-1 rounded-sm"
 							style:height="{Math.max(8, a * 100)}%"
 							style:background={a >= 0.999
-								? 'var(--good)'
+								? 'var(--good-soft)'
 								: a >= 0.99
 									? 'var(--warning)'
 									: 'var(--critical)'}
@@ -372,15 +363,16 @@
 							t.down < view.speedtest.booked_down * 5e5}
 						<tr class="border-t border-line">
 							<td class="py-1">{dayClock(new Date(t.t * 1000))}</td>
-							<td style:color={low ? 'var(--warning-text)' : undefined}>{bitrate(t.down)}</td>
+							<td>
+								{bitrate(t.down)}{#if low}<span class="ml-1.5 inline-block align-middle">
+										<StateDot tone="warning" label="Below the booked speed" size="size-1.5" />
+									</span>{/if}
+							</td>
 							<td>{bitrate(t.up)}</td>
 							<td>
 								{t.ms_idle ?? '–'} → {t.ms_loaded ?? '–'} ms
-								{#if t.ms_idle && t.ms_loaded && t.ms_loaded > t.ms_idle * 4}<span
-										class="text-xs"
-										style:color="var(--warning-text)"
-									>
-										bufferbloat
+								{#if t.ms_idle && t.ms_loaded && t.ms_loaded > t.ms_idle * 4}<span class="ml-1.5">
+										<StateBadge word="Bufferbloat" tone="warning" quiet />
 									</span>{/if}
 							</td>
 						</tr>
