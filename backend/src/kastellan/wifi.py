@@ -466,16 +466,23 @@ def lineup(
                     "kind": "fritzbox",
                     "guest": bool(n.get("guest")),
                     "clients": n.get("clients"),
+                    "wps": bool(n.get("wps")),
                 }
             )
     out = []
     for net in networks.values():
         on = net["on"]
+        for e in on:
+            e["security"] = encryption_word(e.get("encryption"))
         keys = {e["key"] for e in on if e.get("key")}
         net |= {
             "devices": sorted({e["device"] for e in on}),
             "bands": sorted({e["band"] for e in on if e.get("band")}),
-            "same_key": len(keys) == 1 if all(e.get("key") for e in on) else None,
+            # Two different fingerprints differ for sure; one alone says nothing about the rest.
+            "same_key": False
+            if len(keys) > 1
+            else (len(keys) == 1 if all(e.get("key") for e in on) else None),
+            "security": sorted({e["security"] for e in on}),
             "same_encryption": len({encryption_word(e.get("encryption")) for e in on}) <= 1,
             "off": sorted({e["device"] for e in on if e.get("disabled")}),
             "guest": any(e.get("guest") for e in on),
@@ -542,3 +549,303 @@ def country_note(countries: list[str], radios: list[dict[str, Any]]) -> str | No
     if len(countries) > 1:
         return f"the radios have different countries ({', '.join(countries)}): set one for all"
     return None
+
+
+# --- What is off (the Wi-Fi page's Findings) ---------------------------------------------------
+
+
+def merge(parts: list[dict[str, Any]]) -> dict[str, Any]:
+    """sync.survey answers of single access points as one: networks and meshes by name, radios
+    and errors by device."""
+    networks: dict[str, dict[str, Any]] = {}
+    mesh: dict[str, list[dict[str, Any]]] = {}
+    radios: dict[str, list[dict[str, Any]]] = {}
+    errors: dict[str, str] = {}
+    for part in parts:
+        errors |= part.get("errors") or {}
+        radios |= part.get("radios") or {}
+        for n in part.get("networks") or []:
+            networks.setdefault(n["ssid"], {"ssid": n["ssid"], "on": []})["on"].extend(n["on"])
+        for m in part.get("mesh") or []:
+            mesh.setdefault(m.get("mesh_id") or "", []).extend(m.get("on") or [])
+    for n in networks.values():
+        n["devices"] = sorted({e["device"] for e in n["on"]})
+    return {
+        "errors": errors,
+        "networks": list(networks.values()),
+        "radios": radios,
+        "mesh": [
+            {"mesh_id": k, "on": on, "devices": sorted({e["device"] for e in on})} for k, on in mesh.items()
+        ],
+    }
+
+
+def of_members(survey: dict[str, Any], members: list[str]) -> dict[str, Any]:
+    """The part of a merged survey on `members` (a group's), as roaming.check reads it."""
+    keep = set(members)
+
+    def only(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for n in items:
+            on = [e for e in n.get("on") or [] if e["device"] in keep]
+            if on:
+                out.append(n | {"on": on, "devices": sorted({e["device"] for e in on})})
+        return out
+
+    return {
+        "networks": only(survey.get("networks") or []),
+        "mesh": only(survey.get("mesh") or []),
+        "radios": {k: v for k, v in (survey.get("radios") or {}).items() if k in keep},
+    }
+
+
+BAND_WORD = {"2g": "2.4 GHz", "5g": "5 GHz", "6g": "6 GHz"}
+# roaming.check's channel findings: the Wi-Fi page has its own, over every radio.
+ROAMING_CHANNEL_KINDS = {"channel", "auto", "odd"}
+WEAK_LINK = -70  # dBm: a FRITZ!Mesh repeater's Wi-Fi link below this passes on little
+SECURITY_OLD = {"WPA/WPA2"}
+
+
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def findings(
+    *,
+    networks: list[dict[str, Any]],
+    radios: list[dict[str, Any]],
+    clients: list[dict[str, Any]],
+    errors: dict[str, str],
+    country: str | None,
+    meshes: list[dict[str, Any]],
+    fritz_mesh: dict[str, dict[str, Any]],
+    roaming: dict[str, dict[str, Any]],
+    scanned: bool,
+    names: dict[str, str],
+) -> list[dict[str, Any]]:
+    """What is off about the Wi-Fi, as sentences with what fixes it: each has a `key`, `level`
+    (warning, info), `text`, `fix`, the `devices` it is about, an `action` the page offers
+    ({"kind": plan | network | wps-off | setup | clients | scan | roaming | radios, ...}) and the
+    alarm keys that say the same (`alarms`: the page shows the alarm instead)."""
+    out: list[dict[str, Any]] = []
+    name = lambda id: names.get(id, id)  # noqa: E731
+
+    def say(key: str, level: str, text: str, fix: str, devices: list[str], action=None, alarms=None) -> None:
+        out.append(
+            {
+                "key": key,
+                "level": level,
+                "text": text,
+                "fix": fix,
+                "devices": sorted(set(devices)),
+                "action": action,
+                "alarms": alarms or [],
+            }
+        )
+
+    for id, why in sorted(errors.items()):
+        say(
+            f"error:{id}",
+            "warning",
+            f"{name(id)}: its Wi-Fi couldn't be read",
+            why,
+            [id],
+            {"kind": "setup", "device": id},
+        )
+
+    # Networks: one password, one encryption, not open.
+    for n in networks:
+        on = n.get("on") or []
+        ssid, devices = n["ssid"], n.get("devices") or []
+        action = {"kind": "network", "ssid": ssid}
+        if n.get("same_key") is False:
+            say(
+                f"key:{ssid}",
+                "warning",
+                f"{ssid}: the passwords differ between access points",
+                "Clients ask for the password again when they move: set one password for all",
+                devices,
+                action,
+            )
+        if not n.get("same_encryption", True):
+            by = {}
+            for e in on:
+                by.setdefault(e.get("security") or encryption_word(e.get("encryption")), set()).add(
+                    name(e["device"])
+                )
+            how = "; ".join(f"{w} on {', '.join(sorted(d))}" for w, d in sorted(by.items()))
+            say(
+                f"encryption:{ssid}",
+                "warning",
+                f"{ssid}: the encryption differs ({how})",
+                "Clients may not move between them: one encryption for all",
+                devices,
+                action,
+            )
+        words = {
+            e.get("security") or encryption_word(e.get("encryption")) for e in on if not e.get("disabled")
+        }
+        if "open" in words:
+            say(
+                f"open:{ssid}",
+                "info" if n.get("guest") else "warning",
+                f"{ssid} is open: no password",
+                "Anyone nearby can join and listen in: WPA2/WPA3 with a password",
+                devices,
+                action,
+            )
+        elif words & SECURITY_OLD:
+            say(
+                f"wpa:{ssid}",
+                "info",
+                f"{ssid} still lets devices in with WPA",
+                "WPA is broken; WPA2/WPA3 keeps old devices working",
+                devices,
+                action,
+            )
+    wps = sorted(
+        {e["device"] for n in networks for e in n.get("on") or [] if e.get("wps") and not e.get("disabled")}
+    )
+    for id in wps:
+        say(
+            f"wps:{id}",
+            "warning",
+            f"{name(id)}: WPS is on",
+            "A button or a PIN lets devices in without the password",
+            [id],
+            {"kind": "wps-off", "device": id},
+        )
+    if country:
+        say(
+            "country",
+            "warning",
+            f"Country: {country}",
+            "It decides which channels and how much power are allowed",
+            [r["device"] for r in radios if r.get("kind") == "openwrt"],
+            {"kind": "radios"},
+        )
+
+    # Channels: our radios apart (a mesh needs one channel: its radios don't count).
+    meshed = {
+        frozenset((a["device"], a.get("radio")) for a in m.get("on") or [] if a.get("radio")) for m in meshes
+    }
+
+    def same_mesh(a: dict[str, Any], b: dict[str, Any]) -> bool:
+        return any({(a["device"], a["radio"]), (b["device"], b["radio"])} <= m for m in meshed)
+
+    plan = {"kind": "plan"}
+    for band in ("2g", "5g", "6g"):
+        mine = [r for r in radios if r.get("band") == band and r.get("channel") and not r.get("off")]
+        groups: list[list[dict[str, Any]]] = []
+        for r in mine:
+            near = [
+                g
+                for g in groups
+                if any(
+                    not same_mesh(r, o)
+                    and overlap(
+                        span(r["channel"], r.get("width") or 20, band),
+                        span(o["channel"], o.get("width") or 20, band),
+                    )
+                    for o in g
+                )
+            ]
+            joined = [r] + [x for g in near for x in g]
+            groups = [g for g in groups if g not in near] + [joined]
+        for g in groups:
+            if len({r["device"] for r in g}) < 2:
+                continue
+            g.sort(key=lambda r: name(r["device"]))
+            if len({r["channel"] for r in g}) == 1:
+                who = _and([name(r["device"]) for r in g])
+                text = f"{BAND_WORD[band]}: {who} share channel {g[0]['channel']}"
+            else:
+                who = _and([f"{name(r['device'])} ({r['channel']})" for r in g])
+                text = f"{BAND_WORD[band]}: {who} overlap"
+            say(
+                f"channel:{band}:{'+'.join(sorted(f'{r["device"]}/{r["radio"]}' for r in g))}",
+                "warning",
+                text,
+                "Neighbours on one channel take turns: the channel plan spreads them",
+                [r["device"] for r in g],
+                plan,
+            )
+        if band == "2g":
+            for r in mine:
+                if r["channel"] not in CH24:
+                    say(
+                        f"grid:{r['device']}/{r['radio']}",
+                        "info",
+                        f"2.4 GHz: {name(r['device'])} is on channel {r['channel']}",
+                        "Channels other than 1, 6 and 11 overlap two of them",
+                        [r["device"]],
+                        plan,
+                    )
+                if (r.get("width") or 20) > 20:
+                    say(
+                        f"wide:{r['device']}/{r['radio']}",
+                        "info",
+                        f"2.4 GHz: {name(r['device'])} uses {r['width']} MHz",
+                        "Wider than 20 MHz covers most of the band and disturbs every neighbour",
+                        [r["device"]],
+                        plan,
+                    )
+
+    # FRITZ!Mesh: a repeater far away passes on little.
+    for id, mesh in sorted(fritz_mesh.items()):
+        members = {m["uid"]: m.get("name") or m.get("model") or m["uid"] for m in mesh.get("members") or []}
+        for link in mesh.get("links") or []:
+            signal = link.get("signal")
+            if link.get("type") == "WLAN" and isinstance(signal, int | float) and signal < WEAK_LINK:
+                a, b = members.get(link["a"], link["a"]), members.get(link["b"], link["b"])
+                say(
+                    f"mesh:{id}:{link['a']}:{link['b']}",
+                    "warning",
+                    f"{b}: weak Wi-Fi link to {a} ({signal:.0f} dBm)",
+                    "A repeater this far out passes on little: closer, or connected by cable",
+                    [id],
+                )
+
+    # Roaming in groups (roaming.check), without its channel findings.
+    for gid, check in sorted(roaming.items()):
+        for f in check.get("findings") or []:
+            kind = f.get("kind") or ""
+            if kind in ROAMING_CHANNEL_KINDS:
+                continue
+            alarms = (
+                [f"roaming:{gid}:{d}:{kind}" for d in f.get("devices") or []]
+                if kind in ("usteer", "view", "memory")
+                else []
+            )
+            say(
+                f"roaming:{gid}:{kind}:{'+'.join(f.get('devices') or [])}",
+                f.get("level") or "info",
+                f["text"],
+                f.get("fix") or "",
+                f.get("devices") or [],
+                {"kind": "roaming", "group": gid} if kind in ("ft", "domain", "kv") else None,
+                alarms,
+            )
+
+    troubled = [c for c in clients if c.get("issues")]
+    if troubled:
+        who = [c.get("name") or c.get("mac") or "?" for c in troubled]
+        say(
+            "clients",
+            "warning",
+            f"{len(troubled)} client{'s have' if len(troubled) != 1 else ' has'} a weak or slow link",
+            f"{', '.join(who[:3])}{' and more' if len(who) > 3 else ''}: an access point nearer helps",
+            [c["device"] for c in troubled],
+            {"kind": "clients"},
+        )
+    if radios and not scanned:
+        say(
+            "scan",
+            "info",
+            "No scan in the last week",
+            "The channel chart and the channel plan need to know what the radios hear",
+            [],
+            {"kind": "scan"},
+        )
+    out.sort(key=lambda f: f["level"] != "warning")
+    return out

@@ -539,3 +539,139 @@ def test_the_demo_lists_every_wifi_client_its_radios_count(demo_client) -> None:
     fritz = [c for c in body["clients"] if c["kind"] == "fritzbox"]
     assert counted and len(fritz) == counted
     assert all(c["name"] for c in fritz)
+
+
+def test_wifi_findings_say_what_is_off_and_what_fixes_it() -> None:
+    def radio(device, radio, band, channel, width=20, kind="openwrt"):
+        return {
+            "device": device,
+            "radio": radio,
+            "band": band,
+            "channel": channel,
+            "width": width,
+            "kind": kind,
+        }
+
+    networks = wifi.lineup(
+        {
+            "networks": [
+                {
+                    "ssid": "Castle",
+                    "on": [
+                        {
+                            "device": "a",
+                            "radio": "radio0",
+                            "band": "2g",
+                            "encryption": "psk-mixed",
+                            "key": "k1",
+                        },
+                        {
+                            "device": "b",
+                            "radio": "radio0",
+                            "band": "2g",
+                            "encryption": "sae-mixed",
+                            "key": "k2",
+                        },
+                    ],
+                }
+            ]
+        },
+        {
+            "gw": [
+                {"index": 1, "ssid": "Cafe", "band": "2g", "encryption": "None", "enabled": True, "wps": True}
+            ]
+        },
+        {},
+    )
+    radios = [
+        radio("a", "radio0", "2g", 6),
+        radio("b", "radio0", "2g", 6),
+        radio("gw", "wlan1", "2g", 3, 40, "fritzbox"),
+        radio("a", "radio1", "5g", 36, 80),
+        radio("b", "radio1", "5g", 36, 80),  # meshed with a's: one channel is right
+    ]
+    meshes = [{"mesh_id": "m", "on": [{"device": d, "radio": "radio1"} for d in ("a", "b")]}]
+    found = wifi.findings(
+        networks=networks,
+        radios=radios,
+        clients=[
+            {"device": "a", "name": "phone", "issues": ["weak signal (-80 dBm)"]},
+            {"device": "b", "issues": []},
+        ],
+        errors={"c": "not allowed"},
+        country=None,
+        meshes=meshes,
+        fritz_mesh={
+            "gw": {
+                "members": [{"uid": "n1", "name": "fritz.box"}, {"uid": "n2", "name": "Repeater hall"}],
+                "links": [{"a": "n1", "b": "n2", "type": "WLAN", "signal": -78}],
+            }
+        },
+        roaming={
+            "aps": {
+                "findings": [
+                    {
+                        "kind": "channel",
+                        "level": "warning",
+                        "text": "2g: a, b share channel 6",
+                        "devices": ["a", "b"],
+                    },
+                    {"kind": "view", "level": "warning", "text": "A doesn't see B", "devices": ["a"]},
+                ]
+            }
+        },
+        scanned=False,
+        names={"a": "AP A", "b": "AP B", "gw": "Box"},
+    )
+    by = {f["key"]: f for f in found}
+    assert by["key:Castle"]["action"] == {"kind": "network", "ssid": "Castle"}
+    assert "WPA2/WPA3 on AP B" in by["encryption:Castle"]["text"] and "wpa:Castle" in by
+    assert by["open:Cafe"]["level"] == "warning" and by["wps:gw"]["action"] == {
+        "kind": "wps-off",
+        "device": "gw",
+    }
+    (two4,) = [f for f in found if f["key"].startswith("channel:2g")]
+    assert two4["text"] == "2.4 GHz: AP A (6), AP B (6) and Box (3) overlap"
+    assert two4["devices"] == ["a", "b", "gw"] and two4["action"] == {"kind": "plan"}
+    assert not [f for f in found if f["key"].startswith("channel:5g")]
+    assert "grid:gw/wlan1" in by and "wide:gw/wlan1" in by
+    assert by["mesh:gw:n1:n2"]["text"] == "Repeater hall: weak Wi-Fi link to fritz.box (-78 dBm)"
+    assert by["error:c"]["action"] == {"kind": "setup", "device": "c"}
+    assert by["clients"]["text"] == "1 client has a weak or slow link"
+    assert by["scan"]["level"] == "info"
+    # roaming's own channel finding gives way to the page's; its view finding names its alarm
+    assert by["roaming:aps:view:a"]["alarms"] == ["roaming:aps:a:view"]
+    assert not any(k.startswith("roaming:aps:channel") for k in by)
+    assert [f["level"] for f in found] == sorted((f["level"] for f in found), key=lambda x: x != "warning")
+
+
+def test_surveys_of_single_access_points_merge_into_one() -> None:
+    def part(d, key):
+        entry = {"device": d, "section": "s", "radio": "radio0", "band": "2g", "key": key}
+        return {
+            "errors": {},
+            "networks": [{"ssid": "Castle", "on": [entry]}],
+            "radios": {d: [{"section": "radio0", "band": "2g", "channel": "6"}]},
+            "mesh": [{"mesh_id": "m", "on": [entry | {"radio": "radio1"}]}],
+        }
+
+    merged = wifi.merge([part("a", "k"), part("b", "k"), {"errors": {"c": "down"}, "networks": []}])
+    (castle,) = merged["networks"]
+    assert castle["devices"] == ["a", "b"] and merged["errors"] == {"c": "down"}
+    assert sorted(merged["radios"]) == ["a", "b"] and merged["mesh"][0]["devices"] == ["a", "b"]
+    only = wifi.of_members(merged, ["a"])
+    assert only["networks"][0]["devices"] == ["a"] and list(only["radios"]) == ["a"]
+    assert only["mesh"][0]["devices"] == ["a"]
+
+
+def test_the_demo_wifi_page_finds_what_its_groups_page_says(demo_client) -> None:
+    body = demo_client.get("/api/wifi").json()
+    keys = {f["key"] for f in body["findings"]}
+    assert {"key:Castle", "wps:fritzbox", "clients"} <= keys
+    assert any(k.startswith("channel:2g") for k in keys) and any(k.startswith("roaming:aps:ft") for k in keys)
+    group = demo_client.get("/api/groups/aps").json()
+    assert next(n for n in group["networks"] if n["ssid"] == "Castle")["same_key"] is False
+    assert all(r["state"] == "on" for r in body["radios"])
+    assert {r["mesh"] for r in body["radios"] if r["kind"] == "openwrt" and r["band"] == "5g"} == {
+        "castle-mesh"
+    }

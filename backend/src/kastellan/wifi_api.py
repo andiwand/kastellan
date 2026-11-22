@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import demo_more, setup_run, wifi
+from . import demo_more, roaming, setup_run, wifi
 from .auth_api import client_address, require_admin, require_signin
 from .fritzbox import client as fb
 from .openwrt import client as ow
@@ -164,12 +164,6 @@ def router(hub: Hub) -> APIRouter:
                 return {"errors": {id: "didn't answer in time"}, "networks": []}
 
         parts = await asyncio.gather(*(one(i, u) for i, u in members().items()))
-        networks: dict[str, dict[str, Any]] = {}
-        errors: dict[str, str] = {}
-        for part in parts:
-            errors |= part.get("errors") or {}
-            for n in part.get("networks") or []:
-                networks.setdefault(n["ssid"], {"ssid": n["ssid"], "on": []})["on"].extend(n["on"])
 
         async def fingerprint(id: str, index: int) -> tuple[tuple[str, int], str | None]:
             try:
@@ -181,7 +175,7 @@ def router(hub: Hub) -> APIRouter:
         found = await asyncio.gather(
             *(fingerprint(id, n["index"]) for id, nets in fritz_networks().items() for n in nets)
         )
-        return {"errors": errors, "networks": list(networks.values())}, dict(found)
+        return wifi.merge(parts), dict(found)
 
     async def live(auto: bool = False) -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
         # A config reload or a locked ring must not leave old credentials' readings in use.
@@ -234,6 +228,20 @@ def router(hub: Hub) -> APIRouter:
             fr = next((n for n in fritz.get(r.device, []) if f"wlan{n['index']}" == r.radio), {})
             scan = newest.get(r.key) or {}
             busy = r.busy.get(r.channel or 0)
+            if fr:
+                up = fr.get("status") in (None, "Up")
+                state = "off" if not fr.get("enabled") else "on" if up else "down"
+            else:
+                state = "off" if st.get("disabled") else "down" if st.get("up") is False else "on"
+            mesh = next(
+                (
+                    m.get("mesh_id") or ""
+                    for m in survey.get("mesh") or []
+                    for e in m.get("on") or []
+                    if e["device"] == r.device and e.get("radio") == r.radio
+                ),
+                None,
+            )
             radio_rows.append(
                 {
                     "device": r.device,
@@ -250,16 +258,36 @@ def router(hub: Hub) -> APIRouter:
                     "scanned": scan.get("t"),
                     "allowed": r.allowed,
                     "country": st.get("country"),
+                    "state": state,
+                    "off": state == "off",
+                    "mesh": mesh,
                 }
             )
         countries = sorted({r["country"] for r in radio_rows if r.get("country")})
+        networks = wifi.lineup(survey, fritz, keys)
+        clients = clients_view()
+        country_note = wifi.country_note(countries, [r for r in radio_rows if r["kind"] == "openwrt"])
+        errors = survey.get("errors") or {}
+        found = wifi.findings(
+            networks=networks,
+            radios=radio_rows,
+            clients=clients,
+            errors=errors,
+            country=country_note,
+            meshes=survey.get("mesh") or [],
+            fritz_mesh=fritz_meshes(),
+            roaming=roaming_checks(survey),
+            scanned=bool(all_scans),
+            names={id: hub.config.label(id) for id in hub.config.devices},
+        )
         return {
-            "networks": wifi.lineup(survey, fritz, keys),
-            "clients": clients_view(),
+            "networks": networks,
+            "clients": clients,
             "countries": countries,
-            "country_note": wifi.country_note(countries, [r for r in radio_rows if r["kind"] == "openwrt"]),
+            "country_note": country_note,
             "radios": radio_rows,
-            "errors": survey.get("errors") or {},
+            "findings": found,
+            "errors": errors,
             "scans": {k: _scan_view(v) for k, v in newest.items()},
             "plans": scans.plans()[-5:],
             "scanning": sorted(hub.wifi_scanning),
@@ -444,6 +472,25 @@ def router(hub: Hub) -> APIRouter:
         )
         result["scanned"] = bool(scans.all(time.time() - 7 * 86400))
         return result
+
+    def fritz_meshes() -> dict[str, dict[str, Any]]:
+        out = {}
+        for id in fritz_ids():
+            st = hub.monitor.status.get(id)
+            mesh = (st.fritz or {}).get("mesh") if st else None
+            if mesh and mesh.get("members"):
+                out[id] = mesh
+        return out
+
+    def roaming_checks(survey: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """roaming.check for each group of two or more OpenWrt access points (what the Groups
+        page says), from the survey at hand: nothing is asked of the devices again."""
+        out = {}
+        for gid, g in hub.config.groups.items():
+            ids = [id for id in g.devices if (d := hub.config.devices.get(id)) and d.openwrt]
+            if len(ids) >= 2:
+                out[gid] = roaming.check(hub, ids, wifi.of_members(survey, ids))
+        return out
 
     def clients_view() -> list[dict[str, Any]]:
         """Every Wi-Fi client with how its radio link is (wifi.diagnose): weak, slow, on 2.4 GHz

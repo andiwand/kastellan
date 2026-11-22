@@ -248,23 +248,6 @@ def _entry(device: str, section: str, band: str, key: str = "k1") -> dict[str, A
     }
 
 
-WIFI_SURVEY = {
-    "members": ["repeater-attic", "repeater-living"],
-    "errors": {},
-    "networks": [
-        {
-            "ssid": "Castle",
-            "on": [
-                _entry(d, f"default_radio{r}", b, "k1")
-                for d in ("repeater-attic", "repeater-living")
-                for r, b in ((0, "2g"), (1, "5g"))
-            ],
-        },
-        {"ssid": "Castle guests", "on": [_entry("repeater-living", "guest", "2g")]},
-    ],
-    "mesh": [],
-}
-
 # A group's survey (groups_api), as sync.survey gives it.
 GROUP = {
     "members": ["repeater-attic", "repeater-living"],
@@ -310,6 +293,16 @@ GROUP = {
     ],
 }
 
+
+# Every access point's Wi-Fi as the Wi-Fi page reads it (sync.survey per device, merged): the
+# group's, so both pages say the same (the passwords of Castle differ, no 802.11r yet).
+WIFI_SURVEY = {
+    "members": GROUP["members"],
+    "errors": {},
+    "networks": [{"ssid": n["ssid"], "on": n["on"], "devices": n["devices"]} for n in GROUP["networks"]],
+    "radios": GROUP["radios"],
+    "mesh": GROUP["mesh"],
+}
 
 NEIGHBOURS = [
     ("FRITZ!Box 6660 Cable", 1, 20, -67),

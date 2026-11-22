@@ -64,8 +64,11 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
     per member: usteer's state, who it sees, its memory."""
     findings: list[dict[str, Any]] = []
 
-    def say(level: str, text: str, fix: str = "", devices: list[str] | None = None) -> None:
-        findings.append({"level": level, "text": text, "fix": fix, "devices": devices or []})
+    def say(kind: str, level: str, text: str, fix: str = "", devices: list[str] | None = None) -> None:
+        findings.append({"kind": kind, "level": level, "text": text, "fix": fix, "devices": devices or []})
+
+    def names(ids: Any) -> str:
+        return ", ".join(hub.config.label(i) if i in hub.config.devices else i for i in ids)
 
     # Networks across members: 802.11r/k/v and one mobility domain.
     shared = [n for n in (survey or {}).get("networks") or [] if len(n.get("devices") or []) >= 2]
@@ -75,13 +78,15 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
         domains = {e.get("mobility_domain") for e in on if e.get("ft")}
         if no_ft:
             say(
+                "ft",
                 "warning",
-                f"{n['ssid']}: fast roaming (802.11r) is off on {', '.join(no_ft)}",
+                f"{n['ssid']}: fast roaming (802.11r) is off on {names(no_ft)}",
                 "Roaming assistance turns it on with one mobility domain for all",
                 no_ft,
             )
         elif len(domains) > 1:
             say(
+                "domain",
                 "warning",
                 f"{n['ssid']}: different mobility domains ({', '.join(sorted(str(d) for d in domains))})",
                 "One domain for the whole network: clients only fast-roam within one",
@@ -90,8 +95,9 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
         no_kv = sorted({e["device"] for e in on if not (e.get("k") and e.get("v"))})
         if no_kv and not no_ft:
             say(
+                "kv",
                 "info",
-                f"{n['ssid']}: neighbour reports and steering (802.11k/v) are off on {', '.join(no_kv)}",
+                f"{n['ssid']}: neighbour reports and steering (802.11k/v) are off on {names(no_kv)}",
                 "They help clients pick the better access point (needs wpad, not wpad-basic)",
                 no_kv,
             )
@@ -110,8 +116,9 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
         auto = sorted({id for id, _, ch in radios if ch in (None, "auto", "0")})
         if auto and len(radios) > 1:
             say(
+                "auto",
                 "info",
-                f"{band}: channel chosen automatically on {', '.join(auto)}",
+                f"{band}: channel chosen automatically on {names(auto)}",
                 "Fixed channels keep neighbours apart (Wi-Fi page: channel plan)",
                 auto,
             )
@@ -124,8 +131,9 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
         for ch, ids in seen.items():
             if len(set(ids)) > 1:
                 say(
+                    "channel",
                     "warning",
-                    f"{band}: {', '.join(sorted(set(ids)))} share channel {ch}",
+                    f"{band}: {names(sorted(set(ids)))} share channel {ch}",
                     "Neighbours on one channel take turns; the channel plan spreads them",
                     sorted(set(ids)),
                 )
@@ -133,8 +141,9 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
             odd = sorted({id for id, _, ch in fixed if ch not in ("1", "6", "11")})
             if odd:
                 say(
+                    "odd",
                     "info",
-                    f"2.4 GHz: {', '.join(odd)} on a channel other than 1, 6 or 11",
+                    f"2.4 GHz: {names(odd)} on a channel other than 1, 6 or 11",
                     "Others overlap two of those three",
                     odd,
                 )
@@ -162,23 +171,26 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
     without = sorted(id for id, s in state.items() if s["usteer"] in ("missing", "stopped"))
     if without and len(members) > 1:
         say(
+            "usteer",
             "warning" if any(s["usteer"] == "running" for s in state.values()) else "info",
-            f"usteer isn't running on {', '.join(without)}",
+            f"usteer isn't running on {names(without)}",
             "usteer lets the access points steer clients together (opkg/apk: usteer, luci-app-usteer)",
             without,
         )
     for id, s in state.items():
         if s["misses"] and s["usteer"] == "running":
             say(
+                "view",
                 "warning",
-                f"{id} doesn't see {', '.join(s['misses'])} (usteer)",
+                f"{names([id])} doesn't see {names(s['misses'])} (usteer)",
                 "They must be in one network segment with usteer running (UDP 16720)",
                 [id],
             )
         if isinstance(s["memory"], int) and s["memory"] < SMALL_MEMORY:
             say(
+                "memory",
                 "info",
-                f"{id} has {s['memory'] // 2**20} MB memory",
+                f"{names([id])} has {s['memory'] // 2**20} MB memory",
                 "Small devices can run out with usteer: install from the package file, lower its"
                 " OOM priority",
                 [id],
@@ -187,6 +199,7 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
     triggers = {s["config"].get("roam_trigger_snr") for s in state.values() if s["config"]}
     if len(triggers) > 1:
         say(
+            "trigger",
             "info",
             "usteer's roam trigger differs between members",
             "The same thresholds everywhere keep clients from bouncing",
