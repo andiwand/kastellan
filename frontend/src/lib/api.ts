@@ -73,6 +73,7 @@ export interface Device {
 	host_report?: HostReport | null;
 	host_forecast?: Record<string, number> | null; // days until full, per mount (disks.py)
 	vitals?: Vitals | null; // CPU, memory, storage, temperature now (vitals.py)
+	updates_skipped?: ('firmware' | 'reboot' | 'packages')[]; // said to be not needed (skipped.py)
 	/** libvirt's virtual machines on the host, from its collector (null: it can't tell). */
 	vms?: Vm[] | null;
 	runs_on?: RunsOn | null;
@@ -1689,6 +1690,11 @@ export const more = {
 		call<{ lines: LogLine[]; levels: string[]; marks?: LogMark[] }>('GET', `/logs${logQuery(f)}`),
 	logFacets: (hours = 24) => get<LogFacets>('/logs/facets', { hours }),
 	logSources: () => get<LogSources>('/logs/sources'),
+	deviceUpdateNotNeeded: (id: string, kind: 'firmware' | 'reboot' | 'packages') =>
+		call<{ skipped: string }>(
+			'POST',
+			`/devices/${encodeURIComponent(id)}/updates/${kind}/not-needed`
+		),
 	updateNotNeeded: (id: string, key: string) =>
 		call<{ skipped: string }>(
 			'POST',

@@ -108,6 +108,13 @@
 		asking = null;
 	}
 
+	// The same columns in the header and every row (each row is its own grid); the actions get a
+	// column of their own on wide screens, below the row on narrower ones.
+	const cols = $derived(
+		canAct
+			? 'md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)] lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)_18rem]'
+			: 'md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)]'
+	);
 	const order = (c: Container) => (c.update ? 0 : c.unchecked ? 1 : 2);
 	const sorted = $derived(
 		[...containers].sort((a, b) => order(a) - order(b) || a.name.localeCompare(b.name))
@@ -134,15 +141,15 @@
 {/if}
 <div class="card overflow-hidden" class:opacity-60={stale}>
 	<div
-		class="hidden grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted md:grid"
+		class="hidden gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted md:grid {cols}"
 	>
-		<span>Container</span><span>Image</span><span>State</span><span>Update</span>
+		<span>Container</span><span>Image</span><span>State</span><span>Update</span>{#if canAct}<span
+				class="hidden lg:block"
+			></span>{/if}
 	</div>
 	<ul class="divide-y divide-line">
 		{#each sorted as c (c.key)}
-			<li
-				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_6rem_minmax(0,1.2fr)]"
-			>
+			<li class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-3 {cols}">
 				<p class="truncate text-sm font-medium">{c.name}</p>
 				<p
 					class="col-span-2 row-start-2 truncate font-mono text-xs text-muted md:col-span-1 md:row-start-auto"
@@ -193,7 +200,7 @@
 					{/if}
 				</span>
 				{#if canAct}
-					<span class="col-span-full flex flex-wrap justify-end gap-1">
+					<span class="col-span-full flex flex-wrap justify-end gap-1 lg:col-span-1">
 						{#each actions(c) as a (a.label)}
 							<button
 								class="btn btn-sm {a.label === 'Update' ? '' : 'text-muted'}"

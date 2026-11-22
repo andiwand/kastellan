@@ -44,11 +44,13 @@ export function updatesOf(devices: Device[]): Update[] {
 				});
 		}
 		const u = d.host_report?.updates;
-		if (u?.available)
+		const passed = new Set(d.updates_skipped ?? []); // said to be not needed, as they are now
+		if (u?.available && !passed.has('packages'))
 			out.push({ kind: 'packages', device: d, count: u.available, security: u.security ?? 0 });
-		if (u?.reboot) out.push({ kind: 'reboot', device: d, why: u.reboot_for ?? [] });
+		if (u?.reboot && !passed.has('reboot'))
+			out.push({ kind: 'reboot', device: d, why: u.reboot_for ?? [] });
 		const fw = d.router?.firmware;
-		if (fw?.next_step)
+		if (fw?.next_step && !passed.has('firmware'))
 			out.push({
 				kind: 'firmware',
 				device: d,

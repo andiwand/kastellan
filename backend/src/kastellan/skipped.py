@@ -1,6 +1,8 @@
-"""Container updates an admin said aren't needed (`<data>/updates-skipped.json`): per device and
-container, the one offer passed. Updates stops showing it and no notification asks again; a newer
-offer (another tag, or another build of the same tag) shows as usual."""
+"""Updates an admin said aren't needed (`<data>/updates-skipped.json`): per device, the one offer
+passed, for each container (by its key) and for the device's own (`@firmware`, `@reboot`,
+`@packages`). Updates stops showing it and no notification asks again; a newer offer (another
+tag or build; another firmware release; a reboot for other packages; other system updates)
+shows as usual."""
 
 from __future__ import annotations
 
@@ -23,6 +25,24 @@ def identity(container: dict[str, Any]) -> str | None:
     """An offer belongs to this image and running tag, even if the container's name is reused."""
     what = offer(container)
     return json.dumps([container.get("image"), container.get("tag"), what]) if what else None
+
+
+DEVICE_KINDS = ("firmware", "reboot", "packages")
+
+
+def device_offers(router: dict[str, Any] | None, host: dict[str, Any] | None) -> dict[str, str]:
+    """The device's own update offers now, each as what makes it this one: the OpenWrt release
+    to go to, the packages a reboot is for, how many system updates (and for security)."""
+    out: dict[str, str] = {}
+    fw = (router or {}).get("firmware") or {}
+    if fw.get("next_step"):
+        out["firmware"] = f"OpenWrt {fw['next_step']}"
+    updates = (host or {}).get("updates") or {}
+    if updates.get("reboot"):
+        out["reboot"] = "reboot for " + " ".join(sorted(str(p) for p in updates.get("reboot_for") or []))
+    if updates.get("available"):
+        out["packages"] = f"{updates['available']} updates, {updates.get('security') or 0} for security"
+    return out
 
 
 class Skipped:
@@ -70,3 +90,10 @@ class Skipped:
             }
             for c in containers
         ]
+
+    def device_skipped(
+        self, device: str, router: dict[str, Any] | None, host: dict[str, Any] | None
+    ) -> list[str]:
+        """Which of the device's own offers now were said to be not needed (DEVICE_KINDS)."""
+        passed = self._read().get(device, {})
+        return [k for k, what in device_offers(router, host).items() if passed.get(f"@{k}") == what]

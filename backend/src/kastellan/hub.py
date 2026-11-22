@@ -1379,7 +1379,7 @@ class Hub:
                     )
             # The host wants a reboot (kernel or libc updates): once per set of packages.
             updates = (status.host or {}).get("updates") or {}  # normalized (host/report.py)
-            if updates.get("reboot"):
+            if updates.get("reboot") and "reboot" not in self.skipped.device_skipped(id, None, status.host):
                 why = ", ".join(str(p) for p in (updates.get("reboot_for") or [])[:6])
                 key = f"reboot:{id}:{why}"
                 if m := self.alarms.event(

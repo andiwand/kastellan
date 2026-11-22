@@ -14,11 +14,16 @@
 - CPU, memory, storage and temperature readings from Linux, OpenWrt and FRITZ!Box. The device
   page shows 24-hour, 7-day and 30-day charts; the device list shows current values. History
   stays for 30 days in `vitals.db` and is included in hub backups when history is enabled.
+- "Not needed" for an OpenWrt firmware step, a wanted reboot and a host's system updates on
+  Updates: each stays away until it changes (a newer release, a reboot for other packages,
+  other updates); a silenced reboot sends no notification.
 
 ### Changed
 
 - Device pages group readings into Services, Software, Wi-Fi, Network, and Storage and hardware.
 - Updates leaves out OpenWrt packages, which come with firmware; Software still lists them.
+- Sign-ins: "Worth a look" is a table with columns (from, why, where, as, the counts, last).
+- Containers: the buttons have a column of their own on wide screens, so rows line up.
 
 ### Fixed
 

@@ -43,6 +43,7 @@ from .openwrt_api import router as openwrt_router
 from .push_api import router as push_router
 from .settings import Settings
 from .signins_api import router as signins_router
+from .skipped import DEVICE_KINDS, device_offers
 from .skipped import identity as skipped_identity
 from .skipped import offer as skipped_offer
 from .sshkeys_api import router as sshkeys_router
@@ -324,6 +325,9 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "driver": device.driver,
                     "info": status.info if status else None,
                     "containers": hub.skipped.mark(id, status.containers) if status else None,
+                    "updates_skipped": hub.skipped.device_skipped(id, status.router, status.host)
+                    if status
+                    else [],
                     "containers_checked": status.containers_checked if status else None,
                     "containers_error": status.containers_error if status else None,
                     "vulns": status.vulns if status else None,
@@ -398,6 +402,21 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         hub.skipped.skip(id, key, skipped_identity(c))
         hub.audit.record(
             "update.not-needed", w.user, client_address(request.scope), device=id, container=key, update=what
+        )
+        return {"skipped": what}
+
+    @app.post("/api/devices/{id}/updates/{kind}/not-needed")
+    def device_update_not_needed(id: str, kind: str, request: Request) -> dict[str, Any]:
+        """The device's firmware step, wanted reboot or system updates as they are now: not
+        wanted (Updates stops showing it until it changes)."""
+        w = require_admin(request)
+        status = hub.monitor.status.get(id)
+        what = device_offers(status.router, status.host).get(kind) if status else None
+        if kind not in DEVICE_KINDS or what is None:
+            raise HTTPException(404, "no such update offered for that device")
+        hub.skipped.skip(id, f"@{kind}", what)
+        hub.audit.record(
+            "update.not-needed", w.user, client_address(request.scope), device=id, kind=kind, update=what
         )
         return {"skipped": what}
 

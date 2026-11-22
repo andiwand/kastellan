@@ -101,11 +101,13 @@
 		confirm = null;
 	}
 	let skipError = $state<string | null>(null);
-	async function notNeeded(u: ContainerUpdate) {
+	async function notNeeded(u: Update) {
 		dismissing = keyOf(u);
 		skipError = null;
 		try {
-			await more.updateNotNeeded(u.device.id, u.key);
+			if (u.kind === 'container') await more.updateNotNeeded(u.device.id, u.key);
+			else if (u.kind === 'firmware' || u.kind === 'reboot' || u.kind === 'packages')
+				await more.deviceUpdateNotNeeded(u.device.id, u.kind);
 			await store.refresh();
 		} catch (e) {
 			skipError = (e as Error).message;
@@ -347,16 +349,6 @@
 					</div>
 				{:else if LABEL[u.kind]}
 					<div class="flex items-center gap-2">
-						{#if u.kind === 'container' && admin}
-							<button
-								class="btn btn-sm"
-								title="Updates stops showing this one; a newer version shows again"
-								disabled={dismissing !== null}
-								onclick={() => notNeeded(u)}
-							>
-								Not needed
-							</button>
-						{/if}
 						{#if !possible(u)}
 							<a class="text-xs text-muted hover:text-text" href="/devices/{u.device.id}">
 								{u.kind === 'firmware' ? 'needs its OpenWrt login' : 'needs the actor there'}
@@ -374,6 +366,22 @@
 						{:else}
 							<button class="btn btn-sm" disabled={busyOf(u)} onclick={() => (confirm = key)}>
 								{LABEL[u.kind]}
+							</button>
+						{/if}
+						{#if admin && confirm !== key}
+							<button
+								class="btn btn-sm"
+								title={u.kind === 'firmware'
+									? 'Updates stops showing this release; a newer one shows again'
+									: u.kind === 'reboot'
+										? 'Updates stops asking; a reboot for other packages shows again'
+										: u.kind === 'container'
+											? 'Updates stops showing this one; a newer version shows again'
+											: 'Updates stops showing these; other updates show again'}
+								disabled={dismissing !== null || busyOf(u)}
+								onclick={() => notNeeded(u)}
+							>
+								Not needed
 							</button>
 						{/if}
 					</div>

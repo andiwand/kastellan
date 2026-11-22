@@ -139,33 +139,82 @@
 	</p>
 
 	{#if flagged.length}
-		<section class="card mt-5 p-4">
-			<h2 class="text-sm font-semibold">Worth a look</h2>
-			<ul class="mt-2 divide-y divide-line text-sm">
-				{#each flagged.slice(0, 30) as s (s.address)}
-					<li class="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-1.5">
-						<button class="font-mono text-xs hover:underline" onclick={() => (address = s.address)}>
-							{s.address}
-						</button>
-						{#each s.flags as f (f)}
-							<span class="text-xs font-medium" style:color={FLAG[f].color} title={FLAG[f].title}>
-								{FLAG[f].text}
-							</span>
+		<section class="card mt-5 overflow-hidden">
+			<h2 class="px-4 pt-4 text-sm font-semibold">Worth a look</h2>
+			<div class="mt-2 overflow-x-auto">
+				<table class="w-full min-w-[52rem] text-sm">
+					<thead>
+						<tr class="border-b border-line text-left text-xs text-faint">
+							<th class="px-4 py-1.5 font-medium">From</th>
+							<th class="px-2 py-1.5 font-medium">Why</th>
+							<th class="px-2 py-1.5 font-medium">Where</th>
+							<th class="px-2 py-1.5 font-medium">As</th>
+							<th class="px-2 py-1.5 text-right font-medium">Ok</th>
+							<th class="px-2 py-1.5 text-right font-medium">Failed</th>
+							<th
+								class="px-2 py-1.5 text-right font-medium"
+								title="Connections that ended before a login"
+							>
+								Broken off
+							</th>
+							<th class="px-4 py-1.5 text-right font-medium">Last</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each flagged.slice(0, 30) as s (s.address)}
+							<tr class="border-b border-line align-baseline last:border-0">
+								<td class="px-4 py-1.5 whitespace-nowrap">
+									<button
+										class="font-mono text-xs hover:underline"
+										onclick={() => (address = s.address)}
+									>
+										{s.address}
+									</button>
+								</td>
+								<td class="px-2 py-1.5 text-xs whitespace-nowrap">
+									{#each s.flags as f, i (f)}
+										<span class="font-medium" style:color={FLAG[f].color} title={FLAG[f].title}>
+											{FLAG[f].text}
+										</span>{i < s.flags.length - 1 ? ', ' : ''}
+									{/each}
+								</td>
+								<td class="px-2 py-1.5 text-xs text-muted">
+									{s.services.map((x) => SERVICE[x] ?? x).join(', ')} on {s.devices
+										.map(name)
+										.join(', ')}
+								</td>
+								<td
+									class="max-w-[16rem] truncate px-2 py-1.5 text-xs text-muted"
+									title={s.users.join(', ')}
+								>
+									{s.users.slice(0, 5).join(', ')}{s.users.length > 5 ? ', …' : ''}
+								</td>
+								<td
+									class="tabular px-2 py-1.5 text-right text-xs"
+									style:color={s.ok ? 'var(--text)' : 'var(--faint)'}
+								>
+									{s.ok}
+								</td>
+								<td
+									class="tabular px-2 py-1.5 text-right text-xs"
+									style:color={s.failed ? 'var(--text)' : 'var(--faint)'}
+								>
+									{s.failed}
+								</td>
+								<td
+									class="tabular px-2 py-1.5 text-right text-xs"
+									style:color={s.attempts ? 'var(--text)' : 'var(--faint)'}
+								>
+									{s.attempts}
+								</td>
+								<td class="tabular px-4 py-1.5 text-right text-xs whitespace-nowrap text-muted">
+									{when(s.last)}
+								</td>
+							</tr>
 						{/each}
-						<span class="text-xs text-muted">
-							{s.services.map((x) => SERVICE[x] ?? x).join(', ')} on {s.devices
-								.map(name)
-								.join(', ')}
-							{#if s.users.length}· as {s.users.slice(0, 5).join(', ')}{s.users.length > 5
-									? ', …'
-									: ''}{/if}
-						</span>
-						<span class="ml-auto text-xs text-faint tabular-nums">
-							{s.ok} ok · {s.failed} failed · {s.attempts} broken off · last {when(s.last)}
-						</span>
-					</li>
-				{/each}
-			</ul>
+					</tbody>
+				</table>
+			</div>
 		</section>
 	{/if}
 
