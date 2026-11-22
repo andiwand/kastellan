@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Upgrading
+
+- OpenWrt routers: set up again (Updates lists the outdated script) so the package check no
+  longer leaves its lists in the router's memory.
+
+### Fixed
+
+- OpenWrt routers with less than 64 MB aren't asked for package updates any more: `opkg update`
+  ran them out of memory and the kernel killed usteer or the web interface. The router card
+  says why.
+- The FRITZ!Box firmware no longer "changes" every ten minutes between `FRITZ!OS 8.25` and
+  `FRITZ!OS 164.08.25`: both sources now spell it the same way.
+
 ## 0.13.0 (2026-11-22)
 
 Container updates to newer tags, "Not needed" for updates, and much less load on routers' web

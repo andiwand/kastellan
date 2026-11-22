@@ -23,6 +23,20 @@ log = logging.getLogger(__name__)
 
 PORT = 49000
 
+_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-(\d+))?")
+
+
+def firmware_name(version: str | None) -> str | None:
+    """AVM's version string ("164.08.25", a lab build "164.08.30-117523": hardware, major, minor,
+    build) as people know it ("FRITZ!OS 8.25"). The one spelling for every source (tr64desc's
+    Display, TR-064's NewSoftwareVersion), so the firmware log sees no change between them."""
+    if not version:
+        return None
+    if m := _VERSION.fullmatch(version.strip()):
+        _, major, minor, build = m.groups()
+        return f"FRITZ!OS {int(major)}.{minor}" + (f" (build {build})" if build else "")
+    return f"FRITZ!OS {version.strip()}"
+
 
 def parse_description(xml: str) -> DeviceInfo:
     """The root device of tr64desc.xml; namespaces vary between FRITZ!OS versions, so tags are
@@ -37,10 +51,9 @@ def parse_description(xml: str) -> DeviceInfo:
 
     display = first("Display")
     firmware, details = None, {}
-    if display and (m := re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-(\d+))?", display)):
-        hardware, major, minor, build = m.groups()
-        firmware = f"FRITZ!OS {int(major)}.{minor}" + (f" (build {build})" if build else "")
-        details = {"hardware": hardware}
+    if display and (m := _VERSION.fullmatch(display)):
+        firmware = firmware_name(display)
+        details = {"hardware": m.group(1)}
     return DeviceInfo(
         model=first("modelName"), name=first("friendlyName"), firmware=firmware, details=details
     )

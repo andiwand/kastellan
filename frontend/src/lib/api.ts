@@ -209,6 +209,8 @@ export interface RouterReport {
 	services_allowed?: string[];
 	packages?: string[] | null;
 	packages_checked?: number | null;
+	/** Why it isn't asked for package updates (a small router: opkg would run it out of memory). */
+	packages_skipped?: string | null;
 	firmware?: {
 		current: string;
 		series: string;

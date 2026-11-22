@@ -86,6 +86,8 @@ if command -v apk >/dev/null 2>&1; then
   apk update >/dev/null 2>&1; apk list --upgradable 2>/dev/null
 else
   opkg update >/dev/null 2>&1; opkg list-upgradable 2>/dev/null
+  # The lists would stay in RAM (/var is /tmp) until a reboot: about 1 MB a small router lacks.
+  rm -rf /var/opkg-lists
 fi
 exit 0
 """

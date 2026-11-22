@@ -950,3 +950,16 @@ async def test_an_old_read_cannot_repopulate_an_invalidated_cache(tmp_path: Path
     assert await task == 1
     assert await u.slow("system", "board") == 2
     assert await u.slow("system", "board") == 2
+
+
+def test_small_routers_are_not_asked_for_package_updates() -> None:
+    from kastellan.hub import packages_skipped
+    from kastellan.openwrt import setup
+
+    # A TL-WR1043ND v1: 32 MB, 25 usable. opkg update there got the OOM killer to take usteer.
+    small = {"system": {"memory": {"total": 24900 * 1024, "free": 4 * 2**20}}}
+    assert packages_skipped(small) == "too little memory (24 MB)"
+    assert packages_skipped({"system": {"memory": {"total": 2**28}}}) is None
+    assert packages_skipped({"system": {"memory": {}}}) is None  # unknown: asked as before
+    # Where it is asked, the lists don't stay behind in RAM.
+    assert "rm -rf /var/opkg-lists" in setup._UPGRADABLE_SCRIPT

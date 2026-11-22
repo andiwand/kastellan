@@ -51,6 +51,7 @@ from .config import Config, Device, NotifyChannel, Role
 from .desktop_api import Tickets
 from .disks import DiskHistory
 from .drivers import DRIVERS
+from .drivers.fritzbox import firmware_name
 from .fritzbox import client as fritz_client
 from .fritzbox.client import Fritz
 from .history import History
@@ -67,6 +68,7 @@ from .openwrt.client import Pins, Ubus
 from .openwrt.firmware import Releases, advise
 from .push import Push
 from .registry import Registries
+from .roaming import SMALL_MEMORY
 from .secrets import Secrets
 from .settings import Settings
 from .skipped import Skipped
@@ -106,6 +108,16 @@ class ConfigProblem(Exception):
 
 def _brief(e: Exception) -> str:
     return (str(e) or type(e).__name__)[:200]
+
+
+def packages_skipped(report: dict[str, Any]) -> str | None:
+    """Why an OpenWrt router isn't asked for package updates, or None. opkg update needs a few MB
+    and the lists sit in RAM (/tmp): on a small router the OOM killer then takes usteer, uhttpd
+    or opkg itself."""
+    total = ((report.get("system") or {}).get("memory") or {}).get("total")
+    if isinstance(total, int) and total < SMALL_MEMORY:
+        return f"too little memory ({total // 2**20} MB)"
+    return None
 
 
 def _first_line(text: str) -> str:
@@ -733,8 +745,12 @@ class Hub:
                     old = status.router or {}
                     report["packages"] = old.get("packages")
                     report["packages_checked"] = old.get("packages_checked")
+                    report["packages_skipped"] = packages_skipped(report)
+                    if report["packages_skipped"]:
+                        report["packages"] = None
                     now = time.time()
-                    if not report["packages_checked"] or now - report["packages_checked"] > PACKAGES_EVERY:
+                    due = not report["packages_checked"] or now - report["packages_checked"] > PACKAGES_EVERY
+                    if due and not report["packages_skipped"]:
                         try:
                             report["packages"] = await openwrt_client.upgradable(ubus)
                             report["packages_checked"] = now
@@ -865,14 +881,11 @@ class Hub:
                 new["down"] = (new["rx"] - old["rx"]) * 8 / span
                 new["up"] = (new["tx"] - old["tx"]) * 8 / span
             status.fritz, status.fritz_checked, status.fritz_error = report, datetime.now(UTC), None
-            status.info = {
-                "model": report.get("model"),
-                "name": None,
-                "firmware": f"FRITZ!OS {report['firmware']}" if report.get("firmware") else None,
-            }
+            firmware = firmware_name(report.get("firmware"))  # spelled as the driver spells it
+            status.info = {"model": report.get("model"), "name": None, "firmware": firmware}
             status.info_checked = datetime.now(UTC)
-            if report.get("firmware"):
-                self._note_firmware(id, f"FRITZ!OS {report['firmware']}", datetime.now(UTC))
+            if firmware:
+                self._note_firmware(id, firmware, datetime.now(UTC))
 
         while True:
             if self.demo:

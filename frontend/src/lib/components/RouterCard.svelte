@@ -192,14 +192,16 @@
 	<div class="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
 		<p>
 			<span class="text-xs text-muted">Package updates</span><br />
-			{report.packages == null
-				? 'not looked yet'
-				: report.packages.length === 0
-					? 'none'
-					: `${report.packages.length}: ${report.packages
-							.slice(0, 5)
-							.map(packageName)
-							.join(', ')}${report.packages.length > 5 ? ', …' : ''}`}
+			{report.packages_skipped
+				? `not asked: ${report.packages_skipped}`
+				: report.packages == null
+					? 'not looked yet'
+					: report.packages.length === 0
+						? 'none'
+						: `${report.packages.length}: ${report.packages
+								.slice(0, 5)
+								.map(packageName)
+								.join(', ')}${report.packages.length > 5 ? ', …' : ''}`}
 		</p>
 	</div>
 	{#if note}

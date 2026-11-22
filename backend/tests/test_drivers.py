@@ -25,6 +25,17 @@ def test_fritzbox_description() -> None:
     assert labor.firmware == "FRITZ!OS 8.30 (build 117523)"
 
 
+def test_fritzbox_firmware_one_spelling() -> None:
+    from kastellan.drivers.fritzbox import firmware_name
+
+    # tr64desc's Display and TR-064's NewSoftwareVersion say the same thing: spelled alike, the
+    # firmware log doesn't flip between "FRITZ!OS 8.25" and "FRITZ!OS 164.08.25" every poll.
+    assert firmware_name("164.08.25") == parse_description(TR64).firmware == "FRITZ!OS 8.25"
+    assert firmware_name("164.08.30-117523") == "FRITZ!OS 8.30 (build 117523)"
+    assert firmware_name("8.25") == "FRITZ!OS 8.25"  # an unknown shape is kept as it is
+    assert firmware_name(None) is None and firmware_name("") is None
+
+
 def test_wud_container() -> None:
     from kastellan.docker import from_wud
 
