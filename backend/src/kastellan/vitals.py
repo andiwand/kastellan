@@ -25,6 +25,7 @@ from typing import Any
 KEEP_DAYS = 30
 SAMPLE_EVERY = 110  # seconds: at most one sample per device (routers are read every 120 s)
 FIELDS = ("cpu", "memory", "storage", "temperature")
+DISK_FIELDS = ("busy", "asleep", "temperature")
 
 
 @dataclass
@@ -75,6 +76,49 @@ def _num(v: Any) -> float | None:
     except OverflowError:
         return None
     return value if math.isfinite(value) else None
+
+
+@dataclass
+class DiskSample:
+    disk: str
+    busy: float | None  # percent of the time doing I/O since the reading before
+    asleep: bool | None  # a spinning disk in standby (None: not spinning, or not known)
+    temperature: float | None
+
+
+class Busy:
+    """Disks' busy shares from their I/O time counters (ms), per device and disk."""
+
+    def __init__(self) -> None:
+        self._last: dict[tuple[str, str], tuple[float, int]] = {}  # (time, busy ms)
+
+    def percent(self, device: str, disk: str, busy_ms: int | None, now: float) -> float | None:
+        if busy_ms is None:
+            return None
+        last = self._last.get((device, disk))
+        self._last[(device, disk)] = (now, busy_ms)
+        if last is None or now <= last[0] or busy_ms < last[1]:
+            return None  # the first reading, or the counter began anew (a restart)
+        return round(max(0.0, min(100.0, 100 * (busy_ms - last[1]) / ((now - last[0]) * 1000))), 1)
+
+
+def disks_of(device: str, report: dict[str, Any], busy: Busy, now: float) -> list[DiskSample]:
+    """A Linux host's disks from its collector report (activity, and SMART's temperature)."""
+    temps = {
+        d.get("disk"): _num(d.get("temperature"))
+        for d in (report.get("smart") or {}).get("disks") or []
+        if isinstance(d, dict)
+    }
+    return [
+        DiskSample(
+            disk=d["disk"],
+            busy=busy.percent(device, d["disk"], d.get("busy_ms"), now),
+            asleep=d.get("asleep") if d.get("rotational") else None,
+            temperature=temps.get(d["disk"]),
+        )
+        for d in report.get("activity") or []
+        if isinstance(d, dict) and d.get("disk")
+    ]
 
 
 class Cpu:
@@ -188,6 +232,7 @@ class Store:
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         self._last: dict[str, float] = {}
+        self._last_disks: dict[str, float] = {}
         self._pruned = 0.0
         self._closed = False
 
@@ -206,6 +251,12 @@ class Store:
                 " cpu REAL, memory REAL, storage REAL, temperature REAL)"
             )
             db.execute("CREATE INDEX IF NOT EXISTS vitals_device_ts ON vitals (device, ts)")
+            # Each disk of a host (its collector): how busy, asleep (1) or spinning (0), how warm.
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS disks (device TEXT NOT NULL, disk TEXT NOT NULL,"
+                " ts REAL NOT NULL, busy REAL, asleep REAL, temperature REAL)"
+            )
+            db.execute("CREATE INDEX IF NOT EXISTS disks_device_ts ON disks (device, ts)")
             self._conn = db
         return self._conn
 
@@ -230,7 +281,8 @@ class Store:
             )
             self._last[device] = now
             if now - self._pruned > 3600:
-                self._db.execute("DELETE FROM vitals WHERE ts < ?", (now - KEEP_DAYS * 86400,))
+                for table in ("vitals", "disks"):
+                    self._db.execute(f"DELETE FROM {table} WHERE ts < ?", (now - KEEP_DAYS * 86400,))
                 self._pruned = now
         return True
 
@@ -257,5 +309,50 @@ class Store:
                 continue
             d = out.setdefault(device, {f: [None] * buckets for f in FIELDS})
             for f, value in zip(FIELDS, values, strict=True):
+                d[f][b] = None if value is None else round(value, 1)
+        return out
+
+    def add_disks(self, device: str, samples: list[DiskSample], now: float | None = None) -> bool:
+        """A host's disks now, unless its last sample is newer than SAMPLE_EVERY."""
+        now = time.time() if now is None else now
+        if not samples:
+            return False
+        with self._lock:
+            if self._closed or now - self._last_disks.get(device, 0) < SAMPLE_EVERY:
+                return False
+            self._db.executemany(
+                "INSERT INTO disks VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        device,
+                        d.disk,
+                        now,
+                        d.busy,
+                        None if d.asleep is None else float(d.asleep),
+                        d.temperature,
+                    )
+                    for d in samples
+                ],
+            )
+            self._last_disks[device] = now
+        return True
+
+    def disk_series(
+        self, device: str, since: float, step: float, buckets: int
+    ) -> dict[str, dict[str, list[float | None]]]:
+        """Per disk of the device: mean busy (%), share asleep (%) and mean temperature (°C) in
+        each of `buckets` slices of `step` seconds from `since`."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT disk, CAST((ts - ?) / ? AS INTEGER) AS b, AVG(busy), AVG(asleep) * 100,"
+                " AVG(temperature) FROM disks WHERE device = ? AND ts >= ? AND ts < ? GROUP BY disk, b",
+                [since, step, device, since, since + step * buckets],
+            ).fetchall()
+        out: dict[str, dict[str, list[float | None]]] = {}
+        for disk, b, *values in rows:
+            if not 0 <= b < buckets:
+                continue
+            d = out.setdefault(disk, {f: [None] * buckets for f in DISK_FIELDS})
+            for f, value in zip(DISK_FIELDS, values, strict=True):
                 d[f][b] = None if value is None else round(value, 1)
         return out

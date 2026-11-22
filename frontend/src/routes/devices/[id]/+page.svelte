@@ -566,7 +566,11 @@
 			<WifiSection {device} canChange={signedAdmin} />
 			<NetworkSection {device} />
 			{#if device.host_report}
-				<StorageSection report={device.host_report} forecast={device.host_forecast ?? {}} />
+				<StorageSection
+					device={device.id}
+					report={device.host_report}
+					forecast={device.host_forecast ?? {}}
+				/>
 			{/if}
 
 			<BackupsCard device={device.id} />

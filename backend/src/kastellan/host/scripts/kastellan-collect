@@ -147,6 +147,27 @@ def disks():
     return out
 
 
+@section("activity")
+def activity():
+    """Each disk's time busy so far (/sys/block/<disk>/stat, ms doing I/O; the hub makes a share
+    of two readings) and, for a spinning one, whether it sleeps now: `smartctl -n standby -i`
+    only asks, it never wakes a sleeping disk (SMART itself is read every SMART_EVERY)."""
+    smartctl = next((p for p in ("/usr/sbin/smartctl", "/usr/bin/smartctl", "/sbin/smartctl") if os.path.exists(p)), None)
+    out = []
+    for name in disks():
+        try:
+            fields = read(f"/sys/block/{name}/stat").split()
+            spinning = read(f"/sys/block/{name}/queue/rotational").strip() == "1"
+            entry = {"disk": name, "busy_ms": int(fields[9]), "rotational": spinning}
+        except (OSError, ValueError, IndexError):
+            continue
+        if spinning and smartctl:
+            code, _ = run([smartctl, "-n", "standby", "-i", f"/dev/{name}"], timeout=10)
+            entry["asleep"] = bool(code & 2)  # -n standby: exit bit 1 when it sleeps (and wasn't asked)
+        out.append(entry)
+    return out
+
+
 SMART_CACHE = "/run/kastellan-collect/smart.json"  # root's, in memory: one read per 20 min
 SMART_EVERY = 20 * 60
 

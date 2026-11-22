@@ -346,7 +346,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `hub.note_vitals` sets `status.vitals` (in /api/devices) and keeps a sample at most every
     `SAMPLE_EVERY` in `<data>/vitals.db` (30 days); `/api/vitals` gives bucketed means for the
     device page's tiles and charts (`VitalsPanel`) — the devices list (`VitalMeters`) uses only
-    the current values. Demo: `demo.vitals`, a week filled at start.
+    the current values. Demo: `demo.vitals`, a week filled at start. Disks: the collector's
+    `activity` (busy ms from /sys/block/*/stat; `smartctl -n standby -i` for spinning ones,
+    which never wakes them) becomes `DiskSample`s (`Busy`: a share of two readings; SMART's
+    temperature) in the same database's `disks` table; `/api/devices/{id}/disks` buckets them
+    for `DiskActivity` (Storage and hardware). Demo: `demo.disks`.
     `host.report.normalize` must preserve new collector fields (including `system.cpu` and
     container `compose`). Hub backups snapshot `vitals.db` through SQLite when history is
     enabled; WAL/SHM files are never copied or restored separately.

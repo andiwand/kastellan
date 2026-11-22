@@ -1,14 +1,18 @@
 <script lang="ts">
 	import type { HostReport } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
+	import DiskActivity from './DiskActivity.svelte';
 	import { bytes } from '#lib/format.js';
 	import { diskLimits, toneColor, toneOf } from '#lib/vitals.js';
 
 	/** A Linux host's storage and hardware, from its collector: each filesystem's space (and when
 	 * it is full at the rate it fills), RAID arrays and disk health (SMART), its temperatures.
 	 * The fullest filesystem is also among the vitals. */
-	let { report, forecast = {} }: { report: HostReport; forecast?: Record<string, number> } =
-		$props();
+	let {
+		device,
+		report,
+		forecast = {}
+	}: { device: string; report: HostReport; forecast?: Record<string, number> } = $props();
 
 	// The same limits the alarms use (config.yaml's alarms:).
 	const disk = $derived(diskLimits(store.alarms));
@@ -19,7 +23,7 @@
 	);
 </script>
 
-{#if report.filesystems?.length || report.raid?.length || disks.length || hot.length}
+{#if report.filesystems?.length || report.raid?.length || disks.length || hot.length || report.activity?.length}
 	<section class="mt-8">
 		<h2 class="text-sm font-semibold">Storage and hardware</h2>
 		{#if report.filesystems?.length}
@@ -136,5 +140,6 @@
 				</div>
 			{/if}
 		</div>
+		<DiskActivity {device} />
 	</section>
 {/if}

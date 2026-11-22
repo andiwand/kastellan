@@ -437,6 +437,19 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             out["services"] = own.get(device, {})
         return out
 
+    @app.get("/api/devices/{id}/disks")
+    async def disk_series(id: str, hours: Hours = 24, buckets: int = 96) -> dict[str, Any]:
+        """Each disk of a host over the last `hours`: mean busy (%), share asleep (%) and mean
+        temperature (°C) per slice (vitals.py)."""
+        if id not in hub.config.devices:
+            raise HTTPException(404, "no such device")
+        hours = min(max(hours, 1), 24 * 30)
+        buckets = min(max(buckets, 1), 500)
+        step = hours * 3600 / buckets
+        start = datetime.now(UTC) - timedelta(hours=hours)
+        data = await asyncio.to_thread(hub.vitals.disk_series, id, start.timestamp(), step, buckets)
+        return {"start": start, "step_seconds": step, "disks": data}
+
     @app.get("/api/hub/resources")
     async def hub_resources(request: Request) -> dict[str, Any]:
         """What Kastellan costs the machine: its CPU and memory, and its data folder store by

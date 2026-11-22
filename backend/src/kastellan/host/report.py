@@ -138,6 +138,18 @@ def normalize(raw: Any) -> dict[str, Any]:
             )
         out["smart"] = {"available": sm.get("available") is True, "disks": disks}
 
+    if "activity" in r:
+        out["activity"] = [
+            {
+                "disk": name,
+                "busy_ms": _int(d.get("busy_ms"), 0, 2**63),
+                "rotational": d.get("rotational") is True,
+                "asleep": d.get("asleep") if isinstance(d.get("asleep"), bool) else None,
+            }
+            for d in (_dict(x) for x in _list(r.get("activity"), 64))
+            if (name := _text(d.get("disk"), 40))
+        ]
+
     if "temperatures" in r:
         temps = []
         for t in _list(r.get("temperatures")):

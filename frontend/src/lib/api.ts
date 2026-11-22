@@ -91,6 +91,13 @@ export interface Device {
 
 /** What the collector reports about a host (host/collector.py). Every part may be missing. */
 export interface HostReport {
+	// Each disk's time busy so far and whether a spinning one sleeps now (charted: api.disks).
+	activity?: {
+		disk: string;
+		busy_ms: number | null;
+		rotational: boolean;
+		asleep: boolean | null;
+	}[];
 	errors?: Record<string, string>;
 	system?: {
 		hostname: string;
@@ -882,6 +889,17 @@ export interface Vitals {
 }
 
 export type VitalField = 'cpu' | 'memory' | 'storage' | 'temperature';
+
+/** A host's disks over time (GET /api/devices/{id}/disks): per slice, the mean busy share (%),
+ * the share of the time asleep (%; null for disks that don't spin) and the mean temperature. */
+export interface DiskSeries {
+	start: string;
+	step_seconds: number;
+	disks: Record<
+		string,
+		{ busy: (number | null)[]; asleep: (number | null)[]; temperature: (number | null)[] }
+	>;
+}
 
 /** One part of Kastellan's data folder (footprint.py): its size, rate and where it levels off. */
 export interface DataStore {
@@ -1849,6 +1867,8 @@ export const api = {
 	health: () => get<Health>('/health'),
 	devices: () => get<Device[]>('/devices'),
 	hubResources: () => get<HubResources>('/hub/resources'),
+	disks: (id: string, hours: number, buckets: number) =>
+		get<DiskSeries>(`${dev(id)}/disks`, { hours, buckets }),
 	vitals: (hours: number, buckets: number, device?: string) =>
 		get<VitalsSeries>('/vitals', { hours, buckets, device }),
 	series: (hours: number, buckets: number, device?: string) =>

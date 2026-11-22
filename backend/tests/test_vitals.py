@@ -177,3 +177,48 @@ async def test_empty_readings_and_replaced_devices_clear_current_vitals(tmp_path
         assert hub._cpu.percent("nas", [150, 0, 150, 900]) is None
     finally:
         await hub.stop()
+
+
+def test_disks_busy_asleep_and_warm(tmp_path: Path) -> None:
+    from kastellan.host.report import normalize
+    from kastellan.vitals import Busy, DiskSample, disks_of
+
+    busy = Busy()
+    assert busy.percent("h", "sda", 1000, 100.0) is None  # the first reading
+    assert busy.percent("h", "sda", 31_000, 160.0) == 50.0  # 30 s busy in 60 s
+    assert busy.percent("h", "sda", 5, 220.0) is None  # the counter began anew
+
+    report = normalize(
+        {
+            "activity": [
+                {"disk": "sda", "busy_ms": 0, "rotational": True, "asleep": True},
+                {"disk": "nvme0n1", "busy_ms": 0, "rotational": False, "asleep": "?"},
+                {"disk": "", "busy_ms": 1},
+            ],
+            "smart": {"available": True, "disks": [{"disk": "nvme0n1", "temperature": 41}]},
+        }
+    )
+    assert [d["disk"] for d in report["activity"]] == ["sda", "nvme0n1"]
+    samples = disks_of("h", report, Busy(), 100.0)
+    assert samples == [DiskSample("sda", None, True, None), DiskSample("nvme0n1", None, None, 41.0)]
+
+    store = Store(tmp_path / "vitals.db")
+    t0 = 1_000_000.0
+    assert store.add_disks("h", [DiskSample("sda", 0.0, True, None)], now=t0)
+    assert not store.add_disks("h", [DiskSample("sda", 9.0, False, 35.0)], now=t0 + 10)  # too soon
+    assert store.add_disks("h", [DiskSample("sda", 20.0, False, 35.0)], now=t0 + 200)
+    assert store.disk_series("h", t0, 600, 2) == {
+        "sda": {"busy": [10.0, None], "asleep": [50.0, None], "temperature": [35.0, None]}
+    }
+
+
+def test_the_disks_route(admin_client) -> None:
+    import time
+
+    from kastellan.vitals import DiskSample
+
+    c = admin_client("devices:\n  nas:\n    host: 192.0.2.2\n")
+    c.app.state.hub.vitals.add_disks("nas", [DiskSample("sda", 12.0, False, 38.0)], now=time.time() - 60)
+    r = c.get("/api/devices/nas/disks", params={"hours": 1, "buckets": 4}).json()
+    assert r["disks"]["sda"]["busy"][-1] == 12.0
+    assert c.get("/api/devices/nope/disks").status_code == 404

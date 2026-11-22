@@ -5,7 +5,7 @@
 ### Upgrading
 
 - Set up the Linux collector again (Updates lists it) so containers say which service they
-  serve.
+  serve and disks report their activity.
 
 ### Added
 
@@ -15,6 +15,9 @@
   not red.
 - A check served by a container names it, and the container says which check it serves (by the
   ports it publishes).
+- Disks over time: each disk of a host shows its day as a strip (asleep or spinning, how
+  busy) and opens charts of busy, asleep and temperature over a day, a week or a month. Read
+  from the kernel's I/O counters and `smartctl -n standby`, which never wakes a sleeping disk.
 - Updates renews an outdated OpenWrt login in place (root's password once), keeping what it
   may do now, as it does for the collector and the actor.
 

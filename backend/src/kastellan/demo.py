@@ -22,7 +22,7 @@ from .history import History, Row
 from .software import Software
 from .tls import Cert, public_name
 from .versions import Versions
-from .vitals import Vitals
+from .vitals import DiskSample, Vitals
 
 CONFIG = {
     "check_interval": 15,
@@ -827,3 +827,26 @@ def vitals(id: str, t: float) -> Vitals:
         storage_mount=None if id in FRITZ else "/",
         temperature=round((52 if router else 44) + 5 * day + rnd.uniform(-1, 1), 1),
     )
+
+
+def disks(id: str, t: float):
+    """The made-up host's disks at time t: the NVMe always awake and lightly busy; the two hard
+    disks asleep at night and on a quiet afternoon hour, busy when the backup runs at 3:00."""
+    out = []
+    for d in (HOST.get(id, {}).get("smart") or {}).get("disks") or []:
+        name = d["disk"]
+        rnd = random.Random(int(t // 300) * 7 + sum(map(ord, id + name)))
+        hour = datetime.fromtimestamp(t).hour
+        if name.startswith("nvme"):
+            out.append(
+                DiskSample(name, round(3 + rnd.uniform(0, 6), 1), None, round(40 + rnd.uniform(-1, 2), 1))
+            )
+            continue
+        backup = hour == 3
+        asleep = not backup and (hour < 7 or hour == 15) and rnd.random() > 0.1
+        busy = 0.0 if asleep else round((55 if backup else 4) + rnd.uniform(0, 10), 1)
+        warm = 30 if asleep else 36 + 4 * math.sin(hour / 24 * math.pi)
+        out.append(
+            DiskSample(name, busy, asleep, None if asleep else round(warm + rnd.uniform(-0.5, 0.5), 1))
+        )
+    return out

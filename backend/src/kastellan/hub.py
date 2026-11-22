@@ -83,9 +83,9 @@ from .syslog_tls import Authority
 from .terminals import Terminals
 from .vault import AUTO, KASTELLAN, Damaged, Vault, WrongKey, policy
 from .versions import Versions
+from .vitals import Busy, Vitals, disks_of, from_fritz, from_host, from_openwrt
 from .vitals import Cpu as VitalsCpu
 from .vitals import Store as VitalsStore
-from .vitals import Vitals, from_fritz, from_host, from_openwrt
 from .vpn.openvpn import OpenVpn, Seen, crl_next_update, parse_status, server_meta, split_status
 from .vuln_policy import assess, auto_update_reason
 from .wifi import Scans
@@ -186,6 +186,7 @@ class Hub:
         self.resources = footprint.Resources()  # the hub's own CPU, memory and data folder
         self.vitals = VitalsStore(data / "vitals.db")  # CPU, memory, storage over time (vitals.py)
         self._cpu = VitalsCpu()
+        self._busy = Busy()  # disks' busy shares, from their I/O time counters
         self._eco_next: dict[str, tuple[float, int]] = {}  # FRITZ!Box energy monitor: next read
         self.backups = Backups(data)
         self.logs = LogStore(data / "logs.db")  # central logs (logs.py)
@@ -530,6 +531,8 @@ class Hub:
         self.disks.note(id, report, now)
         status.host_forecast = self.disks.forecasts(id, now)
         await self.note_vitals(id, status, from_host(id, report, self._cpu))
+        samples = disks_of(id, report, self._busy, time.time())
+        await asyncio.to_thread(self.vitals.add_disks, id, samples)
         items = report.get("docker")
         if isinstance(items, list):
             try:
@@ -550,10 +553,12 @@ class Hub:
                 for i in ids:
                     for k in range(7 * 24 * 4, 0, -1):  # every 15 minutes
                         self.vitals.add(i, demo.vitals(i, now - k * 900), now=now - k * 900)
+                        self.vitals.add_disks(i, demo.disks(i, now - k * 900), now=now - k * 900)
 
             await asyncio.to_thread(fill)
         for i in ids:
             await self.note_vitals(i, self.monitor.status[i], demo.vitals(i, now))
+            await asyncio.to_thread(self.vitals.add_disks, i, demo.disks(i, now))
 
     async def note_vitals(self, id: str, status: DeviceStatus, v: Vitals) -> None:
         """A device's vitals now (shown) and, now and then, kept (charted)."""
