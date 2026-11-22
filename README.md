@@ -21,7 +21,8 @@ Self-hosted checks, alerts and device administration, with permissions you choos
 > See [releases](https://github.com/andiwand/kastellan/releases), [CHANGELOG.md](CHANGELOG.md)
 > and [PLAN.md](PLAN.md).
 
-- **Monitor:** ping, TCP, HTTP, DNS and DHCP; uptime, latency, software versions and certificates.
+- **Monitor:** ping, TCP, HTTP, DNS and DHCP; uptime, latency, software versions and certificates;
+  CPU, memory, storage and temperature of hosts, OpenWrt devices and FRITZ!Boxes.
 - **Find problems:** dependency-aware alarms, UPS power status, disk forecasts, backup reports and vulnerability
   lookups (NVD, OSV, CISA KEV). Notifications through ntfy, Gotify, Telegram, e-mail, webhooks
   and browser push, with maintenance windows and optional reminders.
@@ -205,9 +206,10 @@ with a confirmed high/critical or exploited vulnerability and an eligible update
 changes must stay within the same major and include a known fix when available; automatic actor updates
 remain limited to a newer build of the existing tag.
 
-**Updates** lists outdated collector and actor scripts. Reinstall from Setup with a host login;
-their restricted keys cannot replace them. VPN and OpenWrt helpers do not yet report versions.
-After upgrading Kastellan, check the changelog for helper reinstallation requirements.
+**Updates** lists helpers older than the hub (collector, actor, OpenWrt login, OpenVPN scripts)
+and abilities a login doesn't have yet. Set them up again from Setup with a host login; their
+restricted keys cannot replace them. Updates you don't want can be marked **Not needed** until
+a newer one arrives. After upgrading Kastellan, check the changelog for setups to repeat.
 
 ## Backup and recovery
 

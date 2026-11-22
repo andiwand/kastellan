@@ -13,7 +13,7 @@ Implementation details and release history belong in [AGENTS.md](AGENTS.md) and
   host keys and OpenWrt certificates are pinned.
 - **Agentless first.** SSH and vendor APIs now; an outbound Go agent where needed later.
 - **Reuse protocols and tools.** Guacamole, xterm.js, asyncssh, vendor APIs; restic for future backups.
-- **Local storage.** YAML configuration and daily CSV history; SQLite for indexed device logs.
+- **Local storage.** YAML configuration and daily CSV history; SQLite for device logs and vitals.
 - **Stack.** FastAPI, SvelteKit, one Docker image.
 - **Controlled updates.** Suggestions by default; automatic container updates require opt-in,
   whole-device exposure, a confirmed serious vulnerability and an eligible update.
@@ -39,7 +39,12 @@ Implementation details and release history belong in [AGENTS.md](AGENTS.md) and
 - Logs by group with alarms and events among the lines.
 - Internet: provider hops, line trouble, iperf3, bandwidth per device (nlbwmon).
 - Wi-Fi: client diagnostics, country, scan after a channel plan; roaming checks and assistance.
-- Helper version checks (OpenWrt, VPN scripts); container tag upgrades and same-major alternatives.
+- Helper version checks (collector, actor, OpenWrt, VPN scripts); container tag upgrades and
+  same-major alternatives; "Not needed" for container, firmware, reboot and system updates.
+- Vitals (CPU, memory, storage, temperature) for Linux, OpenWrt and FRITZ!Box, with 30-day charts.
+- Device pages by topic for every kind: services (with the device's own), software, Wi-Fi,
+  network, storage and hardware.
+- Kept TLS connections and slower reads of rarely changing data, sparing small routers.
 - HTTP checks with expected text; credential references; isolation of device pages;
   "Open signed in" for device pages (LuCI, HTTP Basic).
 
