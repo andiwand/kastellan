@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Upgrading
+
+- Linux hosts: set up the actor and the collector again (Updates says where) for updates to a
+  newer tag and for the compose hint; until then a newer tag can't be applied from Kastellan.
+
+### Added
+
+- Container tag upgrades, with an alternative within the current major version when available.
+  The actor keeps settings and the previous image for rollback. Confirmations identify major
+  upgrades and Compose files that need the same tag change.
+- "Not needed" hides a container update and its notification until a newer offer arrives.
+
+### Changed
+
+- Router requests reuse pinned TLS connections briefly. Settings that rarely change are cached
+  for a few minutes; Kastellan's changes invalidate them. FRITZ!Box WireGuard is read every
+  10 minutes, with backoff on failures. OpenWrt log polls fetch 200 lines once caught up.
+- Background Wi-Fi page refreshes reuse cached readings; opening the page refreshes readings
+  older than five minutes.
+
+### Fixed
+
+- Setup accepts every available ability. Validation errors show the affected fields.
+- Updates combines outdated OpenWrt helpers and new abilities in one setup row, with separate
+  links when VPN scripts also need renewal. Container controls wrap at phone widths.
+- Router actions aren't replayed after a lost response. HTTP framing uses h11; closing a client
+  ends its connections, and stale reads cannot repopulate invalidated caches.
+- Tag changes apply even when both tags name the same image. Bulk confirmations include major
+  upgrade and Compose warnings. Skipped offers belong to the image and running tag.
+- Malformed log entries cannot hide a backlog. Replacing a FRITZ!Box login clears its backoff.
+
 ## 0.12.0 (2026-11-22)
 
 Sign-ins, VPN servers, provider and line checks, Wi-Fi client diagnostics and roaming checks,

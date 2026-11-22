@@ -48,6 +48,7 @@ class Container:
     previous: str | None = None  # the image kept from before its last update (actor), short id
     # When update_to is a new major version: the newest tag within the running one (or None).
     update_within: str | None = None
+    compose: str | None = None  # its compose file (or project), when compose made it
 
     @property
     def running_version(self) -> str | None:
@@ -159,6 +160,7 @@ async def from_collector(items: list[Any], registries: Any) -> list[Container]:
                 registry=(ref.registry.replace("registry-1.docker.io", "docker.io") if ref else None),
                 previous=_text(item.get("previous"), 12) or None,
                 update_within=update.within,
+                compose=_text(item.get("compose"), 300) or None,
             )
         )
     return sorted(out, key=lambda c: c.key.lower())

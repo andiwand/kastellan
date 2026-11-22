@@ -162,3 +162,32 @@ async def test_wireguard_presence_from_handshakes(tmp_path: Path, monkeypatch) -
         ("sv1", "vpn", "phone went quiet"),
         ("sv1", "vpn", "phone connected"),
     ]
+
+
+async def test_a_caught_up_router_is_asked_for_its_newest_lines(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from kastellan import logs_poll
+    from kastellan.openwrt import client as ow
+
+    buffer = [
+        {"msg": f"daemon: line {i}", "priority": 30, "source": 1, "time": 1_000_000 + i, "id": i}
+        for i in range(900)
+    ]
+    asked: list[int] = []
+
+    async def read_log(ubus, lines: int = 1000):
+        asked.append(lines)
+        return buffer[-lines:]
+
+    monkeypatch.setattr(ow, "read_log", read_log)
+    hub = SimpleNamespace(logs=LogStore(tmp_path / "logs.db"), ubus=lambda id: None)
+    assert await logs_poll.openwrt(hub, "r") == 900 and asked == [1000]  # first: all of it
+    buffer.append({"msg": "daemon: one more", "priority": 30, "source": 1, "time": 2_000_000, "id": 900})
+    assert await logs_poll.openwrt(hub, "r") == 1 and asked[-1] == 200  # then the newest
+    for i in range(300):  # more than the newest 200 since: the whole buffer once more
+        buffer.append(
+            {"msg": f"daemon: burst {i}", "priority": 30, "source": 1, "time": 3_000_000 + i, "id": 1000 + i}
+        )
+    buffer[-2]["time"] = "malformed"  # does not count as overlap with the previous poll
+    assert await logs_poll.openwrt(hub, "r") == 299 and asked[-2:] == [200, 1000]

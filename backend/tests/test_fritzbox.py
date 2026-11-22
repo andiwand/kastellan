@@ -493,3 +493,61 @@ async def test_the_second_factor_is_waited_for(tmp_path: Path) -> None:
     fake.second_factor = True
     with pytest.raises(fb.FritzError):  # nobody at the box (a scheduled run): no waiting
         await fb.confirmed(b, lambda: fb.change_wifi(b, 1, {"ssid": "y"}), wait=0)
+
+
+async def test_what_rarely_changes_is_asked_less_often(tmp_path: Path) -> None:
+    fake = FakeBox()
+    b = box(tmp_path, fake)
+    first = await fb.read(b)
+    n = len(fake.calls)
+    again = await fb.read(b)
+    later = [c for c, _ in fake.calls[n:]]
+    assert again["forwards"] == first["forwards"] and again["wifi"] == first["wifi"]
+    assert "DeviceInfo:1#GetInfo" in later  # the line and uptime: every round
+    assert not any(
+        c.startswith(("UserInterface", "WLANConfiguration", "Hosts", "X_AVM-DE_HostFilter")) for c in later
+    )
+    assert "LANHostConfigManagement:1#GetInfo" not in later
+    async with b.changing:  # a change of Kastellan's: read anew
+        pass
+    m = len(fake.calls)
+    await fb.read(b)
+    assert any(c.startswith("WLANConfiguration") for c, _ in fake.calls[m:])
+
+
+async def test_an_old_read_cannot_repopulate_an_invalidated_cache(tmp_path: Path) -> None:
+    import asyncio
+
+    b = box(tmp_path, FakeBox())
+    started, finish = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def read(errors):
+        calls.append(1)
+        started.set()
+        await finish.wait()
+        return len(calls)
+
+    task = asyncio.create_task(fb._kept(b, "wifi", {}, read))
+    await started.wait()
+    async with b.changing:
+        pass
+    finish.set()
+    assert await task == 1
+    assert await fb._kept(b, "wifi", {}, read) == 2
+    assert await fb._kept(b, "wifi", {}, read) == 2
+
+
+def test_replacing_a_client_clears_its_wireguard_backoff(tmp_path: Path) -> None:
+    from kastellan.hub import Hub
+    from kastellan.settings import Settings
+
+    hub = Hub(Settings(config=tmp_path / "config.yaml", data=tmp_path))
+    hub._wg_next = {"a": (9999999, 5), "b": (9999999, 4)}
+    hub.drop_clients("a", fritz=False)
+    assert "a" in hub._wg_next
+    hub.drop_clients("a")
+    assert set(hub._wg_next) == {"b"}
+    hub.drop_clients()
+    assert not hub._wg_next
+    hub.logs.close()

@@ -7,7 +7,13 @@ import { store } from '#lib/state.svelte.js';
 export type Job =
 	| {
 			device: string;
-			kind: 'container' | 'rollback' | 'restart' | 'start' | 'stop';
+			kind: 'container';
+			name: string;
+			tag?: string; // another tag of its image (one the hub found); none: a new build
+	  }
+	| {
+			device: string;
+			kind: 'rollback' | 'restart' | 'start' | 'stop';
 			name: string;
 	  }
 	| {
@@ -66,13 +72,18 @@ const VERB: Record<Job['kind'], string> = {
 
 function labelOf(j: Job): string {
 	const where = store.byId?.get(j.device)?.name ?? j.device;
-	return `${where}: ${VERB[j.kind]}${'name' in j ? ` ${j.name}` : ''}`;
+	const to = j.kind === 'container' && j.tag ? ` to ${j.tag}` : '';
+	return `${where}: ${VERB[j.kind]}${'name' in j ? ` ${j.name}` : ''}${to}`;
 }
 
 /** The answer in a sentence. */
 function sentence(j: Job, r: ActResult): string {
 	if (j.kind === 'container')
-		return r.updated ? `Updated (${r.from} → ${r.to}).` : `Nothing to do: ${r.why ?? 'newest'}.`;
+		return r.updated
+			? r.to_tag
+				? `Updated to ${r.to_tag} (from ${r.from_tag}).`
+				: `Updated (${r.from} → ${r.to}).`
+			: `Nothing to do: ${r.why ?? 'newest'}.`;
 	if (j.kind === 'rollback') return `Back to the previous image (${r.from} → ${r.to}).`;
 	if (j.kind === 'restart') return 'Restarted.';
 	if (j.kind === 'start') return 'Started.';
@@ -148,7 +159,8 @@ class Runner {
 						job.device,
 						ABILITY[job.kind],
 						'name' in job ? job.name : null,
-						say
+						say,
+						job.kind === 'container' ? job.tag : undefined
 					);
 					s.result = result;
 					s.text = sentence(job, result);

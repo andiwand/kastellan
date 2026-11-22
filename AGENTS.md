@@ -146,7 +146,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     (`fritzbox: {user, port}`, secret `fritzbox-<id>`), Digest auth by hand over a TLS connection
     whose certificate is pinned (`<data>/fritzbox/<id>.sha256`, confirmed by an admin at setup:
     `POST .../fritzbox/certificate`, then `/setup`). `read()` → `status.fritz` every 60 s
-    (`hub._poll_fritzboxes`); events for FRITZ!OS updates, enabled port forwards, remote access,
+    (`hub._poll_fritzboxes`), sections that rarely change kept `KEEP` seconds (`_kept`, with
+    their errors; `Fritz.changing` ends them); WireGuard (web.py) every `WG_EVERY`, backing off
+    after failures (`hub._wg_next`); events for FRITZ!OS updates, enabled port forwards, remote access,
     MyFRITZ!. AVM's 866 (second factor) says to confirm on the box. Tested against a fake box
     with Digest (tests/test_fritzbox.py).
   - `internet.py` + `internet_api.py`: a look every `internet.every` s: router ping, the line as
@@ -325,7 +327,15 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     (`CONTAINER_ABILITIES`, names `NAME`); update and rollback (`REPLACING`) share
     `act-containers` (settings for the new container, the swap that puts the old one back): an
     update keeps the image it ran before as `kastellan-previous:<name>` (the collector reports it
-    as a container's `previous`), rollback points the container's reference at it and swaps;
+    as a container's `previous`), rollback points the container's reference at it and swaps.
+    `update-container <name> <tag>` (`TAG`) goes to another tag of the same image (from its
+    registry); act_api passes only a tag the hub found (`update_to`/`update_within`, else 409).
+    The new container's label `kastellan.previous-image` names the reference it ran, so rollback
+    returns to that tag (and the label flips for going forth); a same-tag update drops it. The
+    collector reports `compose` (the compose file) for the app's warning. `skipped.py`: update
+    offers an admin said aren't needed (`<data>/updates-skipped.json`, per device and container
+    key: image, running tag and offered tag or build digest); `api` marks containers `skipped`, Updates and the
+    update notifications leave them out until a newer offer;
     `container-logs` and `unit-logs` (`READING`: no lock, no re-collect after; journal by
     `UNIT` name, allow list `*`) return `lines`, excluded from hub and host audit logs. Renewal uses `allowed` to preserve
     each ability’s targets, including restricted unit lists.
@@ -347,7 +357,14 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     (`versions:`) carry a hash of each installed file; `collector.digest` is what the hub's own
     would hash to. Older ones show as `outdated_scripts` (Updates, the device page). Renewing is
     setting up again with a login: the hub's keys may run these scripts, never replace them.
-  - `openwrt/` + `openwrt_api.py`: OpenWrt devices through ubus over HTTPS (as LuCI). `setup.py`
+  - `pinned_http.py`: h11 handles HTTP/1.1 framing over pinned TLS; `Pool` keeps idle connections
+    for 8 seconds and checks the pin before sending credentials on each new connection. Only
+    GET/HEAD may retry a dropped connection: replaying a POST could repeat an action. Ubus and
+    Fritz each have a pool; `hub.drop_clients` closes idle and active connections.
+  - `openwrt/` + `openwrt_api.py`: OpenWrt devices through ubus over HTTPS (as LuCI). `Ubus.slow`
+    keeps reads that rarely change (board, uci dhcp, rc list, services.allow, session access,
+    versions) `SLOW_EVERY`; `Ubus.changing` ends them. Logs: the newest `RECENT_LINES` once
+    caught up (logs_poll). `setup.py`
     makes an rpcd login `kastellan` (md5crypt hash; the password is the secret
     `openwrt-<id>`) and `/usr/share/rpcd/acl.d/kastellan.json` with one group per ability
     (reboot, wifi, firmware, password, services, openvpn, logs, backup, scan);

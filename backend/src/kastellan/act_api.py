@@ -28,10 +28,10 @@ if TYPE_CHECKING:
 
 
 class Choice(BaseModel):
-    abilities: list[str] = Field(default_factory=list, max_length=20)
+    abilities: list[str] = Field(default_factory=list, max_length=len(actor.ABILITIES))
     containers: list[str] = Field(default_factory=list, max_length=200)  # ["*"] for all
     vms: list[str] = Field(default_factory=list, max_length=200)  # ["*"] for all
-    allowed: dict[str, list[str]] | None = Field(default=None, max_length=20)
+    allowed: dict[str, list[str]] | None = Field(default=None, max_length=len(actor.ABILITIES))
 
 
 class Install(Choice, Login):
@@ -42,6 +42,7 @@ class Action(BaseModel):
     container: str | None = Field(default=None, max_length=128)
     vm: str | None = Field(default=None, max_length=128)
     unit: str | None = Field(default=None, max_length=210)
+    tag: str | None = Field(default=None, max_length=128)  # update-container: the tag to go to
 
 
 def router(hub: Hub) -> APIRouter:
@@ -185,9 +186,26 @@ def router(hub: Hub) -> APIRouter:
             else "container"
         )
         given = {k: v for k, v in body.model_dump().items() if v is not None}
-        if set(given) - {field}:
+        tag = given.pop("tag", None)
+        if set(given) - {field} or (tag is not None and ability != "update-container"):
             raise HTTPException(400, f"{ability} takes a {field}, nothing else")
         target = given.get(field)
+        if tag is not None:
+            # Only a tag the hub found for this container (its newer version, or the newest
+            # within its major one): the page can't send the host to any tag it likes.
+            status = hub.monitor.status.get(id)
+            matches = [c for c in (status.containers if status else None) or [] if c.get("name") == target]
+            if len(matches) != 1:
+                raise HTTPException(409, "the container isn't uniquely identified on this device")
+            offered = {
+                t
+                for c in matches
+                if c.get("update") and not c.get("unchecked")
+                for t in (c.get("update_to"), c.get("update_within"))
+                if t and t != "newer build"
+            }
+            if tag not in offered:
+                raise HTTPException(409, f"{tag} isn't a newer version Kastellan found for {target}")
         audit = partial(
             hub.audit.record,
             f"act.{ability}",
@@ -195,8 +213,9 @@ def router(hub: Hub) -> APIRouter:
             client_address(request.scope),
             device=id,
             **({field: target} if target is not None else {}),
+            **({"tag": tag} if tag is not None else {}),
         )
-        return device, target, audit
+        return device, target, tag, audit
 
     def brief(result: dict[str, Any]) -> dict[str, Any]:
         """For the audit: what was done, never what was read (log lines)."""
@@ -213,7 +232,7 @@ def router(hub: Hub) -> APIRouter:
         """The same, with how far it got as it goes: `KASTELLAN-STEP <text>` lines, then
         `KASTELLAN-DONE {"ok": ..., "result" | "error": ...}`. The hub's task, not the page's:
         it finishes (and is audited) when the browser leaves halfway."""
-        device, target, audit = action(id, ability, body, request)
+        device, target, tag, audit = action(id, ability, body, request)
         audit(outcome="started")
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
@@ -222,7 +241,7 @@ def router(hub: Hub) -> APIRouter:
 
         async def run() -> None:
             try:
-                result = await actor.act(hub.keys, device, ability, target, on_step=said)
+                result = await actor.act(hub.keys, device, ability, target, on_step=said, tag=tag)
                 outcome: dict[str, Any] = {"ok": True, "result": result}
                 audit(outcome="done", result=brief(result))
             except BaseException as e:  # also when the hub stops: the audit still says so
@@ -243,9 +262,9 @@ def router(hub: Hub) -> APIRouter:
     @api.post("/{id}/act/{ability}")
     async def act_now(id: str, ability: str, body: Action, request: Request) -> dict[str, Any]:
         """Do one thing on the host, as far as it allows."""
-        device, target, audit = action(id, ability, body, request)
+        device, target, tag, audit = action(id, ability, body, request)
         try:
-            result = await actor.act(hub.keys, device, ability, target)
+            result = await actor.act(hub.keys, device, ability, target, tag=tag)
             audit(outcome="done", result=brief(result))
         except asyncio.CancelledError:
             audit(outcome="interrupted: CancelledError")

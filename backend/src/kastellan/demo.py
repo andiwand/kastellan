@@ -216,7 +216,17 @@ INFO = {
 }
 
 
-def _c(name, image, tag, update_to=None, unchecked=None, state="running", previous=None, within=None):
+def _c(
+    name,
+    image,
+    tag,
+    update_to=None,
+    unchecked=None,
+    state="running",
+    previous=None,
+    within=None,
+    compose=None,
+):
     return {
         "key": name,
         "wud_id": name,
@@ -232,13 +242,16 @@ def _c(name, image, tag, update_to=None, unchecked=None, state="running", previo
         "registry": "hub",
         "previous": previous,
         "update_within": within,
+        "compose": compose,
     }
 
 
 # The demo's Docker hosts (see hub._poll_docker).
 CONTAINERS = {
     "nas": [
-        _c("jellyfin", "jellyfin/jellyfin", "10.10.7", update_to="10.11.0"),
+        _c(
+            "jellyfin", "jellyfin/jellyfin", "10.10.7", update_to="10.11.0", compose="/srv/media/compose.yaml"
+        ),
         _c("postgres", "library/postgres", "16.4", update_to="17.2", within="16.6"),
         _c("immich-server", "immich-app/immich-server", "v1.135.3"),
         _c("paperless", "paperless-ngx/paperless-ngx", "2.14", previous="8d41e07c5a92"),

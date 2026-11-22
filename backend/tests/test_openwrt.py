@@ -471,8 +471,10 @@ async def test_an_ended_session_logs_in_again_once(tmp_path: Path) -> None:
 
 async def test_dhcp_pool_usage_excludes_static_leases_outside_it() -> None:
     class Ubus:
-        async def call(self, *args):
+        async def call(self, *args, **kw):
             return {"values": {"lan": {".type": "dhcp", "start": "100", "limit": "10"}}}
+
+        slow = call
 
     leases = [{"address": f"192.168.1.{i}"} for i in range(2, 100)]
     leases += [{"address": "192.168.1.101"}, {"address": "192.168.1.101"}]
@@ -897,3 +899,54 @@ def test_nlbwmon_and_usteer_are_read() -> None:
     ]
     assert r["nodes"][0]["roam_source"] == 4 and r["clients"][0]["signal"] == -61
     assert r["config"] == {"min_snr": 10, "roam_trigger_snr": 20}
+
+
+def test_setup_choice_takes_every_ability():
+    # The request models once capped abilities below the number on offer (all ticked: a 422).
+    from kastellan import act_api, openwrt_api
+    from kastellan.host import actor
+    from kastellan.openwrt.setup import ABILITIES
+
+    assert openwrt_api.Choice(abilities=list(ABILITIES)).abilities == list(ABILITIES)
+    assert act_api.Choice(abilities=list(actor.ABILITIES)).abilities == list(actor.ABILITIES)
+
+
+async def test_what_rarely_changes_is_read_less_often(tmp_path: Path) -> None:
+    """The board, uci dhcp and the services are kept for a while, until a change of Kastellan's."""
+    rpcd = FakeRpcd(["kastellan-services"])
+    u = ubus(tmp_path, rpcd)
+    await ow.read(u)
+    first = list(rpcd.calls)
+    await ow.read(u)
+    again = rpcd.calls[len(first) :]
+    asked = lambda calls, what: sum(1 for c in calls if c[:2] == what)  # noqa: E731
+    assert asked(first, ("system", "board")) == 1 and asked(again, ("system", "board")) == 0
+    assert asked(again, ("rc", "list")) == 0 and asked(again, ("system", "info")) == 1
+    async with u.changing:
+        pass
+    await ow.read(u)
+    assert asked(rpcd.calls[len(first) + len(again) :], ("system", "board")) == 1
+
+
+async def test_an_old_read_cannot_repopulate_an_invalidated_cache(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    u = ubus(tmp_path, FakeRpcd([]))
+    started, finish = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def read(*args):
+        calls.append(args)
+        started.set()
+        await finish.wait()
+        return len(calls)
+
+    monkeypatch.setattr(u, "call", read)
+    task = asyncio.create_task(u.slow("system", "board"))
+    await started.wait()
+    async with u.changing:
+        pass
+    finish.set()
+    assert await task == 1
+    assert await u.slow("system", "board") == 2
+    assert await u.slow("system", "board") == 2

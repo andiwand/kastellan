@@ -492,6 +492,8 @@ export interface Container {
 	update_within?: string | null;
 	unchecked: string | null;
 	previous?: string | null; // the image kept from before its last update (actor), short id
+	compose?: string | null; // its compose file (or project), when compose made it
+	skipped?: boolean; // its update offer was said to be not needed (Updates leaves it out)
 }
 
 export interface Alarm {
@@ -983,7 +985,19 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 
 async function detail(response: Response): Promise<string | undefined> {
 	try {
-		return (await response.json()).detail;
+		const d = (await response.json()).detail;
+		if (d === undefined || d === null || typeof d === 'string') return d ?? undefined;
+		// FastAPI's validation errors: [{loc: [...], msg: "..."}, ...]
+		if (Array.isArray(d))
+			return d
+				.map((e) => {
+					const where = Array.isArray(e?.loc)
+						? e.loc.filter((p: unknown) => p !== 'body').join('.')
+						: '';
+					return where ? `${where}: ${e?.msg}` : String(e?.msg ?? JSON.stringify(e));
+				})
+				.join('; ');
+		return JSON.stringify(d);
 	} catch {
 		return undefined;
 	}
@@ -1043,6 +1057,8 @@ export interface ActResult {
 	updated?: boolean;
 	from?: string;
 	to?: string;
+	from_tag?: string; // an update to another tag: the tags
+	to_tag?: string;
 	why?: string;
 	restarted?: boolean;
 	started?: boolean;
@@ -1063,11 +1079,12 @@ export async function actStream(
 	device: string,
 	ability: string,
 	name: string | null, // the container's, or the VM's for vm-* abilities
-	onStep: (text: string) => void
+	onStep: (text: string) => void,
+	tag?: string // update-container: another tag of its image (one the hub found)
 ): Promise<ActResult> {
 	const outcome = (await streamSetup(
 		`/devices/${encodeURIComponent(device)}/act/${ability}/stream`,
-		ability.startsWith('vm-') ? { vm: name } : { container: name },
+		ability.startsWith('vm-') ? { vm: name } : { container: name, ...(tag ? { tag } : {}) },
 		(line) => {
 			if (line.startsWith('KASTELLAN-STEP ')) onStep(line.slice(15));
 		}
@@ -1645,6 +1662,11 @@ export const more = {
 		call<{ lines: LogLine[]; levels: string[]; marks?: LogMark[] }>('GET', `/logs${logQuery(f)}`),
 	logFacets: (hours = 24) => get<LogFacets>('/logs/facets', { hours }),
 	logSources: () => get<LogSources>('/logs/sources'),
+	updateNotNeeded: (id: string, key: string) =>
+		call<{ skipped: string }>(
+			'POST',
+			`/devices/${encodeURIComponent(id)}/containers/${encodeURIComponent(key)}/not-needed`
+		),
 	notNeeded: (id: string, kind: 'actor' | 'openwrt') =>
 		call<{ passed: string[] }>(
 			'POST',

@@ -37,12 +37,12 @@
 		updates: all.filter((c) => c.update && !c.unchecked).length
 	});
 	const canAct = (d: Device) => !!d.act && admin;
-	// Updates the actor can take: a newer build of the tag it runs (a new tag is chosen where the
-	// container is set up), on hosts with an actor, not already queued.
+	// "Update all": a newer build of the tag each runs (another tag is one at a time, asked first,
+	// in its row), on hosts with an actor, not said to be not needed, not already queued.
 	const updatable = $derived(
 		hosts.filter(canAct).flatMap((d) =>
 			(d.containers ?? [])
-				.filter((c) => c.update && c.update_to === 'newer build')
+				.filter((c) => c.update && !c.unchecked && c.update_to === 'newer build' && !c.skipped)
 				.map((c): Job => ({ device: d.id, kind: 'container', name: c.name }))
 				.filter((j) => !['queued', 'running'].includes(runner.state(j)?.state ?? ''))
 		)

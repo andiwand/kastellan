@@ -1,11 +1,18 @@
 # Update one container (on the host's list): pull its image again (same reference, e.g.
-# nginx:1.27 or app:latest; never another one, and only if it came from that registry), and if
-# that brought a newer image, recreate the container from its own settings with it. The old one
+# nginx:1.27 or app:latest), or, when asked for a tag (`<name> <tag>`), that tag of the same
+# image (nginx:1.28; never another image), only if it came from that registry; and if that
+# brought another image, recreate the container from its own settings with it. After a tag
+# change the container remembers the reference it ran (a label), for rollback-container. The old one
 # stays (stopped, renamed) until the new one runs steadily (and is healthy, if it has a health
 # check); if it doesn't, the old one comes back. The image it ran before is kept (tagged
 # kastellan-previous:<name>) for rollback-container. One update at a time (a lock in /run).
 import signal
 
+to_tag = None
+if len(sys.argv) == 3:  # the tag to go to, checked here again
+    if not TAG.fullmatch(sys.argv[2]):
+        fail("wrong arguments", 2)
+    to_tag = sys.argv.pop()
 name = one_name()
 signal.signal(signal.SIGHUP, signal.SIG_IGN)  # a dropped connection doesn't stop it half-way
 
@@ -53,20 +60,31 @@ mine = docker("GET", f"/images/{before}/json")
 # someone publishes under the same name.
 if not from_registry(mine, ref):
     fail(f"{ref} wasn't pulled from its registry (built here?): not replaced from there")
-step(f"pulling {ref}")
+target = with_tag(ref, to_tag) if to_tag else ref
+step(f"pulling {target}")
 try:
     signal.alarm(900)  # the pull, all of it
-    pull(ref)
+    pull(target)
     signal.alarm(0)
-    after = docker("GET", f"/images/{quote(ref, safe='/:')}/json")["Id"]
+    pulled = docker("GET", f"/images/{quote(target, safe='/:')}/json")
+    after = pulled["Id"]
 except Exception as e:
     signal.alarm(0)
-    fail(f"{ref}: {e}")
+    fail(f"{target}: {e}")
+if not from_registry(pulled, ref):
+    fail(f"{target} isn't {ref}'s image from its registry; not used")
 step("comparing the pulled image with the running one")
-if after == before:
+if after == before and target == ref:
     done({"container": name, "image": ref, "updated": False, "why": "already the newest image"})
 
 body, others = spec(old, mine.get("Config") or {})
+labels = dict(body.get("Labels") or {})
+if target != ref:
+    body["Image"] = target
+    labels[PREVIOUS_REF] = ref  # for going back to this tag
+else:
+    labels.pop(PREVIOUS_REF, None)  # the kept image is now this tag's
+body["Labels"] = labels
 swap(old, name, body, others)
 # The image it ran before keeps a name, so `docker image prune` leaves it and rollback-container
 # can go back to it.
@@ -75,4 +93,7 @@ try:
     tag(before, f"{PREVIOUS}:{name}")
 except Exception as e:
     step(f"couldn't keep the previous image: {e}")
-done({"container": name, "image": ref, "updated": True, "from": before[7:19], "to": after[7:19]})
+result = {"container": name, "image": target, "updated": True, "from": before[7:19], "to": after[7:19]}
+if target != ref:
+    result["from_tag"], result["to_tag"] = tag_of(ref), to_tag
+done(result)

@@ -69,6 +69,7 @@ from .push import Push
 from .registry import Registries
 from .secrets import Secrets
 from .settings import Settings
+from .skipped import Skipped
 from .ssh import Keys
 from .syslog_tls import Authority
 from .terminals import Terminals
@@ -89,6 +90,8 @@ RELOAD_EVERY = 2  # seconds between looks at config.yaml's mtime
 PRUNE_EVERY = 6 * 3600
 DRIVER_EVERY = 600
 FRITZ_EVERY = 60
+WG_EVERY = 600  # seconds between reads of a FRITZ!Box's WireGuard connections (web interface)
+WG_BACKOFF, WG_BACKOFF_MAX = 1800, 6 * 3600  # after a failure: 30 min, doubling, up to 6 h
 ACTIVE_WINDOW = 30 * 60  # a ring that stays open while admins are here: used within this
 ALARMS_EVERY = 30
 VULNS_FIRST = 120
@@ -183,6 +186,7 @@ class Hub:
         )
         self.backup_status: dict[str, dict[str, Any]] = {}  # per device: the last attempt
         self.offered = Offered(data / "abilities-offered.json")  # new abilities passed on
+        self.skipped = Skipped(data / "updates-skipped.json")  # container updates passed on
         # Kastellan's own backup (hubbackup.py): its key comes from a passphrase, not the hub.
         self.hub_backup = HubBackup(data if self.demo else settings.data, self._hub_backup_key)
         self.internet = Internet(data / "internet")  # the internet connection (internet.py)
@@ -233,6 +237,7 @@ class Hub:
         self.pins = Pins(settings.data / "openwrt")
         self.fritz_pins = Pins(settings.data / "fritzbox")  # FRITZ!Boxes' confirmed certificates
         self._fritz: dict[tuple[str, str, int, str], Fritz] = {}
+        self._wg_next: dict[str, tuple[float, int]] = {}  # FRITZ!Box WireGuard: next read, failures
         self.releases = Releases()
         self._ubus: dict[tuple[str, str, int, str], Ubus] = {}
         self.heartbeat_ok: datetime | None = None
@@ -271,6 +276,10 @@ class Hub:
                 log.error("%s; the API stays locked", problem.message)
                 return
         old_users = self.config.users
+        for id, old in self.config.devices.items():
+            new = config.devices.get(id)
+            if new is None or (old.host, old.openwrt, old.fritzbox) != (new.host, new.openwrt, new.fritzbox):
+                self.drop_clients(id)
         self.config, self.config_error, self.locked, self._loaded = config, None, None, True
         # Someone removed from config.yaml is signed out everywhere at once, and a terminal stays
         # open only for an admin whose password did not change.
@@ -422,6 +431,7 @@ class Hub:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await self.monitor.stop()
+        self.drop_clients()
         self.logs.close()
         if self._demo_dir:
             shutil.rmtree(self._demo_dir, ignore_errors=True)
@@ -626,8 +636,23 @@ class Hub:
         gone = self.vault.lock(ring, by_hand=by_hand)
         if not self.vault.is_open(KASTELLAN):
             self.push.forget_key()
-            self._ubus, self._fritz = {}, {}
+            self.drop_clients()
         return gone
+
+    def drop_clients(self, id: str | None = None, ubus: bool = True, fritz: bool = True) -> None:
+        """Forget the device clients (one device's, or all) and close their kept connections."""
+        if fritz:
+            if id is None:
+                self._wg_next.clear()
+            else:
+                self._wg_next.pop(id, None)
+        for cache, wanted in ((self._ubus, ubus), (self._fritz, fritz)):
+            if not wanted:
+                continue
+            for k in [k for k in cache if id is None or k[0] == id]:
+                pool = getattr(cache.pop(k), "pool", None)  # tests may keep fakes here
+                if pool is not None:
+                    pool.close()
 
     async def _relock(self) -> None:
         """Rings that stay open only while an admin uses the app (within ACTIVE_WINDOW), or until
@@ -640,7 +665,7 @@ class Hub:
                 self.audit.record("vault.lock", None, None, ring=rid, by="its policy")
             if not self.vault.is_open(KASTELLAN):
                 self.push.forget_key()
-                self._ubus, self._fritz = {}, {}
+                self.drop_clients()
 
     def _hub_backup_key(self) -> bytes:
         """The key of Kastellan's own backup (made from its passphrase; hubbackup.py)."""
@@ -675,7 +700,8 @@ class Hub:
         password = self.secrets.get(self.openwrt_secret(id))
         if client is None or client.password != password:
             client = Ubus(id, device.host, device.openwrt.port, device.openwrt.user, password, self.pins)
-            self._ubus = {k: v for k, v in self._ubus.items() if k[0] != id} | {key: client}
+            self.drop_clients(id, fritz=False)
+            self._ubus[key] = client
         return client
 
     async def _poll_routers(self) -> None:
@@ -692,14 +718,14 @@ class Hub:
                     ubus = self.ubus(id)
                     report = await openwrt_client.read(ubus)
                     with contextlib.suppress(Exception):
-                        access = await ubus.call("session", "access", {})
+                        access = await ubus.slow("session", "access", {})
                         groups = access.get("access-group") or {}
                         status.router_abilities = sorted(
                             g.removeprefix("kastellan-") for g in groups if g.startswith("kastellan-")
                         )
                     if status.router_abilities is not None:
                         try:
-                            versions = await ubus.call("file", "read", {"path": openwrt_setup.VERSIONS})
+                            versions = await ubus.slow("file", "read", {"path": openwrt_setup.VERSIONS})
                             text = str(versions.get("data") or "")
                         except Exception:  # set up before versions were kept (or not readable)
                             text = None
@@ -777,7 +803,8 @@ class Hub:
             client = Fritz(
                 id, device.host, device.fritzbox.port, device.fritzbox.user, password, self.fritz_pins
             )
-            self._fritz = {k: v for k, v in self._fritz.items() if k[0] != id} | {key: client}
+            self.drop_clients(id, ubus=False)
+            self._fritz[key] = client
         return client
 
     def fritz_web(self, id: str):
@@ -799,15 +826,29 @@ class Hub:
             try:
                 async with asyncio.timeout(90):
                     report = await fritz_client.read(self.fritz(id))
-                    try:  # the web interface's own API (undocumented): WireGuard
-                        from .fritzbox import web
+                    # The web interface's own API (undocumented): WireGuard. Every WG_EVERY, the
+                    # last answer kept between; after a failure (no such page, no right: a
+                    # sign-in each time) later and later, up to WG_BACKOFF_MAX.
+                    due, failures = self._wg_next.get(id, (0.0, 0))
+                    before = status.fritz or {}
+                    if time.monotonic() < due:
+                        if "wireguard" in before:
+                            report["wireguard"] = before["wireguard"]
+                        if err := (before.get("errors") or {}).get("wireguard"):
+                            report["errors"]["wireguard"] = err
+                    else:
+                        try:
+                            from .fritzbox import web
 
-                        async with asyncio.timeout(10):
-                            report["wireguard"] = web.wireguard(
-                                await self.fritz_web(id).data("shareWireguard")
-                            )
-                    except Exception as e:
-                        report["errors"]["wireguard"] = _brief(e)
+                            async with asyncio.timeout(10):
+                                report["wireguard"] = web.wireguard(
+                                    await self.fritz_web(id).data("shareWireguard")
+                                )
+                            self._wg_next[id] = (time.monotonic() + WG_EVERY, 0)
+                        except Exception as e:
+                            report["errors"]["wireguard"] = _brief(e)
+                            wait = min(WG_BACKOFF_MAX, WG_BACKOFF * 2**failures)
+                            self._wg_next[id] = (time.monotonic() + wait, failures + 1)
             except Exception as e:
                 status.fritz_error = _brief(e)
                 log.info("%s: %s", id, status.fritz_error)
@@ -1182,7 +1223,7 @@ class Hub:
                 continue
             label = self.config.label(id)
             for c in status.containers or []:
-                if c.get("update"):
+                if c.get("update") and not self.skipped.is_skipped(id, c):
                     target = c.get("update_to") or "a newer image"
                     key = f"update:{id}:{c.get('key', c['name'])}:{target}"
                     title = f"{label}: {c['name']} can be updated to {target}"

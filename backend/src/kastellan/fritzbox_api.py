@@ -143,7 +143,7 @@ def router(hub: Hub) -> APIRouter:
                 hub.fritz_pins.set(id, old_pin)
             audit(outcome="failed to save setup")
             raise
-        hub._fritz = {k: v for k, v in hub._fritz.items() if k[0] != id}
+        hub.drop_clients(id, ubus=False)
         audit(outcome="done")
         return {"model": info.get("NewModelName"), "firmware": info.get("NewSoftwareVersion")}
 
@@ -163,7 +163,7 @@ def router(hub: Hub) -> APIRouter:
         hub.check(new)
         hub.save_config(old, new)
         hub.fritz_pins.forget(id)
-        hub._fritz = {k: v for k, v in hub._fritz.items() if k[0] != id}
+        hub.drop_clients(id, ubus=False)
         hub.audit.record("fritzbox.remove", w.user, client_address(request.scope), device=id)
         return {"removed": True}
 

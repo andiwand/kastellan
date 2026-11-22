@@ -38,7 +38,8 @@ log = logging.getLogger(__name__)
 USER = "kastellan-act"
 BASE = "/usr/local/lib/kastellan/act"
 ABILITIES = {
-    "update-container": "Update containers (pull the image, recreate it with the same settings)",
+    "update-container": "Update containers (pull the image, or a newer tag of it, and recreate it"
+    " with the same settings)",
     "rollback-container": "Go back to a container's previous image (kept by an update)",
     "restart-container": "Restart containers",
     "start-container": "Start stopped containers",
@@ -76,6 +77,7 @@ UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mo
 REPLACING = ("update-container", "rollback-container")  # with act-containers (the swap)
 VM_ABILITIES = ("vm-start", "vm-shutdown", "vm-reboot", "vm-force-off")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # always with fullmatch
+TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")  # an image tag (update-container), fullmatch
 
 
 def _script(name: str) -> str:
@@ -312,12 +314,15 @@ async def act(
     ability: str,
     name: str | None = None,
     on_step: Callable[[str], None] | None = None,
+    tag: str | None = None,
 ) -> dict[str, Any]:
     """Ask the host to do one thing (to the container or VM `name`, for those abilities); its
     answer (JSON) or RuntimeError with its reason. Its steps (how far it got) go to `on_step` as
     they come; scripts older than steps send none."""
     if ability not in ABILITIES:
         raise ValueError("unknown ability")
+    if tag is not None and (ability != "update-container" or not TAG.fullmatch(tag)):
+        raise ValueError("only update-container takes a tag (letters, digits, _ . -)")
     words = [ability]
     if ability in CONTAINER_ABILITIES:
         if not name or not NAME.fullmatch(name):
@@ -337,6 +342,8 @@ async def act(
         words.append(name)
     elif name is not None:
         raise ValueError(f"{ability} takes no target")
+    if tag is not None:
+        words.append(tag)
     errors: list[str] = []
     async with asyncio.timeout(LIMITS[ability]), await keys.connect(target_of(device), "act") as conn:
         process = await conn.create_process(" ".join(words), stdin=asyncssh.DEVNULL)
@@ -364,6 +371,9 @@ async def act(
         stdout = await out
         code = (await process.wait(check=False)).exit_status
     if code != 0:
+        if tag is not None and errors and errors[-1].endswith("wrong arguments"):
+            # An actor from before tag changes: its dispatcher takes the name only.
+            raise RuntimeError("the actor there can't change tags yet: set it up again (Updates)")
         raise RuntimeError(errors[-1][:300] if errors else f"exit {code}")
     try:
         result = json.loads(stdout.strip().splitlines()[-1])

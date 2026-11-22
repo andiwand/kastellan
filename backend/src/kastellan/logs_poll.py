@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 EVERY = 60
+RECENT_LINES, ALL_LINES = 200, 1000  # an OpenWrt log read when caught up, and when not
 DENIED_AGAIN = 1800  # a device that doesn't allow it is asked again after this long
 PRUNE_EVERY = 3600
 
@@ -30,10 +31,17 @@ def _brief(e: BaseException) -> str:
 
 async def openwrt(hub: Hub, id: str) -> int:
     """New lines from an OpenWrt device's logd; how many."""
-    entries = await ow.read_log(hub.ubus(id))
     key = f"openwrt:{id}"
     cursor = await asyncio.to_thread(hub.logs.get_state, key)
-    lines, cursor = logs.from_logd(id, entries, cursor)
+    # Caught up: the newest RECENT_LINES are enough (logd builds and the router encrypts all it
+    # is asked for, every minute). All of them new: there may be more, so the whole buffer.
+    entries = await ow.read_log(hub.ubus(id), lines=RECENT_LINES if cursor else ALL_LINES)
+    lines, after = logs.from_logd(id, entries, cursor)
+    # Compare against all parsable entries: a malformed line isn't evidence of overlap.
+    if cursor and len(entries) >= RECENT_LINES and len(lines) == len(logs.from_logd(id, entries, None)[0]):
+        entries = await ow.read_log(hub.ubus(id), lines=ALL_LINES)
+        lines, after = logs.from_logd(id, entries, cursor)
+    cursor = after
     if lines:
         await asyncio.to_thread(hub.logs.add, lines)
         await asyncio.to_thread(hub.logs.set_state, key, cursor)

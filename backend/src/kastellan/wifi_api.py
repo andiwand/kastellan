@@ -71,7 +71,7 @@ class PlanApply(BaseModel):
 
 
 LIVE_WAIT = 10.0  # seconds one access point may take
-LIVE_FRESH = 60.0  # seconds a reading is shown as it is
+LIVE_FRESH = 300.0  # seconds a reading is shown as it is (Kastellan's own changes end it sooner)
 
 
 def router(hub: Hub) -> APIRouter:
@@ -184,7 +184,7 @@ def router(hub: Hub) -> APIRouter:
         )
         return {"errors": errors, "networks": list(networks.values())}, dict(found)
 
-    async def live() -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
+    async def live(auto: bool = False) -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
         # A config reload or a locked ring must not leave old credentials' readings in use.
         try:
             context = (id(hub.config), salt())
@@ -195,7 +195,9 @@ def router(hub: Hub) -> APIRouter:
             invalidate()
             cache["context"] = context
         age = time.monotonic() - cache["t"]
-        if cache["value"] is not None and age < LIVE_FRESH:
+        # Fresh enough, or the page refreshing on its own with nobody using it (it reads the
+        # access points anew when someone looks again): what is kept.
+        if cache["value"] is not None and (age < LIVE_FRESH or auto):
             return cache["value"]
         if cache["task"] is None or cache["task"].done():
 
@@ -221,7 +223,7 @@ def router(hub: Hub) -> APIRouter:
 
             survey, keys = demo.WIFI_SURVEY, {}
         else:
-            survey, keys = await live()
+            survey, keys = await live(auto=request.headers.get("x-kastellan-auto") == "1")
         settings = router_settings()
         all_scans = scans.all(time.time() - 7 * 86400)
         radios = wifi.radios_from(settings, all_scans, fritz)

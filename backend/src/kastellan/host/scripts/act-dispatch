@@ -15,9 +15,10 @@ VM_NAME = re.compile(  # libvirt allows more; Kastellan this much, and never a n
     r"(?!\d+$)(?![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$)"
     r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}"  # virsh reads those as a domain id or UUID first
 )
+TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")  # an image tag, as Docker allows (fullmatch)
 UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
 FORMS = {
-    "update-container": NAME,  # pull its image, recreate it with the same settings
+    "update-container": NAME,  # pull its image (or a tag of it), recreate it with the same settings
     "rollback-container": NAME,  # back to the image it ran before its last update
     "restart-container": NAME,
     "start-container": NAME,
@@ -67,7 +68,14 @@ if ability not in installed:
     print(f"{ability} isn't installed on this host", file=sys.stderr)
     sys.exit(3)
 pattern = FORMS[ability]
-if (pattern is None and args) or (pattern is not None and (len(args) != 1 or not pattern.fullmatch(args[0]))):
+# update-container may name the tag to go to: another tag of the same image (`<name> <tag>`).
+if ability == "update-container" and len(args) == 2 and TAG.fullmatch(args[1]):
+    args_checked = args[:1]
+else:
+    args_checked = args
+if (pattern is None and args) or (
+    pattern is not None and (len(args_checked) != 1 or not pattern.fullmatch(args_checked[0]))
+):
     print(f"{ability}: wrong arguments", file=sys.stderr)
     sys.exit(2)
 

@@ -42,6 +42,8 @@ from .openwrt_api import router as openwrt_router
 from .push_api import router as push_router
 from .settings import Settings
 from .signins_api import router as signins_router
+from .skipped import identity as skipped_identity
+from .skipped import offer as skipped_offer
 from .sshkeys_api import router as sshkeys_router
 from .terminal_api import router as terminal_router
 from .terminal_api import ssh_port
@@ -320,7 +322,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
                     "state": status.state if status else "unknown",
                     "driver": device.driver,
                     "info": status.info if status else None,
-                    "containers": status.containers if status else None,
+                    "containers": hub.skipped.mark(id, status.containers) if status else None,
                     "containers_checked": status.containers_checked if status else None,
                     "containers_error": status.containers_error if status else None,
                     "vulns": status.vulns if status else None,
@@ -379,6 +381,23 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             "abilities.not-needed", w.user, client_address(request.scope), device=id, kind=kind, abilities=new
         )
         return {"passed": new}
+
+    @app.post("/api/devices/{id}/containers/{key:path}/not-needed")
+    def update_not_needed(id: str, key: str, request: Request) -> dict[str, Any]:
+        """A container's update offer: not wanted (Updates stops showing it until a newer one)."""
+        w = require_admin(request)
+        status = hub.monitor.status.get(id)
+        c = next(
+            (c for c in (status.containers if status else None) or [] if c.get("key", c["name"]) == key), None
+        )
+        what = skipped_offer(c) if c else None
+        if what is None:
+            raise HTTPException(404, "no update offered for that container")
+        hub.skipped.skip(id, key, skipped_identity(c))
+        hub.audit.record(
+            "update.not-needed", w.user, client_address(request.scope), device=id, container=key, update=what
+        )
+        return {"skipped": what}
 
     @app.get("/api/devices/{id}/history")
     def history(id: str, hours: Hours = 24) -> list[dict[str, Any]]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -87,7 +88,7 @@ async def test_wifi_cache_respects_config_reload_and_locked_keys(tmp_path, monke
     monkeypatch.setattr(wifi_api.sync, "survey", survey)
     monkeypatch.setattr(hub, "own_secret", lambda *args: "salt")
     overview = next(r.endpoint for r in wifi_api.router(hub).routes if r.path == "/api/wifi")
-    request = Request({"type": "http", "state": {"who": Who("admin", Role.ADMIN)}})
+    request = Request({"type": "http", "headers": [], "state": {"who": Who("admin", Role.ADMIN)}})
     await overview(request)
     await overview(request)
     assert calls == ["ap"]
@@ -104,6 +105,17 @@ async def test_wifi_cache_respects_config_reload_and_locked_keys(tmp_path, monke
     monkeypatch.setattr(hub, "own_secret", lambda *args: "salt")
     await overview(request)
     assert calls == ["ap", "new", "new"]
+
+    # Stale, but the page refreshing on its own: what is kept, no access point asked.
+    monkeypatch.setattr(wifi_api, "LIVE_FRESH", 0.0)
+    auto = Request(
+        {"type": "http", "headers": [(b"x-kastellan-auto", b"1")], "state": {"who": Who("admin", Role.ADMIN)}}
+    )
+    await overview(auto)
+    assert calls == ["ap", "new", "new"]
+    await overview(request)  # someone looks: read anew (shown next time; it runs alongside)
+    await asyncio.sleep(0.05)
+    assert calls == ["ap", "new", "new", "new"]
 
 
 @pytest.fixture

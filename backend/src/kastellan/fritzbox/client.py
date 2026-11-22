@@ -33,7 +33,8 @@ from xml.sax.saxutils import escape
 import httpx
 
 from ..logs import Line
-from ..openwrt.client import ChangedCertificate, Pins, fingerprint_of_der
+from ..openwrt.client import ChangedCertificate, Pins, _Changing, fingerprint_of_der
+from ..pinned_http import Pool
 
 MAX_RESPONSE = 16 * 1024 * 1024
 NS = "urn:dslforum-org:service:"
@@ -105,9 +106,12 @@ class Fritz:
         self._service_types: dict[str, str] = {}
         self._challenge: str | None = None
         self._nc = 0
-        self.changing = asyncio.Lock()
+        self.changing = _Changing(self)  # one change at a time; its end forgets the kept sections
+        self._kept: dict[str, tuple[float, Any, dict[str, str]]] = {}
         self.confirming = asyncio.Lock()
         self._token: ContextVar[str | None] = ContextVar("fritz_confirmation", default=None)
+        # Connections kept open between requests (TR-064 and the web interface, by port).
+        self.pool = Pool(host, self._check)
 
     async def _http(
         self,
@@ -131,56 +135,26 @@ class Fritz:
                     method, f"https://{self.host}:{port}{path}", content=body, headers=headers
                 )
                 return r.status_code, {k.lower(): v for k, v in r.headers.items()}, r.content
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE  # checked below, by the pinned fingerprint
-        async with asyncio.timeout(timeout):
-            reader, writer = await asyncio.open_connection(self.host, port, ssl=ctx)
-            try:
-                der = writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
-                pin = self.pins.get(self.id)
-                if pin is None:
-                    raise ChangedCertificate(f"{self.host}: no confirmed certificate (set its login up)")
-                if fingerprint_of_der(der) != pin:
-                    raise ChangedCertificate(
-                        f"{self.host} shows another certificate than the one confirmed at its setup"
-                        " (confirm the new one if the FRITZ!Box made a new one)"
-                    )
-                host = f"[{self.host}]" if ":" in self.host else self.host
-                head = f"{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n"
-                head += "".join(f"{k}: {v}\r\n" for k, v in headers.items())
-                head += f"Content-Length: {len(body)}\r\n\r\n"
-                writer.write(head.encode() + body)
-                await writer.drain()
-                data = bytearray()
-                while len(data) <= MAX_RESPONSE:
-                    try:
-                        chunk = await reader.read(65536)
-                    except (ssl.SSLError, ConnectionResetError, asyncio.IncompleteReadError):
-                        break
-                    if not chunk:
-                        break
-                    data += chunk
-                if len(data) > MAX_RESPONSE:
-                    raise ValueError("the FRITZ!Box response is too large")
-            finally:
-                writer.close()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(writer.wait_closed(), 2)
-        header, _, payload = bytes(data).partition(b"\r\n\r\n")
-        lines = header.decode("latin-1").split("\r\n")
         try:
-            status = int(lines[0].split()[1])
-        except (IndexError, ValueError) as e:
-            raise ConnectionError(f"{self.host}: not an HTTP answer") from e
-        heads = {k.strip().lower(): v.strip() for k, _, v in (ln.partition(":") for ln in lines[1:])}
-        if "content-length" in heads and len(payload) != int(heads["content-length"]):
-            raise ConnectionError("incomplete FRITZ!Box response")
-        if "chunked" in heads.get("transfer-encoding", "").lower():
-            from ..openwrt.client import _decode_chunked
+            return await self.pool.request(port, method, path, headers, body, timeout, MAX_RESPONSE)
+        except ValueError as e:
+            if "too large" in str(e):
+                raise ValueError("the FRITZ!Box response is too large") from e
+            raise
 
-            payload = _decode_chunked(payload)
-        return status, heads, payload
+    def _check(self, der: bytes) -> None:
+        pin = self.pins.get(self.id)
+        if pin is None:
+            raise ChangedCertificate(f"{self.host}: no confirmed certificate (set its login up)")
+        if fingerprint_of_der(der) != pin:
+            raise ChangedCertificate(
+                f"{self.host} shows another certificate than the one confirmed at its setup"
+                " (confirm the new one if the FRITZ!Box made a new one)"
+            )
+
+    def forget(self) -> None:
+        """What read() kept: read anew next time."""
+        self._kept = {}
 
     async def request(
         self,
@@ -326,6 +300,26 @@ async def _try(coro) -> Any:
         return None
 
 
+# How long read() keeps a section (seconds): what rarely changes is asked less often than the
+# line (every round). Each TR-064 action is a request the box answers on a slow CPU.
+KEEP = {"update": 600, "forwards": 600, "remote": 600, "dhcp": 600, "mesh": 300, "wifi": 120, "hosts": 120}
+
+
+async def _kept(fb: Fritz, name: str, errors: dict[str, str], make) -> Any:
+    """A section of read(): kept for KEEP[name] seconds (and until a change of Kastellan's), with
+    the errors it had."""
+    cache = fb._kept
+    kept = cache.get(name)
+    if kept is not None and time.monotonic() - kept[0] < KEEP[name]:
+        errors.update(kept[2])
+        return kept[1]
+    own: dict[str, str] = {}
+    value = await make(own)
+    cache[name] = (time.monotonic(), value, own)
+    errors.update(own)
+    return value
+
+
 async def read(fb: Fritz) -> dict[str, Any]:
     """The FRITZ!Box's state, as the page shows it. What it doesn't offer (or doesn't allow) is
     left out; `errors` says what couldn't be read."""
@@ -338,28 +332,42 @@ async def read(fb: Fritz) -> dict[str, Any]:
         "serial": None,  # never shown
         "errors": errors,
     }
-    if ui := await _try(fb.call("UserInterface:1", "GetInfo")):
-        report["update"] = {
+
+    async def update(_e):
+        ui = await _try(fb.call("UserInterface:1", "GetInfo"))
+        if not ui:
+            return None
+        return {
             "available": _bool(ui.get("NewUpgradeAvailable")),
             "version": ui.get("NewX_AVM-DE_Version") or None,
         }
+
+    async def wifi(e):
+        networks = await _wifi(fb, e)
+        for w in networks:
+            w["associated"] = await _associated(fb, w["index"])
+        return networks
+
+    if (update_info := await _kept(fb, "update", errors, update)) is not None:
+        report["update"] = update_info
     report["internet"] = await _internet(fb, errors)
-    report["wifi"] = await _wifi(fb, errors)
-    report["clients"] = await _hosts(fb, errors)
-    report["forwards"] = await _forwards(fb, errors)
-    report["remote"] = await _remote(fb)
-    report["mesh"] = await _mesh(fb, errors)
-    report["dhcp"] = await _dhcp(fb, report["clients"])
-    for w in report["wifi"]:
-        w["associated"] = await _associated(fb, w["index"])
+    report["wifi"] = [dict(w) for w in await _kept(fb, "wifi", errors, wifi)]
+    report["clients"] = await _kept(fb, "hosts", errors, lambda e: _hosts(fb, e))
+    report["forwards"] = await _kept(fb, "forwards", errors, lambda e: _forwards(fb, e))
+    report["remote"] = await _kept(fb, "remote", errors, lambda _e: _remote(fb))
+    report["mesh"] = await _kept(fb, "mesh", errors, lambda e: _mesh(fb, e))
+    dhcp_info = await _kept(
+        fb, "dhcp", errors, lambda _e: _try(fb.call("LANHostConfigManagement:1", "GetInfo"))
+    )
+    report["dhcp"] = _dhcp(dhcp_info, report["clients"])
     return report
 
 
-async def _dhcp(fb: Fritz, clients: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Its DHCP server: on or off, the pool, and the active clients with an address in it."""
+def _dhcp(info: dict[str, Any] | None, clients: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Its DHCP server (LANHostConfigManagement's GetInfo): on or off, the pool, and the active
+    clients with an address in it."""
     from ..dhcp import in_range
 
-    info = await _try(fb.call("LANHostConfigManagement:1", "GetInfo"))
     if not info:
         return None
     low, high = info.get("NewMinAddress"), info.get("NewMaxAddress")

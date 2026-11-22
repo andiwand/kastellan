@@ -317,7 +317,11 @@ def docker():
                 digests[image_id] = []
         name = (c.get("Names") or ["?"])[0].lstrip("/")
         before = previous.get(name)
+        labels = c.get("Labels") or {}
         out.append({
+            # Set up with compose: its file names the tag (a tag changed here would go back).
+            "compose": labels.get("com.docker.compose.project.config_files")
+            or labels.get("com.docker.compose.project"),
             "name": name,
             "previous": before[7:19] if before and before != image_id else None,
             "image": c.get("Image", ""),

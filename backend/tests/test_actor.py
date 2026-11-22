@@ -299,6 +299,47 @@ def test_a_failing_rollback_points_the_name_back(host) -> None:
     assert fake.images["me/app:1"] == "sha256:" + "b" * 64  # the name points where it did
 
 
+def test_update_to_another_tag_and_back(host) -> None:
+    fake, run = host
+    a, b = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    fake.images = {"me/app:1": a, "me/app:2": b}
+    r = run("update-container", "app", "2")
+    assert r.returncode == 0, r.stderr
+    result = json.loads(r.stdout)
+    assert (result["image"], result["from_tag"], result["to_tag"]) == ("me/app:2", "1", "2")
+    assert "pulling me/app:2" in steps(r)
+    c = fake.find("app")
+    assert c["Config"]["Image"] == "me/app:2" and c["Image"] == b
+    assert c["Config"]["Labels"] == {"mine": "yes", "kastellan.previous-image": "me/app:1"}
+    assert fake.images["kastellan-previous:app"] == a
+
+    # Back: to the tag it ran, not the old image under the new tag's name.
+    r = run("rollback-container", "app")
+    assert r.returncode == 0, r.stderr
+    c = fake.find("app")
+    assert (c["Config"]["Image"], c["Image"]) == ("me/app:1", a) and fake.images["me/app:2"] == b
+    assert c["Config"]["Labels"]["kastellan.previous-image"] == "me/app:2"  # and forth again
+    assert json.loads(r.stdout)["image"] == "me/app:1"
+
+    # A same-tag update forgets the other tag (the kept image is now this tag's).
+    fake.images["me/app:1"] = b
+    assert run("update-container", "app").returncode == 0
+    assert "kastellan.previous-image" not in fake.find("app")["Config"]["Labels"]
+
+
+def test_a_tag_only_of_the_same_image(host) -> None:
+    fake, run = host
+    a, b = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    fake.images = {"me/app:1": a, "me/app:2": b}
+    fake.image_info[b]["RepoDigests"] = ["evil/app@sha256:" + "3" * 64]  # someone else's under it
+    r = run("update-container", "app", "2")
+    assert r.returncode == 1 and "isn't me/app:1's image" in r.stderr
+    assert fake.find("app")["Image"] == a
+    for bad in ("../x", "-x", "a b"):
+        assert run("update-container", "app", bad).returncode == 2
+    assert run("update-container", "app", "1", "2").returncode == 2
+
+
 def test_nothing_newer_changes_nothing(host) -> None:
     fake, run = host
     fake.images["me/app:1"] = "sha256:" + "a" * 64
@@ -312,7 +353,7 @@ def test_only_what_the_host_allows(host) -> None:
     assert run("update-container", "app", allow="other\n").returncode == 3
     assert run("update-container", "app", allow="*\n").returncode == 0
     assert run("update-container", "../app").returncode == 2
-    assert run("update-container", "app", "more").returncode == 2
+    assert run("update-container", "app", "more", "extra").returncode == 2
     assert run("restart-container", "app").returncode == 0
     app_id = fake.find("app")["Id"]
     assert f"POST /containers/{app_id}/restart" in fake.calls  # by its id, once found by its exact name
@@ -342,7 +383,9 @@ def test_the_dispatcher_accepts_only_known_forms(tmp_path: Path) -> None:
     for bad, code in [
         ("reboot", 3),  # not installed
         ("update-container", 2),
-        ("update-container a b", 2),
+        ("update-container a b c", 2),
+        ("update-container a ../b", 2),
+        ("update-container a -b", 2),
         ("update-container ;id", 2),
         ("update-container $(id)", 2),
         ("rm -rf /", 2),
@@ -351,6 +394,10 @@ def test_the_dispatcher_accepts_only_known_forms(tmp_path: Path) -> None:
         r = dispatch(tmp_path, bad, ("update-container",))
         assert r.returncode == code, (bad, r.stdout, r.stderr)
         assert "sudo" not in r.stdout
+    tagged = dispatch(tmp_path, "update-container norn 1.2.3", ("update-container",))
+    assert tagged.returncode == 0 and tagged.stdout.strip().endswith("update-container norn 1.2.3")
+    (tmp_path / "other").mkdir()
+    assert dispatch(tmp_path / "other", "restart-container norn 1.2", ("restart-container",)).returncode == 2
     listing = dispatch(tmp_path, "abilities", ("update-container", "reboot"))
     assert listing.stdout.splitlines()[0] == "reboot update-container"
 
@@ -694,7 +741,7 @@ def test_the_streamed_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     from kastellan.auth import hash_password
     from kastellan.settings import Settings
 
-    async def fake_act(keys, device, ability, container=None, on_step=None):
+    async def fake_act(keys, device, ability, container=None, on_step=None, tag=None):
         on_step("pulling me/app:1")
         on_step("creating the new container")
         if container == "broken":
@@ -1010,7 +1057,7 @@ def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: p
 
     asked: list[tuple[str, str | None]] = []
 
-    async def fake_act(keys, device, ability, name=None, on_step=None):
+    async def fake_act(keys, device, ability, name=None, on_step=None, tag=None):
         if ability == "journal":
             return {"lines": []}
         asked.append((ability, name))
@@ -1092,7 +1139,7 @@ async def test_log_lines_stay_out_of_the_audit(tmp_path: Path, monkeypatch: pyte
         f"users:\n  ada:\n    role: admin\n    password: {hash_password('admin password')}\n"
     )
 
-    async def fake_act(keys, device, ability, name=None, on_step=None):
+    async def fake_act(keys, device, ability, name=None, on_step=None, tag=None):
         assert (ability, name) == ("unit-logs", "nginx.service")
         return {"unit": name, "lines": ["SECRET=hunter2"], "state": "failed"}
 
@@ -1326,3 +1373,91 @@ def test_docker_log_batches_keep_the_earliest_unread_entries(host) -> None:
         (500, b"failed") if "/logs?" in path else original(method, path, body)
     )
     assert run("docker-logs", second["since"], allow="").returncode != 0
+
+
+def test_only_a_tag_the_hub_found_and_not_needed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tag goes to the host only when the hub found it for that container; an update offer
+    said to be not needed stops being shown until a newer one comes."""
+    from fastapi.testclient import TestClient
+
+    from kastellan import act_api
+    from kastellan.api import create_app
+    from kastellan.auth import hash_password
+    from kastellan.monitor import DeviceStatus
+    from kastellan.settings import Settings
+
+    asked: list[tuple[str, str | None, str | None]] = []
+
+    async def fake_act(keys, device, ability, name=None, on_step=None, tag=None):
+        asked.append((ability, name, tag))
+        return {"updated": True}
+
+    monkeypatch.setattr(act_api.actor, "act", fake_act)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "devices:\n  nas:\n    host: 127.0.0.1\n    act: {}\n"
+        f"users:\n  ada:\n    role: admin\n    password: {hash_password('pw for tests')}\n"
+    )
+    h = {"X-Kastellan": "1"}
+    bind = {"key": "bind", "name": "bind", "image": "isc/bind9", "tag": "9.20", "update": True}
+    with TestClient(create_app(Settings(config=config, data=tmp_path))) as c:
+        assert c.post("/api/auth/login", json={"user": "ada", "password": "pw for tests"}, headers=h)
+        hub = c.app.state.hub
+        hub.monitor.status["nas"] = DeviceStatus(
+            containers=[{**bind, "update_to": "10.0", "update_within": "9.21", "update_digest": ""}]
+        )
+        url = "/api/devices/nas/act/update-container"
+        for tag in ("9.21", "10.0"):
+            assert c.post(url, json={"container": "bind", "tag": tag}, headers=h).status_code == 200
+        assert c.post(url, json={"container": "bind", "tag": "9.19"}, headers=h).status_code == 409
+        assert c.post(url, json={"container": "other", "tag": "9.21"}, headers=h).status_code == 409
+        container = hub.monitor.status["nas"].containers[0]
+        container["unchecked"] = "registry unavailable"
+        assert c.post(url, json={"container": "bind", "tag": "10.0"}, headers=h).status_code == 409
+        container["unchecked"] = None
+        hub.monitor.status["nas"].containers.append({**container, "key": "remote/bind"})
+        assert c.post(url, json={"container": "bind", "tag": "10.0"}, headers=h).status_code == 409
+        hub.monitor.status["nas"].containers.pop()
+        restart = "/api/devices/nas/act/restart-container"
+        assert c.post(restart, json={"container": "bind", "tag": "9.21"}, headers=h).status_code == 400
+        assert asked == [("update-container", "bind", "9.21"), ("update-container", "bind", "10.0")]
+
+        def shown():
+            (d,) = [d for d in c.get("/api/devices").json() if d["id"] == "nas"]
+            return d["containers"][0]["skipped"]
+
+        assert shown() is False
+        assert c.post("/api/devices/nas/containers/bind/not-needed", headers=h).json() == {"skipped": "10.0"}
+        assert shown() is True
+        hub.monitor.status["nas"].containers[0]["update_to"] = "10.1"  # a newer offer shows again
+        assert shown() is False
+        assert c.post("/api/devices/nas/containers/nope/not-needed", headers=h).status_code == 404
+    audit = [json.loads(ln) for ln in (tmp_path / "audit.log").read_text().splitlines()]
+    assert any(a.get("action") == "act.update-container" and a.get("tag") == "10.0" for a in audit)
+    assert any(a.get("action") == "update.not-needed" and a.get("update") == "10.0" for a in audit)
+
+
+def test_switching_tags_even_when_the_image_is_identical(host) -> None:
+    fake, run = host
+    a = "sha256:" + "a" * 64
+    fake.images = {"me/app:1": a, "me/app:2": a}
+    result = run("update-container", "app", "2")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["updated"] is True
+    assert fake.find("app")["Config"]["Image"] == "me/app:2"
+    assert fake.find("app")["Image"] == a
+
+
+def test_skipped_offers_belong_to_the_image_and_ignore_damaged_entries(tmp_path: Path) -> None:
+    from kastellan.skipped import Skipped, identity
+
+    path = tmp_path / "skipped.json"
+    path.write_text('{"nas": [], "other": {"app": 42}}')
+    skipped = Skipped(path)
+    c = {"name": "app", "image": "repo/app", "tag": "1", "update": True, "update_to": "2"}
+    assert not skipped.is_skipped("nas", c)
+    skipped.skip("nas", "app", identity(c))
+    assert skipped.is_skipped("nas", c)
+    assert not skipped.is_skipped("nas", {**c, "image": "another/app"})
+    assert not skipped.is_skipped("nas", {**c, "tag": "1.5"})
+    assert not skipped.is_skipped("nas", {**c, "update_to": "3"})

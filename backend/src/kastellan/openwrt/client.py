@@ -7,7 +7,7 @@ certificate with it before a byte is sent. Validity dates don't count (uhttpd's 
 is never renewed, and a router's clock may be wrong); only the certificate itself. A device
 that shows another one gets nothing until its login is set up again.
 
-Requests are plain HTTP/1.0 over that checked TLS connection, one per call.
+HTTP/1.1 connections are reused briefly between calls.
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+from ..pinned_http import Pool
 
 NULL_SESSION = "0" * 32
 DENIED = -32002  # uhttpd: the session may not call that (or it has ended)
@@ -111,16 +113,24 @@ class Pins:
         (self.folder / f"{id}.sha256").unlink(missing_ok=True)
 
 
-def _decode_chunked(body: bytes) -> bytes:
-    out, rest = bytearray(), body
-    while rest:
-        size_line, _, rest = rest.partition(b"\r\n")
-        size = int(size_line.split(b";")[0] or b"0", 16)
-        if size == 0:
-            break
-        out += rest[:size]
-        rest = rest[size + 2 :]
-    return bytes(out)
+SLOW_EVERY = 600.0  # seconds: how long `Ubus.slow` keeps a read
+
+
+class _Changing:
+    """`Ubus.changing`: a lock whose end forgets the kept reads (what it changed shows next)."""
+
+    def __init__(self, ubus: Ubus) -> None:
+        self._lock, self._ubus = asyncio.Lock(), ubus
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    async def __aenter__(self) -> None:
+        await self._lock.acquire()
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._ubus.forget()
+        self._lock.release()
 
 
 class Ubus:
@@ -142,7 +152,11 @@ class Ubus:
         self.expires = 0.0
         self._id = 0
         self._login_lock = asyncio.Lock()
-        self.changing = asyncio.Lock()  # one change (Wi-Fi, firmware, services) at a time
+        # One change (Wi-Fi, firmware, services) at a time; it ends what `slow` kept.
+        self.changing = _Changing(self)
+        self._slow: dict[str, tuple[float, Any]] = {}
+        # Connections kept open between calls: one TLS handshake per round, not per call.
+        self.pool = Pool(host, self._check)
 
     async def _http(self, path: str, body: bytes, content_type: str, timeout: float) -> tuple[int, bytes]:
         if self.transport is not None:
@@ -153,50 +167,20 @@ class Ubus:
                     headers={"content-type": content_type},
                 )
                 return r.status_code, r.content
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE  # checked below, by the pinned fingerprint
-        async with asyncio.timeout(timeout):
-            reader, writer = await asyncio.open_connection(self.host, self.port, ssl=ctx)
-            try:
-                der = writer.get_extra_info("ssl_object").getpeercert(binary_form=True)
-                pin = self.pins.get(self.id)
-                if pin is None:
-                    raise ChangedCertificate(f"{self.host}: no pinned certificate (set its login up)")
-                if fingerprint_of_der(der) != pin:
-                    raise ChangedCertificate(
-                        f"{self.host} shows another certificate than at its setup"
-                        " (set its login up again if it was reset)"
-                    )
-                head = (
-                    f"POST {path} HTTP/1.0\r\nHost: {self.host}\r\nContent-Type: {content_type}\r\n"
-                    f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
-                )
-                writer.write(head.encode() + body)
-                await writer.drain()
-                data = bytearray()
-                while len(data) <= MAX_RESPONSE:
-                    try:
-                        chunk = await reader.read(65536)
-                    except (ssl.SSLError, ConnectionResetError, asyncio.IncompleteReadError):
-                        break  # uhttpd closes without a TLS goodbye
-                    if not chunk:
-                        break
-                    data += chunk
-            finally:
-                writer.close()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(writer.wait_closed(), 2)
-        header, _, payload = bytes(data).partition(b"\r\n\r\n")
-        lines = header.decode("latin-1").split("\r\n")
-        try:
-            status = int(lines[0].split()[1])
-        except (IndexError, ValueError) as e:
-            raise ConnectionError(f"{self.host}: not an HTTP answer") from e
-        headers = {k.strip().lower(): v.strip() for k, _, v in (ln.partition(":") for ln in lines[1:])}
-        if "chunked" in headers.get("transfer-encoding", "").lower():
-            payload = _decode_chunked(payload)
-        return status, payload
+        _status, _heads, payload = await self.pool.request(
+            self.port, "POST", path, {"Content-Type": content_type}, body, timeout, MAX_RESPONSE
+        )
+        return _status, payload
+
+    def _check(self, der: bytes) -> None:
+        pin = self.pins.get(self.id)
+        if pin is None:
+            raise ChangedCertificate(f"{self.host}: no pinned certificate (set its login up)")
+        if fingerprint_of_der(der) != pin:
+            raise ChangedCertificate(
+                f"{self.host} shows another certificate than at its setup"
+                " (set its login up again if it was reset)"
+            )
 
     async def _rpc(self, session: str, obj: str, method: str, args: dict[str, Any], timeout: float) -> Any:
         self._id += 1
@@ -242,6 +226,22 @@ class Ubus:
                 self.expires = time.monotonic() + self._timeout - 30
             assert self.session is not None
             return self.session
+
+    async def slow(self, obj: str, method: str, args: dict[str, Any] | None = None, every: float = 0) -> Any:
+        """A read of what rarely changes (the board, uci dhcp, the services): kept `every`
+        seconds (SLOW_EVERY), and until a change of Kastellan's (`changing`) or a new client."""
+        key = json.dumps([obj, method, args or {}], sort_keys=True)
+        cache = self._slow
+        kept = cache.get(key)
+        if kept is not None and time.monotonic() - kept[0] < (every or SLOW_EVERY):
+            return kept[1]
+        result = await self.call(obj, method, args)
+        cache[key] = (time.monotonic(), result)  # a concurrent forget() replaces this cache
+        return result
+
+    def forget(self) -> None:
+        """What `slow` kept: read anew next time."""
+        self._slow = {}
 
     async def call(
         self,
@@ -293,7 +293,7 @@ class Ubus:
 
 async def read(ubus: Ubus) -> dict[str, Any]:
     """The device's state, as the page shows it."""
-    board = await ubus.call("system", "board")
+    board = await ubus.slow("system", "board")
     info = await ubus.call("system", "info")
     report: dict[str, Any] = {
         "board": {
@@ -403,7 +403,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
     except Exception as e:
         report["errors"]["wifi"] = str(e)[:200]
     try:
-        rc = await ubus.call("rc", "list")
+        rc = await ubus.slow("rc", "list", every=300)
         report["services"] = [
             {"name": n, "enabled": bool(v.get("enabled")), "running": bool(v.get("running"))}
             for n, v in sorted(rc.items())
@@ -413,7 +413,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
     from .setup import SERVICES_ALLOW
 
     try:  # the services Kastellan may act on
-        data = (await ubus.call("file", "read", {"path": SERVICES_ALLOW})).get("data", "")
+        data = (await ubus.slow("file", "read", {"path": SERVICES_ALLOW})).get("data", "")
         report["services_allowed"] = [ln for ln in str(data).split("\n") if ln][:100]
     except Exception:
         report["services_allowed"] = []
@@ -486,7 +486,7 @@ async def _dhcp(ubus: Ubus, leases: list[dict[str, Any]], interfaces: list[dict[
     pools: list[dict[str, Any]] | None = None
     ranges = []
     with contextlib.suppress(Exception):
-        values = (await ubus.call("uci", "get", {"config": "dhcp"})).get("values", {})
+        values = (await ubus.slow("uci", "get", {"config": "dhcp"})).get("values", {})
         pools = []
         for name, sec in values.items():
             if (

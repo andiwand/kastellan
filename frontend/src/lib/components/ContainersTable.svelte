@@ -5,6 +5,7 @@
 	import LogsDialog from './LogsDialog.svelte';
 	import { store } from '#lib/state.svelte.js';
 	import { containerActions, type ContainerAction } from '#lib/actions.js';
+	import { containerAsk, tagOf } from '#lib/updates.js';
 	import ArrowUpCircle from '@lucide/svelte/icons/circle-arrow-up';
 	import CircleHelp from '@lucide/svelte/icons/circle-help';
 	import Check from '@lucide/svelte/icons/check';
@@ -22,7 +23,19 @@
 	let asking = $state<string | null>(null); // a job's key (or "all"): asked once before it runs
 	let logsOf = $state<string | null>(null); // the container whose log is open
 
-	const update = (c: Container): Job => ({ device, kind: 'container', name: c.name });
+	const update = (c: Container, to = c.update_to): Job => ({
+		device,
+		kind: 'container',
+		name: c.name,
+		...(tagOf(to) ? { tag: tagOf(to) } : {})
+	});
+	const ask = (c: Container, to: string) =>
+		containerAsk({
+			name: c.name,
+			from: c.tag,
+			to,
+			compose: c.compose
+		});
 	const restart = (c: Container): Job => ({ device, kind: 'restart', name: c.name });
 	/** What can be done to it now (only what can work from its state: actions.ts), each with its
 	 * button and its question. */
@@ -30,9 +43,11 @@
 		const all: Record<ContainerAction, { job: Job; label: string; ask: string; title?: string }> = {
 			update: {
 				job: update(c),
-				label: 'Update',
-				ask: `Update ${c.name}? It is recreated with the new image (the old one comes back if that fails).`,
-				title: 'Pull its image again and recreate it with the same settings'
+				label: tagOf(c.update_to) ? `Update to ${c.update_to}` : 'Update',
+				ask: ask(c, c.update_to ?? 'newer build'),
+				title: tagOf(c.update_to)
+					? `Pull ${c.image}:${c.update_to} and recreate it with the same settings`
+					: 'Pull its image again and recreate it with the same settings'
 			},
 			rollback: {
 				job: { device, kind: 'rollback', name: c.name },
@@ -52,7 +67,18 @@
 				ask: `Stop ${c.name}? It stays stopped until started again (or until the host restarts, if it is set to restart).`
 			}
 		};
-		return containerActions(c.state, updatable.includes(c), !!c.previous).map((a) => all[a]);
+		const out = containerActions(c.state, !!c.update && !c.unchecked, !!c.previous).map(
+			(a) => all[a]
+		);
+		// A new major version: the newest of the one it runs is offered too.
+		if (c.update && !c.unchecked && c.update_within && tagOf(c.update_within))
+			out.splice(1, 0, {
+				job: update(c, c.update_within),
+				label: `Update to ${c.update_within}`,
+				ask: ask(c, c.update_within),
+				title: `The newest within the major version it runs`
+			});
+		return out;
 	}
 	// What its row says: the latest of its jobs (runner.latest).
 	const lastOf = (c: Container) =>
@@ -66,10 +92,15 @@
 			],
 			store.now
 		);
-	const keyOf = (j: Job) => `${j.kind}:${'name' in j ? j.name : ''}`;
+	const keyOf = (j: Job) =>
+		`${j.kind}:${'name' in j ? j.name : ''}${j.kind === 'container' && j.tag ? `:${j.tag}` : ''}`;
 	const busy = (j: Job) => ['queued', 'running'].includes(runner.state(j)?.state ?? '');
-	// The actor pulls the tag a container runs again: a newer build, not a new tag.
-	const updatable = $derived(containers.filter((c) => c.update && c.update_to === 'newer build'));
+	// "Update all": new builds of the tags they run (another tag is one at a time, asked first).
+	const updatable = $derived(
+		containers.filter(
+			(c) => c.update && !c.unchecked && c.update_to === 'newer build' && !c.skipped
+		)
+	);
 	const waiting = $derived(updatable.filter((c) => !busy(update(c))));
 
 	function go(jobs: Job[]) {
@@ -90,7 +121,7 @@
 				Update {waiting.map((c) => c.name).join(', ')}? One after another, each recreated with its
 				new image (the old one comes back if that fails).
 			</span>
-			<button class="btn btn-sm btn-primary" onclick={() => go(waiting.map(update))}>
+			<button class="btn btn-sm btn-primary" onclick={() => go(waiting.map((c) => update(c)))}>
 				Update {waiting.length}
 			</button>
 			<button class="btn btn-sm" onclick={() => (asking = null)}>Not now</button>
@@ -125,10 +156,15 @@
 				>
 					{c.state}
 				</span>
-				<span class="flex items-center gap-1.5 text-xs">
+				<span class="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
 					{#if c.update}
 						<ArrowUpCircle class="size-3.5 shrink-0 text-accent" />
-						<span class="font-medium text-accent">{c.update_to ?? 'newer image'}</span>
+						<span class="font-medium text-accent" class:opacity-60={c.skipped}>
+							{c.update_to ?? 'newer image'}
+						</span>
+						{#if c.skipped}<span class="text-muted" title="Said to be not needed on Updates">
+								· not needed
+							</span>{/if}
 						{#if c.update_within}<span
 								class="text-muted"
 								title="The newest within the major version it runs"
@@ -153,28 +189,28 @@
 					{#if c.state !== 'running'}
 						<span class="ml-auto text-faint md:hidden">{c.state}</span>
 					{/if}
-					{#if canAct}
-						<span class="ml-auto flex shrink-0 gap-1">
-							{#each actions(c) as a (a.label)}
-								<button
-									class="btn btn-sm {a.label === 'Update' ? '' : 'text-muted'}"
-									disabled={busy(a.job)}
-									onclick={() => (asking = keyOf(a.job))}
-									title={a.title ?? ''}
-								>
-									{a.label}
-								</button>
-							{/each}
-							<button
-								class="btn btn-sm text-muted"
-								onclick={() => (logsOf = c.name)}
-								title="The last lines of its log"
-							>
-								Logs
-							</button>
-						</span>
-					{/if}
 				</span>
+				{#if canAct}
+					<span class="col-span-full flex flex-wrap justify-end gap-1">
+						{#each actions(c) as a (a.label)}
+							<button
+								class="btn btn-sm {a.label === 'Update' ? '' : 'text-muted'}"
+								disabled={busy(a.job)}
+								onclick={() => (asking = keyOf(a.job))}
+								title={a.title ?? ''}
+							>
+								{a.label}
+							</button>
+						{/each}
+						<button
+							class="btn btn-sm text-muted"
+							onclick={() => (logsOf = c.name)}
+							title="The last lines of its log"
+						>
+							Logs
+						</button>
+					</span>
+				{/if}
 				{#each actions(c) as a (a.label)}
 					{#if asking === keyOf(a.job)}
 						<p class="col-span-full flex flex-wrap items-center gap-2 text-xs">

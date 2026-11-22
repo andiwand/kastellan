@@ -194,14 +194,15 @@ Normal SSH access is broader than the restricted helpers. OpenSSH source-address
 are added when the hub's address is known; Dropbear does not support them. Host keys require
 explicit trust. Rotate the hub key in **Settings → Access** and the VPN key on **VPN**.
 
-Container updates through the actor repull the existing tag and restore the old container if
-the replacement fails its startup checks. They do not switch version tags. Apt updates retain
-modified config files and avoid package removals. OpenWrt firmware advances one release series
-at a time, using an image built for the device and its packages.
+Container updates can pull a new build or an offered tag of the same image. The old container
+returns if startup fails; stored data is not rolled back. Update the Compose file's tag too if
+it manages the container. Apt updates retain modified config files and avoid package removals.
+OpenWrt firmware advances one release series at a time, using an image built for the device
+and its packages.
 
 Automatic updates are opt-in and limited to containers on devices marked `exposed: true`,
 with a confirmed high/critical or exploited vulnerability and an eligible update. Version
-changes must stay within the same major and include a known fix when available; actor updates
+changes must stay within the same major and include a known fix when available; automatic actor updates
 remain limited to a newer build of the existing tag.
 
 **Updates** lists outdated collector and actor scripts. Reinstall from Setup with a host login;

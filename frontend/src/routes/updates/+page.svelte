@@ -13,7 +13,7 @@
 		roaming: 'Wi-Fi roaming'
 	};
 	import { store } from '#lib/state.svelte.js';
-	import { scriptName, updatesOf, type Update } from '#lib/updates.js';
+	import { containerAsk, scriptName, tagOf, updatesOf, type Update } from '#lib/updates.js';
 	import KindIcon from '#lib/components/KindIcon.svelte';
 	import FirmwareDialog from '#lib/components/FirmwareDialog.svelte';
 	import Check from '@lucide/svelte/icons/check';
@@ -35,12 +35,12 @@
 	let dismissing = $state<string | null>(null);
 
 	const keyOf = (u: Update) =>
-		`${u.device.id}:${u.kind}:${u.kind === 'container' ? u.name : u.kind === 'abilities' ? u.login : ''}`;
-	async function dismiss(u: Extract<Update, { kind: 'abilities' }>) {
+		`${u.device.id}:${u.kind}:${u.kind === 'container' ? u.key : u.kind === 'abilities' ? u.login : ''}`;
+	async function dismiss(u: Update, login: 'actor' | 'openwrt') {
 		dismissing = keyOf(u);
 		dismissError = null;
 		try {
-			await more.notNeeded(u.device.id, u.login);
+			await more.notNeeded(u.device.id, login);
 			await store.refresh();
 		} catch (e) {
 			dismissError = (e as Error).message;
@@ -51,8 +51,14 @@
 
 	/** What the actor does for it, if it can (the same jobs as a device's container table). */
 	function jobOf(u: Update): Job | null {
-		if (!canAct || !possible(u) || newTag(u)) return null;
-		if (u.kind === 'container') return { device: u.device.id, kind: 'container', name: u.name };
+		if (!canAct || !possible(u)) return null;
+		if (u.kind === 'container')
+			return {
+				device: u.device.id,
+				kind: 'container',
+				name: u.name,
+				...(tagOf(u.to) ? { tag: tagOf(u.to) } : {})
+			};
 		if (u.kind === 'packages' || u.kind === 'reboot') return { device: u.device.id, kind: u.kind };
 		return null;
 	}
@@ -87,8 +93,32 @@
 			: u.kind === 'router-packages'
 				? false
 				: !!u.device.act;
-	// The actor pulls the container's own tag again: a newer build of it, not a new tag.
-	const newTag = (u: Update) => u.kind === 'container' && u.to !== 'newer build';
+	type ContainerUpdate = Extract<Update, { kind: 'container' }>;
+	const askOf = (u: ContainerUpdate, to: string) =>
+		containerAsk({
+			name: u.name,
+			from: u.from,
+			to,
+			compose: u.compose
+		});
+	/** The newest within its major version, when `to` is a new major one: its own job. */
+	function startWithin(u: ContainerUpdate) {
+		runner.add([{ device: u.device.id, kind: 'container', name: u.name, tag: u.within! }]);
+		confirm = null;
+	}
+	let skipError = $state<string | null>(null);
+	async function notNeeded(u: ContainerUpdate) {
+		dismissing = keyOf(u);
+		skipError = null;
+		try {
+			await more.updateNotNeeded(u.device.id, u.key);
+			await store.refresh();
+		} catch (e) {
+			skipError = (e as Error).message;
+		} finally {
+			dismissing = null;
+		}
+	}
 	const admin = $derived(store.me?.role === 'admin');
 	const counts = $derived({
 		devices: new Set(updates.map((u) => u.device.id)).size,
@@ -96,7 +126,9 @@
 	});
 </script>
 
-{#if dismissError}<p class="mt-3 text-sm" style:color="var(--critical-text)">{dismissError}</p>{/if}
+{#if dismissError || skipError}<p class="mt-3 text-sm" style:color="var(--critical-text)">
+		{dismissError ?? skipError}
+	</p>{/if}
 
 <svelte:head><title>Updates · Kastellan</title></svelte:head>
 
@@ -203,7 +235,7 @@
 					{#each chosen as u (keyOf(u))}
 						<li>
 							{u.device.name}: {u.kind === 'container'
-								? `container ${u.name}`
+								? askOf(u, u.to)
 								: u.kind === 'packages'
 									? `${u.count} system packages`
 									: 'reboot'}
@@ -273,6 +305,9 @@
 					{:else if u.kind === 'scripts'}
 						Kastellan's {u.names.map(scriptName).join(' and ')} there
 						<span class="text-xs text-muted">· older than this Kastellan</span>
+						{#if u.offered?.length}<span class="text-xs text-muted">
+								· new to tick: {u.offered.map((n) => ABILITY[n] ?? n).join(', ')}
+							</span>{/if}
 					{:else if u.kind === 'abilities'}
 						New for its {u.login === 'actor' ? 'actor' : 'OpenWrt login'}:
 						{u.names.map((n) => ABILITY[n] ?? n).join(', ')}
@@ -283,16 +318,55 @@
 					{/if}
 					{#if jobOf(u)}<JobStatus job={runner.state(jobOf(u)!)} />{/if}
 				</div>
-				{#if LABEL[u.kind]}
-					<div class="flex items-center gap-2">
-						{#if newTag(u)}
-							<span
-								class="text-xs text-muted"
-								title="Kastellan pulls the tag the container runs; a new tag is chosen where it is set up (compose, run command)"
+				{#if u.kind === 'container' && possible(u) && canAct && (confirm === key || confirm === `${key}:within`)}
+					{@const to = confirm === key ? u.to : u.within!}
+					<div class="flex basis-full flex-wrap items-center gap-2 text-xs">
+						<span class="min-w-0 flex-1">{askOf(u, to)}</span>
+						<button
+							class="btn btn-sm btn-primary"
+							onclick={() => (confirm === key ? start([u]) : startWithin(u))}
+						>
+							{tagOf(to) ? `Update to ${to}` : 'Update'}
+						</button>
+						<button class="btn btn-sm" onclick={() => (confirm = null)}>Not now</button>
+					</div>
+				{:else if u.kind === 'container' && possible(u) && canAct}
+					<div class="flex flex-wrap items-center gap-2">
+						<button class="btn btn-sm" disabled={busyOf(u)} onclick={() => (confirm = key)}>
+							{tagOf(u.to) ? `Update to ${u.to}` : 'Update'}
+						</button>
+						{#if tagOf(u.within)}
+							<button
+								class="btn btn-sm"
+								disabled={busyOf(u)}
+								title="The newest within the major version it runs"
+								onclick={() => (confirm = `${key}:within`)}
 							>
-								change the tag on the host
-							</span>
-						{:else if !possible(u)}
+								to {u.within}
+							</button>
+						{/if}
+						<button
+							class="btn btn-sm"
+							title="Updates stops showing this one; a newer version shows again"
+							disabled={dismissing !== null}
+							onclick={() => notNeeded(u)}
+						>
+							Not needed
+						</button>
+					</div>
+				{:else if LABEL[u.kind]}
+					<div class="flex items-center gap-2">
+						{#if u.kind === 'container' && admin}
+							<button
+								class="btn btn-sm"
+								title="Updates stops showing this one; a newer version shows again"
+								disabled={dismissing !== null}
+								onclick={() => notNeeded(u)}
+							>
+								Not needed
+							</button>
+						{/if}
+						{#if !possible(u)}
 							<a class="text-xs text-muted hover:text-text" href="/devices/{u.device.id}">
 								{u.kind === 'firmware' ? 'needs its OpenWrt login' : 'needs the actor there'}
 							</a>
@@ -320,37 +394,41 @@
 								class="btn btn-sm"
 								title="Updates stops offering these for this device"
 								disabled={dismissing !== null}
-								onclick={() => dismiss(u)}
+								onclick={() => dismiss(u, u.login)}
 							>
 								Not needed
 							</button>
 						</div>
 					{/if}
 				{:else if u.kind === 'scripts'}
-					{#if admin && u.names.some((n) => n.startsWith('vpn-'))}
-						<a
-							class="btn btn-sm"
-							href="/vpn?tab=setup"
-							title="The VPN's Setup installs this Kastellan's scripts on its hosts"
-						>
-							Set up again
-						</a>
-					{:else if admin && u.names.includes('openwrt')}
-						<a
-							class="btn btn-sm"
-							href="/devices/{u.device.id}?tab=setup"
-							title="Setting up the OpenWrt login again installs this Kastellan's scripts and access list, keeping what you tick"
-						>
-							Set up again
-						</a>
-					{:else if admin}
-						<button
-							class="btn btn-sm"
-							title="Kastellan's keys may only run these scripts, not replace them: renewing takes a login on the host"
-							onclick={() => (renewing = { device: u.device.id, names: u.names })}
-						>
-							Renew
-						</button>
+					{#if admin}
+						<div class="flex flex-wrap items-center gap-2">
+							{#if u.names.some((n) => n.startsWith('vpn-'))}
+								<a class="btn btn-sm" href="/vpn?tab=setup">VPN setup</a>
+							{/if}
+							{#if u.names.includes('openwrt')}
+								<a class="btn btn-sm" href="/devices/{u.device.id}?tab=setup">OpenWrt setup</a>
+								{#if u.offered?.length}
+									<button
+										class="btn btn-sm"
+										title="Stop offering these new abilities"
+										disabled={dismissing !== null}
+										onclick={() => dismiss(u, 'openwrt')}
+									>
+										Not needed
+									</button>
+								{/if}
+							{/if}
+							{#if u.names.some((n) => n === 'collector' || n === 'actor')}
+								<button
+									class="btn btn-sm"
+									title="Renewing the scripts takes a login on the host"
+									onclick={() => (renewing = { device: u.device.id, names: u.names })}
+								>
+									Renew host scripts
+								</button>
+							{/if}
+						</div>
 					{:else}
 						<span class="text-xs text-muted">admins only</span>
 					{/if}

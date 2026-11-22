@@ -39,7 +39,7 @@ Implementation details and release history belong in [AGENTS.md](AGENTS.md) and
 - Logs by group with alarms and events among the lines.
 - Internet: provider hops, line trouble, iperf3, bandwidth per device (nlbwmon).
 - Wi-Fi: client diagnostics, country, scan after a channel plan; roaming checks and assistance.
-- Helper version checks (OpenWrt, VPN scripts); same-major container updates.
+- Helper version checks (OpenWrt, VPN scripts); container tag upgrades and same-major alternatives.
 - HTTP checks with expected text; credential references; isolation of device pages;
   "Open signed in" for device pages (LuCI, HTTP Basic).
 

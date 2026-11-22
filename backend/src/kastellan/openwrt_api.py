@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 class Choice(BaseModel):
-    abilities: list[str] = Field(default_factory=list, max_length=10)
+    abilities: list[str] = Field(default_factory=list, max_length=len(ABILITIES))
     services: list[str] = Field(default_factory=list, max_length=100)  # with the services ability
 
 
@@ -145,7 +145,7 @@ def router(hub: Hub) -> APIRouter:
             if fp is None:
                 raise ValueError("the setup didn't show the web server's certificate")
             hub.pins.set(id, fp)  # read on the device itself, over SSH with a checked host key
-            hub._ubus = {k: v for k, v in hub._ubus.items() if k[0] != id}  # a fresh session
+            hub.drop_clients(id, fritz=False)  # a fresh session
             setup_run.add_device_key(hub, w.user, client_address(request.scope), id, "openwrt", 443, {})
             hub.offered.passed(id, "openwrt", set(ADDED["openwrt"]) - set(body.abilities))
             return {"certificate": fp}

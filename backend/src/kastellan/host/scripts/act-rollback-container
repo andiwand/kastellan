@@ -28,13 +28,31 @@ if previous["Id"] == current:
 if not from_registry(previous, ref):
     fail(f"the kept image isn't {ref}'s from its registry; not used")
 mine = docker("GET", f"/images/{current}/json")
-step(f"pointing {ref} at the previous image ({previous['Id'][7:19]})")
-tag(previous["Id"], ref)
 body, others = spec(old, mine.get("Config") or {})
-swap(old, name, body, others, undo=lambda: tag(current, ref))
+labels = dict(body.get("Labels") or {})
+back = labels.get(PREVIOUS_REF)
+if back and back != ref and repo_of(back) == repo_of(ref) and "@" not in back:
+    # The last update changed its tag: back to the tag it ran, which names the kept image again.
+    try:
+        had = docker("GET", f"/images/{quote(back, safe='/:')}/json")["Id"]
+    except Exception:
+        had = None
+    step(f"pointing {back} at the previous image ({previous['Id'][7:19]})")
+    tag(previous["Id"], back)
+    body["Image"] = back
+    labels[PREVIOUS_REF] = ref  # going back again returns to the tag it runs now
+    undo = (lambda: tag(had, back)) if had and had != previous["Id"] else (lambda: None)
+else:
+    back = ref
+    labels.pop(PREVIOUS_REF, None)
+    step(f"pointing {ref} at the previous image ({previous['Id'][7:19]})")
+    tag(previous["Id"], ref)
+    undo = lambda: tag(current, ref)  # noqa: E731
+body["Labels"] = labels
+swap(old, name, body, others, undo=undo)
 step("keeping the image it ran until now, to undo this")
 try:
     tag(current, f"{PREVIOUS}:{name}")
 except Exception as e:
     step(f"couldn't keep it: {e}")
-done({"container": name, "image": ref, "rolled_back": True, "from": current[7:19], "to": previous["Id"][7:19]})
+done({"container": name, "image": back, "rolled_back": True, "from": current[7:19], "to": previous["Id"][7:19]})
