@@ -18,7 +18,7 @@ from typing import Any
 from . import client as ow
 
 
-def _fp(secret: str | None, salt: bytes) -> str | None:
+def fingerprint(secret: str | None, salt: bytes) -> str | None:
     """A fingerprint of a password, to see whether two devices have the same one; keyed with a
     secret of the hub's, so it can't be used to guess the password."""
     return hmac.new(salt, secret.encode(), hashlib.sha256).hexdigest()[:16] if secret else None
@@ -57,7 +57,7 @@ async def survey(members: dict[str, ow.Ubus | Exception], salt: bytes) -> dict[s
                 "radio": sec.get("device"),
                 "band": band,
                 "encryption": sec.get("encryption"),
-                "key": _fp(sec.get("key"), salt),
+                "key": fingerprint(sec.get("key"), salt),
                 "disabled": sec.get("disabled") == "1",
                 # roaming (roaming.py): 802.11r with its mobility domain, 802.11k and v
                 "ft": sec.get("ieee80211r") == "1",
@@ -176,21 +176,26 @@ async def can_mesh(ubus: ow.Ubus) -> bool | None:
     return bool(wpa.get("mesh") and wpa.get("sae"))
 
 
-DFS = range(52, 145)  # 5 GHz channels a radio must listen on first (and may be moved off)
-
-
-async def _staged_ok(ubus: ow.Ubus, session: str, before: dict[str, bool], sections: set[str]) -> bool:
-    """After applying: the radios that were up are up, and these sections have an interface."""
-    status = await ubus.call("network.wireless", "status", session=session)
-    for name, radio in status.items():
-        if radio.get("disabled"):
-            continue
-        if before.get(name, True) and (not radio.get("up") or radio.get("retry_setup_failed")):
-            return False
-    running = {
-        i.get("section") for r in status.values() for i in r.get("interfaces") or [] if i.get("ifname")
-    }
-    return sections <= running
+async def _staged_ok(
+    ubus: ow.Ubus, session: str, before: dict[str, bool], sections: set[str], mesh_id: str
+) -> bool:
+    """After applying: the radios that were up are up, and these mesh sections have an interface
+    (on OpenWrt 25.12, which names no sections: as many mesh interfaces with this id, by iwinfo)."""
+    now = await ow.radios_up(ubus, session)
+    if any(not up and before.get(name, True) for name, up in now.items()):
+        return False
+    status = await ow.wireless_status(ubus, session)
+    if status is not None:
+        running = {
+            i.get("section") for r in status.values() for i in r.get("interfaces") or [] if i.get("ifname")
+        }
+        return sections <= running
+    meshes = 0
+    for ifname in (await ubus.call("iwinfo", "devices", session=session)).get("devices") or []:
+        info = await ubus.call("iwinfo", "info", {"device": ifname}, session=session)
+        if "mesh" in str(info.get("mode") or "").lower() and info.get("meshid") == mesh_id:
+            meshes += 1
+    return meshes >= len(sections)
 
 
 async def set_mesh(
@@ -304,7 +309,7 @@ async def set_mesh(
                             {"config": "wireless", "section": r, "values": {"channel": channel}},
                             session=s,
                         )
-                before[id] = await ow._radios_up(ubus, s)
+                before[id] = await ow.radios_up(ubus, s)
                 staged[id] = sections
         except BaseException as e:
             for id in plan:
@@ -334,15 +339,27 @@ async def set_mesh(
         until = loop.time() + deadline
         while not refused and loop.time() < until and good != set(staged):
             await asyncio.sleep(wait)
-            for id in set(staged) - good:
+            for id in sorted(set(staged) - good):
+                # Each look within the time left: none may count after the deadline (its device
+                # may be undoing the change by then).
                 with contextlib.suppress(Exception):
-                    if await _staged_ok(members[id], plan[id]["session"], before[id], staged[id]):
+                    async with asyncio.timeout(max(0.0, until - loop.time())):
+                        ok = await _staged_ok(
+                            members[id], plan[id]["session"], before[id], staged[id], mesh_id
+                        )
+                    if ok:
                         good.add(id)
                         note(f"{id}: back, mesh up")
         if good == set(staged):
             for id in staged:
-                await members[id].call("uci", "confirm", {}, session=plan[id]["session"])
-                outcome[id] = f"added on {plan[id]['add']}" if plan[id]["add"] else "set"
+                try:
+                    await members[id].call("uci", "confirm", {}, session=plan[id]["session"])
+                    outcome[id] = f"added on {plan[id]['add']}" if plan[id]["add"] else "set"
+                except Exception as e:
+                    outcome[id] = (
+                        f"failed: not confirmed ({str(e)[:120] or type(e).__name__}); it undoes the"
+                        " change by itself"
+                    )
         else:
             # All or none. Those that applied are rolled back (else they would by themselves when
             # the rollback time is up); one that refused still has it staged: reverted.

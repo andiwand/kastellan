@@ -27,6 +27,7 @@ from typing import Any
 
 from .alarms import Severity
 from .config import Device
+from .registry import NEWER_BUILD
 from .vulns import version_key
 
 
@@ -69,7 +70,7 @@ def auto_update_reason(
         return None
     current, target = str(container.get("tag") or ""), str(container.get("update_to") or "")
     # A newer build of the same tag is the same version: it holds no fix newer than that.
-    same_tag = target == "newer build"
+    same_tag = target == NEWER_BUILD
     new = current if same_tag else target
     if not same_tag:
         a, b = version_key(current), version_key(target)

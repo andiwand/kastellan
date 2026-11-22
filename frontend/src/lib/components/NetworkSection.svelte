@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Device } from '#lib/api.js';
-	import { duration } from '#lib/format.js';
+	import { bitrate, duration, kbitrate } from '#lib/format.js';
 	import DhcpPool from './DhcpPool.svelte';
 	import FritzWireguard from './FritzWireguard.svelte';
 
@@ -15,13 +15,6 @@
 	const dhcp = $derived(device.router?.dhcp ?? fritz?.dhcp ?? null);
 	const forwards = $derived((fritz?.forwards ?? []).filter((f) => f.enabled));
 	let showClients = $state(false);
-
-	const mbit = (bits: number | null | undefined) =>
-		bits == null
-			? '–'
-			: bits >= 1e9
-				? `${(bits / 1e9).toFixed(1)} Gbit/s`
-				: `${(bits / 1e6).toFixed(bits < 1e7 ? 1 : 0)} Mbit/s`;
 </script>
 
 {#if net || dhcp || fritz?.wireguard || fritz?.clients.length}
@@ -47,13 +40,13 @@
 						<dt class="text-muted">Public address</dt>
 						<dd class="truncate font-mono" title={net.address_v6 ?? ''}>{net.address ?? '–'}</dd>
 						<dt class="text-muted">{net.access ?? 'Line'} in use</dt>
-						<dd class="tabular">↓ {mbit(net.rate?.down)} · ↑ {mbit(net.rate?.up)}</dd>
+						<dd class="tabular">↓ {bitrate(net.rate?.down)} · ↑ {bitrate(net.rate?.up)}</dd>
 						{#if dsl}
 							<dt class="text-muted">DSL line</dt>
 							<dd class="tabular">
-								↓ {mbit((dsl.down ?? 0) * 1000)} of {mbit((dsl.max_down ?? 0) * 1000)} · ↑ {mbit(
-									(dsl.up ?? 0) * 1000
-								)} of {mbit((dsl.max_up ?? 0) * 1000)}
+								↓ {kbitrate(dsl.down)} of {kbitrate(dsl.max_down)} · ↑ {kbitrate(dsl.up)} of {kbitrate(
+									dsl.max_up
+								)}
 							</dd>
 							<dt class="text-muted">Noise margin</dt>
 							<dd class="tabular">

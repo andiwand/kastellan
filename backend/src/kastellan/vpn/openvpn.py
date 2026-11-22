@@ -413,14 +413,8 @@ class OpenVpn:
         for what, device, user, name, conf in parts:
             try:
                 have = (await self._run(device, user, name, conf, "version")).strip()
-            except RuntimeError as e:  # the script answered: it doesn't know `version`
-                if (
-                    what in (known or [])
-                    or name in str(e)
-                    or "only 'install'" in str(e)
-                    or "unknown" in str(e)
-                ):
-                    out.append(what)
+            except RuntimeError:  # it answered, but not with exit 0: too old to know `version`
+                out.append(what)
                 continue
             except Exception:  # not reachable now: next time
                 if what in (known or []):

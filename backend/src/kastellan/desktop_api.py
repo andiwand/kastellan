@@ -9,7 +9,7 @@ session. The ticket lives in `hub.tickets`; it expires on a timer and with a sig
 password is handed to guacd in the handshake and dropped right after.
 
 Same rules as the terminal: a signed-in admin, the hub's own page, closed when the session ends
-or the user's access changes, after 30 minutes without input, after 8 hours in any case. The
+or the user's access changes, idle or too old (terminals.py: IDLE_LIMIT, MAX_SECONDS). The
 browser may only send what a screen needs (mouse, keys, size); no clipboard, files or drives.
 """
 
@@ -20,8 +20,9 @@ import contextlib
 import logging
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -29,7 +30,7 @@ from pydantic import BaseModel, Field
 from . import guac
 from .auth import SESSION_COOKIE
 from .auth_api import Who, client_address, require_signin, same_origin, session_token, session_who
-from .terminals import token_key
+from .terminals import MAX_PER_USER, token_key, watch
 
 if TYPE_CHECKING:
     from .config import Device
@@ -39,10 +40,6 @@ log = logging.getLogger(__name__)
 
 TICKET_SECONDS = 60
 MAX_TICKETS = 20
-MAX_SECONDS = 8 * 3600
-IDLE_LIMIT = 30 * 60
-RECHECK_EVERY = 15
-MAX_PER_USER = 4
 DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900}
 # What the page may send to guacd: input and the screen size; the tunnel's own pings are answered
 # by the hub. Nothing else (no clipboard, files, pipes or arguments) reaches guacd.
@@ -165,19 +162,11 @@ def router(hub: Hub) -> APIRouter:
         # Registered before anything is awaited: a sign-out during the handshake ends it too, and
         # parallel opens count against the limit at once.
         handle = hub.terminals.add(w.user, token, id)
-        opened = time.monotonic()
         ended = "closed"
         writer: asyncio.StreamWriter | None = None
 
         def allowed() -> str | None:
-            if handle.stop.is_set():
-                return handle.reason or "signed out"
-            now = session_who(hub, token)
-            if now is None or now.user != w.user or not now.is_admin:
-                return "your session ended"
-            if time.monotonic() - opened > MAX_SECONDS:
-                return "closed after 8 hours"
-            return None
+            return handle.ended(session_who(hub, token))
 
         try:
             await ws.accept(subprotocol="guacamole")
@@ -227,7 +216,7 @@ def router(hub: Hub) -> APIRouter:
                 w.user,
                 address,
                 device=id,
-                seconds=round(time.monotonic() - opened),
+                seconds=round(time.monotonic() - handle.opened),
                 why=ended,
             )
             if writer is not None:
@@ -261,7 +250,11 @@ def _from_browser(instruction: str) -> str | None:
 
 
 async def _relay(
-    ws: WebSocket, guacd: guac.Reader, writer: asyncio.StreamWriter, allowed: Any, stop: asyncio.Event
+    ws: WebSocket,
+    guacd: guac.Reader,
+    writer: asyncio.StreamWriter,
+    allowed: Callable[[], str | None],
+    stop: asyncio.Event,
 ) -> str:
     why = "closed"
     last_input = time.monotonic()
@@ -301,19 +294,11 @@ async def _relay(
             if len(buffer) > 1024 * 1024:
                 return
 
-    async def watch() -> None:
+    async def watching() -> None:
         nonlocal why
-        while True:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), RECHECK_EVERY)
-            if reason := allowed():
-                why = reason
-                return
-            if time.monotonic() - last_input > IDLE_LIMIT:
-                why = f"closed after {IDLE_LIMIT // 60} minutes without input"
-                return
+        why = await watch(stop, allowed, lambda: last_input)
 
-    tasks = [asyncio.create_task(down()), asyncio.create_task(up()), asyncio.create_task(watch())]
+    tasks = [asyncio.create_task(down()), asyncio.create_task(up()), asyncio.create_task(watching())]
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:

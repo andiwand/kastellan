@@ -116,7 +116,7 @@
 	// Status: what the members say (read); Setup: the same with every way to change it.
 	const setup = $derived(page.url.searchParams.get('tab') === 'setup');
 	function showTab(t: 'status' | 'setup') {
-		goto(t === 'setup' ? '?section=groups&tab=setup' : '?section=groups', { replaceState: true });
+		goto(t === 'setup' ? '?section=groups&tab=setup' : '?section=groups', { replace: true });
 	}
 	const keyOk = (k: string) => k.length >= 8 && k.length <= 63;
 	const input =
@@ -334,9 +334,7 @@
 								<li>
 									<span
 										class="text-xs font-medium"
-										style:color={f.level === 'warning'
-											? 'var(--warning-text)'
-											: 'var(--text-muted)'}
+										style:color={f.level === 'warning' ? 'var(--warning-text)' : 'var(--muted)'}
 									>
 										{f.level === 'warning' ? '!' : 'i'}
 									</span>

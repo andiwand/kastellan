@@ -21,21 +21,17 @@ import re
 import secrets
 import ssl
 import time
-from pathlib import Path
 from typing import Any
 
 import httpx
 
-from ..pinned_http import Pool
+from ..pinned_http import ChangedCertificate, Changing, Pins, Pool, fingerprint_of_der
+from .setup import BANDWIDTH, FIRMWARE, OPENVPN_STATUS, SERVICE, SERVICES_ALLOW, UPGRADABLE, VITALS
 
 NULL_SESSION = "0" * 32
 DENIED = -32002  # uhttpd: the session may not call that (or it has ended)
 MAX_RESPONSE = 8 * 1024 * 1024
 CONFIRM_AFTER = 5.0  # seconds between applying a Wi-Fi change and looking at the radios
-
-
-class ChangedCertificate(Exception):
-    pass
 
 
 class LoginRefused(Exception):
@@ -68,10 +64,6 @@ STATUS = {
 }
 
 
-def fingerprint_of_der(der: bytes) -> str:
-    return hashlib.sha256(der).hexdigest()
-
-
 def fingerprint_from_setup(lines: list[str]) -> str | None:
     """The certificate's fingerprint as the setup printed it: `KASTELLAN-CERT der <sha256>`
     (uhttpd's own, a DER file), or `KASTELLAN-CERT pem <line>` lines (a PEM file; its first
@@ -93,44 +85,32 @@ def fingerprint_from_setup(lines: list[str]) -> str | None:
         return None
 
 
-class Pins:
-    """Each device's pinned certificate fingerprint: <data>/openwrt/<id>.sha256."""
-
-    def __init__(self, folder: Path) -> None:
-        self.folder = folder
-
-    def get(self, id: str) -> str | None:
-        try:
-            return (self.folder / f"{id}.sha256").read_text().strip() or None
-        except OSError:
-            return None
-
-    def set(self, id: str, fp: str) -> None:
-        self.folder.mkdir(parents=True, exist_ok=True)
-        (self.folder / f"{id}.sha256").write_text(fp + "\n")
-
-    def forget(self, id: str) -> None:
-        (self.folder / f"{id}.sha256").unlink(missing_ok=True)
-
-
 SLOW_EVERY = 600.0  # seconds: how long `Ubus.slow` keeps a read
 
-
-class _Changing:
-    """`Ubus.changing`: a lock whose end forgets the kept reads (what it changed shows next)."""
-
-    def __init__(self, ubus: Ubus) -> None:
-        self._lock, self._ubus = asyncio.Lock(), ubus
-
-    def locked(self) -> bool:
-        return self._lock.locked()
-
-    async def __aenter__(self) -> None:
-        await self._lock.acquire()
-
-    async def __aexit__(self, *exc: object) -> None:
-        self._ubus.forget()
-        self._lock.release()
+# Calls that only read: sent once more when a kept connection turns out closed (pinned_http).
+READS = {
+    ("system", "board"),
+    ("system", "info"),
+    ("network.interface", "dump"),
+    ("network.wireless", "status"),
+    ("network.device", "status"),
+    ("rc", "list"),
+    ("iwinfo", "devices"),
+    ("iwinfo", "info"),
+    ("iwinfo", "assoclist"),
+    ("iwinfo", "freqlist"),
+    ("iwinfo", "survey"),
+    ("luci-rpc", "getDHCPLeases"),
+    ("luci", "getFeatures"),
+    ("uci", "get"),
+    ("file", "read"),
+    ("session", "access"),
+    ("log", "read"),
+    ("usteer", "local_info"),
+    ("usteer", "remote_info"),
+    ("usteer", "connected_clients"),
+    ("usteer", "get_config"),
+}
 
 
 class Ubus:
@@ -151,14 +131,18 @@ class Ubus:
         self.session: str | None = None
         self.expires = 0.0
         self._id = 0
+        self._timeout = 300.0  # the session's, as rpcd says at login
         self._login_lock = asyncio.Lock()
         # One change (Wi-Fi, firmware, services) at a time; it ends what `slow` kept.
-        self.changing = _Changing(self)
+        self.changing = Changing(self.forget)
         self._slow: dict[str, tuple[float, Any]] = {}
+        self._uptime: int | None = None
         # Connections kept open between calls: one TLS handshake per round, not per call.
         self.pool = Pool(host, self._check)
 
-    async def _http(self, path: str, body: bytes, content_type: str, timeout: float) -> tuple[int, bytes]:
+    async def _http(
+        self, path: str, body: bytes, content_type: str, timeout: float, idempotent: bool = False
+    ) -> tuple[int, bytes]:
         if self.transport is not None:
             async with httpx.AsyncClient(timeout=timeout, transport=self.transport) as c:
                 r = await c.post(
@@ -168,7 +152,7 @@ class Ubus:
                 )
                 return r.status_code, r.content
         _status, _heads, payload = await self.pool.request(
-            self.port, "POST", path, {"Content-Type": content_type}, body, timeout, MAX_RESPONSE
+            self.port, "POST", path, {"Content-Type": content_type}, body, timeout, MAX_RESPONSE, idempotent
         )
         return _status, payload
 
@@ -185,7 +169,9 @@ class Ubus:
     async def _rpc(self, session: str, obj: str, method: str, args: dict[str, Any], timeout: float) -> Any:
         self._id += 1
         body = {"jsonrpc": "2.0", "id": self._id, "method": "call", "params": [session, obj, method, args]}
-        status, payload = await self._http("/ubus", json.dumps(body).encode(), "application/json", timeout)
+        status, payload = await self._http(
+            "/ubus", json.dumps(body).encode(), "application/json", timeout, (obj, method) in READS
+        )
         try:
             data = json.loads(payload)
         except ValueError as e:
@@ -199,8 +185,6 @@ class Ubus:
         if session != NULL_SESSION:
             self.expires = time.monotonic() + self._timeout - 30  # rpcd extends it on every use
         return result[1] if len(result) > 1 else {}
-
-    _timeout = 300.0
 
     async def session_id(self, renew_from: str | None = None, min_left: float = 0) -> str:
         """A live session: the kept one, or a new login (once, even with callers at the same time)."""
@@ -224,12 +208,15 @@ class Ubus:
                 self.session = res["ubus_rpc_session"]
                 self._timeout = float(res.get("timeout") or res.get("expires") or 300)
                 self.expires = time.monotonic() + self._timeout - 30
+                # The session may have ended with a reboot or new firmware: what `slow` kept too.
+                self.forget()
             assert self.session is not None
             return self.session
 
     async def slow(self, obj: str, method: str, args: dict[str, Any] | None = None, every: float = 0) -> Any:
-        """A read of what rarely changes (the board, uci dhcp, the services): kept `every`
-        seconds (SLOW_EVERY), and until a change of Kastellan's (`changing`) or a new client."""
+        """A read of what rarely changes (the board, uci dhcp, the allowed services): kept
+        `every` seconds (SLOW_EVERY), and until a change of Kastellan's (`changing`), a new
+        login, a restart (`note_uptime`) or a new client."""
         key = json.dumps([obj, method, args or {}], sort_keys=True)
         cache = self._slow
         kept = cache.get(key)
@@ -242,6 +229,27 @@ class Ubus:
     def forget(self) -> None:
         """What `slow` kept: read anew next time."""
         self._slow = {}
+
+    def note_uptime(self, uptime: Any) -> None:
+        """The uptime `system info` tells: lower than last time, the device restarted (a reboot,
+        new firmware, perhaps through LuCI), so what `slow` kept is old."""
+        if not isinstance(uptime, int):
+            return
+        if self._uptime is not None and uptime < self._uptime:
+            self.forget()
+        self._uptime = uptime
+
+    async def _ended(self, session: str, obj: str, method: str) -> bool:
+        """After a refusal (-32002): whether the session has ended rather than the call being
+        outside the login's access list (uhttpd says the same for both). Only a live session
+        may ask `session access` (the read group allows it)."""
+        try:
+            await self._rpc(
+                session, "session", "access", {"scope": "ubus", "object": obj, "function": method}, 10
+            )
+        except UbusError as e:
+            return e.code == DENIED
+        return False
 
     async def call(
         self,
@@ -259,7 +267,7 @@ class Ubus:
         try:
             return await self._rpc(s, obj, method, args or {}, timeout)
         except UbusError as e:
-            if e.code != DENIED:
+            if e.code != DENIED or not await self._ended(s, obj, method):
                 raise
         s = await self.session_id(renew_from=s)  # the session ended (a reboot, or it timed out)
         return await self._rpc(s, obj, method, args or {}, timeout)
@@ -293,8 +301,9 @@ class Ubus:
 
 async def read(ubus: Ubus) -> dict[str, Any]:
     """The device's state, as the page shows it."""
-    board = await ubus.slow("system", "board")
     info = await ubus.call("system", "info")
+    ubus.note_uptime(info.get("uptime"))
+    board = await ubus.slow("system", "board")
     report: dict[str, Any] = {
         "board": {
             "model": board.get("model"),
@@ -307,7 +316,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
             "kernel": board.get("kernel"),
             "rootfs_type": board.get("rootfs_type"),
         },
-        # The root filesystem (KiB: total, free, used, avail), for the vitals' storage.
+        # The root filesystem (KiB: total, used, avail), for the vitals' storage.
         "storage": {k: (info.get("root") or {}).get(k) for k in ("total", "used", "avail")},
         "system": {
             "uptime": info.get("uptime"),
@@ -355,14 +364,8 @@ async def read(ubus: Ubus) -> dict[str, Any]:
                 )
     report["dhcp"] = await _dhcp(ubus, lease_list, dump) if lease_list is not None else None
     try:
-        try:
-            status = await ubus.call("network.wireless", "status")
-        except UbusError as e:
-            if e.code != 2:  # not "invalid argument": a real refusal
-                raise
-            # OpenWrt 25.12 answers "invalid argument" here: the radios as iwinfo sees them.
-            status = None
-        if status is None:
+        status = await wireless_status(ubus)
+        if status is None:  # OpenWrt 25.12: the radios as iwinfo sees them
             report["radios"] = await _radios_from_iwinfo(ubus, leases)
             status = {}
         radios = report.get("radios") or []
@@ -372,13 +375,6 @@ async def read(ubus: Ubus) -> dict[str, Any]:
             for iface in radio.get("interfaces") or []:
                 ic = iface.get("config") or {}
                 ifname = iface.get("ifname")
-                clients = []
-                if ifname:
-                    with contextlib.suppress(Exception):
-                        for c in (await ubus.call("iwinfo", "assoclist", {"device": ifname})).get(
-                            "results", []
-                        ):
-                            clients.append(assoc_client(c, leases))
                 ifaces.append(
                     {
                         "section": iface.get("section"),
@@ -386,7 +382,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
                         "ssid": ic.get("ssid") or ic.get("mesh_id"),
                         "mode": ic.get("mode"),
                         "network": ic.get("network"),
-                        "clients": clients,
+                        "clients": await _clients(ubus, ifname, leases) if ifname else [],
                     }
                 )
             radios.append(
@@ -405,15 +401,13 @@ async def read(ubus: Ubus) -> dict[str, Any]:
     except Exception as e:
         report["errors"]["wifi"] = str(e)[:200]
     try:
-        rc = await ubus.slow("rc", "list", every=300)
+        rc = await ubus.call("rc", "list")  # every round: whether they run
         report["services"] = [
             {"name": n, "enabled": bool(v.get("enabled")), "running": bool(v.get("running"))}
             for n, v in sorted(rc.items())
         ][:200]
     except Exception as e:  # rc arrived in OpenWrt 21.02
         report["errors"]["services"] = str(e)[:200]
-    from .setup import SERVICES_ALLOW
-
     try:  # the services Kastellan may act on
         data = (await ubus.slow("file", "read", {"path": SERVICES_ALLOW})).get("data", "")
         report["services_allowed"] = [ln for ln in str(data).split("\n") if ln][:100]
@@ -538,8 +532,6 @@ async def _dhcp(ubus: Ubus, leases: list[dict[str, Any]], interfaces: list[dict[
 async def service(ubus: Ubus, name: str, action: str) -> str:
     """start/stop/restart/enable/disable one allowed service, through the one script setup
     installs (it checks the allow list on the device)."""
-    from .setup import SERVICE
-
     async with ubus.changing:
         res = await ubus.call("file", "exec", {"command": SERVICE, "params": [name, action]}, timeout=55)
     if res.get("code", 0) != 0:
@@ -549,10 +541,21 @@ async def service(ubus: Ubus, name: str, action: str) -> str:
     return str(res.get("stdout", "")).strip()[:300]
 
 
+SMALL_MEMORY = 64 * 2**20  # bytes: a router below this runs short (package lists, usteer)
+
+
+def packages_skipped(report: dict[str, Any]) -> str | None:
+    """Why a router isn't asked for package updates (read()'s report), or None. opkg update needs
+    a few MB and the lists sit in RAM (/tmp): on a small router the OOM killer then takes usteer,
+    uhttpd or opkg itself."""
+    total = ((report.get("system") or {}).get("memory") or {}).get("total")
+    if isinstance(total, int) and total < SMALL_MEMORY:
+        return f"too little memory ({total // 2**20} MB)"
+    return None
+
+
 async def upgradable(ubus: Ubus) -> list[str]:
     """Packages with updates ("name - old - new"), through the one fixed script setup installs."""
-    from .setup import UPGRADABLE
-
     res = await ubus.call("file", "exec", {"command": UPGRADABLE, "params": []}, timeout=55)
     if res.get("code", 0) != 0:
         raise ValueError("the package update check failed")
@@ -562,8 +565,6 @@ async def upgradable(ubus: Ubus) -> list[str]:
 async def openvpn_status(ubus: Ubus) -> str:
     """Who is connected to its OpenVPN servers: the one fixed script's output (vpn/openvpn.py
     reads it). UbusError when the login hasn't that ability."""
-    from .setup import OPENVPN_STATUS
-
     res = await ubus.call("file", "exec", {"command": OPENVPN_STATUS, "params": []}, timeout=20)
     return str(res.get("stdout", ""))[:1048576]
 
@@ -571,8 +572,6 @@ async def openvpn_status(ubus: Ubus) -> str:
 async def vitals(ubus: Ubus) -> dict[str, Any] | None:
     """CPU time counters and the hottest temperature, from the read group's helper (None when
     the login was set up before it, or its answer isn't readable)."""
-    from .setup import VITALS
-
     try:
         res = await ubus.call("file", "exec", {"command": VITALS, "params": []}, timeout=10)
         data = json.loads(str(res.get("stdout", ""))[:2000])
@@ -585,8 +584,6 @@ async def bandwidth(ubus: Ubus) -> dict[str, dict[str, int]]:
     """Bytes per device (MAC) this accounting period, from nlbwmon (the `bandwidth` ability):
     rx is what the device received (its download), tx what it sent. ValueError when nlbwmon
     isn't there."""
-    from .setup import BANDWIDTH
-
     res = await ubus.call("file", "exec", {"command": BANDWIDTH, "params": []}, timeout=20)
     return parse_nlbw(str(res.get("stdout", ""))[:4_000_000])
 
@@ -1042,13 +1039,22 @@ async def remove_network(ubus: Ubus, section: str, *, expected_ssid: str | None 
         await apply_with_rollback(ubus, s)
 
 
-async def _radios_up(ubus: Ubus, session: str) -> dict[str, bool]:
+async def wireless_status(ubus: Ubus, session: str | None = None) -> dict[str, Any] | None:
+    """netifd's `network.wireless status`: each radio, its state and its interfaces (with their
+    uci sections). None on OpenWrt 25.12, which answers it with "invalid argument"."""
     try:
-        status = await ubus.call("network.wireless", "status", session=session)
+        return await ubus.call("network.wireless", "status", session=session)
     except UbusError as e:
-        if e.code != 2:
+        if e.code != 2:  # a real refusal
             raise
-        # OpenWrt 25.12 (see read): the Wi-Fi interfaces iwinfo lists count as the radios up.
+        return None
+
+
+async def radios_up(ubus: Ubus, session: str) -> dict[str, bool]:
+    """Whether each radio that is meant to be on is up. On OpenWrt 25.12 (no wireless status) the
+    Wi-Fi interfaces iwinfo lists count as the radios up."""
+    status = await wireless_status(ubus, session)
+    if status is None:
         devices = (await ubus.call("iwinfo", "devices", session=session)).get("devices") or []
         return {str(d): True for d in devices}
     return {
@@ -1064,7 +1070,7 @@ async def apply_with_rollback(ubus: Ubus, session: str, confirm_after: float | N
     be on came up; otherwise it rolls back at once."""
     wait = CONFIRM_AFTER if confirm_after is None else confirm_after
     try:
-        before = await _radios_up(ubus, session)
+        before = await radios_up(ubus, session)
         await ubus.call("uci", "apply", {"rollback": True, "timeout": 90}, session=session)
     except BaseException:  # nothing applied: the staged changes mustn't ride along with the next one
         with contextlib.suppress(Exception):
@@ -1074,7 +1080,7 @@ async def apply_with_rollback(ubus: Ubus, session: str, confirm_after: float | N
     for _ in range(6):  # the radios restart: up to about half a minute
         await asyncio.sleep(wait)
         try:
-            now = await _radios_up(ubus, session)
+            now = await radios_up(ubus, session)
         except Exception:
             continue
         broken = [n for n, up in now.items() if not up and before.get(n, True)]
@@ -1089,8 +1095,6 @@ async def apply_with_rollback(ubus: Ubus, session: str, confirm_after: float | N
 
 
 # --- Firmware ---------------------------------------------------------------------------------
-
-FIRMWARE = "/tmp/firmware.bin"
 
 
 async def install_firmware(ubus: Ubus, image: bytes, sha256: str, say=None) -> dict[str, Any]:

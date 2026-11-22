@@ -111,20 +111,26 @@ async def test_connection_close_and_too_large(tmp_path: Path, monkeypatch: pytes
         pool.close()
 
 
-@pytest.mark.parametrize("method", ["GET", "POST"])
-async def test_only_safe_reads_retry_a_lost_response(tmp_path: Path, method: str) -> None:
+@pytest.mark.parametrize(
+    ("method", "idempotent", "retried"),
+    [("GET", None, True), ("POST", None, False), ("POST", True, True), ("GET", False, False)],
+)
+async def test_only_reads_retry_a_lost_response(
+    tmp_path: Path, method: str, idempotent: bool | None, retried: bool
+) -> None:
     ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
     srv, port, fp, seen = await server(tmp_path, [ok, None, ok])
     async with srv:
         pool = Pool("127.0.0.1", pinned(fp))
         await pool.request(port, "GET", "/", {}, b"", 5, 1000)
-        if method == "POST":
-            with pytest.raises(ConnectionError):
-                await pool.request(port, method, "/action", {}, b"{}", 5, 1000)
-            assert seen == {"connections": 1, "requests": 2}
-        else:
-            assert (await pool.request(port, method, "/", {}, b"", 5, 1000))[2] == b"ok"
+        if retried:
+            answer = await pool.request(port, method, "/", {}, b"{}", 5, 1000, idempotent=idempotent)
+            assert answer[2] == b"ok"
             assert seen == {"connections": 2, "requests": 3}
+        else:
+            with pytest.raises(ConnectionError):
+                await pool.request(port, method, "/action", {}, b"{}", 5, 1000, idempotent=idempotent)
+            assert seen == {"connections": 1, "requests": 2}
         pool.close()
 
 

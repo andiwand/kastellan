@@ -1,11 +1,17 @@
-import type { VitalField, Vitals } from '#lib/api.js';
+import type { Alarms, VitalField, Vitals } from '#lib/api.js';
+import { bytes } from '#lib/format.js';
+
+export type Limits = { warning: number; critical: number };
+
+/** When storage is full enough for an alarm (config.yaml's alarms:), as the hub tells. */
+export const diskLimits = (alarms: Alarms | null | undefined): Limits => ({
+	warning: alarms?.limits?.disk_warning ?? 85,
+	critical: alarms?.limits?.disk_critical ?? 95
+});
 
 /** When a vital counts as high (warning) and very high (critical): colour of its bar only (no
  * alarms). Storage follows the disk alarms' limits (config.yaml's alarms:). */
-export function limitsOf(
-	field: VitalField,
-	disk: { warning: number; critical: number }
-): { warning: number; critical: number } {
+export function limitsOf(field: VitalField, disk: Limits): Limits {
 	if (field === 'storage') return disk;
 	if (field === 'memory') return { warning: 90, critical: 97 };
 	if (field === 'temperature') return { warning: 80, critical: 90 };
@@ -14,13 +20,20 @@ export function limitsOf(
 
 export type Tone = 'normal' | 'warning' | 'critical';
 
-export const toneOf = (v: number | null, l: { warning: number; critical: number }): Tone =>
+export const toneOf = (v: number | null, l: Limits): Tone =>
 	v == null ? 'normal' : v >= l.critical ? 'critical' : v >= l.warning ? 'warning' : 'normal';
 
 export const toneColor: Record<Tone, string> = {
 	normal: 'var(--accent)',
 	warning: 'var(--warning)',
 	critical: 'var(--critical)'
+};
+
+/** A value's text in its tone: plain (muted) until it is high. */
+export const toneText: Record<Tone, string> = {
+	normal: 'var(--muted)',
+	warning: 'var(--warning-text)',
+	critical: 'var(--critical-text)'
 };
 
 export const LABEL: Record<VitalField, string> = {
@@ -33,13 +46,6 @@ export const LABEL: Record<VitalField, string> = {
 export const formatVital = (field: VitalField, v: number | null | undefined) =>
 	v == null ? '–' : field === 'temperature' ? `${v.toFixed(0)} °C` : `${v.toFixed(0)} %`;
 
-export function bytes(n: number): string {
-	if (n >= 1e12) return `${(n / 1e12).toFixed(1)} TB`;
-	if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
-	if (n >= 1e6) return `${(n / 1e6).toFixed(0)} MB`;
-	return `${(n / 1e3).toFixed(0)} kB`;
-}
-
 /** What a vital's number is of: "1.2 of 4.0 GB", "/data", "load 0.42 · 4 cores". */
 export function detailOf(field: VitalField, v: Vitals): string {
 	if (field === 'cpu') {
@@ -49,7 +55,8 @@ export function detailOf(field: VitalField, v: Vitals): string {
 		return parts.join(' · ');
 	}
 	if (field === 'memory')
-		return v.memory_total && v.memory_total > 100 && v.memory_used != null
+		// (a FRITZ!Box tells only a share: no bytes)
+		return v.memory_total && v.memory_used != null
 			? `${bytes(v.memory_used)} of ${bytes(v.memory_total)}`
 			: '';
 	if (field === 'storage')

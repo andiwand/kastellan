@@ -9,11 +9,15 @@ import io
 import math
 import random
 import tarfile
-from datetime import datetime
-from typing import Any
+import time
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from . import devbackups, internet
 from .logs import Line
+
+if TYPE_CHECKING:
+    from .hub import Hub
 
 # --- The FRITZ!Box ----------------------------------------------------------------------------
 
@@ -221,6 +225,52 @@ WIFI_SURVEY = {
     ],
     "mesh": [],
 }
+
+# A group's survey (groups_api), as sync.survey gives it.
+GROUP = {
+    "members": ["repeater-attic", "repeater-living"],
+    "errors": {},
+    "radios": {
+        d: [
+            {"section": "radio0", "band": "2g", "channel": "6"},
+            {"section": "radio1", "band": "5g", "channel": "36"},
+        ]
+        for d in ("repeater-attic", "repeater-living")
+    },
+    "can_mesh": {"repeater-attic": True, "repeater-living": True},
+    "networks": [
+        {
+            "ssid": "Castle",
+            "on": [
+                _entry(d, f"default_radio{r}", b, "k1" if d == "repeater-living" else "k2")
+                for d in ("repeater-attic", "repeater-living")
+                for r, b in ((0, "2g"), (1, "5g"))
+            ],
+            "devices": ["repeater-attic", "repeater-living"],
+            "missing": [],
+            "same_key": False,
+            "same_encryption": True,
+        },
+        {
+            "ssid": "Castle guests",
+            "on": [_entry("repeater-living", "guest", "2g")],
+            "devices": ["repeater-living"],
+            "missing": ["repeater-attic"],
+            "same_key": True,
+            "same_encryption": True,
+        },
+    ],
+    "mesh": [
+        {
+            "mesh_id": "castle-mesh",
+            "on": [_entry(d, "mesh1", "5g") for d in ("repeater-attic", "repeater-living")],
+            "devices": ["repeater-attic", "repeater-living"],
+            "missing": [],
+            "same_key": True,
+        }
+    ],
+}
+
 
 NEIGHBOURS = [
     ("FRITZ!Box 6660 Cable", 1, 20, -67),
@@ -452,8 +502,7 @@ def seed_backups(store: devbackups.Store) -> None:
         )
         content = text.encode()
         sha = hashlib.sha256(content).hexdigest()
-        same = sha
-        f = devbackups.File("fritzbox.export", sha, len(content), "file", 0o600, 0, "", same)
+        f = devbackups.File("fritzbox.export", sha, len(content), "file", 0o600, 0, "")
         store.add("fritzbox", "fritzbox-export", [(f, content)], 60)
 
 
@@ -535,3 +584,20 @@ def seed_internet(net: internet.Internet, now: float) -> None:
 def demo_key() -> bytes:
     """The demo's backups' key: made up, never a real secret."""
     return hashlib.sha256(b"kastellan demo backups").digest()
+
+
+def seed(hub: Hub) -> None:
+    """Everything made up the hub keeps from the start: a day of logs, device backups, the line's
+    week, Wi-Fi scans, and the backups that reported in (one last night, one failed this
+    morning)."""
+    now = time.time()
+    hub.logs.add(log_lines(now - 86400, now))
+    seed_backups(hub.device_backups)
+    seed_internet(hub.internet, now)
+    hub.wifi_scans.add(scans(now))
+    at = datetime.fromtimestamp(now, UTC)
+    for id, how in (("repeater-living", "openwrt"), ("repeater-attic", "openwrt"), ("fritzbox", "fritzbox")):
+        hub.log_status[id] = {"how": how, "ok": at.isoformat(timespec="seconds")}
+    hub.backups.report("nas-b2", True, "", at - timedelta(hours=7))
+    hub.backups.report("homeserver-borg", True, "", at - timedelta(hours=31))
+    hub.backups.report("homeserver-borg", False, "Failed to create/acquire the lock", at - timedelta(hours=7))

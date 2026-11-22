@@ -158,7 +158,7 @@ def test_tickets(client: TestClient, device) -> None:
     assert client.get(where).status_code == 200
     assert client.get(where).status_code == 401  # once only
     access = webproxy.Access()
-    key = access.ticket("token", "nas-box")
+    key = access.ticket("token", "nas-box", "https://nas")
     access._tickets[key].expires = 0  # a minute later
     assert access.enter(key, "nas-box") is None
     assert client.get(f"{HUB}/api/devices/printer/web", follow_redirects=False).status_code == 404
@@ -416,7 +416,7 @@ async def test_signing_in_for_the_admin_keeps_the_password_on_the_hub() -> None:
         assert s.how == "basic" and s.basic == "Basic YWRtaW46cHc=" and not s.cookies
 
     access = webproxy.Access()
-    key = access.ticket("session", "printer", cookies=["sid=1; Path=/"], basic="Basic x")
+    key = access.ticket("session", "printer", "http://printer", cookies=["sid=1; Path=/"], basic="Basic x")
     value, cookies = access.enter(key, "printer")
     assert cookies == ["sid=1; Path=/"] and access.basic(value) == "Basic x"
     assert access.enter(key, "printer") is None  # once

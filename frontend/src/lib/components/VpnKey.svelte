@@ -81,7 +81,9 @@
 		</p>
 		{#if error}<p class="mt-2 text-xs" style:color="var(--critical-text)">{error}</p>{/if}
 		{#if key}
-			<p class="mt-2 font-mono text-[11px] break-all text-muted">{key.fingerprint}</p>
+			<p class="mt-2 font-mono text-[11px] break-all text-muted">
+				{key.fingerprint ?? 'not known while the Kastellan key ring is locked'}
+			</p>
 			{#if rot}
 				<ul class="mt-3 space-y-1">
 					{#each Object.entries(rot.devices) as [role, step] (role)}

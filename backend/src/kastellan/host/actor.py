@@ -5,9 +5,9 @@ On the host (install_script, run as root; running it again with another choice c
 exactly that choice):
 - a user `kastellan-act` that can do nothing by itself;
 - a dispatcher (scripts/act-dispatch), the only thing the act key may run (`restrict`,
-  `command=`, `from=` the hub): it accepts exactly the known forms (`update-container <name>`,
-  `vm-start <name>`, `reboot`, ...) and `abilities` (which lists what is installed), and starts
-  the ability;
+  `command=`, `from=` the hub): it accepts exactly the known forms (`update-container <name>
+  [<tag>]`, `vm-start <name>`, `journal <cursor>`, `reboot`, ...) and `abilities` (which lists
+  what is installed), and starts the ability;
 - per chosen ability, a root-owned script (act-common + act-<ability>) and one sudo rule naming
   exactly it; the container and VM abilities act only on the names in a root-owned list on the
   host (/etc/kastellan/act/<ability>.allow), every action goes to the host's syslog.
@@ -28,10 +28,10 @@ from typing import Any
 
 import asyncssh
 
-from ..access import authorize
+from ..access import PYTHON_CHECK, authorize, port_of
 from ..config import VM_NAME, Device
 from ..ssh import Keys, Target
-from .collector import PYTHON_CHECK, digest, remove_user
+from .collector import digest, remove_user
 
 log = logging.getLogger(__name__)
 
@@ -66,18 +66,17 @@ CONTAINER_ABILITIES = (
 )
 UNIT_ABILITIES = ("unit-logs",)
 READING = ("container-logs", "unit-logs", "journal", "docker-logs")  # change nothing
-# Reading where it left off: a journald cursor, a Docker log time ("-" for none); no list of names.
-CURSORS = {
-    "journal": re.compile(r"-|[A-Za-z0-9=;]{1,400}"),
-    "docker-logs": re.compile(r"-|\d{1,12}(\.\d{1,9})?"),
-}
-CURSOR_ABILITIES = tuple(CURSORS)
-CURSOR = CURSORS["journal"]
-UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
 REPLACING = ("update-container", "rollback-container")  # with act-containers (the swap)
 VM_ABILITIES = ("vm-start", "vm-shutdown", "vm-reboot", "vm-force-off")
-NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # always with fullmatch
-TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")  # an image tag (update-container), fullmatch
+# The same patterns as act-common's and act-dispatch's (a test checks); always with fullmatch.
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")  # an image tag (update-container)
+UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
+CURSOR = re.compile(r"-|[A-Za-z0-9=;]{1,400}")  # journald's, or "-" for none
+SINCE = re.compile(r"-|\d{1,12}(\.\d{1,9})?")  # Docker's log time "<s>.<ns>", or "-" for none
+# Reading where it left off (no list of names): the pattern of where.
+CURSORS = {"journal": CURSOR, "docker-logs": SINCE}
+CURSOR_ABILITIES = tuple(CURSORS)
 
 
 def _script(name: str) -> str:
@@ -202,11 +201,10 @@ def install_script(
         'limits="no-port-forwarding,no-agent-forwarding,no-pty,no-X11-forwarding"',
         'dropbear_line="command=\\"$cmd\\",$limits $key"',
     ]
-    for ln in authorize(user, "OPENSSH_LINE", "DROPBEAR_LINE"):
+    for ln in authorize(user, "OPENSSH_LINE", "DROPBEAR_LINE", only=True):
         lines.append(
             ln.replace("OPENSSH_LINE", '"$openssh_line"').replace("DROPBEAR_LINE", '"$dropbear_line"')
         )
-    lines += keep_only_new_key()
     what = ", ".join(sorted(chosen)) or "nothing (only listing)"
     lines.append(f"echo {q(f'The actor is set up; Kastellan may: {what}.')}")
     return "\n".join(lines) + "\n"
@@ -229,23 +227,10 @@ def uninstall_script(user: str = USER) -> str:
     )
 
 
-def keep_only_new_key() -> list[str]:
-    """Shell lines, after authorize(): the Kastellan user's authorized_keys keeps only the line
-    just added (its own user: an older key or an older hub address must not stay valid). The new
-    line is in first, so an interruption never leaves the host without it."""
-    return [
-        'if [ -n "${home:-}" ]; then',
-        '  su -s /bin/sh "$user" -c \'f=$0; grep -qxF -- "$1" "$f" && grep -m1 -xF -- "$1" "$f" > "$f.k" \\',
-        '    && cat "$f.k" > "$f"; rm -f "$f.k"\' "$home/.ssh/authorized_keys" "$line"',
-        "fi",
-    ]
-
-
 def target_of(device: Device) -> Target:
     if device.act is None:
         raise ValueError("the device has no act: in config.yaml")
-    port = device.act.port or (device.ssh.port if device.ssh else 22)
-    return Target(device.host, port, device.act.user)
+    return Target(device.host, port_of(device, device.act), device.act.user)
 
 
 async def _run(keys: Keys, device: Device, words: list[str], timeout: float) -> tuple[int, str, str]:

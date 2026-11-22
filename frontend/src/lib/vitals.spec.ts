@@ -9,6 +9,7 @@ const v = (more: Partial<Vitals>): Vitals => ({
 	memory: null,
 	memory_used: null,
 	memory_total: null,
+	memory_share: null,
 	storage: null,
 	storage_used: null,
 	storage_total: null,
@@ -39,7 +40,7 @@ it('colours only what is high, storage by the disk alarms', () => {
 it('says what a value is of', () => {
 	expect(detailOf('cpu', v({ load: 0.42, cores: 4 }))).toBe('load 0.42 · 4 cores');
 	expect(detailOf('memory', v({ memory_used: 1.2e9, memory_total: 4e9 }))).toBe('1.2 GB of 4.0 GB');
-	expect(detailOf('memory', v({ memory_used: 55, memory_total: 100 }))).toBe(''); // shares only
+	expect(detailOf('memory', v({ memory: 55, memory_share: 55 }))).toBe(''); // a share only
 	expect(
 		detailOf('storage', v({ storage_used: 2e9, storage_total: 8e9, storage_mount: '/' }))
 	).toBe('2.0 GB of 8.0 GB · /');

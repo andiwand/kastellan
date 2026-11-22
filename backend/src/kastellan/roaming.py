@@ -18,11 +18,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from .alarms import Problem, Severity
+from .openwrt.client import SMALL_MEMORY
 
 if TYPE_CHECKING:
     from .hub import Hub
 
-SMALL_MEMORY = 64 * 2**20  # bytes: below this, a warning before it runs out
 LOW_FREE = 8 * 2**20
 
 # What roaming assistance sets on each member's network (with its mobility domain).
@@ -97,9 +97,10 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
             )
     # Channels: neighbours on the same (or, at 2.4 GHz, overlapping) channel.
     meshed = {
-        e.get("radio") and (e["device"], e["radio"])
+        (e["device"], e["radio"])
         for m in (survey or {}).get("mesh") or []
         for e in m.get("on") or []
+        if e.get("radio")
     }
     by_band: dict[str, list[tuple[str, str, Any]]] = {}
     for id, radios in ((survey or {}).get("radios") or {}).items():

@@ -7,7 +7,6 @@ signed-in admins, streamed (device by device), audited without passwords."""
 from __future__ import annotations
 
 import asyncio
-import secrets as random
 from functools import partial
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -15,16 +14,15 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import roaming, setup_run, sshkeys, sshsync
+from . import demo_more, roaming, setup_run, sshkeys, sshsync
 from .auth_api import client_address, require_admin, require_signin
 from .config import Device
 from .openwrt import client as ow
 from .openwrt import sync
+from .secrets import FINGERPRINT_SALT
 
 if TYPE_CHECKING:
     from .hub import Hub
-
-SALT_SECRET = "group-fingerprints"  # keys the password fingerprints (never shown)
 
 
 class NetworkChange(BaseModel):
@@ -89,12 +87,7 @@ def router(hub: Hub) -> APIRouter:
         return {id: u for id, u in all.items() if not isinstance(u, Exception)}
 
     def salt() -> bytes:
-        try:
-            return hub.secrets.get(SALT_SECRET).encode()
-        except KeyError:
-            value = random.token_urlsafe(32)
-            hub.secrets.set(SALT_SECRET, value)
-            return value.encode()
+        return hub.own_secret(FINGERPRINT_SALT).encode()
 
     def check(fn, *args):
         try:
@@ -142,9 +135,7 @@ def router(hub: Hub) -> APIRouter:
         if not any((d := hub.config.devices.get(id)) and d.openwrt for id in group.devices):
             raise HTTPException(404, "no OpenWrt devices in this group")
         if hub.demo:
-            from .demo import GROUP
-
-            found = GROUP
+            found = demo_more.GROUP
         else:
             found = await sync.survey(members(gid), salt())
         ids = [id for id in group.devices if (d := hub.config.devices.get(id)) and d.openwrt]
@@ -324,7 +315,7 @@ def router(hub: Hub) -> APIRouter:
             if body.file == "authorized_keys":
                 for key in change.remove:
                     kind, _, data = key.partition(" ")
-                    if sshsync._fingerprint(kind, data) in own:
+                    if sshsync.fingerprint_of(kind, data) in own:
                         raise HTTPException(400, "that is one of Kastellan's own keys; rotate it instead")
             if change.add or change.remove:
                 plan.append((id, user, device, change))

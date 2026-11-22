@@ -1,4 +1,5 @@
-"""config.yaml: the devices and how to check them. It is the only configuration; there is no database.
+"""config.yaml: the devices and how to check them. It is the only configuration; the SQLite files
+(logs, vitals) hold only what was seen, never settings.
 
     devices:
       fritzbox:
@@ -19,8 +20,9 @@
           - http: http://nas.lan:8096/health
             name: jellyfin
 
-A check is `ping`, `tcp: <port>` or `http: <url>`. A device without `checks` is pinged. An https
-check also looks at the certificate; `tls:` decides whether it can raise alarms (tls.py).
+A check is `ping`, `tcp: <port>`, `http: <url>`, `dns: <name>` or `dhcp`. A device without
+`checks` is pinged. An https check also looks at the certificate; `tls:` decides whether it can
+raise alarms (tls.py).
 
     users:
       andreas:
@@ -42,6 +44,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ruamel.yaml import YAML
 
+from .secrets import OWN
 from .tls import public_name
 
 ID = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -897,11 +900,6 @@ class Config(BaseModel):
     def site_name(self, site: str) -> str:
         return self.sites.get(site) or site.replace("-", " ").replace("_", " ").capitalize()
 
-    @property
-    def multi_site(self) -> bool:
-        """Devices at more than one site: only then do sites show (a list, alarms)."""
-        return len({d.site or HOME for d in self.devices.values()}) > 1
-
     def label(self, id: str) -> str:
         """A device for alarms and notifications: its name, and where it is when that isn't home."""
         site = self.site_of(id)
@@ -951,12 +949,7 @@ class Config(BaseModel):
         names = {access.password_secret for access in accesses}
         names.update(name for channel in self.notify for name in channel.secret_refs().values())
         for name in names:
-            if name in {
-                "device-backups",
-                "group-fingerprints",
-                "syslog-ca-key",
-                "hub-backup-key",
-            }:
+            if name in OWN:
                 raise ValueError(
                     "a login or notification cannot use Kastellan's encryption or fingerprint key"
                 )
@@ -1099,9 +1092,11 @@ class Config(BaseModel):
         return self
 
 
+def parse(text: str) -> Config:
+    """A config.yaml's text; an empty one is an empty configuration."""
+    return Config.model_validate(YAML(typ="safe").load(text) or {})
+
+
 def load(path: Path) -> Config:
     """Read config.yaml; a missing or empty file is an empty configuration."""
-    if not path.exists():
-        return Config()
-    data = YAML(typ="safe").load(path.read_text()) or {}
-    return Config.model_validate(data)
+    return parse(path.read_text()) if path.exists() else Config()

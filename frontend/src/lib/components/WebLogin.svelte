@@ -1,6 +1,7 @@
 <script lang="ts">
 	import KeyRound from '@lucide/svelte/icons/key-round';
 	import { modal } from '#lib/modal.js';
+	import { api, more, type StoredLogin } from '#lib/api.js';
 
 	/** A device's web login from the People key ring, next to "Open web interface": the logins
 	 * stored for this device; "Copy password" asks for your own password again (as revealing a
@@ -9,9 +10,8 @@
 	 * in itself (LuCI, HTTP Basic): the password never reaches the browser. */
 	let { device, proxied = false }: { device: string; proxied?: boolean } = $props();
 
-	type Stored = { id: string; name: string; user: string };
 	let open = $state(false);
-	let logins = $state<Stored[]>([]);
+	let logins = $state<StoredLogin[]>([]);
 	let ring = $state<{ vault: boolean; ring_open: boolean } | null>(null);
 	let mine = $state('');
 	let copying = $state<string | null>(null);
@@ -29,16 +29,9 @@
 		form = { name: '', user: '', secret: '' };
 	}
 
-	const H = { 'X-Kastellan': '1', 'Content-Type': 'application/json' };
-	async function json<T>(r: Response): Promise<T> {
-		if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? `HTTP ${r.status}`);
-		return r.json();
-	}
 	async function load() {
 		try {
-			const d = await json<{ vault: boolean; ring_open: boolean; stored: Stored[] }>(
-				await fetch(`/api/devices/${encodeURIComponent(device)}/stored-logins`)
-			);
+			const d = await more.storedLogins(device);
 			logins = d.stored;
 			ring = d;
 		} catch (e) {
@@ -50,13 +43,7 @@
 		busy = true;
 		note = null;
 		try {
-			const { secret } = await json<{ secret: string }>(
-				await fetch(`/api/vault/entries/${encodeURIComponent(id)}/reveal`, {
-					method: 'POST',
-					headers: H,
-					body: JSON.stringify({ password: mine })
-				})
-			);
+			const { secret } = await api.vaultReveal(id, mine);
 			await navigator.clipboard.writeText(secret);
 			note = { ok: true, text: 'Copied. Paste it into the login of the device’s page.' };
 			copying = null;
@@ -74,13 +61,7 @@
 		if (tab) tab.opener = null;
 		note = null;
 		try {
-			const { url } = await json<{ url: string }>(
-				await fetch(`/api/devices/${encodeURIComponent(device)}/web/sign-in`, {
-					method: 'POST',
-					headers: H,
-					body: JSON.stringify({ entry: id, password: mine })
-				})
-			);
+			const { url } = await more.webSignIn(device, id, mine);
 			if (tab && !tab.closed) tab.location.href = url;
 			else window.location.href = url;
 			note = { ok: true, text: 'Opened, signed in. The password stayed on the hub.' };
@@ -99,21 +80,16 @@
 		busy = true;
 		note = null;
 		try {
-			await json(
-				await fetch('/api/vault/entries', {
-					method: 'POST',
-					headers: H,
-					body: JSON.stringify({
-						ring: 'people',
-						kind: 'password',
-						name: form.name || `${device} web login`,
-						user: form.user,
-						secret: form.secret,
-						devices: [device],
-						password: mine
-					})
-				})
-			);
+			await api.vaultAdd({
+				ring: 'people',
+				kind: 'password',
+				name: form.name || `${device} web login`,
+				user: form.user,
+				notes: '',
+				secret: form.secret,
+				devices: [device],
+				password: mine
+			});
 			form = { name: '', user: '', secret: '' };
 			adding = false;
 			note = { ok: true, text: 'Stored in the People key ring, for this device only.' };
@@ -125,14 +101,12 @@
 			busy = false;
 		}
 	}
-	const look =
-		'inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong';
 	const input = 'h-8 w-full rounded-lg border border-line bg-surface px-2.5 text-xs';
 </script>
 
 <div class="relative">
 	<button
-		class={look}
+		class="btn-header"
 		onclick={() => ((open = true), load())}
 		title="Its web login from the key ring"
 	>

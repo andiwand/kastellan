@@ -12,13 +12,15 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .registry import NEWER_BUILD
+
 
 def offer(container: dict[str, Any]) -> str | None:
     """What a container's update offer is: its newer tag, or which new build of its own tag."""
     if not container.get("update") or container.get("unchecked"):
         return None
-    to = container.get("update_to") or "newer build"
-    return f"newer build {container.get('update_digest') or ''}".strip() if to == "newer build" else to
+    to = container.get("update_to") or NEWER_BUILD
+    return f"{NEWER_BUILD} {container.get('update_digest') or ''}".strip() if to == NEWER_BUILD else to
 
 
 def identity(container: dict[str, Any]) -> str | None:

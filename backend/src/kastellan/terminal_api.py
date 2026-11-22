@@ -30,9 +30,10 @@ import asyncssh
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from .access import USER
-from .auth import Brake, password_tag
+from .access import valid_user
+from .auth import Brake
 from .auth_api import (
+    MAX_PASSWORD,
     Who,
     client_address,
     require_admin,
@@ -42,18 +43,16 @@ from .auth_api import (
     session_who,
 )
 from .config import CheckType, Device
+from .setup_run import Login, remember, stored_logins
 from .ssh import ChangedHost, Target, UnknownHost
-from .vault import PEOPLE, Locked
+from .terminals import MAX_PER_USER, watch
+from .vault import Locked
 
 if TYPE_CHECKING:
     from .hub import Hub
 
 log = logging.getLogger(__name__)
 
-IDLE_LIMIT = 30 * 60  # a terminal nobody typed in for this long closes
-MAX_SECONDS = 8 * 3600  # however busy, a terminal ends after this long
-MAX_PER_USER = 4
-RECHECK_EVERY = 15  # seconds between checks that the session is still good
 LOGIN_WAIT = 300  # seconds the page has to answer "login-needed"
 _brake = Brake()  # typed SSH passwords, per address: the device's own guard is the other one
 
@@ -172,25 +171,9 @@ def router(hub: Hub) -> APIRouter:
             await say(message)
             await ws.close(code=code)
 
-        def mine() -> bool:
-            """This admin has their own way into the People ring (not only someone else's)."""
-            me = hub.config.users.get(w.user or "")
-            return me is not None and hub.vault.has_slot(PEOPLE, w.user or "", password_tag(me.password))
-
-        def usable(e: Any) -> bool:
-            # A stored login goes only to the devices it was stored for: never to another host.
-            return e is not None and e.ring == PEOPLE and e.kind == "password" and id in e.devices
-
         def stored() -> dict[str, Any]:
-            """The People ring's logins the page may offer: open ring, this admin's own slot there,
-            and only logins stored for this device."""
-            ring_open = hub.vault.exists and hub.vault.is_open(PEOPLE)
-            entries = [
-                {"id": e.id, "name": e.name, "user": e.user}
-                for e in (hub.vault.entries() if ring_open and mine() else [])
-                if usable(e)
-            ]
-            return {"vault": hub.vault.exists, "ring_open": ring_open, "stored": entries}
+            """The People ring's logins the page may offer (setup_run's rule, as for setups)."""
+            return stored_logins(hub, id, w.user)
 
         async def ask(why: str, again: bool = False) -> tuple[Target, str | None] | None:
             """A login from the page: typed (with the password) or a stored one. None: it left.
@@ -209,7 +192,7 @@ def router(hub: Hub) -> APIRouter:
                 if isinstance(m.get("entry"), str):
                     try:
                         entry = hub.vault.entry(m["entry"]) if hub.vault.exists else None
-                        if not usable(entry) or not mine():
+                        if entry is None or not any(e["id"] == entry.id for e in stored()["stored"]):
                             await say({"type": "login-failed", "message": "no stored login for this device"})
                             continue
                         password = hub.vault.get(entry.id, by=w.user)  # an admin's own action
@@ -222,7 +205,11 @@ def router(hub: Hub) -> APIRouter:
                     login.update(user=entry.user, way="stored", entry=entry.id, store=False)
                     return Target(device.host, port, entry.user), password
                 user, password = str(m.get("user") or ""), m.get("password")
-                if not USER.match(user) or not isinstance(password, str) or not password:
+                if (
+                    not valid_user(user)
+                    or not isinstance(password, str)
+                    or not 0 < len(password) <= MAX_PASSWORD
+                ):
                     await say({"type": "login-failed", "message": "a user name and a password, please"})
                     continue
                 login.update(user=user, way="password", store=bool(m.get("store")))
@@ -271,39 +258,14 @@ def router(hub: Hub) -> APIRouter:
                     raise
                 _brake.succeeded(address, attempt)
                 try:
-                    if login.get("store"):
-                        note = store_login(t.user, password)
-                        if note:
+                    if login.get("store") and password:
+                        typed = Login(login=t.user, password=password, remember=True)
+                        if note := remember(hub, id, typed, w.user, address):
                             await say({"type": "note", "message": note})
                 except BaseException:
                     conn.close()  # a ready login must not stay open when the page went meanwhile
                     raise
                 return conn
-
-        def store_login(user: str, password: str | None) -> str | None:
-            """The typed login into the People ring (the page asked to): a note for the page."""
-            if not password:
-                return None
-            base = f"ssh-{id}-{user}".lower().replace("_", "-")
-            entry_id, n = base, 2
-            while hub.vault.has(entry_id):
-                entry_id, n = f"{base}-{n}", n + 1
-            try:
-                hub.vault.put(
-                    entry_id,
-                    password,
-                    ring=PEOPLE,
-                    kind="password",
-                    name=f"{device.name or id} ({user})",
-                    user=user,
-                    devices=[id],  # only ever sent to this device again
-                )
-            except Locked as e:
-                return f"not stored: {e}"
-            except Exception:  # never the password in a message
-                return "not stored: the key ring can't be written"
-            hub.audit.record("vault.add", w.user, address, entry=entry_id, ring=PEOPLE, kind="password")
-            return f"stored in the People ring as {entry_id}"
 
         try:
             try:
@@ -362,15 +324,7 @@ def router(hub: Hub) -> APIRouter:
                 )
 
                 def allowed() -> str | None:
-                    """Why the terminal must end now, or None."""
-                    if handle.stop.is_set():
-                        return handle.reason or "signed out"
-                    now = session_who(hub, token)
-                    if now is None or now.user != w.user or not now.is_admin:
-                        return "your session ended"
-                    if time.monotonic() - opened > MAX_SECONDS:
-                        return f"closed after {MAX_SECONDS // 3600} hours"
-                    return None
+                    return handle.ended(session_who(hub, token))
 
                 ended = await _bridge(ws, process, allowed, handle.stop)
                 if ended == "exit":
@@ -417,14 +371,14 @@ async def _bridge(
         nonlocal last_input
         while True:
             try:
-                message = await asyncio.wait_for(ws.receive_text(), RECHECK_EVERY)
-            except TimeoutError:
-                continue
+                message = await ws.receive_text()
             except (WebSocketDisconnect, RuntimeError):
                 return
             try:
                 m = json.loads(message)
             except ValueError:
+                continue
+            if not isinstance(m, dict):
                 continue
             if m.get("type") == "input" and isinstance(m.get("data"), str):
                 last_input = time.monotonic()  # only typing counts as use, not resizing
@@ -435,20 +389,11 @@ async def _bridge(
                     cols, rows = max(10, min(int(m["cols"]), 500)), max(4, min(int(m["rows"]), 200))
                     process.change_terminal_size(cols, rows)
 
-    async def watch() -> None:
-        """Ends the terminal when its session ends, the user loses access, or it idles."""
+    async def watching() -> None:
         nonlocal why
-        while True:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), RECHECK_EVERY)
-            if reason := allowed():
-                why = reason
-                return
-            if time.monotonic() - last_input > IDLE_LIMIT:
-                why = f"closed after {IDLE_LIMIT // 60} minutes without typing"
-                return
+        why = await watch(stop, allowed, lambda: last_input)
 
-    tasks = [asyncio.create_task(output()), asyncio.create_task(input()), asyncio.create_task(watch())]
+    tasks = [asyncio.create_task(output()), asyncio.create_task(input()), asyncio.create_task(watching())]
     try:
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     finally:

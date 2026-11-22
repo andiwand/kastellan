@@ -5,12 +5,18 @@ per ability. The login gets only the groups chosen; rpcd refuses every other cal
 hub asks. Running it again with another choice changes the login to exactly that choice.
 
 Abilities:
-- read (always): board, system, interfaces, Wi-Fi state and clients, DHCP leases, available
-  package updates (through one fixed script);
+- read (always): board, system, interfaces, Wi-Fi state and clients, DHCP leases and pools, the
+  services and which of them Kastellan may act on (services.allow), what setup installed
+  (versions), and through fixed scripts without input: available package updates and the
+  vitals (CPU time, temperature);
 - reboot;
 - wifi: read and change the `wireless` configuration only, applied with an automatic rollback;
 - firmware: put an image at /tmp/firmware.bin, test it, and start the upgrade (keeping the
   settings);
+- password: set root's password (rpc-sys);
+- services: start, stop, restart, enable or disable the services in services.allow, through one
+  script that checks that list on the device (rpcd, uhttpd, the firewall and the network may only
+  be restarted);
 - openvpn: who is connected to its OpenVPN servers, through one fixed script that prints only
   the client lines of the status files its own openvpn config names (no file path is ever taken
   from Kastellan);
@@ -18,7 +24,10 @@ Abilities:
 - backup: download its configuration backup (`sysupgrade -b`, through cgi-io as LuCI does); it
   holds every password and key on the device, so Kastellan keeps it encrypted;
 - scan: look for neighbouring Wi-Fi networks and how busy each channel is (a scan can disturb
-  its clients for a moment), for the Wi-Fi page's channel plan.
+  its clients for a moment), for the Wi-Fi page's channel plan;
+- bandwidth: bytes per device from nlbwmon, through one fixed script;
+- roaming: usteer's view, read only (its nodes, the other access points, the clients, a part
+  of its settings).
 """
 
 from __future__ import annotations
@@ -39,6 +48,7 @@ OPENVPN_STATUS = "/usr/libexec/kastellan/openvpn-status"
 VERSIONS = "/usr/libexec/kastellan/versions"
 BANDWIDTH = "/usr/libexec/kastellan/bandwidth"
 VITALS = "/usr/libexec/kastellan/vitals"
+FIRMWARE = "/tmp/firmware.bin"  # where an image is uploaded to (cgi-io) and tested
 SERVICE_NAME = r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
 # Kastellan's own way in: these may be restarted, never stopped or disabled.
 # (and what stopping would open up or cut off: the firewall, the network).
@@ -220,7 +230,7 @@ def acl() -> dict:
                     "network.interface": ["dump"],
                     "network.wireless": ["status"],
                     "rc": ["list"],  # services: enabled, running
-                    "iwinfo": ["devices", "info", "assoclist", "freqlist", "txpowerlist"],
+                    "iwinfo": ["devices", "info", "assoclist", "freqlist"],
                     "network.device": ["status"],  # the WAN's byte counters
                     "luci-rpc": ["getDHCPLeases"],
                     "luci": ["getFeatures"],  # whether its Wi-Fi software can do mesh
@@ -243,7 +253,7 @@ def acl() -> dict:
         },
         "kastellan-wifi": {
             "description": "Kastellan: the wireless settings, nothing else",
-            "read": {"ubus": {"uci": ["get", "changes"]}, "uci": ["wireless"]},
+            "read": {"ubus": {"uci": ["get"]}, "uci": ["wireless"]},
             "write": {
                 "ubus": {"uci": ["set", "add", "delete", "apply", "confirm", "rollback", "revert"]},
                 "uci": ["wireless"],
@@ -263,18 +273,7 @@ def acl() -> dict:
         },
         "kastellan-roaming": {
             "description": "Kastellan: how Wi-Fi clients roam (usteer, read only)",
-            "read": {
-                "ubus": {
-                    "usteer": [
-                        "local_info",
-                        "remote_info",
-                        "remote_hosts",
-                        "connected_clients",
-                        "get_clients",
-                        "get_config",
-                    ]
-                }
-            },
+            "read": {"ubus": {"usteer": ["local_info", "remote_info", "connected_clients", "get_config"]}},
         },
         "kastellan-logs": {
             "description": "Kastellan: read the system log",
@@ -298,7 +297,7 @@ def acl() -> dict:
             "write": {
                 "ubus": {"file": ["remove"], "rpc-sys": ["upgrade_test", "upgrade_start"]},
                 # written through cgi-io (/cgi-bin/cgi-upload), which checks this
-                "file": {"/tmp/firmware.bin": ["write"]},
+                "file": {FIRMWARE: ["write"]},
             },
         },
     }

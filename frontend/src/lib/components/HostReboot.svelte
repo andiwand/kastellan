@@ -8,12 +8,10 @@
 	let asking = $state(false);
 	const job = $derived<Job>({ device, kind: 'reboot' });
 	const st = $derived(runner.state(job));
-	const look =
-		'inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong';
 </script>
 
 {#if asking}
-	<span class="{look} hover:border-line">
+	<span class="btn-header hover:border-line">
 		Reboot in a minute?
 		<button
 			class="underline"
@@ -26,7 +24,7 @@
 	</span>
 {:else}
 	<button
-		class={look}
+		class="btn-header"
 		disabled={st?.state === 'queued' || st?.state === 'running'}
 		title={st?.state === 'failed'
 			? st?.text

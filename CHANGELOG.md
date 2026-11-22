@@ -8,6 +8,8 @@
   longer leaves its lists in the router's memory.
 - For CPU use and temperature, set up the OpenWrt login (its new `vitals` helper) and the Linux
   collector again; until then OpenWrt shows its load, memory and storage.
+- Set up the actor, the OpenWrt logins and restricted OpenVPN scripts again (Updates lists them):
+  their scripts and access list changed with this release's fixes.
 
 ### Added
 
@@ -24,6 +26,10 @@
 - Updates leaves out OpenWrt packages, which come with firmware; Software still lists them.
 - Sign-ins: "Worth a look" is a table with columns (from, why, where, as, the counts, last).
 - Containers: the buttons have a column of their own on wide screens, so rows line up.
+- Passwords have no minimum length any more; only an empty one is refused (sign-in still slows
+  down guessing). `kastellan hash-password --short` is gone.
+- Sizes and rates read the same everywhere (kB/MB/GB, Mbit/s), and range and filter buttons
+  look alike on every page.
 
 ### Fixed
 
@@ -37,6 +43,22 @@
   on navigation; fit charts, filters and hardware tables at phone widths. Plot negative temperatures.
 - Handle unusual service names and keep unrelated DNS lookups separate. Hide service actions
   that the router's access helper refuses.
+- Alarms of the hub itself (its backup, its names) were resolved and sent again every minute.
+- Saving the config blanked OpenWrt and FRITZ!Box model and firmware until the next poll; a
+  removed FRITZ!Box kept showing its last readings.
+- Rotating the hub's SSH key counted devices it couldn't check as done; they now stay open until
+  forgotten, and devices skipped at the switch are listed.
+- Kastellan's key for password fingerprints could be revealed on Keys.
+- A rollback trusts the container's own label only for a valid tag of the same image, and an
+  actor action that fails halfway is always logged on the host.
+- OpenWrt 25.12: a mesh change was always rolled back. A denied call no longer makes a new
+  rpcd session; readings kept across a reboot or a firmware update are read anew. A kept
+  connection the device closed no longer fails a poll round.
+- FRITZ!Box: the action after a confirmation on the box got only what was left of the wait;
+  changing Wi-Fi dropped the WireGuard reading until the next read.
+- Smaller: an escalated alarm lost the devices behind it, a user name ending in a newline
+  passed the check, one bad log entry or VPN handshake time stopped that source, a malformed
+  terminal message closed the terminal, and internal version keys showed in Activity.
 
 ## 0.13.0 (2026-11-22)
 

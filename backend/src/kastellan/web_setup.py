@@ -17,7 +17,7 @@ resolving, raise warnings.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import logging
 import secrets
 import time
 from datetime import UTC, datetime
@@ -35,6 +35,8 @@ from .webproxy import label
 
 if TYPE_CHECKING:
     from .hub import Hub
+
+log = logging.getLogger(__name__)
 
 EVERY = 6 * 3600
 CERT_DAYS = 14  # a proxy certificate with fewer days left: a warning
@@ -62,7 +64,7 @@ def router_dns(values: dict[str, Any], zone: str, server: str | None) -> dict[st
     answers through (rebind_domain) and forwards the zone to the site's DNS server."""
     masq = next((v for v in values.values() if isinstance(v, dict) and v.get(".type") == "dnsmasq"), None)
     if masq is None:
-        return {"dnsmasq": False, "rebind_ok": None, "forward_ok": None, "forwards": []}
+        return {"dnsmasq": False, "rebind_ok": None, "forward_ok": None, "forwards": [], "local": []}
 
     def as_list(v: Any) -> list[str]:
         return [str(x) for x in v] if isinstance(v, list) else [str(v)] if v else []
@@ -121,7 +123,7 @@ async def look(hub: Hub) -> dict[str, Any]:
         if not name:
             continue
         address = next((r["answers"][0] for r in resolved if r["name"] == name and r["answers"]), None)
-        cert = await tls.certificate(address or name, 443, name, 8) if address else None
+        cert = await tls.certificate(address, 443, name, 8) if address else None
         certs.append({"name": name, "certificate": cert.view(now) if cert else None})
     routers = []
     for id, d in hub.config.devices.items():
@@ -186,8 +188,10 @@ async def run(hub: Hub) -> None:
     await asyncio.sleep(120)
     while True:
         if not hub.demo and hub.config.web is not None:
-            with contextlib.suppress(Exception):  # next time
+            try:
                 hub.web_state, hub.web_state_t = await look(hub), time.time()
+            except Exception:  # tried again next time
+                log.exception("checking the site's names and certificates failed")
         await asyncio.sleep(EVERY)
 
 

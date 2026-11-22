@@ -17,8 +17,10 @@ Rotating the hub key, so a key that leaked or got old stops working everywhere:
 2. switching: when it works everywhere (or the admin says to go on anyway), the next key
    becomes the key; the key so far is kept as "old" (crash-safe: the stage is saved first, and
    the switch can be resumed);
-3. removing: on each device, a login with only the new key must work; then the old key is
-   removed, and a login with only the old key must fail;
+3. removing: on each device, a login with only the new key must work (a device skipped at the
+   switch gets it first, with the old key); then the old key is removed, and a login with only
+   the old key must fail. A device that fails, left config.yaml or changed its login holds this
+   stage (and the old private key) until it works or an admin forgets it (`forget`);
 4. done: the old private key is deleted.
 Meanwhile logins offer every key (ssh.py), so nothing breaks half-way. The state is in
 <data>/ssh/rotation.json. One device is changed by one thing at a time (`device_lock`).
@@ -38,7 +40,7 @@ from typing import Any
 
 import asyncssh
 
-from .access import USER, authorize, hub_address, openssh_options
+from .access import authorize, hub_address, openssh_options, valid_user
 from .config import Device
 from .ssh import Keys, Target
 
@@ -177,7 +179,7 @@ def parse(output: str) -> tuple[list[AuthorizedKey], bool]:
             continue
         user, file, line = parts
         line = line.rstrip("\r")
-        if not USER.match(user) or not (FILE.match(file) or (file == DROPBEAR and user == "root")):
+        if not valid_user(user) or not (FILE.match(file) or (file == DROPBEAR and user == "root")):
             continue
         parsed = parse_line(line)
         if parsed is None:
@@ -216,7 +218,7 @@ def target_of(device: Device) -> Target:
     return Target(device.host, device.ssh.port, device.ssh.user)
 
 
-async def _privileged(conn: asyncssh.SSHClientConnection) -> str | None:
+async def privileged(conn: asyncssh.SSHClientConnection) -> str | None:
     """How to run something with root's rights here: "" (the login is root), "sudo -n ", or None
     (it can't)."""
     r = await conn.run(
@@ -231,7 +233,7 @@ async def _privileged(conn: asyncssh.SSHClientConnection) -> str | None:
 async def list_keys(keys: Keys, device: Device) -> tuple[list[AuthorizedKey], bool]:
     """The keys allowed on a device, and whether that is everyone's (False: only the login's)."""
     async with await keys.connect(target_of(device)) as conn:
-        how = await _privileged(conn)
+        how = await privileged(conn)
         prefix = how if how is not None else ""
         # Bytes: one stray byte in someone's file must not break the listing.
         r = await conn.run(f"{prefix}sh -s", input=_LIST.encode(), check=False, timeout=60, encoding=None)
@@ -247,7 +249,7 @@ async def remove_lines(keys: Keys, device: Device, user: str, file: str, lines: 
     q = shlex.quote
     me = target_of(device).user
     async with await keys.connect(target_of(device)) as conn:
-        how = await _privileged(conn)
+        how = await privileged(conn)
         if user == me:
             command = f"sh -c {q(_REMOVE)} {q(file)}"
         elif how is None:
@@ -288,6 +290,19 @@ class DeviceStep:
     note: str | None = None  # what the step found (e.g. other keys it removed)
     forgotten: bool = False  # given up on by an admin: the old key may still work there
 
+    def summary(self) -> str:
+        """What the audit log says of it."""
+        state = (
+            "removed the old key"
+            if self.removed
+            else "forgotten"
+            if self.forgotten
+            else "has the new key"
+            if self.added
+            else None
+        )
+        return "; ".join(x for x in (state, self.note, self.error) if x)
+
 
 @dataclass
 class Rotation:
@@ -296,6 +311,21 @@ class Rotation:
     stage: str = "adding"  # adding, switching, removing, done
     devices: dict[str, DeviceStep] = field(default_factory=dict)
     finished: str | None = None
+
+    def settled(self) -> bool:
+        """Every device clean or given up on: the old private key may go."""
+        return all(s.removed or s.forgotten for s in self.devices.values())
+
+    def forget(self, id: str) -> None:
+        """Give up on one device while removing: the old key may still be trusted there."""
+        if self.stage != "removing" or id not in self.devices:
+            raise ValueError("nothing to forget")
+        step = self.devices[id]
+        if not step.removed:
+            step.forgotten = True
+            step.error = (
+                f"forgotten: the old key may still be trusted on {step.target}; remove it there by hand"
+            )
 
     @classmethod
     def load(cls, path: Path) -> Rotation | None:
@@ -319,12 +349,15 @@ def login_of(device: Device) -> str:
     return f"{t.user}@{t.host}:{t.port}"
 
 
-def _why(e: Exception) -> str:
+def why(e: Exception) -> str:
     return str(e)[:200] or type(e).__name__
 
 
-def _now() -> str:
+def timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+_STILL_TRUSTED = "the old key may still be trusted there; forget it to finish"
 
 
 class Rotator:
@@ -354,13 +387,18 @@ class Rotator:
                     await conn.run("true", check=False, stdin=asyncssh.DEVNULL, timeout=20)
             step.added = True
         except Exception as e:  # one device's trouble is reported, never stops the others
-            step.error = _why(e)
+            step.error = why(e)
         return step
 
     async def _remove_old(
         self, id: str, device: Device, old: asyncssh.SSHKey, step: DeviceStep
     ) -> DeviceStep:
-        """On one device: the new key must work; then the old one goes, and must stop working."""
+        """On one device: the new key must work (one skipped at the switch gets it first, logging
+        in with the old); then the old one goes, and must stop working."""
+        if not step.added:
+            step = await self._add(id, device, self.keys.hub_key())
+            if not step.added:
+                return step
         done = DeviceStep(added=True, target=step.target)
         try:
             target = target_of(device)
@@ -383,7 +421,7 @@ class Rotator:
                     pass  # as it should be
             done.removed = True
         except Exception as e:
-            done.error = _why(e)
+            done.error = why(e)
         return done
 
     async def start(self, devices: dict[str, Device]) -> Rotation:
@@ -391,7 +429,7 @@ class Rotator:
         async with self._lock:
             rot = self.state()
             if rot is None or rot.stage == "done":
-                rot = Rotation(started=_now())
+                rot = Rotation(started=timestamp())
             if rot.stage != "adding":
                 raise ValueError("the switch happened already; finish removing the old key")
             key = self.keys.make_next()
@@ -422,7 +460,8 @@ class Rotator:
         rot.save(self.path)
 
     async def finish(self, devices: dict[str, Device], anyway: bool = False) -> Rotation:
-        """Make the next key the key, and remove the old one from every device."""
+        """Make the next key the key, and remove the old one from every device (again, for devices
+        that didn't work the last time)."""
         async with self._lock:
             rot = self.state()
             if rot is None:
@@ -433,31 +472,54 @@ class Rotator:
                     for id, s in rot.devices.items()
                     if s.added and id in devices and devices[id].ssh and s.target == login_of(devices[id])
                 }
-                missing = [id for id, d in devices.items() if d.ssh and id not in ready]
+                missing = sorted(id for id, d in devices.items() if d.ssh and id not in ready)
                 if missing and not anyway:
-                    raise ValueError(f"the new key isn't on {', '.join(sorted(missing))} yet")
+                    raise ValueError(f"the new key isn't on {', '.join(missing)} yet")
+                # Devices that lost their ssh: since have nothing to do; those missing stay and get
+                # the new key with the old one while removing.
                 rot.devices = {id: s for id, s in rot.devices.items() if id in ready}
+                for id in missing:
+                    was = rot.devices.get(id)
+                    cause = was.error if was and was.error else "didn't get the new key"
+                    rot.devices[id] = DeviceStep(
+                        error=f"skipped at the switch: {cause}", target=login_of(devices[id])
+                    )
             if rot.stage in ("adding", "switching"):
                 self._switch(rot)
-            old = self.keys.side_key("old")
-            # Only devices still with this login; one that left (or changed its login) is noted.
-            for id, s in list(rot.devices.items()):
-                if id not in devices or not devices[id].ssh or s.target != login_of(devices[id]):
-                    rot.devices[id] = DeviceStep(
-                        added=s.added,
-                        removed=True,
-                        target=s.target,
-                        error="not in config.yaml any more: not checked",
-                    )
-            if old is not None:
-                todo = {id: s for id, s in rot.devices.items() if not s.removed}
+            if rot.stage == "removing":
+                old = self.keys.side_key("old")
+                todo = {}
+                for id, s in rot.devices.items():
+                    if s.removed or s.forgotten:
+                        continue
+                    if id not in devices or not devices[id].ssh or s.target != login_of(devices[id]):
+                        s.error = f"not this login any more ({s.target}): {_STILL_TRUSTED}"
+                    elif old is None:
+                        s.error = "the old private key is gone: remove the old key there by hand"
+                    else:
+                        todo[id] = s
                 steps = await asyncio.gather(
                     *(self._remove_old(id, devices[id], old, s) for id, s in todo.items())
                 )
                 rot.devices.update(dict(zip(todo, steps, strict=True)))
-            if all(s.removed for s in rot.devices.values()):
-                self.keys.drop("old")
-                rot.stage, rot.finished = "done", _now()
+                self._settle(rot)
+            rot.save(self.path)
+            return rot
+
+    def _settle(self, rot: Rotation) -> None:
+        """Done once every device is clean or given up on: then the old private key goes."""
+        if rot.settled():
+            self.keys.drop("old")
+            rot.stage, rot.finished = "done", timestamp()
+
+    async def forget(self, id: str) -> Rotation:
+        """Give up on one device while removing (it left, changed its login or can't be reached)."""
+        async with self._lock:
+            rot = self.state()
+            if rot is None:
+                raise ValueError("nothing to forget")
+            rot.forget(id)
+            self._settle(rot)
             rot.save(self.path)
             return rot
 

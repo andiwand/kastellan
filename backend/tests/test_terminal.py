@@ -178,9 +178,9 @@ def ends(ws) -> str:
 
 def test_terminal_ends_with_the_session(tmp_path: Path, ssh_server, monkeypatch: pytest.MonkeyPatch) -> None:
     """Security review: an open terminal used to outlive sign-out, removal and password change."""
-    from kastellan import terminal_api
+    from kastellan import terminals
 
-    monkeypatch.setattr(terminal_api, "RECHECK_EVERY", 0.2)
+    monkeypatch.setattr(terminals, "RECHECK_EVERY", 0.2)
     port, host_key = ssh_server
     with make_client(tmp_path, port) as c:
         signin(c, "ada")

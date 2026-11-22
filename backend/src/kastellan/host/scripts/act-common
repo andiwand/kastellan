@@ -1,7 +1,8 @@
 #!/usr/bin/python3 -I -S
 # Kastellan's actor: what every ability shares (prepended to each when installed). Runs as root
-# through one sudo rule per ability; takes its one argument from the dispatcher and checks it
-# again, against a pattern and the host's own list (/etc/kastellan/act/<ability>.allow, root's).
+# through one sudo rule per ability; takes its arguments from the dispatcher (a name or a cursor;
+# update-container a name and maybe a tag) and checks them again, against a pattern and the
+# host's own list (/etc/kastellan/act/<ability>.allow, root's).
 import http.client
 import json
 import os
@@ -16,6 +17,12 @@ VM_NAME = re.compile(  # libvirt allows more; Kastellan this much, and never a n
     r"(?!\d+$)(?![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$)"
     r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,127}"  # virsh reads those as a domain id or UUID first
 )
+TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")  # an image tag, as Docker allows
+UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
+CURSOR = re.compile(r"-|[A-Za-z0-9=;]{1,400}")  # journald's (s=...;i=...;b=...), or "-" for none
+SINCE = re.compile(r"-|\d{1,12}(\.\d{1,9})?")  # Docker's log time "<s>.<ns>", or "-" for none
+# Escape sequences and control characters, taken out of log lines.
+ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
 SOCKET = "/var/run/docker.sock"  # fixed: nothing from the environment steers a root script
 ABILITY = os.path.basename(sys.argv[0])
 
@@ -40,6 +47,11 @@ def fail(message, code=1):
     syslog.syslog(syslog.LOG_WARNING, f"{ABILITY}: refused or failed: {message}")
     print(message, file=sys.stderr)
     sys.exit(code)
+
+
+# Whatever an ability doesn't catch (a Docker error halfway) ends it the same way: one line,
+# and the host's syslog says it failed.
+sys.excepthook = lambda kind, error, _tb: fail(f"{kind.__name__}: {error}")
 
 
 LOCK = "/run/kastellan-act.lock"

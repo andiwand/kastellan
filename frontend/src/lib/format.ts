@@ -62,3 +62,43 @@ export function stateFor(
 	const d = since(check.since, now);
 	return check.since_exact === false ? `at least ${d}` : d;
 }
+
+/** What a software change is about: a check's name, or the hub's internal version keys
+ * (hub.py) "@firmware" and "@container <key>" said in words. */
+export function versionSubject(check: string): string {
+	if (check === '@firmware') return 'Firmware';
+	if (check.startsWith('@container ')) return `Container ${check.slice('@container '.length)}`;
+	return check;
+}
+
+/** A size in bytes, in SI units: "512 B", "12 kB", "4.3 GB", "340 GB" (a decimal below 10). */
+export function bytes(n: number | null | undefined): string {
+	if (n == null) return '–';
+	const units = ['B', 'kB', 'MB', 'GB', 'TB'];
+	let i = 0;
+	while (n >= 1000 && i < units.length - 1) {
+		n /= 1000;
+		i++;
+	}
+	return `${i && n < 10 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+}
+
+/** A rate in bits per second: "0.4 Mbit/s", "95 Mbit/s", "1.2 Gbit/s" (a decimal below 10). */
+export function bitrate(bits: number | null | undefined): string {
+	if (bits == null) return '–';
+	const [n, unit] = bits >= 1e9 ? [bits / 1e9, 'Gbit/s'] : [bits / 1e6, 'Mbit/s'];
+	return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${unit}`;
+}
+
+/** A rate the FRITZ!Box tells in kbit/s (DSL, mesh links). */
+export const kbitrate = (kbit: number | null | undefined) =>
+	bitrate(kbit == null ? null : kbit * 1000);
+
+const BANDS: Record<string, string> = { '2g': '2.4 GHz', '5g': '5 GHz', '6g': '6 GHz' };
+
+/** A Wi-Fi band as OpenWrt and the FRITZ!Box name it ("2g", "5g", "6g") in words; '' for none. */
+export const bandLabel = (band: string | null | undefined) => (band ? (BANDS[band] ?? band) : '');
+
+/** The Wi-Fi band a frequency in MHz is in, in words. */
+export const bandOfFrequency = (mhz: number | null | undefined) =>
+	mhz ? bandLabel(mhz < 3000 ? '2g' : mhz < 5950 ? '5g' : '6g') : '';

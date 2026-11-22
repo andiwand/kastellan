@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -386,10 +387,17 @@ class Sources:
         self._dirty = False
         self.kev_error: str | None = None
         try:
-            self._cache = json.loads((folder / "cache.json").read_text())
+            cache = json.loads((folder / "cache.json").read_text())
+            if isinstance(cache, dict):
+                self._cache = {k: v for k, v in cache.items() if isinstance(v, dict)}
+        except (OSError, ValueError):
+            pass
+        try:
             kev = json.loads((folder / "kev.json").read_text())
-            self._kev, self._kev_fetched = set(kev["ids"]), float(kev["fetched"])
-        except (OSError, ValueError, KeyError, TypeError):
+            if isinstance(kev, dict) and isinstance(kev.get("ids"), list):
+                self._kev = {str(i) for i in kev["ids"]}
+                self._kev_fetched = float(kev.get("fetched") or 0)
+        except (OSError, ValueError, TypeError):
             pass
 
     def flush(self) -> None:
@@ -404,21 +412,25 @@ class Sources:
     def _save(self) -> None:
         try:
             self.folder.mkdir(parents=True, exist_ok=True)
-            (self.folder / "cache.json").write_text(json.dumps(self._cache))
-            (self.folder / "kev.json").write_text(
-                json.dumps({"ids": sorted(self._kev), "fetched": self._kev_fetched})
-            )
+            self._write("cache.json", self._cache)
+            self._write("kev.json", {"ids": sorted(self._kev), "fetched": self._kev_fetched})
         except OSError as e:
             log.warning("cannot save the vulnerability cache: %s", e)
+
+    def _write(self, name: str, data: Any) -> None:
+        """Replaced whole, so a crash halfway never leaves half a file."""
+        tmp = self.folder / f"{name}.tmp"
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, self.folder / name)
 
     async def refresh_kev(self, client: httpx.AsyncClient) -> None:
         if time.time() - self._kev_fetched < CACHE_SECONDS:
             return
         try:
             data = await _get_json(client, "GET", KEV_URL)
-            self._kev = {
-                str(v.get("cveID")) for v in data.get("vulnerabilities") or [] if isinstance(v, dict)
-            }
+            if not isinstance(data, dict) or not isinstance(data.get("vulnerabilities"), list):
+                raise ValueError("not a KEV catalog")
+            self._kev = {str(v.get("cveID")) for v in data["vulnerabilities"] if isinstance(v, dict)}
             self._kev_fetched = time.time()
             self.kev_error = None
             self._save()
@@ -507,6 +519,8 @@ class Sources:
                 OSV_URL,
                 json={"package": {"name": package, "ecosystem": ecosystem}, "version": version},
             )
+            if not isinstance(data, dict):
+                raise ValueError("not an OSV answer")
             self.errors.pop("osv", None)
             return parse_osv(data, version)
         except (httpx.HTTPError, ValueError, TimeoutError) as e:

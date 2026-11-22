@@ -59,10 +59,10 @@ def collect(hub: Hub, admin: bool) -> list[dict[str, Any]]:
 
     def managed_openvpn(device: str, name: str, count: int) -> str | None:
         for vid, v in vpns.items():
-            if v.kind == "openvpn" and v.server == device:
-                instance = getattr(v, "instance", None)
-                if instance == name or (instance is None and count == 1):
-                    return vid
+            if v.kind != "openvpn" or v.server != device:
+                continue
+            if v.instance == name or (v.instance is None and count == 1):
+                return vid
         return None
 
     for device, state in sorted(hub.vpn_servers.items()):
@@ -109,7 +109,7 @@ def collect(hub: Hub, admin: bool) -> list[dict[str, Any]]:
                 }
             )
 
-    for id in list(hub.config.devices):
+    for id, device in hub.config.devices.items():
         status = hub.monitor.status.get(id)
         if status is None:
             continue
@@ -150,14 +150,13 @@ def collect(hub: Hub, admin: bool) -> list[dict[str, Any]]:
             if not VPN_IMAGE.search(image.rsplit("/", 1)[-1].split(":")[0]):
                 continue
             kind = _kind_of_image(image)
-            host = hub.config.devices[id].host if id in hub.config.devices else None
             vpn = next(
                 (
                     vid
                     for vid, v in vpns.items()
                     if v.kind == "wireguard"
                     and "wg-easy" in image.lower()
-                    and _host_of(str(v.wg_easy)) in {host, id}
+                    and _host_of(str(v.wg_easy)) in {device.host, id}
                 ),
                 None,
             )

@@ -17,19 +17,17 @@
 			note = { ok: false, text: (e as Error).message };
 		}
 	}
-	const look =
-		'inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong';
 </script>
 
 {#if asking}
-	<span class="{look} hover:border-line">
+	<span class="btn-header hover:border-line">
 		Reboot it?
 		<button class="underline" style:color="var(--critical-text)" onclick={reboot}>Yes</button>
 		<button class="underline" onclick={() => (asking = false)}>No</button>
 	</span>
 {:else}
 	<button
-		class={look}
+		class="btn-header"
 		title={note?.text ?? 'Restart the device'}
 		onclick={() => ((asking = true), (note = null))}
 	>

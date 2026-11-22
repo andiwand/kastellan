@@ -31,7 +31,9 @@ mine = docker("GET", f"/images/{current}/json")
 body, others = spec(old, mine.get("Config") or {})
 labels = dict(body.get("Labels") or {})
 back = labels.get(PREVIOUS_REF)
-if back and back != ref and repo_of(back) == repo_of(ref) and "@" not in back:
+# The label is the container's own metadata (its compose file could set it): only another tag of
+# the same repository, and a well-formed one.
+if back and back != ref and repo_of(back) == repo_of(ref) and "@" not in back and TAG.fullmatch(tag_of(back)):
     # The last update changed its tag: back to the tag it ran, which names the kept image again.
     try:
         had = docker("GET", f"/images/{quote(back, safe='/:')}/json")["Id"]
@@ -41,7 +43,11 @@ if back and back != ref and repo_of(back) == repo_of(ref) and "@" not in back:
     tag(previous["Id"], back)
     body["Image"] = back
     labels[PREVIOUS_REF] = ref  # going back again returns to the tag it runs now
-    undo = (lambda: tag(had, back)) if had and had != previous["Id"] else (lambda: None)
+    def undo():  # the tag as it was: on the image it named, or gone if it was made here
+        if had is None:
+            docker("DELETE", f"/images/{quote(back, safe='/:')}?noprune=1", ok=(200, 404))
+        elif had != previous["Id"]:
+            tag(had, back)
 else:
     back = ref
     labels.pop(PREVIOUS_REF, None)

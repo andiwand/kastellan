@@ -157,6 +157,7 @@ async def test_the_hub_says_why_nobody_is_seen(tmp_path: Path, monkeypatch, text
     from types import SimpleNamespace
 
     from kastellan import hub as hub_module
+    from kastellan.config import OpenVpnSource
     from kastellan.vpn.openvpn import Seen
 
     async def status(ubus) -> str:
@@ -168,7 +169,7 @@ async def test_the_hub_says_why_nobody_is_seen(tmp_path: Path, monkeypatch, text
         seen=lambda vid: seen,
         ovpn_status={"office": {"connected": [{"name": "old"}]}},
         vpn_servers={},
-        config=SimpleNamespace(vpns={"office": SimpleNamespace(instance=None)}),
+        config=SimpleNamespace(vpns={"office": OpenVpnSource(pki="pki", server="gw")}),
     )
     await hub_module.Hub._read_openvpn(me, ["office"], "gw", None)  # type: ignore[arg-type]
     status = me.ovpn_status["office"]
@@ -260,6 +261,7 @@ async def test_several_openvpn_servers_on_one_router_are_kept_apart(tmp_path: Pa
     from types import SimpleNamespace
 
     from kastellan import hub as hub_module
+    from kastellan.config import OpenVpnSource
     from kastellan.vpn.openvpn import Seen
 
     text = (
@@ -274,9 +276,9 @@ async def test_several_openvpn_servers_on_one_router_are_kept_apart(tmp_path: Pa
     monkeypatch.setattr(hub_module.openwrt_client, "openvpn_status", status)
     seen = {v: Seen(tmp_path, v) for v in ("a", "b", "c")}
     vpns = {
-        "a": SimpleNamespace(instance="office"),
-        "b": SimpleNamespace(instance="lab.conf"),
-        "c": SimpleNamespace(instance=None),
+        "a": OpenVpnSource(pki="pki", server="gw", instance="office"),
+        "b": OpenVpnSource(pki="pki", server="gw", instance="lab.conf"),
+        "c": OpenVpnSource(pki="pki", server="gw"),
     }
     me = SimpleNamespace(
         seen=lambda v: seen[v], ovpn_status={}, vpn_servers={}, config=SimpleNamespace(vpns=vpns)

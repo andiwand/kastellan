@@ -10,16 +10,15 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-import asyncssh
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from . import config_edit
-from .auth import password_tag, verify_password
-from .auth_api import Who, client_address, require_signin
-from .groups_api import SALT_SECRET
+from .auth import password_tag
+from .auth_api import MAX_PASSWORD, Who, client_address, confirm_password, require_signin
+from .hub_errors import ConfigProblem
 from .push import VAULT_ID as PUSH_ID
-from .ssh import Keys
+from .secrets import OWN
 from .vault import (
     AUTO,
     DEFAULT_RINGS,
@@ -38,11 +37,11 @@ if TYPE_CHECKING:
 
 
 class Password(BaseModel):
-    password: str = Field(min_length=1, max_length=1024)
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
 
 
 class Unlock(BaseModel):
-    password: str | None = Field(default=None, max_length=1024)
+    password: str | None = Field(default=None, max_length=MAX_PASSWORD)
     recovery: str | None = Field(default=None, max_length=200)
     ring: str | None = Field(default=None, max_length=40)  # the recovery key's ring
 
@@ -80,12 +79,12 @@ class EntryForm(BaseModel):
     # A login's devices (a terminal sends it only there); None on a change: kept. Changing them
     # needs the admin's password typed again: it decides where a password may go.
     devices: list[str] | None = Field(default=None, max_length=200)
-    password: str | None = Field(default=None, max_length=1024)
+    password: str | None = Field(default=None, max_length=MAX_PASSWORD)
 
 
 def own(id: str) -> bool:
     """Kastellan's own keys: made and replaced by Kastellan (rotation), never edited here."""
-    return id.startswith("ssh/") or id in (PUSH_ID, "device-backups", "syslog-ca-key", "hub-backup-key")
+    return id.startswith("ssh/") or id == PUSH_ID or id in OWN
 
 
 def router(hub: Hub) -> APIRouter:
@@ -93,16 +92,9 @@ def router(hub: Hub) -> APIRouter:
 
     def admin_signed_in(request: Request) -> Who:
         w = require_signin(request)  # refuses while sign-in is off: a key ring needs a password
-        if not w.is_admin:
-            raise HTTPException(403, "admins only")
         if hub.demo:
             raise HTTPException(409, "demo mode shows a made-up network; it has no key ring")
         return w
-
-    async def check_password(w: Who, password: str) -> None:
-        user = hub.config.users.get(w.user or "")
-        if user is None or not await asyncio.to_thread(verify_password, password, user.password):
-            raise HTTPException(403, "wrong password")
 
     def audit(what: str, w: Who, request: Request, **details: Any) -> None:
         hub.audit.record(f"vault.{what}", w.user, client_address(request.scope), **details)
@@ -119,14 +111,8 @@ def router(hub: Hub) -> APIRouter:
             out.append(labels[id.split(".")[0]] + (" (rotation)" if "." in id else ""))
         if id == PUSH_ID:
             out.append("push notifications")
-        if id == SALT_SECRET:
-            out.append("groups: Wi-Fi password fingerprints")
-        if id == "syslog-ca-key":
-            out.append("syslog certificate authority")
-        if id == "hub-backup-key":
-            out.append("hub backup encryption")
-        if id == "device-backups":
-            out.append("device backup encryption")
+        if id in OWN:
+            out.append(OWN[id])
         for dev, device in hub.config.devices.items():
             if device.openwrt is not None and hub.openwrt_secret(dev) == id:
                 out.append(f"{dev}: its OpenWrt login")
@@ -167,9 +153,7 @@ def router(hub: Hub) -> APIRouter:
     @api.get("")
     def state(request: Request, response: Response) -> dict[str, Any]:
         # Signed-in admins only (also while sign-in is off: a key ring needs a password).
-        w = require_signin(request)
-        if not w.is_admin:
-            raise HTTPException(403, "admins only")
+        require_signin(request)
         response.headers["Cache-Control"] = "no-store"
         out: dict[str, Any] = {
             "state": hub.vault.state,
@@ -193,7 +177,7 @@ def router(hub: Hub) -> APIRouter:
         can change things, push's key) into Kastellan's: each one checked to read back from the
         ring before its file is overwritten and removed."""
         w = admin_signed_in(request)
-        await check_password(w, body.password)
+        await confirm_password(hub, w, body.password)
         if hub.vault.exists:
             raise HTTPException(409, "there is a key ring already")
         user = hub.config.users[w.user or ""]
@@ -230,7 +214,7 @@ def router(hub: Hub) -> APIRouter:
                 await asyncio.to_thread(hub.vault.unlock_recovery, body.ring, body.recovery)
                 opened = [body.ring]
             elif body.password:
-                await check_password(w, body.password)
+                await confirm_password(hub, w, body.password)
                 opened = await asyncio.to_thread(hub.vault.unlock, w.user or "", body.password)
             else:
                 raise HTTPException(400, "your password or a recovery key")
@@ -262,7 +246,7 @@ def router(hub: Hub) -> APIRouter:
         """Another ring (e.g. a site's logins), opened by this admin's password; its recovery
         key, shown once."""
         w = admin_signed_in(request)
-        await check_password(w, body.password)
+        await confirm_password(hub, w, body.password)
         if not hub.vault.exists:
             raise HTTPException(409, "make the key ring first")
         user = hub.config.users[w.user or ""]
@@ -292,7 +276,7 @@ def router(hub: Hub) -> APIRouter:
     async def recovery(rid: str, body: Password, request: Request) -> dict[str, str]:
         """A new recovery key for one ring (the old one stops working), shown once."""
         w = admin_signed_in(request)
-        await check_password(w, body.password)
+        await confirm_password(hub, w, body.password)
         if rid not in hub.vault.ring_ids():
             raise HTTPException(404, "no such ring")
         key = await asyncio.to_thread(hub.vault.new_recovery, rid)
@@ -306,7 +290,7 @@ def router(hub: Hub) -> APIRouter:
         open ring's slots then match its ways (a key in config.yaml made here when chosen, a key
         file written only when asked to). A ring that is locked gets its new ways once open."""
         w = admin_signed_in(request)
-        await check_password(w, body.password)
+        await confirm_password(hub, w, body.password)
         if not hub.vault.exists:
             raise HTTPException(409, "make the key ring first")
         known = set(hub.vault.ring_ids())
@@ -345,7 +329,6 @@ def router(hub: Hub) -> APIRouter:
         old_text = config_edit.read(hub.settings.config)
         value = {"level": body.level, **({"rings": rings} if rings else {})}
         new_text = config_edit.set_top(old_text, "vault", value)
-        from .hub import ConfigProblem
 
         try:
             hub.check(new_text)
@@ -385,7 +368,7 @@ def router(hub: Hub) -> APIRouter:
             raise HTTPException(400, f"no such device: {', '.join(unknown)}")
         if not body.password:
             raise HTTPException(403, "type your password again to change where a login may go")
-        await check_password(w, body.password)
+        await confirm_password(hub, w, body.password)
         if not await asyncio.to_thread(hub.vault.opens_with, body.ring, w.user or "", body.password):
             raise HTTPException(403, "your password doesn't open this ring (sign in again to get a slot)")
 
@@ -424,6 +407,8 @@ def router(hub: Hub) -> APIRouter:
                 raise HTTPException(400, f"no ring {body.ring!r}")
             if used_by(id) and not hub.vault.policy(body.ring).background:
                 raise HTTPException(400, "Kastellan uses it by itself: it stays in a ring Kastellan may use")
+            if not hub.vault.is_open(body.ring):  # before anything is written
+                raise HTTPException(423, str(Locked(body.ring)))
         await check_devices(w, body, old.devices)
         f = form_of(body, body.secret or None)
         try:
@@ -462,7 +447,7 @@ def router(hub: Hub) -> APIRouter:
         """One secret, shown to the admin who asks with their password typed again (an SSH key's
         private half never: only Kastellan uses it)."""
         w = admin_signed_in(request)
-        await check_password(w, body.password)
+        await confirm_password(hub, w, body.password)
         entry = hub.vault.entry(id)
         if entry is None:
             raise HTTPException(404, "no such entry")
@@ -506,19 +491,9 @@ def migrate(hub: Hub) -> tuple[list[str], list[Path]]:
             raise ValueError(f"{name} doesn't read back")
         taken.append(name)
         gone.append(folder / name)
-    keys = hub.keys
-    for of in Keys.IN_VAULT:
-        for side in ("", "next", "old"):
-            path = keys._file(of, side)
-            if not path.exists():
-                continue
-            key = asyncssh.read_private_key(str(path))
-            keys._store(key, of, side)  # the key ring exists now: into it
-            back = keys._load(of, side)
-            if back is None or back.get_fingerprint() != key.get_fingerprint():
-                raise ValueError(f"the {of} key doesn't read back")
-            taken.append(Keys.vault_id(of, side))
-            gone += [path, path.with_suffix(".pub")] if not side else [path]
+    keys_taken, keys_gone = hub.keys.take_in()
+    taken += keys_taken
+    gone += keys_gone
     pem = hub.push.folder / "vapid.pem"
     if pem.exists():
         text = pem.read_text()

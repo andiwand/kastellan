@@ -243,4 +243,8 @@ details[open] > summary::before {
 		padding: 0 0.7rem;
 		font-size: 0.75rem;
 	}
+	/* The actions at the top of a page: a device's Terminal, Reboot, Mute, Maintenance. */
+	.btn-header {
+		@apply inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong;
+	}
 }

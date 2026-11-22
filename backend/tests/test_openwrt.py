@@ -12,6 +12,7 @@ import pytest
 from kastellan.openwrt import client as ow
 from kastellan.openwrt import firmware as fw
 from kastellan.openwrt.setup import acl, install_script, md5crypt
+from kastellan.pinned_http import ChangedCertificate, Pins
 
 VERSIONS = {
     "stable_version": "25.12.6",
@@ -93,6 +94,18 @@ class FakeRpcd:
         self.break_on_apply = False
         self.status_refused = False  # OpenWrt 25.12: network.wireless status says invalid argument
         self.added = 0
+        self.uptime = 100
+
+    def meshes(self) -> dict[str, str]:
+        """The mesh interfaces running as iwinfo names them (OpenWrt 25.12's view): one per mesh
+        section that is on, staged ones only once applied; none while the radio is down."""
+        if not self.radio_up:
+            return {}
+        live = {**self.wireless}
+        if self.applied:
+            live |= {n: {**self.wireless.get(n, {}), **v} for n, v in self.staged.items()}
+        on = [v for v in live.values() if v.get("mode") == "mesh" and v.get("disabled") != "1"]
+        return {f"phy0-mesh{i}": v.get("mesh_id") for i, v in enumerate(on)}
 
     def file_allowed(self, path: str, function: str) -> bool:
         """rpcd's `file` scope: a path and what may be done with it."""
@@ -172,7 +185,7 @@ class FakeRpcd:
                 "release": {"version": "23.05.2", "revision": "r23630", "target": "mediatek/filogic"},
             },
             ("system", "info"): {
-                "uptime": 100,
+                "uptime": self.uptime,
                 "load": [65536, 32768, 0],
                 "memory": {"total": 2**28, "free": 2**27},
             },
@@ -223,7 +236,11 @@ class FakeRpcd:
         if (obj, method) == ("network.wireless", "status") and self.status_refused:
             return httpx.Response(200, json={"result": [2]})
         if (obj, method) == ("iwinfo", "devices"):
-            return httpx.Response(200, json={"result": [0, {"devices": ["phy0-ap0", "phy1-ap0"]}]})
+            devices = ["phy0-ap0", "phy1-ap0", *self.meshes()]
+            return httpx.Response(200, json={"result": [0, {"devices": devices}]})
+        if (obj, method) == ("iwinfo", "info") and args["device"] in self.meshes():
+            info = {"phy": "phy0", "mode": "Mesh Point", "meshid": self.meshes()[args["device"]]}
+            return httpx.Response(200, json={"result": [0, info]})
         if (obj, method) == ("iwinfo", "info"):
             five = args["device"].startswith("phy1")
             return httpx.Response(
@@ -298,7 +315,7 @@ def ubus(tmp_path: Path, rpcd: FakeRpcd, password: str = "pw") -> ow.Ubus:
         443,
         "kastellan",
         password,
-        ow.Pins(tmp_path),
+        Pins(tmp_path),
         transport=httpx.MockTransport(rpcd.handle),
     )
 
@@ -469,6 +486,34 @@ async def test_an_ended_session_logs_in_again_once(tmp_path: Path) -> None:
     assert report["board"]["model"] and rpcd.logins == 2
 
 
+async def test_a_denied_call_doesnt_log_in_again(tmp_path: Path) -> None:
+    """uhttpd refuses a call outside the login's access list as it does one in an ended session;
+    only the latter is worth a new login."""
+    rpcd = FakeRpcd([])
+    u = ubus(tmp_path, rpcd)
+    await ow.read(u)
+    for _ in range(2):
+        with pytest.raises(ow.UbusError) as e:
+            await ow.reboot(u)
+        assert e.value.code == ow.DENIED
+    assert rpcd.logins == 1
+
+
+async def test_a_restart_or_a_new_login_forgets_what_was_kept(tmp_path: Path) -> None:
+    rpcd = FakeRpcd([])
+    u = ubus(tmp_path, rpcd)
+    boards = lambda: sum(1 for c in rpcd.calls if c[:2] == ("system", "board"))  # noqa: E731
+    await ow.read(u)
+    await ow.read(u)
+    assert boards() == 1
+    rpcd.uptime = 5  # restarted (new firmware, perhaps through LuCI)
+    await ow.read(u)
+    assert boards() == 2
+    rpcd.session = "s2"  # the session ended, as with a reboot
+    await ow.read(u)
+    assert boards() == 3 and rpcd.logins == 2
+
+
 async def test_dhcp_pool_usage_excludes_static_leases_outside_it() -> None:
     class Ubus:
         async def call(self, *args, **kw):
@@ -615,7 +660,7 @@ async def test_pinning_checks_the_certificate_itself(tmp_path: Path, kind: str) 
 
     server = await asyncio.start_server(serve, "127.0.0.1", 0, ssl=ctx)
     port = server.sockets[0].getsockname()[1]
-    pins = ow.Pins(tmp_path / "pins")
+    pins = Pins(tmp_path / "pins")
     if kind == "openwrt":
         u = ow.Ubus("r", "127.0.0.1", port, "kastellan", "pw", pins)
         request = u.session_id
@@ -630,10 +675,10 @@ async def test_pinning_checks_the_certificate_itself(tmp_path: Path, kind: str) 
             return json.loads(body)["result"][1]["ubus_rpc_session"]
 
     async with server:
-        with pytest.raises(ow.ChangedCertificate):
+        with pytest.raises(ChangedCertificate):
             await request()  # nothing pinned
         pins.set("r", "0" * 64)
-        with pytest.raises(ow.ChangedCertificate):
+        with pytest.raises(ChangedCertificate):
             await request()
         assert not any(got)  # the password was never sent
         pins.set("r", hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest())
@@ -859,6 +904,42 @@ async def test_radios_on_openwrt_25_through_iwinfo(tmp_path: Path) -> None:
     assert rpcd.wireless["default_radio0"]["ssid"] == "home2"
 
 
+async def test_a_mesh_on_openwrt_25_through_iwinfo(tmp_path: Path) -> None:
+    """OpenWrt 25.12 refuses network.wireless status: the mesh is seen by iwinfo instead."""
+    from kastellan.openwrt import sync
+
+    devices = {n: FakeRpcd(["kastellan-wifi"]) for n in ("wifi1", "wifi2")}
+    for d in devices.values():
+        d.status_refused = True
+    members = {n: ubus(tmp_path / n, r) for n, r in devices.items()}
+    out = await sync.set_mesh(
+        members, "backhaul", "meshpass1", {"wifi1": "radio0", "wifi2": "radio0"}, wait=0
+    )
+    assert out == {"wifi1": "added on radio0", "wifi2": "added on radio0"}
+    devices["wifi2"].break_on_apply = True  # its mesh doesn't come up
+    out = await sync.set_mesh(members, "backhaul2", "meshpass2", {}, wait=0, deadline=0.05)
+    assert out["wifi1"].startswith("failed: undone on all") and devices["wifi1"].rolled_back
+
+
+async def test_a_failed_confirm_doesnt_stop_the_others(tmp_path: Path) -> None:
+    from kastellan.openwrt import sync
+
+    devices = {n: FakeRpcd(["kastellan-wifi"]) for n in ("wifi1", "wifi2")}
+    members = {n: ubus(tmp_path / n, r) for n, r in devices.items()}
+    handle = devices["wifi1"].handle
+
+    def refuse_confirm(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["params"][1:3] == ["uci", "confirm"]:
+            return httpx.Response(200, json={"result": [7]})
+        return handle(request)
+
+    members["wifi1"].transport = httpx.MockTransport(refuse_confirm)
+    out = await sync.set_mesh(
+        members, "backhaul", "meshpass1", {"wifi1": "radio0", "wifi2": "radio0"}, wait=0
+    )
+    assert out["wifi1"].startswith("failed: not confirmed") and out["wifi2"] == "added on radio0"
+
+
 def test_nlbwmon_and_usteer_are_read() -> None:
     import json
 
@@ -912,7 +993,8 @@ def test_setup_choice_takes_every_ability():
 
 
 async def test_what_rarely_changes_is_read_less_often(tmp_path: Path) -> None:
-    """The board, uci dhcp and the services are kept for a while, until a change of Kastellan's."""
+    """The board, uci dhcp and the allowed services are kept for a while, until a change of
+    Kastellan's; whether the services run is read every round."""
     rpcd = FakeRpcd(["kastellan-services"])
     u = ubus(tmp_path, rpcd)
     await ow.read(u)
@@ -921,7 +1003,8 @@ async def test_what_rarely_changes_is_read_less_often(tmp_path: Path) -> None:
     again = rpcd.calls[len(first) :]
     asked = lambda calls, what: sum(1 for c in calls if c[:2] == what)  # noqa: E731
     assert asked(first, ("system", "board")) == 1 and asked(again, ("system", "board")) == 0
-    assert asked(again, ("rc", "list")) == 0 and asked(again, ("system", "info")) == 1
+    assert asked(again, ("rc", "list")) == 1 and asked(again, ("system", "info")) == 1
+    assert asked(again, ("file", "read")) == 0
     async with u.changing:
         pass
     await ow.read(u)
@@ -953,8 +1036,8 @@ async def test_an_old_read_cannot_repopulate_an_invalidated_cache(tmp_path: Path
 
 
 def test_small_routers_are_not_asked_for_package_updates() -> None:
-    from kastellan.hub import packages_skipped
     from kastellan.openwrt import setup
+    from kastellan.openwrt.client import packages_skipped
 
     # A TL-WR1043ND v1: 32 MB, 25 usable. opkg update there got the OOM killer to take usteer.
     small = {"system": {"memory": {"total": 24900 * 1024, "free": 4 * 2**20}}}

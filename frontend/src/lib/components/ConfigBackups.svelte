@@ -2,7 +2,7 @@
 	import { more, type DeviceBackups } from '#lib/api.js';
 	import BackupDiffDialog from './BackupDiffDialog.svelte';
 	import { store } from '#lib/state.svelte.js';
-	import { ago, dayClock } from '#lib/format.js';
+	import { ago, bytes, dayClock } from '#lib/format.js';
 	import Download from '@lucide/svelte/icons/download';
 	import GitCompare from '@lucide/svelte/icons/git-compare';
 	import Lock from '@lucide/svelte/icons/lock';
@@ -53,12 +53,6 @@
 		diff = { older, newer };
 	}
 
-	const size = (n: number) =>
-		n < 1024
-			? `${n} B`
-			: n < 1048576
-				? `${(n / 1024).toFixed(0)} KB`
-				: `${(n / 1048576).toFixed(1)} MB`;
 	const signedIn = $derived(!!store.me?.user);
 	const KIND: Record<string, string> = {
 		'openwrt-sysupgrade':
@@ -103,7 +97,7 @@
 						<span class="tabular">{dayClock(v.taken)}</span>
 						<span class="text-xs text-muted">
 							{v.files}
-							{v.files === 1 ? 'file' : 'files'}, {size(v.size)}
+							{v.files === 1 ? 'file' : 'files'}, {bytes(v.size)}
 							{#if v.checked !== v.taken}· the same until {ago(v.checked, store.now)}{/if}
 							{#if v.by}· by {v.by}{/if}
 						</span>

@@ -123,12 +123,12 @@ def candidates(r: Radio, dfs: bool) -> list[int]:
     if r.allowed is None:
         return [r.channel] if r.channel else []  # never guess the radio's regulatory limits
     if r.band == "2g":
-        return [c for c in CH24 if r.allowed is None or c in r.allowed]
+        return [c for c in CH24 if c in r.allowed]
     out = []
     for block in BLOCKS.get(r.width, BLOCKS[20]):
         if not dfs and any(c in DFS for c in block):
             continue
-        if r.allowed is not None and any(c not in r.allowed for c in block):
+        if any(c not in r.allowed for c in block):
             continue
         # A channel within the block it is on now stays (36 and 44 are the same 80 MHz).
         out.append(r.channel if r.channel in block else block[0])
@@ -476,7 +476,7 @@ def lineup(
             "devices": sorted({e["device"] for e in on}),
             "bands": sorted({e["band"] for e in on if e.get("band")}),
             "same_key": len(keys) == 1 if all(e.get("key") for e in on) else None,
-            "same_encryption": len({_enc(e.get("encryption")) for e in on}) <= 1,
+            "same_encryption": len({encryption_word(e.get("encryption")) for e in on}) <= 1,
             "off": sorted({e["device"] for e in on if e.get("disabled")}),
             "guest": any(e.get("guest") for e in on),
         }
@@ -484,7 +484,7 @@ def lineup(
     return sorted(out, key=lambda n: (n["guest"], -len(n["devices"]), n["ssid"]))
 
 
-def _enc(e: str | None) -> str:
+def encryption_word(e: str | None) -> str:
     """Encryption, the same words for OpenWrt and FRITZ!Box."""
     return {
         "psk2": "WPA2",
@@ -534,8 +534,9 @@ def diagnose(c: dict[str, Any]) -> list[str]:
 
 def country_note(countries: list[str], radios: list[dict[str, Any]]) -> str | None:
     """Whether the radios' regulatory country is set and the same everywhere."""
-    if any(r.get("country") in (None, "", "00") for r in radios if r.get("country") is not None) or (
-        "00" in countries
+    if (
+        any(r.get("country") in ("", "00") for r in radios if r.get("country") is not None)
+        or "00" in countries
     ):
         return "a radio has no country set (00: the world's rules, fewer channels and less power)"
     if len(countries) > 1:

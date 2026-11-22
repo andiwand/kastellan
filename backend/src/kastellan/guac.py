@@ -120,7 +120,6 @@ async def handshake(
     protocol: str,
     params: dict[str, str],
     size: Sequence[int],
-    timezone: str | None = None,
 ) -> str:
     """Select the protocol, answer guacd's `args` with `params`, and wait for `ready`. Returns
     guacd's connection id."""
@@ -136,8 +135,6 @@ async def handshake(
     writer.write(encode("audio").encode())
     writer.write(encode("video").encode())
     writer.write(encode("image", "image/png", "image/jpeg", "image/webp").encode())
-    if timezone:
-        writer.write(encode("timezone", timezone).encode())
     # Values in the order guacd named them. Since 1.1 the first name is guacd's protocol version
     # (VERSION_1_5_0), answered with itself; older guacd sends only parameter names.
     if names and names[0].startswith("VERSION_"):

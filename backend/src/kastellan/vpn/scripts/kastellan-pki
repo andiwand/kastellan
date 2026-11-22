@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # kastellan-pki: the only thing Kastellan's key may run on the host with the OpenVPN PKI.
 #
-# Install (on the PKI host, e.g. SV1):
+# Install (on the PKI host, e.g. SV1; the hub's setup page shows the exact commands):
 #   sudo install -m 755 kastellan-pki /usr/local/bin/kastellan-pki
-#   sudo useradd --system --create-home kastellan   # a user that owns (or may use) the PKI
-#   In ~kastellan/.ssh/authorized_keys, the hub's key, bound to this script:
-#     restrict,command="/usr/local/bin/kastellan-pki /etc/kastellan-pki.conf" ssh-ed25519 AAAA... kastellan-hub
-#   /etc/kastellan-pki.conf (optional):
+#   sudo useradd --system --create-home kastellan-pki   # a user that owns (or may use) the PKI
+#   In ~kastellan-pki/.ssh/authorized_keys, Kastellan's VPN key, bound to this script:
+#     restrict,command="/usr/local/bin/kastellan-pki /etc/kastellan-pki-<vpn>.conf" ssh-ed25519 AAAA... kastellan-vpn
+#   /etc/kastellan-pki-<vpn>.conf (one per VPN; /etc/kastellan-pki.conf for the VPN "openvpn"):
 #     EASYRSA_DIR=/etc/openvpn/easy-rsa      # where ./easyrsa and pki/ are
 #     TEMPLATE=/etc/kastellan-pki/client.ovpn  # client config with {{ca}} {{cert}} {{key}} {{tls}}
 #     TLS_KEY=/etc/openvpn/server/tc.key        # tls-crypt/tls-auth key to inline, if used

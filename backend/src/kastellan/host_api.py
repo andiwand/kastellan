@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from . import setup_run
-from .access import USER, hub_address
+from .access import hub_address, port_of
 from .auth_api import client_address, require_admin, require_signin
 from .host import collector
 from .setup_run import Login
@@ -25,21 +25,13 @@ if TYPE_CHECKING:
 def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api/devices")
 
-    def device_of(id: str):
-        device = hub.config.devices.get(id)
-        if device is None:
-            raise HTTPException(404, "no such device")
-        if not device.host:  # "" would be this machine: the hub's own
-            raise HTTPException(400, f"{id} has no address of its own (a UPS read through its host)")
-        return device
-
     last_asked: dict[str, float] = {}
 
     @api.post("/{id}/collect/now")
     async def collect_now(id: str, request: Request) -> dict[str, Any]:
         """Read the host's collector now, not at the next minute (a page's "read again")."""
         require_admin(request)
-        device = device_of(id)
+        device = setup_run.device_of(hub, id)
         if device.collect is None:
             raise HTTPException(409, "no collector set up there")
         now = asyncio.get_running_loop().time()
@@ -59,8 +51,8 @@ def router(hub: Hub) -> APIRouter:
     @api.get("/{id}/collect")
     async def collect_setup(id: str, request: Request) -> dict[str, Any]:
         require_admin(request)
-        device = device_of(id)
-        port = (device.collect.port if device.collect else None) or (device.ssh.port if device.ssh else 22)
+        device = setup_run.device_of(hub, id)
+        port = port_of(device, device.collect)
         hub_ip = await asyncio.to_thread(hub_address, device.host, port)
         status = hub.monitor.status.get(id)
         state = "off"
@@ -84,10 +76,8 @@ def router(hub: Hub) -> APIRouter:
         """Log in once with the typed password, install the collector as root (streaming its
         output), and add `collect:` to the device in config.yaml."""
         w = require_signin(request)
-        device = device_of(id)
+        device = setup_run.device_of(hub, id)
         setup_run.resolve(hub, id, body, w.user)
-        if not USER.match(body.login):
-            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
         hub_ip = await asyncio.to_thread(hub_address, device.host, body.port)
         script = collector.install_script(hub.keys.public_key("collect"), hub_ip)
         audit = partial(
@@ -113,10 +103,8 @@ def router(hub: Hub) -> APIRouter:
         """Log in once with the typed password, take the collector off the host as root
         (streaming its output), and remove `collect:` from the device in config.yaml."""
         w = require_signin(request)
-        device = device_of(id)
+        device = setup_run.device_of(hub, id)
         setup_run.resolve(hub, id, body, w.user)
-        if not USER.match(body.login):
-            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
         audit = partial(
             hub.audit.record,
             "collect.uninstall",
@@ -138,7 +126,7 @@ def router(hub: Hub) -> APIRouter:
     async def collect_test(id: str, request: Request) -> dict[str, Any]:
         """Read the collector once now (after installing, or to see why it fails)."""
         require_admin(request)
-        device = device_of(id)
+        device = setup_run.device_of(hub, id)
         if device.collect is None:
             raise HTTPException(409, "no collect: for this device yet")
         try:

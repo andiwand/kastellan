@@ -7,7 +7,7 @@
 	import Tabs from '#lib/components/Tabs.svelte';
 	import { api, type OvpnClient, type Vpn, type VpnServer, type WgClient } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { ago } from '#lib/format.js';
+	import { ago, bytes } from '#lib/format.js';
 	import Download from '@lucide/svelte/icons/download';
 	import QrCode from '@lucide/svelte/icons/qr-code';
 	import Plus from '@lucide/svelte/icons/plus';
@@ -37,7 +37,7 @@
 		canSetUp && page.url.searchParams.get('tab') === 'setup' ? 'setup' : 'clients'
 	);
 	function show(t: 'clients' | 'setup') {
-		goto(t === 'setup' ? '?tab=setup' : '?', { replaceState: true });
+		goto(t === 'setup' ? '?tab=setup' : '?', { replace: true });
 	}
 	const canManage = $derived(store.me?.role === 'admin' && !!store.me.user);
 	const canEdit = $derived(canManage && store.editBlocked === null);
@@ -102,16 +102,6 @@
 		await act(() => api.deleteVpn(v.id, version));
 	}
 
-	function bytes(n: number | null) {
-		if (n == null) return '–';
-		const units = ['B', 'kB', 'MB', 'GB', 'TB'];
-		let i = 0;
-		while (n >= 1000 && i < units.length - 1) {
-			n /= 1000;
-			i++;
-		}
-		return `${n < 10 && i ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
-	}
 	const wgClients = (v: Vpn) => v.clients as WgClient[];
 	const ovpnClients = (v: Vpn) => v.clients as OvpnClient[];
 	const input =

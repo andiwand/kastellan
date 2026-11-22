@@ -31,6 +31,23 @@ def test_scripts() -> None:
     assert hub_address("127.0.0.1") == "127.0.0.1"
 
 
+def test_a_key_of_its_own_user_stays_alone(tmp_path: Path) -> None:
+    """authorize(only=True): the line just added stays, older ones go; without it, nothing goes."""
+    from kastellan import access
+
+    assert access.authorize("kastellan-act", "a", "b")[2] == "only=''"
+    assert access.authorize("kastellan-act", "a", "b", only=True)[2].startswith("only='grep ")
+    keys = tmp_path / "authorized_keys"
+
+    def only(text: str, line: str) -> str:
+        keys.write_text(text)
+        subprocess.run(["sh", "-c", access._ONLY, str(keys), line], check=False)
+        return keys.read_text()
+
+    assert only("old key\nnew key\nnew key\n", "new key") == "new key\n"
+    assert only("old key\n", "new key") == "old key\n"  # never left without a way in
+
+
 def test_dropbear_only_when_openwrt_runs_it(tmp_path: Path) -> None:
     """OpenWrt with openssh-server running reads ~/.ssh like any OpenSSH (and knows from=)."""
     release = tmp_path / "openwrt_release"

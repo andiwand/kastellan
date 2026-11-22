@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { more, type InternetView } from '#lib/api.js';
+	import { bitrate } from '#lib/format.js';
 	import Globe from '@lucide/svelte/icons/globe';
 
 	/** The internet connection in a few words, for the overview (the Internet page has it all). */
@@ -25,8 +26,6 @@
 		down: ['var(--critical-text)', 'Down'],
 		unknown: ['var(--muted)', 'Unknown']
 	};
-	const mbit = (b: number | null | undefined) =>
-		b == null ? '–' : `${(b / 1e6).toFixed(b < 1e7 ? 1 : 0)}`;
 	const today = $derived(view?.days.at(-1));
 </script>
 
@@ -49,7 +48,7 @@
 			{s.ms != null ? `${s.ms} ms` : '–'} · loss {s.loss != null
 				? `${Math.round(s.loss * 100)} %`
 				: '–'}
-			{#if s.down != null}· ↓ {mbit(s.down)} ↑ {mbit(s.up)} Mbit/s{/if}
+			{#if s.down != null}· ↓ {bitrate(s.down)} ↑ {bitrate(s.up)}{/if}
 		</p>
 		{#if today?.availability != null}
 			<p class="tabular mt-1 text-xs text-faint">

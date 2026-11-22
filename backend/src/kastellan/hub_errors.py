@@ -3,7 +3,16 @@ and messages reach the app and the log."""
 
 from __future__ import annotations
 
+from pydantic import ValidationError
 from ruamel.yaml.error import YAMLError
+
+
+class ConfigProblem(Exception):
+    """A config.yaml that can't be used, and why (safe to show)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 def yaml_problem(e: YAMLError) -> str:
@@ -18,3 +27,17 @@ def yaml_problem(e: YAMLError) -> str:
     else:
         what = "the YAML can't be read"
     return f"line {mark.line + 1}, column {mark.column + 1}: {what}" if mark else what
+
+
+def describe(e: ValidationError) -> str:
+    """What is wrong, without the values: config.yaml holds password hashes, and a pasted plain
+    password must not end up in a log or an API answer."""
+    problems = []
+    for err in e.errors(include_input=False, include_url=False):
+        where = ".".join(str(p) for p in err["loc"])
+        problems.append(f"{where}: {err['msg']}" if where else err["msg"])
+    return "; ".join(problems)[:600]
+
+
+def first_line(text: str) -> str:
+    return text.strip().splitlines()[0][:300] if text.strip() else "unreadable"

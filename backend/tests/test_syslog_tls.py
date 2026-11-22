@@ -123,3 +123,5 @@ def test_concurrent_certificates_share_the_authority(tmp_path: Path) -> None:
         der = x509.load_pem_x509_certificate(bundle["cert"].encode()).public_bytes(Encoding.DER)
         assert ca.device_of(der) == "nas"
     assert ca.revoke("nas") == 20
+    ca.issue("nas")
+    assert ca.revoke("nas") == 1  # this time's, not all so far

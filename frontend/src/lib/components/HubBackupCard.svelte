@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { more, type HubBackup } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { ago, dayClock } from '#lib/format.js';
+	import { ago, bytes, dayClock } from '#lib/format.js';
 	import BackupDiffDialog from './BackupDiffDialog.svelte';
 	import CodeBlock from './CodeBlock.svelte';
 	import Download from '@lucide/svelte/icons/download';
@@ -10,34 +11,7 @@
 
 	/** Kastellan's own backup (hubbackup.py): the passphrase (made once, shown once), the versions,
 	 * the copies away from the hub, and checks that the passphrase and recovery keys still work. */
-	type View = {
-		ready: boolean;
-		legacy: boolean;
-		keyring: boolean; // opens with the key rings (an admin's password, a recovery key)
-		vault: boolean; // the hub has key rings
-		made: string | null;
-		status: {
-			ok?: string;
-			local_ok?: string;
-			error?: string | null;
-			running?: boolean;
-			targets?: Record<string, { ok?: string; error?: string; written?: number; path?: string }>;
-		};
-		versions: {
-			id: string;
-			taken: string;
-			checked: string;
-			files: number;
-			size: number;
-			by: string | null;
-		}[];
-		every_hours: number;
-		keep: number;
-		targets: { path: string; device: string | null }[];
-		checks: Record<string, string>;
-		rings: string[];
-	};
-	let view = $state<View | null>(null);
+	let view = $state<HubBackup | null>(null);
 	let error = $state<string | null>(null);
 	let phrase = $state<string | null>(null);
 	let busy = $state(false);
@@ -49,21 +23,9 @@
 	let replacing = $state(false);
 	let checkNote = $state<{ ok: boolean; text: string } | null>(null);
 
-	async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-		const r = await fetch(`/api/hub-backup${path}`, {
-			method,
-			headers:
-				method === 'GET'
-					? { 'X-Kastellan-Auto': '1' }
-					: { 'X-Kastellan': '1', 'Content-Type': 'application/json' },
-			body: body === undefined ? undefined : JSON.stringify(body)
-		});
-		if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? `HTTP ${r.status}`);
-		return r.json();
-	}
 	async function load() {
 		try {
-			view = await call<View>('GET', '');
+			view = await more.hubBackup();
 			error = null;
 		} catch (e) {
 			error = (e as Error).message;
@@ -79,8 +41,7 @@
 		busy = true;
 		error = null;
 		try {
-			phrase = (await call<{ passphrase: string | null }>('POST', '/passphrase', { replace, mode }))
-				.passphrase;
+			phrase = (await more.hubBackupPassphrase(replace, mode)).passphrase;
 			await load();
 		} catch (e) {
 			error = (e as Error).message;
@@ -92,7 +53,7 @@
 		busy = true;
 		note = null;
 		try {
-			const s = await call<{ error?: string | null; new?: boolean }>('POST', '');
+			const s = await more.hubBackupNow();
 			note = s.error ?? (s.new ? 'Backup saved.' : 'No changes; destinations checked.');
 			await load();
 		} catch (e) {
@@ -101,10 +62,10 @@
 			busy = false;
 		}
 	}
-	async function check(body: object) {
+	async function check(key: Parameters<typeof more.hubBackupCheck>[0]) {
 		checkNote = null;
 		try {
-			const r = await call<{ right: boolean }>('POST', '/check', body);
+			const r = await more.hubBackupCheck(key);
 			checkNote = r.right
 				? { ok: true, text: 'Recovery key verified.' }
 				: { ok: false, text: "That isn't it." };
@@ -115,8 +76,6 @@
 		}
 	}
 
-	const size = (n: number) =>
-		n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`;
 	const signedIn = $derived(!!store.me?.user && !store.health?.demo);
 	const old = (iso: string | undefined) => !iso || Date.now() - Date.parse(iso) > 180 * 86400_000;
 </script>
@@ -234,7 +193,7 @@
 					<li class="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5">
 						<span class="tabular">{dayClock(v.taken)}</span>
 						<span class="text-xs text-muted">
-							{v.files} files, {size(v.size)}{v.checked !== v.taken
+							{v.files} files, {bytes(v.size)}{v.checked !== v.taken
 								? ` · the same until ${ago(v.checked, store.now)}`
 								: ''}
 						</span>
@@ -379,11 +338,7 @@
 {#if diff}
 	{@const d = diff}
 	<BackupDiffDialog
-		load={async () => {
-			const r = await fetch(`/api/hub-backup/diff?older=${d.older}&newer=${d.newer}`);
-			if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? `HTTP ${r.status}`);
-			return r.json();
-		}}
+		load={() => more.hubBackupDiff(d.older, d.newer)}
 		onclose={() => (diff = null)}
 	/>
 {/if}

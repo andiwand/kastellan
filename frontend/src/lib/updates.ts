@@ -1,4 +1,4 @@
-import type { Device } from '#lib/api.js';
+import type { Container, Device } from '#lib/api.js';
 
 /** Everything with an update waiting, across the network, from what the devices report:
  * containers (registries), system packages (the collector), reboots after updates, OpenWrt
@@ -38,7 +38,7 @@ export function updatesOf(devices: Device[]): Update[] {
 					key: c.key,
 					name: c.name,
 					from: c.tag,
-					to: c.update_to ?? 'newer',
+					to: updateTarget(c.update_to),
 					within: c.update_within ?? null,
 					compose: c.compose ?? null
 				});
@@ -99,7 +99,7 @@ export const scriptName = (n: string) => SCRIPT_NAMES[n] ?? n;
 export function containerAsk(c: {
 	name: string;
 	from: string; // the tag it runs
-	to: string; // a tag, or "newer build"
+	to: string; // a tag, or NEWER_BUILD
 	compose?: string | null;
 }): string {
 	if (!tagOf(c.to))
@@ -116,6 +116,17 @@ export function containerAsk(c: {
 		.join(' ');
 }
 
+/** A new build of the tag a container runs: what the hub says for one (docker.py); WUD says
+ * nothing (null) for the same. */
+export const NEWER_BUILD = 'newer build';
+
 /** The tag an update goes to, for the actor: none for a new build of the same tag. */
-export const tagOf = (to: string | null | undefined) =>
-	to && to !== 'newer build' && to !== 'newer' ? to : undefined;
+export const tagOf = (to: string | null | undefined) => (to && to !== NEWER_BUILD ? to : undefined);
+
+/** What an update goes to, in words: its tag, or NEWER_BUILD. */
+export const updateTarget = (to: string | null | undefined) => tagOf(to) ?? NEWER_BUILD;
+
+/** What "Update all" updates: new builds of the tags they run (another tag is one at a time,
+ * asked first), not said to be not needed. */
+export const sameTagUpdates = (containers: Container[]) =>
+	containers.filter((c) => c.update && !c.unchecked && !c.skipped && !tagOf(c.update_to));

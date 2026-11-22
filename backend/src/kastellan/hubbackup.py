@@ -1,8 +1,10 @@
 """Encrypted hub snapshots, isolated destination copies, and offline restore.
 
-The backup key comes from a recovery passphrase; the hub keeps only its derived key.
-Contents use devbackups.Store; the hub index is authenticated too. Copies go into a separate
-kastellan-<key id> folder per passphrase, preserving earlier generations. Restore stages and
+The backup key comes from a recovery passphrase (the hub keeps only its derived key), or, in
+key-ring mode, is random and kept in the Kastellan ring: such a store carries the key rings of
+its latest snapshot (`keyring.json`) and opens with an admin's password or the ring's recovery
+key. Contents use devbackups.Store; the hub index is authenticated too. Copies go into a
+separate kastellan-<key id> folder per key, preserving earlier generations. Restore stages and
 validates all files before replacing state. Sessions and caches are excluded; SQLite databases
 use the online backup API. External unlock keys must be kept separately.
 """
@@ -36,16 +38,16 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from . import config_edit, devbackups
+from .secrets import HUB_BACKUP_KEY
 
 log = logging.getLogger(__name__)
 
 ID = "kastellan"  # the store's one "device"
 KIND = "kastellan-state"
-KEY_SECRET = "hub-backup-key"
 INDEX_MAGIC = b"KASTELLAN-INDEX-2\n"
 HEADER = "kastellan-backup.json"
 # Left out of the data folder (relative paths, or their first part).
-SKIP = {"sessions.json", "hub-backup", "vulns", "signin-required.tmp", "web"}
+SKIP = {"sessions.json", "hub-backup", "vulns", "web"}
 DATABASES = {"logs.db", "vitals.db"}
 SQLITE_FILES = {name + suffix for name in DATABASES for suffix in ("", "-wal", "-shm")}
 MAX_FILE = 128 * 1024 * 1024
@@ -109,7 +111,7 @@ def key_from_keyring(
                     raise ValueError(f"{user}'s password doesn't open the Kastellan key ring of this backup")
             else:
                 raise ValueError("an admin's login or the Kastellan ring's recovery key")
-            stored = json.loads(vault.get(KEY_SECRET, by=user or "restore"))
+            stored = json.loads(vault.get(HUB_BACKUP_KEY, by=user))
         except (WrongKey, KeyError) as e:
             raise ValueError("that doesn't open this backup's key rings") from e
     key = base64.b64decode(stored["key"])
@@ -266,6 +268,11 @@ class Store(devbackups.Store):
             INDEX_MAGIC + nonce + AESGCM(self._key()).encrypt(nonce, raw, b"kastellan-backup-index"),
         )
 
+    def opens(self, header: dict[str, Any]) -> bool:
+        """Whether the key is the one this store's header was made with."""
+        check = hmac.new(self._key(), b"kastellan backup", hashlib.sha256).hexdigest()
+        return hmac.compare_digest(header["check"], check)
+
     def get(self, sha: str) -> bytes:
         sealed = read_bounded(self._object(sha), MAX_FILE + 1048576)
         packed = AESGCM(self._key()).decrypt(sealed[:12], sealed[12:], sha.encode())
@@ -321,9 +328,7 @@ class HubBackup:
         header = self.header()
         if not header or header.get("version") != 2:
             raise ValueError("create a new backup passphrase before backing up")
-        if not hmac.compare_digest(
-            header["check"], hmac.new(self.store._key(), b"kastellan backup", hashlib.sha256).hexdigest()
-        ):
+        if not self.store.opens(header):
             raise ValueError("the backup key does not match its passphrase")
         members = collect(data, config, history, logs)
         vault = next((content for file, content in members if file.path == "vault.json"), None)
@@ -627,7 +632,7 @@ async def _run_once(hub: Any, by: str | None) -> dict[str, Any]:
 
         # Device-backup pruning must not delete objects while we read their indexes and files.
         def take():
-            with hub.device_backups._lock, hub.vault._lock:
+            with hub.device_backups.unchanged(), hub.vault.unchanged():
                 return hub.hub_backup.take(
                     hub.settings.data, hub.settings.config, cfg.keep, cfg.history, cfg.logs, by
                 )
@@ -694,8 +699,7 @@ async def run(hub: Any) -> None:
     await asyncio.sleep(240)
     while True:
         if (
-            not hub.demo
-            and hub.hub_backup.header() is not None
+            hub.hub_backup.header() is not None
             and not hub.hub_backup.operation.locked()
             and due(hub.hub_backup.status, hub.config.hub_backup.every_hours, time.time())
         ):

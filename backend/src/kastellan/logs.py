@@ -1,11 +1,15 @@
 """Central logs: every device's log lines in one place, interleaved by time (the Logs page).
 
-Lines come in two ways:
+Lines come in three ways (logs_poll.py brings them in):
 - fetched by the hub over channels it already authenticates and encrypts: OpenWrt's `log read`
-  (its login's `logs` ability, openwrt/client.py), a FRITZ!Box's event log (fritzbox/);
-- received on a syslog port (`logs.syslog` in config.yaml, off by default): plain syslog is
-  neither encrypted nor authenticated, so such lines are only taken from known device addresses
-  and kept as `verified = False`.
+  (its login's `logs` ability, openwrt/client.py), a FRITZ!Box's event log (fritzbox/), Linux
+  hosts' journals (the actor's `journal` ability) and containers' own logs (`docker-logs`);
+  WireGuard has no log, so lines are made from wg-easy's handshakes (presence, not a login);
+- received over TLS with a client certificate per device (syslog_tls.py): verified, the
+  certificate says who sent them;
+- received on the open UDP syslog port (`logs.syslog` in config.yaml, off by default): plain
+  syslog is neither encrypted nor authenticated, so such lines are only taken from known device
+  addresses and kept as `verified = False`.
 
 They are kept in SQLite (`<data>/logs.db`): one table of lines, indexed by time and by device,
 pruned by age and by count (`logs.days`, `logs.max_lines`). Nothing here judges a line; the
@@ -269,11 +273,11 @@ def from_logd(
         try:
             t = int(e.get("time") or 0)
             ident = int(e.get("id") or 0)
+            priority = int(e.get("priority", 6) or 0)
         except (TypeError, ValueError):
             continue
         if t < last_t or (t == last_t and ident in seen):
             continue
-        priority = int(e.get("priority", 6) or 0)
         msg = str(e.get("msg") or "")
         kernel = e.get("source", 1) == 0
         program, text = ("kernel", re.sub(r"^\[\s*\d+\.\d+\]\s*", "", msg)) if kernel else split_program(msg)
@@ -313,9 +317,8 @@ class SyslogReceiver(asyncio.DatagramProtocol):
     """UDP syslog: lines only from addresses of known devices (`who(address)` gives the device
     id), kept unverified. Others are counted, never stored."""
 
-    def __init__(self, who, store: LogStore) -> None:
+    def __init__(self, who) -> None:
         self.who = who
-        self.store = store
         self.pending: list[Line] = []
         self.refused = 0
         self.received = 0

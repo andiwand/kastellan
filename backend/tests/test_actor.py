@@ -416,6 +416,33 @@ def test_older_scripts_are_told(tmp_path: Path) -> None:
     assert actor.parse_abilities("reboot\n")[1] == ["dispatch", "reboot"]
 
 
+def test_the_name_patterns_are_the_same_everywhere() -> None:
+    """The hub (actor.py, config.py's VM_NAME), the dispatcher and the abilities check the same
+    patterns: each has its own copy, since the dispatcher runs alone and the scripts on the host."""
+    import ast
+
+    from kastellan.config import VM_NAME
+
+    def patterns(script: str) -> dict[str, str]:
+        out = {}
+        for node in ast.parse(actor._script(script)).body:
+            call = node.value if isinstance(node, ast.Assign) else None
+            if isinstance(call, ast.Call) and ast.unparse(call.func) == "re.compile":
+                out[node.targets[0].id] = ast.literal_eval(call.args[0])
+        return out
+
+    hub = {"NAME": actor.NAME, "VM_NAME": VM_NAME, "TAG": actor.TAG, "UNIT": actor.UNIT}
+    hub |= {"CURSOR": actor.CURSOR, "SINCE": actor.SINCE}
+    for script in ("act-common", "act-dispatch"):
+        found = patterns(script)
+        assert {k: found.get(k) for k in hub} == {k: p.pattern for k, p in hub.items()}, script
+    assert actor.CURSORS == {"journal": actor.CURSOR, "docker-logs": actor.SINCE}
+    # The abilities take them from act-common; none brings its own.
+    for name in actor.ABILITIES:
+        assert not set(patterns(f"act-{name}")) & {*hub, "ESCAPES"}, name
+    assert not set(patterns("act-containers")) & {*hub, "ESCAPES"}
+
+
 def test_ability_lists_use_each_targets_name_rules(tmp_path: Path) -> None:
     names = "123 12345678-1234-1234-1234-123456789abc guest+one app"
     allow = tmp_path / "allow"
@@ -1046,8 +1073,8 @@ def test_the_collector_stops_asking_libvirt_in_time(libvirt) -> None:
 
 
 def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A VM ability takes `vm`, a container ability `container`: the other field is refused, and
-    the audit names what was acted on."""
+    """A VM ability takes `vm`, a container ability `container`, the journal a `cursor`, reboot
+    nothing: any other field is refused, and the audit names what was acted on."""
     from fastapi.testclient import TestClient
 
     from kastellan import act_api
@@ -1059,6 +1086,7 @@ def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: p
 
     async def fake_act(keys, device, ability, name=None, on_step=None, tag=None):
         if ability == "journal":
+            assert name == "-"
             return {"lines": []}
         asked.append((ability, name))
         return {"ok": True}
@@ -1079,11 +1107,16 @@ def test_an_action_takes_what_its_ability_acts_on(tmp_path: Path, monkeypatch: p
         assert c.post(f"{url}/vm-start", json=both, headers=h).status_code == 400
         assert c.post(f"{url}/vm-start", json={"vm": "win11"}, headers=h).status_code == 200
         assert c.post(f"{url}/restart-container", json={"container": "app"}, headers=h).status_code == 200
+        assert c.post(f"{url}/journal", json={"container": "-"}, headers=h).status_code == 400
+        assert c.post(f"{url}/journal", json={"cursor": "-"}, headers=h).status_code == 200
+        refused = c.post(f"{url}/reboot", json={"container": "app"}, headers=h)
+        assert refused.status_code == 400 and refused.json()["detail"] == "reboot takes nothing"
     assert asked == [("vm-start", "win11"), ("restart-container", "app")]
     audit = [json.loads(ln) for ln in (tmp_path / "audit.log").read_text().splitlines()]
     acts = {a["action"]: a for a in audit if a.get("action", "").startswith("act.")}
     assert acts["act.vm-start"]["vm"] == "win11" and "container" not in acts["act.vm-start"]
     assert acts["act.restart-container"]["container"] == "app"
+    assert acts["act.journal"]["cursor"] == "-" and "container" not in acts["act.journal"]
 
 
 def test_reading_a_containers_log(host) -> None:

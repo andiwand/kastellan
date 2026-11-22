@@ -12,16 +12,11 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Request
 
 from .auth_api import require_admin
+from .secrets import OWN
+from .vault import KASTELLAN
 
 if TYPE_CHECKING:
     from .hub import Hub
-
-OWN = {
-    "hub-backup-key": "Kastellan's own backup: its key",
-    "device-backups": "Device backups: their key",
-    "group-fingerprints": "Groups: the key for password fingerprints",
-    "syslog-ca-key": "Syslog over TLS: the certificate authority's key",
-}
 
 
 def usage(hub: Hub) -> dict[str, list[str]]:
@@ -53,7 +48,7 @@ def view(hub: Hub) -> list[dict[str, Any]]:
     used = usage(hub)
     names = set(used)
     if hub.secrets.in_vault and hub.vault.exists:
-        names |= {e.id for e in hub.vault.entries() if e.ring == "kastellan" and e.kind != "ssh-key"}
+        names |= {e.id for e in hub.vault.entries() if e.ring == KASTELLAN and e.kind != "ssh-key"}
     else:
         names |= set(hub.secrets.names())
     rows = []

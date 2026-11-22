@@ -1010,7 +1010,7 @@
 
 		<SettingsCard
 			title="Users"
-			description="Who may sign in. Admins change things; observers see everything and change nothing. Passwords are stored as hashes; at least 10 characters."
+			description="Who may sign in. Admins change things; observers see everything and change nothing. Passwords are stored as hashes."
 			dirty={json(users) !== base.users}
 			canSave={users.every((u) => nameOk(u.name) && (u.old || u.password.length >= 10)) &&
 				unique(users.map((u) => u.name))}
@@ -1041,7 +1041,7 @@
 							class="input"
 							type="password"
 							autocomplete="new-password"
-							placeholder={u.old ? 'empty keeps it' : 'at least 10 characters'}
+							placeholder={u.old ? 'empty keeps it' : 'a password'}
 							bind:value={u.password}
 						/>
 					</label>

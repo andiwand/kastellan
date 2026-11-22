@@ -30,6 +30,8 @@ from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import CommentMark
+from ruamel.yaml.tokens import CommentToken
 
 from .config import ID, Check
 
@@ -110,7 +112,7 @@ def _mask(node: Any) -> Any:
     return node
 
 
-def _masked_text(text: str) -> str | None:
+def masked_text(text: str) -> str | None:
     try:
         data = YAML(typ="safe").load(text) if text.strip() else {}
     except Exception:
@@ -126,7 +128,7 @@ def _masked_text(text: str) -> str | None:
 def diff(old: str, new: str) -> str:
     """What changed, for the audit log; secrets masked (on the parsed config, whatever style it
     is written in). If either version can't be read, only that it changed."""
-    a, b = _masked_text(old), _masked_text(new)
+    a, b = masked_text(old), masked_text(new)
     if a is None or b is None:
         return "(changed; a version couldn't be read, so the change isn't shown)"
     if a == b:
@@ -245,15 +247,17 @@ def _put_tail(node: Any, rest: str) -> None:
         return
     container, key, slot = where
     slots = container.ca.items.setdefault(key, [None, None, None, None] if slot == 2 else [None, None])
+    _put_after(slots, slot, rest)
+
+
+def _put_after(slots: list[Any], slot: int, rest: str) -> None:
+    """Put `rest` on the lines after a comment slot, keeping its own end-of-line comment."""
     old = slots[slot]
     own = old.value.partition("\n")[0] if old is not None else ""
     text = own + "\n" + rest
     if old is not None:
         old.value = text
     else:
-        from ruamel.yaml.error import CommentMark
-        from ruamel.yaml.tokens import CommentToken
-
         slots[slot] = CommentToken(text, CommentMark(0), None)
 
 
@@ -514,13 +518,7 @@ def set_top(text: str, key: str, value: Any) -> str:
 
 def _put_scalar_tail(doc: CommentedMap, key: str, rest: str) -> None:
     """Put `rest` on the lines after a top-level scalar (`check_interval: 60`)."""
-    from ruamel.yaml.error import CommentMark
-    from ruamel.yaml.tokens import CommentToken
-
-    slots = doc.ca.items.setdefault(key, [None, None, None, None])
-    old = slots[2]
-    own = old.value.partition("\n")[0] if old is not None else ""
-    slots[2] = CommentToken(own + "\n" + rest, CommentMark(0), None)
+    _put_after(doc.ca.items.setdefault(key, [None, None, None, None]), 2, rest)
 
 
 def _device_lines(lines: list[str], id: str) -> tuple[int, int, int]:

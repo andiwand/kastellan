@@ -44,6 +44,11 @@
 	const name = (id: string) => store.byId.get(id)?.name ?? id;
 	// As the hub decides it (a device whose login changed needs the key again).
 	const missing = $derived(rot?.missing ?? []);
+	// The rotation's devices too: one that left config.yaml (or changed its login) stays in it
+	// until it is done or forgotten.
+	const shown = $derived(
+		keys ? [...new Set([...keys.devices, ...Object.keys(rot?.devices ?? {})])] : []
+	);
 	const canChange = $derived(store.me?.role === 'admin' && !!store.me.user);
 </script>
 
@@ -99,7 +104,7 @@
 				</button>
 			{:else}
 				<ul class="mt-3 divide-y divide-line rounded-xl border border-line">
-					{#each keys.devices as id (id)}
+					{#each shown as id (id)}
 						{@const step = rot.devices[id]}
 						{@const ok =
 							rot.stage === 'adding'
@@ -124,8 +129,20 @@
 												: (step?.error ?? 'not tried yet')
 										: step?.removed
 											? 'old key removed'
-											: (step?.error ?? 'old key still there')}
+											: step?.forgotten
+												? `forgotten: the old key may still be trusted on ${step.target ?? 'it'}`
+												: (step?.error ?? 'old key still there')}
 								</span>
+								{#if rot.stage === 'removing' && step && !step.removed && !step.forgotten && canChange}
+									<button
+										class="ml-1 text-xs underline decoration-dotted hover:text-text"
+										disabled={busy !== null}
+										title="Finish without this device: the old key may stay trusted there until you remove it by hand"
+										onclick={() => act(`forget:${id}`, () => api.rotateForget(id))}
+									>
+										forget this device
+									</button>
+								{/if}
 							</span>
 						</li>
 					{/each}

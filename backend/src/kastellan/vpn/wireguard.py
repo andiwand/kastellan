@@ -8,6 +8,7 @@ Routes as in wg-easy v15.5's src/server/api/client.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -57,23 +58,29 @@ class WgEasy:
         self.url = url.rstrip("/")
         self.auth = httpx.BasicAuth(user, password)
 
-    async def _call(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        async with httpx.AsyncClient(auth=self.auth, timeout=15) as client:
-            r = await client.request(method, f"{self.url}/api{path}", **kwargs)
-        r.raise_for_status()
-        if len(r.content) > MAX_BYTES:
-            raise ValueError("answer too large")
-        return r
+    async def _call(self, method: str, path: str, **kwargs: Any) -> bytes:
+        """The answer's body, read only up to MAX_BYTES."""
+        body = bytearray()
+        async with (
+            httpx.AsyncClient(auth=self.auth, timeout=15) as client,
+            client.stream(method, f"{self.url}/api{path}", **kwargs) as r,
+        ):
+            r.raise_for_status()
+            async for chunk in r.aiter_bytes():
+                body += chunk
+                if len(body) > MAX_BYTES:
+                    raise ValueError("answer too large")
+        return bytes(body)
 
     async def clients(self) -> list[WgClient]:
-        data = (await self._call("GET", "/client")).json()
+        data = json.loads(await self._call("GET", "/client"))
         if not isinstance(data, list):
             raise ValueError("unexpected answer from wg-easy")
         return [_client(i) for i in data if isinstance(i, dict)]
 
     async def create(self, name: str, expires: datetime | None) -> str:
         body = {"name": name, "expiresAt": expires.isoformat() if expires else None}
-        data = (await self._call("POST", "/client", json=body)).json()
+        data = json.loads(await self._call("POST", "/client", json=body))
         return str(data.get("clientId"))
 
     async def enable(self, id: str, on: bool) -> None:
@@ -83,10 +90,10 @@ class WgEasy:
         await self._call("DELETE", f"/client/{_id(id)}")
 
     async def configuration(self, id: str) -> str:
-        return (await self._call("GET", f"/client/{_id(id)}/configuration")).text
+        return (await self._call("GET", f"/client/{_id(id)}/configuration")).decode("utf-8", "replace")
 
     async def qrcode(self, id: str) -> str:
-        return (await self._call("GET", f"/client/{_id(id)}/qrcode.svg")).text
+        return (await self._call("GET", f"/client/{_id(id)}/qrcode.svg")).decode("utf-8", "replace")
 
 
 def _id(id: str) -> str:

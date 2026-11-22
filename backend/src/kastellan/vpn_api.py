@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from . import vpn_servers
 from .access import hub_address
-from .auth_api import client_address, require_admin, require_signin, who
+from .auth_api import Who, client_address, require_admin, require_signin, who
 from .setup_run import reason
 from .ssh import ChangedHost, Target, UnknownHost
 from .vpn.openvpn import NAME, OpenVpn, install_script
@@ -40,7 +40,7 @@ class Finish(BaseModel):
 
 
 class Forget(BaseModel):
-    host: str = Field(max_length=40)  # a role of the rotation: pki, server
+    host: str = Field(max_length=48)  # "<vpn>:<role>" (a VPN id has at most 40 characters; pki, server)
 
 
 class NewClient(BaseModel):
@@ -87,19 +87,16 @@ def router(hub: Hub) -> APIRouter:
             return HTTPException(400, str(e))
         return HTTPException(502, f"{type(e).__name__}: {e}")
 
-    def audit(request: Request, action: str, **details: Any) -> None:
-        w = require_signin(request)
-        hub.audit.record(action, w.user, client_address(request.scope), **details)
-
-    async def attempt(request: Request, action: str, work: Any, **details: Any) -> Any:
+    async def attempt(request: Request, w: Who, action: str, work: Any, **details: Any) -> Any:
         """Run a change and audit it, failed attempts too (with what went wrong)."""
+        where = client_address(request.scope)
         try:
             result = await work
         except Exception as e:
             error = problem(e)
-            audit(request, action, outcome=f"failed: {error.detail}", **details)
+            hub.audit.record(action, w.user, where, outcome=f"failed: {error.detail}", **details)
             raise error from e
-        audit(request, action, outcome="done", **details)
+        hub.audit.record(action, w.user, where, outcome="done", **details)
         return result
 
     @api.get("/vpn")
@@ -204,10 +201,11 @@ def router(hub: Hub) -> APIRouter:
 
     @api.post("/vpns/{vid}/wireguard")
     async def wg_create(vid: str, body: NewClient, request: Request) -> dict[str, str]:
-        require_signin(request)
+        w = require_signin(request)
         expires = datetime.now(UTC) + timedelta(days=body.days) if body.days else None
         id = await attempt(
             request,
+            w,
             "vpn.wireguard.create",
             wireguard(vid).create(body.name, expires),
             vpn=vid,
@@ -218,32 +216,37 @@ def router(hub: Hub) -> APIRouter:
 
     @api.post("/vpns/{vid}/wireguard/{id}/{action}")
     async def wg_toggle(vid: str, id: str, action: str, request: Request) -> dict[str, bool]:
-        require_signin(request)
+        w = require_signin(request)
         if action not in ("enable", "disable"):
             raise HTTPException(404, "enable or disable")
         await attempt(
-            request, f"vpn.wireguard.{action}", wireguard(vid).enable(id, action == "enable"), vpn=vid, id=id
+            request,
+            w,
+            f"vpn.wireguard.{action}",
+            wireguard(vid).enable(id, action == "enable"),
+            vpn=vid,
+            id=id,
         )
         return {"enabled": action == "enable"}
 
     @api.delete("/vpns/{vid}/wireguard/{id}")
     async def wg_delete(vid: str, id: str, request: Request) -> dict[str, bool]:
-        require_signin(request)
-        await attempt(request, "vpn.wireguard.delete", wireguard(vid).delete(id), vpn=vid, id=id)
+        w = require_signin(request)
+        await attempt(request, w, "vpn.wireguard.delete", wireguard(vid).delete(id), vpn=vid, id=id)
         return {"deleted": True}
 
     @api.get("/vpns/{vid}/wireguard/{id}/config")
     async def wg_config(vid: str, id: str, request: Request) -> Response:
-        require_signin(request)
+        w = require_signin(request)
         text = await attempt(
-            request, "vpn.wireguard.download", wireguard(vid).configuration(id), vpn=vid, id=id
+            request, w, "vpn.wireguard.download", wireguard(vid).configuration(id), vpn=vid, id=id
         )
         return _download(text, f"{vid}-{id}.conf")
 
     @api.get("/vpns/{vid}/wireguard/{id}/qr")
     async def wg_qr(vid: str, id: str, request: Request) -> Response:
-        require_signin(request)
-        svg = await attempt(request, "vpn.wireguard.qr", wireguard(vid).qrcode(id), vpn=vid, id=id)
+        w = require_signin(request)
+        svg = await attempt(request, w, "vpn.wireguard.qr", wireguard(vid).qrcode(id), vpn=vid, id=id)
         # An SVG from wg-easy is shown as an image only, never as a page (no script runs).
         return Response(
             svg,
@@ -255,12 +258,13 @@ def router(hub: Hub) -> APIRouter:
 
     @api.post("/vpns/{vid}/openvpn")
     async def ovpn_issue(vid: str, body: NewClient, request: Request) -> dict[str, str]:
-        require_signin(request)
+        w = require_signin(request)
         if not NAME.match(body.name):
             raise HTTPException(400, "names are lowercase letters, digits, . _ - (up to 64)")
         days = body.days or vpn_of(vid, "openvpn").days
         await attempt(
             request,
+            w,
             "vpn.openvpn.issue",
             openvpn(vid).issue(body.name, days),
             vpn=vid,
@@ -271,27 +275,29 @@ def router(hub: Hub) -> APIRouter:
 
     @api.post("/vpns/{vid}/openvpn/{name}/revoke")
     async def ovpn_revoke(vid: str, name: str, request: Request) -> dict[str, Any]:
-        require_signin(request)
-        await attempt(request, "vpn.openvpn.revoke", openvpn(vid).revoke(name), vpn=vid, client=name)
+        w = require_signin(request)
+        await attempt(request, w, "vpn.openvpn.revoke", openvpn(vid).revoke(name), vpn=vid, client=name)
         # The revoke stands (and is in the audit log) even if the server can't be reached now;
         # the page then offers to push the CRL again, and the daily renewal does too.
         try:
-            await attempt(request, "vpn.openvpn.crl", hub.push_crl(vid), vpn=vid, after=f"revoking {name}")
+            await attempt(request, w, "vpn.openvpn.crl", hub.push_crl(vid), vpn=vid, after=f"revoking {name}")
         except HTTPException as e:
             return {"revoked": True, "crl_pushed": False, "error": e.detail}
         return {"revoked": True, "crl_pushed": True}
 
     @api.post("/vpns/{vid}/openvpn/crl")
     async def ovpn_push_crl(vid: str, request: Request) -> dict[str, Any]:
-        require_signin(request)
+        w = require_signin(request)
         vpn_of(vid, "openvpn")
-        await attempt(request, "vpn.openvpn.crl", hub.push_crl(vid, renew=True), vpn=vid)
+        await attempt(request, w, "vpn.openvpn.crl", hub.push_crl(vid, renew=True), vpn=vid)
         return {"crl": hub.crl_state.get(vid, {})}
 
     @api.get("/vpns/{vid}/openvpn/{name}/config")
     async def ovpn_config(vid: str, name: str, request: Request) -> Response:
-        require_signin(request)
-        text = await attempt(request, "vpn.openvpn.download", openvpn(vid).export(name), vpn=vid, client=name)
+        w = require_signin(request)
+        text = await attempt(
+            request, w, "vpn.openvpn.download", openvpn(vid).export(name), vpn=vid, client=name
+        )
         return _download(text, f"{name}.ovpn")
 
     # --- Rotating the VPN key (restricted mode) -------------------------------------------------
@@ -313,11 +319,12 @@ def router(hub: Hub) -> APIRouter:
         return out
 
     def key_view() -> dict[str, Any]:
+        """Public halves only: readable while the key ring is locked; no key is made here."""
         rot = rotator.state()
-        key = hub.keys.hub_key("vpn")
-        nxt = hub.keys.side_key("next", "vpn")
+        key = hub.keys.known_public("vpn")
+        nxt = hub.keys.known_public("vpn", "next")
         return {
-            "fingerprint": key.get_fingerprint(),
+            "fingerprint": key.get_fingerprint() if key else None,
             "next": nxt.get_fingerprint() if nxt else None,
             "rotation": None if rot is None else asdict(rot),
         }
@@ -335,18 +342,7 @@ def router(hub: Hub) -> APIRouter:
         except (ValueError, FileNotFoundError) as e:
             hub.audit.record(f"vpn.key.rotate.{what}", w.user, client_address(request.scope), outcome=str(e))
             raise HTTPException(409, str(e)) from e
-        steps = {
-            r: "; ".join(
-                x
-                for x in (
-                    "removed the old key" if s.removed else "has the new key" if s.added else None,
-                    s.note,
-                    s.error,
-                )
-                if x
-            )
-            for r, s in (rot.devices.items() if rot else [])
-        }
+        steps = {r: s.summary() for r, s in (rot.devices.items() if rot else [])}
         hub.audit.record(
             f"vpn.key.rotate.{what}",
             w.user,
@@ -421,11 +417,12 @@ def router(hub: Hub) -> APIRouter:
             note("Host key trusted", False, f"can't reach {device.host}: {reason(e)}")
             return out
         if ovpn.mode == "restricted":
-            # Ask the installed script something harmless; its answer proves it is bound to the key.
-            command = "list" if role == "pki" else "status"
+            # Ask the installed script something harmless; its answer proves it is bound to the key
+            # (the PKI host's `list` also that its PKI can be read).
+            command = "list" if role == "pki" else "version"
             try:
                 code, _, err = await run(Target(device.host, port, user), "vpn", command)
-                answers = code == 0 if role == "pki" else "only 'install'" in err
+                answers = code == 0
                 note(
                     f"kastellan-{role} answers for {user}",
                     answers,
@@ -490,7 +487,7 @@ def router(hub: Hub) -> APIRouter:
     async def install(vid: str, role: str, request: Request) -> dict[str, Any]:
         """Run the install script on a host over its normal login (root, or sudo without a
         password). What it runs is exactly what the setup page shows."""
-        require_signin(request)
+        w = require_signin(request)
         found = {r: (id, user) for r, id, user in roles(vid)}
         if role not in found:
             raise HTTPException(404, "pki or server")
@@ -511,7 +508,7 @@ def router(hub: Hub) -> APIRouter:
                 )
             return out
 
-        output = await attempt(request, f"vpn.openvpn.install.{role}", go(), vpn=vid, device=id)
+        output = await attempt(request, w, f"vpn.openvpn.install.{role}", go(), vpn=vid, device=id)
         return {"output": output[-4000:]}
 
     return api

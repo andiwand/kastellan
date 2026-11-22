@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { containerAsk, tagOf, updatesOf } from './updates';
+import { containerAsk, sameTagUpdates, tagOf, updatesOf } from './updates';
 import type { Device } from './api';
 
 const device = (more: Partial<Device>) =>
@@ -52,4 +52,28 @@ it('detects major upgrades without an intermediate offer', () => {
 	expect(containerAsk({ name: 'app', from: 'latest', to: 'stable' })).not.toContain(
 		'major version'
 	);
+});
+
+it('takes a missing target (WUD) as a new build of the same tag', () => {
+	const c = (key: string, update_to: string | null, skipped = false) =>
+		({
+			key,
+			name: key,
+			tag: 'latest',
+			update: true,
+			unchecked: null,
+			update_to,
+			skipped
+		}) as NonNullable<Device['containers']>[number];
+	const host = device({
+		kind: 'linux',
+		containers: [c('a', null), c('b', 'newer build'), c('c', '2.0'), c('d', null, true)]
+	});
+	expect(updatesOf([host]).map((u) => u.kind === 'container' && u.to)).toEqual([
+		'newer build',
+		'newer build',
+		'2.0'
+	]);
+	expect(sameTagUpdates(host.containers!).map((c) => c.key)).toEqual(['a', 'b']);
+	expect(tagOf(null)).toBeUndefined();
 });

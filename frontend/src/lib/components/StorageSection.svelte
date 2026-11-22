@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { HostReport } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { bytes } from '#lib/vitals.js';
+	import { bytes } from '#lib/format.js';
+	import { diskLimits, toneColor, toneOf } from '#lib/vitals.js';
 
 	/** A Linux host's storage and hardware, from its collector: each filesystem's space (and when
 	 * it is full at the rate it fills), RAID arrays and disk health (SMART), its temperatures.
@@ -10,11 +11,8 @@
 		$props();
 
 	// The same limits the alarms use (config.yaml's alarms:).
-	const WARN = $derived(store.alarms?.limits?.disk_warning ?? 85);
-	const CRIT = $derived(store.alarms?.limits?.disk_critical ?? 95);
+	const disk = $derived(diskLimits(store.alarms));
 	const percent = (used: number, free: number) => (used + free ? (100 * used) / (used + free) : 0);
-	const color = (p: number) =>
-		p >= CRIT ? 'var(--critical)' : p >= WARN ? 'var(--warning)' : 'var(--accent)';
 	const disks = $derived(report.smart?.disks ?? []);
 	const hot = $derived(
 		[...(report.temperatures ?? [])].sort((a, b) => b.celsius - a.celsius).slice(0, 6)
@@ -38,7 +36,7 @@
 								<span
 									class="block h-full rounded-full"
 									style:width="{p}%"
-									style:background={color(p)}
+									style:background={toneColor[toneOf(p, disk)]}
 								></span>
 							</span>
 							<span class="tabular text-xs text-muted">

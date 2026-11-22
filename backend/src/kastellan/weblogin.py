@@ -14,6 +14,7 @@ What it hands back is a one-time ticket to the device's name, as "Open web inter
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -23,8 +24,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .auth import SESSION_COOKIE
-from .auth_api import client_address, require_signin
-from .webproxy import ENTER, Access, _port, _scheme, host_only, label, new_client, upstream
+from .auth_api import MAX_PASSWORD, client_address, confirm_password, require_signin
+from .setup_run import stored_logins
+from .webproxy import ENTER, Access, host_only, label, new_client, page_origin, upstream
 
 if TYPE_CHECKING:
     from .hub import Hub
@@ -42,7 +44,7 @@ class Session:
 
 class SignIn(BaseModel):
     entry: str = Field(min_length=1, max_length=200)  # the stored login's id
-    password: str = Field(min_length=1, max_length=200)  # the admin's own, again
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD)  # the admin's own, again
 
 
 async def sign_in(client: httpx.AsyncClient, target: str, user: str, password: str) -> Session:
@@ -77,10 +79,6 @@ def router(hub: Hub, access: Access) -> APIRouter:
     @api.post("/devices/{id}/web/sign-in")
     async def web_sign_in(id: str, body: SignIn, request: Request) -> dict[str, str]:
         """Sign in to the device's page with a stored login; a link to open it, signed in."""
-        import asyncio
-
-        from .auth import verify_password
-
         w = require_signin(request)
         if hub.demo:
             raise HTTPException(403, "not in demo mode")
@@ -88,16 +86,11 @@ def router(hub: Hub, access: Access) -> APIRouter:
         target = upstream(device) if device else None
         if web is None or device is None or target is None:
             raise HTTPException(404, "no web interface for that device through Kastellan")
-        user = hub.config.users.get(w.user or "")
-        if user is None or not await asyncio.to_thread(verify_password, body.password, user.password):
-            raise HTTPException(403, "wrong password")
+        await confirm_password(hub, w, body.password)
+        # The logins a setup or terminal may use here (setup_run); and, as for revealing one,
+        # the password typed again must open the ring itself.
         entry = hub.vault.entry(body.entry)
-        if (
-            entry is None
-            or entry.ring != "people"
-            or entry.kind == "ssh-key"
-            or id not in (entry.devices or [])
-        ):
+        if entry is None or not any(e["id"] == entry.id for e in stored_logins(hub, id, w.user)["stored"]):
             raise HTTPException(404, "no login stored for this device by that id")
         if not await asyncio.to_thread(hub.vault.opens_with, entry.ring, w.user or "", body.password):
             raise HTTPException(403, "your password doesn't open this ring (sign in again to get a slot)")
@@ -115,14 +108,14 @@ def router(hub: Hub, access: Access) -> APIRouter:
         finally:
             del secret
         headers = {k.lower(): v for k, v in request.headers.items()}
-        where = f"{_scheme(request.scope, headers)}://{label(id)}.{web.domain}{_port(headers)}"
+        where = page_origin(request.scope, headers, id, web.domain)
         insecure = where.startswith("http:")
         key = access.ticket(
             request.cookies.get(SESSION_COOKIE) or "",
             label(id),
+            target,
             cookies=[c for c in (host_only(v, insecure) for v in session.cookies) if c],
             basic=session.basic,
-            target=target,
         )
         hub.audit.record(
             "web.sign-in", w.user, address, device=id, entry=entry.id, how=session.how, outcome="done"

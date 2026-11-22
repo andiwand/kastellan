@@ -199,9 +199,7 @@ async def run(hub: Hub) -> None:
                 and time.time() - last > st.every_hours * 3600
                 and not busy(hub)
             ):
-                task = asyncio.create_task(scheduled_test())
-                hub._background.add(task)
-                task.add_done_callback(hub._background.discard)
+                hub.spawn(scheduled_test(), name="speed test")
             if time.time() - last_prune > 6 * 3600:
                 last_prune = time.time()
                 await asyncio.to_thread(hub.internet.prune)

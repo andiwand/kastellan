@@ -20,6 +20,7 @@ from .auth_api import client_address, require_admin, require_signin
 from .openwrt import client as ow
 from .openwrt import firmware as fw
 from .openwrt.setup import ABILITIES, install_script, md5crypt
+from .pinned_http import ChangedCertificate
 from .setup_run import Login
 
 if TYPE_CHECKING:
@@ -80,7 +81,7 @@ def router(hub: Hub) -> APIRouter:
             return HTTPException(403, "the device doesn't let Kastellan do that (tick it in the setup)")
         if isinstance(e, ow.UbusError):
             return HTTPException(502, f"the device said: {e}")
-        if isinstance(e, ow.ChangedCertificate | ow.LoginRefused):
+        if isinstance(e, ChangedCertificate | ow.LoginRefused):
             return HTTPException(409, str(e))
         if isinstance(e, ValueError):
             return HTTPException(400, str(e))

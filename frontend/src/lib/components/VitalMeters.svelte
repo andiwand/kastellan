@@ -3,22 +3,21 @@
 	import { store } from '#lib/state.svelte.js';
 	import {
 		detailOf,
+		diskLimits,
 		formatVital,
 		isStale,
 		LABEL,
 		limitsOf,
 		toneColor,
-		toneOf
+		toneOf,
+		toneText
 	} from '#lib/vitals.js';
 
 	/** A device's CPU, memory and storage as three slim bars (the devices list): the value, and
 	 * colour only when it is high. A CPU known only by its load shows the load. */
 	let { vitals }: { vitals: Vitals | null | undefined } = $props();
 
-	const disk = $derived({
-		warning: store.alarms?.limits?.disk_warning ?? 85,
-		critical: store.alarms?.limits?.disk_critical ?? 95
-	});
+	const disk = $derived(diskLimits(store.alarms));
 	const SHORT: Record<string, string> = { cpu: 'CPU', memory: 'RAM', storage: 'Disk' };
 	const stale = $derived(vitals ? isStale(vitals, store.now) : false);
 	const rows = $derived(
@@ -53,14 +52,7 @@
 							style:background={toneColor[tone]}
 						></span>
 					</span>
-					<span
-						class="tabular text-right"
-						style:color={tone === 'normal'
-							? 'var(--muted)'
-							: tone === 'warning'
-								? 'var(--warning-text)'
-								: 'var(--critical-text)'}
-					>
+					<span class="tabular text-right" style:color={toneText[tone]}>
 						{v.toFixed(0)}%
 					</span>
 				{/if}

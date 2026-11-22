@@ -49,6 +49,16 @@ def test_hourly_samples_kept_and_forgotten(tmp_path: Path) -> None:
     assert DiskHistory(tmp_path).data == {}
 
 
+def test_a_mount_that_went_is_forgotten_in_time(tmp_path: Path) -> None:
+    disks = DiskHistory(tmp_path)
+    fs = lambda mount: {"mount": mount, "used": GB, "available": GB}  # noqa: E731
+    disks.note("nas", {"filesystems": [fs("/"), fs("/mnt/usb")]}, NOW)
+    disks.note("nas", {"filesystems": [fs("/")]}, NOW + timedelta(days=29))
+    assert set(disks.data["nas"]) == {"/", "/mnt/usb"}  # its history still counts
+    disks.note("nas", {"filesystems": [fs("/")]}, NOW + timedelta(days=31))
+    assert set(DiskHistory(tmp_path).data["nas"]) == {"/"}
+
+
 def test_the_alarm() -> None:
     report = {"filesystems": [{"mount": "/srv", "used": 60 * GB, "available": 40 * GB}]}
     limits = AlarmSettings()

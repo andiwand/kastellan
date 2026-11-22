@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from .auth import _DUMMY_HASH, SESSION_COOKIE, SESSION_IDLE, Brake, password_tag, verify_password
+from .auth import DUMMY_HASH, SESSION_COOKIE, SESSION_IDLE, Brake, password_tag, verify_password
 from .config import Role
 from .terminals import token_key
 
@@ -80,6 +80,18 @@ def require_signin(request: Request) -> Who:
     if w.user is None:
         raise HTTPException(403, "turn on sign-in first (add a user to config.yaml)")
     return w
+
+
+# The longest password typed anywhere (sign-in, typed again to confirm).
+MAX_PASSWORD = 1024
+
+
+async def confirm_password(hub: Hub, w: Who, password: str) -> None:
+    """The asking admin's own password, typed again before a secret is shown or used: 403 if
+    it isn't theirs."""
+    user = hub.config.users.get(w.user or "")
+    if user is None or not await asyncio.to_thread(verify_password, password, user.password):
+        raise HTTPException(403, "wrong password")
 
 
 LOCAL_NAMES = {"localhost"}
@@ -170,7 +182,8 @@ class HubHeaders:
 
 
 class Guard:
-    """ASGI middleware: who is asking, and may they."""
+    """ASGI middleware: who is asking, and may they. A backup job's report (REPORT_PATH) passes
+    without a session and without the CSRF header: backups_api checks its own token."""
 
     def __init__(self, app: ASGIApp, hub: Hub) -> None:
         self.app, self.hub = app, hub
@@ -217,19 +230,15 @@ class Guard:
         if not users:
             w = Who(None, Role.ADMIN)
         else:
-            current = session_who(self.hub, session_token(headers))
-            user = current.user if current else None
-            if user is None:
-                if scope["path"] in PUBLIC:
-                    w = None
-                else:
+            w = session_who(self.hub, session_token(headers))
+            if w is None:
+                if scope["path"] not in PUBLIC:
                     await _deny(scope, send, 401, "sign in first")
                     return
             else:
-                w = Who(user, users[user].role)
                 # A page refreshing on its own (X-Kastellan-Auto) isn't someone using the app.
                 if headers.get("x-kastellan-auto") != "1":
-                    self.hub.sessions.mark(user)
+                    self.hub.sessions.mark(w.user)
                 writes = scope["type"] == "http" and method not in READS
                 if writes and not w.is_admin and scope["path"] not in PUBLIC | OWN:
                     await _deny(scope, send, 403, "observers can't change anything")
@@ -256,7 +265,7 @@ async def _deny(scope: Scope, send: Send, status: int, message: str) -> None:
 
 class SignIn(BaseModel):
     user: str = Field(max_length=64)
-    password: str = Field(max_length=1024)
+    password: str = Field(max_length=MAX_PASSWORD)
 
 
 def router(hub: Hub) -> APIRouter:
@@ -291,7 +300,7 @@ def router(hub: Hub) -> APIRouter:
         async with hashing:
             # A dummy hash for unknown names, so the time taken tells nothing.
             ok = await asyncio.to_thread(
-                verify_password, body.password, user.password if user else _DUMMY_HASH
+                verify_password, body.password, user.password if user else DUMMY_HASH
             )
         if not (ok and user):
             hub.audit.record("signin.failed", body.user, address)

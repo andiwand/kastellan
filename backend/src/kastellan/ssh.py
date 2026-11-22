@@ -1,7 +1,10 @@
-"""SSH from the hub: its own key, pinned host keys, and connections to devices.
+"""SSH from the hub: its own keys, pinned host keys, and connections to devices.
 
-- The hub has one ed25519 key, made on first use: <data>/ssh/hub_ed25519 (0600) and .pub. Put
-  the public key into the `authorized_keys` of the hosts Kastellan may log in to.
+- The hub has four ed25519 keys, each made on first use (`Keys.NAMES`): `hub` (terminals,
+  setups, reading keys), `vpn` (only the restricted VPN scripts), `collect` (the read-only
+  collector) and `act` (the actor's abilities). Without a key ring they are files in
+  <data>/ssh (0600, the hub key with a .pub); with one, hub, vpn and act live in the
+  `kastellan` ring (unusable while it is locked) and only collect stays a file.
 - Host keys are pinned in <data>/ssh/known_hosts. A host we have never seen is not trusted by
   itself: the connection fails with `UnknownHost` (with the fingerprint), and an admin confirms
   it in the app (`trust`). A host whose key changed fails with `ChangedHost`: that is either a
@@ -76,7 +79,6 @@ class Keys:
     def __init__(self, folder: Path, vault: Vault | None = None) -> None:
         self.folder = folder
         self.vault = vault
-        self.private_path = folder / "hub_ed25519"
         self.known_hosts = folder / "known_hosts"
         self._lock = asyncio.Lock()
 
@@ -130,6 +132,26 @@ class Keys:
             return
         self._file(of, side).unlink(missing_ok=True)
 
+    def take_in(self) -> tuple[list[str], list[Path]]:
+        """Into the (new, unlocked) key ring: the keys kept as files that belong there, each read
+        back from it. What was taken (vault ids) and the files to remove now (the caller does,
+        once all is in)."""
+        taken: list[str] = []
+        gone: list[Path] = []
+        for of in self.IN_VAULT:
+            for side in ("", "next", "old"):
+                path = self._file(of, side)
+                if not path.exists():
+                    continue
+                key = asyncssh.read_private_key(str(path))
+                self._store(key, of, side)
+                back = self._load(of, side)
+                if back is None or back.get_fingerprint() != key.get_fingerprint():
+                    raise ValueError(f"the {of} key doesn't read back")
+                taken.append(self.vault_id(of, side))
+                gone += [path, path.with_suffix(".pub")] if not side else [path]
+        return taken, gone
+
     def hub_key(self, which: str = "hub") -> asyncssh.SSHKey:
         """One of the hub's keys, made the first time it is needed (once, even when two requests
         ask at the same time; written whole, then renamed into place). vault.Locked while the
@@ -137,8 +159,7 @@ class Keys:
         with _make_lock:
             key = self._load(which)
             if key is None:
-                comment = "kastellan-hub" if which == "hub" else f"kastellan-{which}"
-                key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
+                key = asyncssh.generate_private_key("ssh-ed25519", comment=f"kastellan-{which}")
                 self._store(key, which)
                 log.info("made the hub's %s SSH key", which)
         return key
@@ -186,8 +207,7 @@ class Keys:
             key = self._load(of, "next")
             if key is None:
                 stamp = time.strftime("%Y-%m-%d")
-                comment = f"kastellan-{'hub' if of == 'hub' else of} {stamp}"
-                key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
+                key = asyncssh.generate_private_key("ssh-ed25519", comment=f"kastellan-{of} {stamp}")
                 self._store(key, of, "next")
                 log.info("made the next %s SSH key", of)
         return key

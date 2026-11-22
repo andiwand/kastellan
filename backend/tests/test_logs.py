@@ -95,8 +95,7 @@ def test_syslog_messages() -> None:
 
 
 def test_syslog_only_from_known_devices(tmp_path: Path) -> None:
-    store = LogStore(tmp_path / "logs.db")
-    receiver = logs.SyslogReceiver(lambda a: {"192.168.1.9": "nas"}.get(a), store)
+    receiver = logs.SyslogReceiver(lambda a: {"192.168.1.9": "nas"}.get(a))
     receiver.datagram_received(b"<30>sshd[1]: hi", ("192.168.1.9", 514))
     receiver.datagram_received(b"<30>sshd[1]: forged", ("10.0.0.66", 514))
     assert [ln.msg for ln in receiver.take()] == ["hi"]
@@ -137,7 +136,10 @@ async def test_wireguard_presence_from_handshakes(tmp_path: Path, monkeypatch) -
             pass
 
         async def clients(self):
-            return [WgClient("1", "phone", True, "10.8.0.2", None, None, handshakes["phone"], None, None)]
+            return [
+                WgClient("0", "odd", True, "10.8.0.9", None, None, "not a time", None, None),
+                WgClient("1", "phone", True, "10.8.0.2", None, None, handshakes["phone"], None, None),
+            ]
 
     monkeypatch.setattr(wireguard, "WgEasy", Fake)
     config = Config.model_validate(
@@ -150,10 +152,11 @@ async def test_wireguard_presence_from_handshakes(tmp_path: Path, monkeypatch) -
         config=config,
         logs=LogStore(tmp_path / "logs.db"),
         secrets=SimpleNamespace(get=lambda name: "pw"),
-        vpn_addresses={},
+        vpn_addresses={"gone": {"10.9.0.2": "old"}},
         resolver=SimpleNamespace(address=lambda h: None),
     )
     await logs_poll.wireguard(hub)
+    assert hub.vpn_addresses == {"wg": {"10.8.0.9": "odd (wg)", "10.8.0.2": "phone (wg)"}}
     await logs_poll.wireguard(hub)  # still there: nothing new
     handshakes["phone"] = datetime.fromtimestamp(time.time() - 600, UTC).isoformat()
     await logs_poll.wireguard(hub)

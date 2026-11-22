@@ -1,20 +1,71 @@
-"""Pinned TLS connections reused between device requests; h11 handles HTTP framing.
+"""Pinned TLS connections reused between device requests; h11 handles HTTP framing. Also what
+the device clients (OpenWrt, FRITZ!Box) share: the pinned fingerprints and their one change at
+a time.
 
-Only GET/HEAD may be retried after a reused connection closes without a response. A router
-may have applied a POST before disconnecting, so replaying it could repeat an action.
+A request is sent again after a reused connection closes without a response only when it is
+idempotent (by default GET and HEAD; callers say so for their reads). A device may have done a
+write before disconnecting, so replaying it could repeat an action.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import ssl
 from collections.abc import Callable
+from pathlib import Path
 
 import h11
 
 IDLE_FOR = 8.0
 MAX_IDLE = 2  # per port
+
+
+class ChangedCertificate(Exception):
+    pass
+
+
+def fingerprint_of_der(der: bytes) -> str:
+    return hashlib.sha256(der).hexdigest()
+
+
+class Pins:
+    """Each device's pinned certificate fingerprint: <folder>/<id>.sha256."""
+
+    def __init__(self, folder: Path) -> None:
+        self.folder = folder
+
+    def get(self, id: str) -> str | None:
+        try:
+            return (self.folder / f"{id}.sha256").read_text().strip() or None
+        except OSError:
+            return None
+
+    def set(self, id: str, fp: str) -> None:
+        self.folder.mkdir(parents=True, exist_ok=True)
+        (self.folder / f"{id}.sha256").write_text(fp + "\n")
+
+    def forget(self, id: str) -> None:
+        (self.folder / f"{id}.sha256").unlink(missing_ok=True)
+
+
+class Changing:
+    """A device client's one change at a time: a lock whose end calls `forget` (what the client
+    kept is read anew, so what it changed shows next)."""
+
+    def __init__(self, forget: Callable[[], None]) -> None:
+        self._lock, self._forget = asyncio.Lock(), forget
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    async def __aenter__(self) -> None:
+        await self._lock.acquire()
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._forget()
+        self._lock.release()
 
 
 class _Closed(ConnectionError):
@@ -98,8 +149,11 @@ class Pool:
         body: bytes,
         timeout: float,
         max_bytes: int,
+        idempotent: bool | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
-        """Status, lower-case headers and a bounded response body."""
+        """Status, lower-case headers and a bounded response body. `idempotent` (default: GET
+        and HEAD) lets it be sent once more when a kept connection turns out closed."""
+        retry = method in {"GET", "HEAD"} if idempotent is None else idempotent
         host = f"[{self.host}]" if ":" in self.host else self.host
         request = h11.Request(
             method=method,
@@ -122,7 +176,7 @@ class Pool:
                     status, heads, payload, keep = await _exchange(c, request, body, max_bytes)
                 except _Closed:
                     c.close()
-                    if reused and method in {"GET", "HEAD"}:
+                    if reused and retry:
                         continue
                     raise ConnectionError(f"{self.host}: the connection closed without an answer") from None
                 except BaseException:

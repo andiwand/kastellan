@@ -5,15 +5,18 @@
 	import { store } from '#lib/state.svelte.js';
 	import {
 		detailOf,
+		diskLimits,
 		fieldsOf,
 		formatVital,
 		LABEL,
 		limitsOf,
 		isStale,
 		toneColor,
-		toneOf
+		toneOf,
+		toneText
 	} from '#lib/vitals.js';
 	import LatencyChart from './LatencyChart.svelte';
+	import Tabs from './Tabs.svelte';
 
 	/** A device's vitals, whatever kind it is: a tile each for CPU, memory, storage and
 	 * temperature (the value, what it is of, a slim bar, the last 24 hours as a line). A tile
@@ -21,22 +24,24 @@
 	let { device, vitals }: { device: string; vitals: Vitals } = $props();
 
 	const RANGES = [
-		{ label: '24 hours', hours: 24, buckets: 96 },
-		{ label: '7 days', hours: 168, buckets: 168 },
-		{ label: '30 days', hours: 720, buckets: 180 }
+		{ label: '24 h', hours: 24, buckets: 96 },
+		{ label: '7 d', hours: 168, buckets: 168 },
+		{ label: '30 d', hours: 720, buckets: 180 }
 	];
 	let trend = $state<VitalsSeries | null>(null); // the last 24 hours, for the tiles' lines
 	let open = $state<VitalField | null>(null);
 	let range = $state(RANGES[0].hours);
-	let chart = $state<VitalsSeries | null>(null);
-	let chartError = $state<string | null>(null);
+	// The open chart's readings (every field's) and the range they are of: a refresh keeps them
+	// until the new ones arrive; another range shows "Loading…" instead of the last one's.
+	let chart = $state<{ hours: number; series: VitalsSeries | null; error: string | null } | null>(
+		null
+	);
+	const shown = $derived(chart?.hours === range ? chart : null);
+	const opened = $derived(open !== null);
 	let refresh = $state(0);
 	const stale = $derived(isStale(vitals, store.now));
 
-	const disk = $derived({
-		warning: store.alarms?.limits?.disk_warning ?? 85,
-		critical: store.alarms?.limits?.disk_critical ?? 95
-	});
+	const disk = $derived(diskLimits(store.alarms));
 	const fields = $derived(fieldsOf(vitals));
 
 	async function loadTrend() {
@@ -55,19 +60,16 @@
 		return () => clearInterval(t);
 	});
 	$effect(() => {
-		const field = open;
+		if (!opened) return;
 		const r = RANGES.find((r) => r.hours === range)!;
-		refresh; // refresh an open chart along with the tiles
-		chart = null;
-		chartError = null;
-		if (!field) return;
+		void refresh; // refresh an open chart along with the tiles
 		let current = true;
 		api.vitals(r.hours, r.buckets, device).then(
-			(s) => {
-				if (current) chart = s;
+			(series) => {
+				if (current) chart = { hours: r.hours, series, error: null };
 			},
 			(e) => {
-				if (current) chartError = (e as Error).message;
+				if (current) chart = { hours: r.hours, series: null, error: (e as Error).message };
 			}
 		);
 		return () => {
@@ -126,10 +128,7 @@
 					<div class="flex items-baseline justify-between gap-2">
 						<span class="text-xs text-muted">{LABEL[f]}</span>
 						{#if tone !== 'normal'}
-							<span
-								class="text-[11px] font-medium"
-								style:color={tone === 'warning' ? 'var(--warning-text)' : 'var(--critical-text)'}
-							>
+							<span class="text-[11px] font-medium" style:color={toneText[tone]}>
 								{tone === 'warning' ? 'High' : 'Very high'}
 							</span>
 						{/if}
@@ -180,31 +179,26 @@
 
 		{#if open}
 			{@const f = open}
-			{@const values = seriesOf(chart, f)}
+			{@const values = seriesOf(shown?.series ?? null, f)}
 			<div class="card mt-3 p-4">
 				<div class="flex flex-wrap items-center justify-between gap-2">
 					<h3 class="text-sm font-medium">{LABEL[f]} over time</h3>
-					<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-						{#each RANGES as r (r.label)}
-							<button
-								onclick={() => (range = r.hours)}
-								class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range === r.hours
-									? 'bg-surface-3 text-text'
-									: 'text-muted hover:text-text'}"
-							>
-								{r.label}
-							</button>
-						{/each}
-					</div>
+					<Tabs
+						small
+						label="Range"
+						tabs={RANGES.map((r) => ({ id: r.hours, label: r.label }))}
+						current={range}
+						onselect={(h) => (range = h)}
+					/>
 				</div>
-				{#if chartError}
-					<p class="mt-3 text-sm" style:color="var(--critical-text)">{chartError}</p>
-				{:else if chart && values.some((v) => v != null)}
+				{#if shown?.error}
+					<p class="mt-3 text-sm" style:color="var(--critical-text)">{shown.error}</p>
+				{:else if shown?.series && values.some((v) => v != null)}
 					<div class="mt-3">
 						<LatencyChart
 							buckets={buckets(values)}
-							start={chart.start}
-							step={chart.step_seconds}
+							start={shown.series.start}
+							step={shown.series.step_seconds}
 							format={(x) => formatVital(f, x)}
 							fixedMax={f === 'temperature' ? undefined : 100}
 							fixedMin={f === 'temperature'
@@ -213,7 +207,7 @@
 							label="{LABEL[f]} over time"
 						/>
 					</div>
-				{:else if chart}
+				{:else if shown}
 					<p class="mt-3 text-sm text-muted">No readings in this period.</p>
 				{:else}
 					<p class="mt-3 text-sm text-muted">Loading…</p>

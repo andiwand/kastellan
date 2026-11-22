@@ -1,5 +1,6 @@
 """What a FRITZ!Box shows only in its web interface: the Wi-Fi environment (neighbouring
-networks, channel use) and its WireGuard connections. Through the web interface's own API
+networks, channel use), its WireGuard connections and its energy monitor (`ecoStat`: CPU, memory,
+temperature; vitals.py reads it). Through the web interface's own API
 (`/login_sid.lua`, `/data.lua`), which AVM does not document and may change with any FRITZ!OS
 update: every reading here is defensive, and a change shows as "can't be read", never as wrong
 data. Seen on FRITZ!OS 8.25 (FRITZ!Box 7530).
@@ -52,10 +53,18 @@ class Web:
         self.since = 0.0
         self._lock = asyncio.Lock()
 
-    async def _post(self, path: str, form: dict[str, str], timeout: float = 30) -> tuple[int, bytes]:
+    async def _post(
+        self, path: str, form: dict[str, str], timeout: float = 30, idempotent: bool = False
+    ) -> tuple[int, bytes]:
         body = urlencode(form).encode()
-        status, _, payload = await self.fb._http(
-            "POST", path, {"Content-Type": "application/x-www-form-urlencoded"}, body, timeout, port=WEB_PORT
+        status, _, payload = await self.fb.http(
+            "POST",
+            path,
+            {"Content-Type": "application/x-www-form-urlencoded"},
+            body,
+            timeout,
+            port=WEB_PORT,
+            idempotent=idempotent,
         )
         return status, payload
 
@@ -63,7 +72,7 @@ class Web:
         async with self._lock:
             if self.sid and time.monotonic() - self.since < 600:
                 return self.sid
-            _, _, payload = await self.fb._http("GET", "/login_sid.lua?version=2", {}, b"", 20, port=WEB_PORT)
+            _, _, payload = await self.fb.http("GET", "/login_sid.lua?version=2", {}, b"", 20, port=WEB_PORT)
             root = ET.fromstring(payload)
             challenge = root.findtext("Challenge") or ""
             block = int(root.findtext("BlockTime") or 0)
@@ -86,7 +95,9 @@ class Web:
         for again in (False, True):
             sid = await self.login()
             status, payload = await self._post(
-                "/data.lua", {"xhr": "1", "sid": sid, "lang": "en", "page": page, "xhrId": xhr_id}
+                "/data.lua",
+                {"xhr": "1", "sid": sid, "lang": "en", "page": page, "xhrId": xhr_id},
+                idempotent=True,  # it only reads
             )
             try:
                 answer = json.loads(payload)
@@ -197,10 +208,11 @@ def wireguard(data: dict[str, Any]) -> dict[str, Any]:
         for x in (connection(c, kind) for c in init.get(key) or [])
         if x
     ]
+    error = init.get("wg_global_error")
     return {
         "server": init.get("server") or None,
         "port": init.get("wg_list_port") or None,
         "address": init.get("own_ipv4") or None,
         "connections": connections,
-        "error": (init.get("wg_global_error") or {}).get("eventMsg") or None,
+        "error": (error.get("eventMsg") or None) if isinstance(error, dict) else None,
     }

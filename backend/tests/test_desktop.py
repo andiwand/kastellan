@@ -129,9 +129,9 @@ def test_desktop_refuses_without_ticket_or_sign_in(tmp_path: Path, guacd) -> Non
 
 
 def test_desktop_ends_with_the_session(tmp_path: Path, guacd, monkeypatch: pytest.MonkeyPatch) -> None:
-    from kastellan import desktop_api
+    from kastellan import terminals
 
-    monkeypatch.setattr(desktop_api, "RECHECK_EVERY", 0.2)
+    monkeypatch.setattr(terminals, "RECHECK_EVERY", 0.2)
     port, _ = guacd
     with make_client(tmp_path, port) as c:
         signin(c)

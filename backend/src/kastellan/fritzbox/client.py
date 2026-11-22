@@ -32,9 +32,9 @@ from xml.sax.saxutils import escape
 
 import httpx
 
+from ..dhcp import in_range
 from ..logs import Line
-from ..openwrt.client import ChangedCertificate, Pins, _Changing, fingerprint_of_der
-from ..pinned_http import Pool
+from ..pinned_http import ChangedCertificate, Changing, Pins, Pool, fingerprint_of_der
 
 MAX_RESPONSE = 16 * 1024 * 1024
 NS = "urn:dslforum-org:service:"
@@ -88,7 +88,8 @@ def _local(tag: str) -> str:
 
 
 class Fritz:
-    """One FRITZ!Box's TR-064, with Kastellan's user; the service list is read once."""
+    """One FRITZ!Box's TR-064, with Kastellan's user; the service list is read once (and again
+    after the box restarted: new FRITZ!OS may bring others)."""
 
     def __init__(
         self,
@@ -106,14 +107,15 @@ class Fritz:
         self._service_types: dict[str, str] = {}
         self._challenge: str | None = None
         self._nc = 0
-        self.changing = _Changing(self)  # one change at a time; its end forgets the kept sections
+        self.changing = Changing(self.forget)  # one change at a time; its end forgets the kept sections
         self._kept: dict[str, tuple[float, Any, dict[str, str]]] = {}
+        self._uptime: int | None = None
         self.confirming = asyncio.Lock()
         self._token: ContextVar[str | None] = ContextVar("fritz_confirmation", default=None)
         # Connections kept open between requests (TR-064 and the web interface, by port).
         self.pool = Pool(host, self._check)
 
-    async def _http(
+    async def http(
         self,
         method: str,
         path: str,
@@ -121,9 +123,11 @@ class Fritz:
         body: bytes,
         timeout: float,
         port: int | None = None,
+        idempotent: bool | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
-        """One request over a connection whose certificate is the pinned one (the web interface
-        on `port` 443 shows the same certificate as TR-064)."""
+        """One request, without TR-064's authentication, over a connection whose certificate is
+        the pinned one (the web interface on `port` 443 shows the same certificate as TR-064).
+        `idempotent`: see pinned_http."""
         port = port or self.port
         if not path.startswith("/") or any(ord(c) <= 32 or ord(c) == 127 for c in path):
             raise ValueError("invalid TR-064 request path")
@@ -136,7 +140,9 @@ class Fritz:
                 )
                 return r.status_code, {k.lower(): v for k, v in r.headers.items()}, r.content
         try:
-            return await self.pool.request(port, method, path, headers, body, timeout, MAX_RESPONSE)
+            return await self.pool.request(
+                port, method, path, headers, body, timeout, MAX_RESPONSE, idempotent
+            )
         except ValueError as e:
             if "too large" in str(e):
                 raise ValueError("the FRITZ!Box response is too large") from e
@@ -156,6 +162,16 @@ class Fritz:
         """What read() kept: read anew next time."""
         self._kept = {}
 
+    def note_uptime(self, uptime: int | None) -> None:
+        """The uptime DeviceInfo tells: lower than last time, the box restarted (a reboot, new
+        FRITZ!OS), so what read() kept and the service list are old."""
+        if uptime is None:
+            return
+        if self._uptime is not None and uptime < self._uptime:
+            self.forget()
+            self._services = None
+        self._uptime = uptime
+
     async def request(
         self,
         method: str,
@@ -163,6 +179,7 @@ class Fritz:
         body: bytes = b"",
         headers: dict[str, str] | None = None,
         timeout: float = 30,
+        idempotent: bool | None = None,
     ) -> tuple[int, bytes]:
         """One request with Digest authentication (a challenge is kept and reused)."""
         headers = dict(headers or {})
@@ -172,7 +189,9 @@ class Fritz:
                 headers["Authorization"] = _digest(
                     self.user, self.password, method, path, self._challenge, self._nc
                 )
-            status, heads, payload = await self._http(method, path, headers, body, timeout)
+            status, heads, payload = await self.http(
+                method, path, headers, body, timeout, idempotent=idempotent
+            )
             if status != 401:
                 return status, payload
             challenge = heads.get("www-authenticate", "")
@@ -193,6 +212,7 @@ class Fritz:
                 raise ConnectionError(f"{self.host}: no TR-064 description (HTTP {status})")
             root = ET.fromstring(payload)
             found: dict[str, str] = {}
+            types: dict[str, str] = {}
             for svc in root.iter():
                 if _local(svc.tag) != "service":
                     continue
@@ -208,17 +228,15 @@ class Fritz:
                             continue
                         key = f"WLANConfiguration:{match[1]}"
                     found[key] = kids["controlURL"]
-                    self._service_types[key] = kids["serviceType"]
-            self._services = found
+                    types[key] = kids["serviceType"]
+            self._services, self._service_types = found, types
         return self._services
-
-    async def has(self, service: str) -> bool:
-        return service in await self.services()
 
     async def call(
         self, service: str, action: str, args: dict[str, Any] | None = None, timeout: float = 30
     ) -> dict[str, str]:
-        """One TR-064 action: its out arguments by name (strings)."""
+        """One TR-064 action: its out arguments by name (strings). Its Get actions only read, so
+        they may be sent again on a closed kept connection."""
         control = (await self.services()).get(service)
         if control is None:
             raise FritzError(401, f"this FRITZ!Box has no {service}")
@@ -239,7 +257,8 @@ class Fritz:
             f'<u:{action} xmlns:u="{urn}">{inner}</u:{action}></s:Body></s:Envelope>'
         ).encode()
         headers = {"Content-Type": 'text/xml; charset="utf-8"', "SOAPACTION": f'"{urn}#{action}"'}
-        status, payload = await self.request("POST", control, body, headers, timeout)
+        reads = re.match(r"(X_AVM-DE_)?Get", action) is not None
+        status, payload = await self.request("POST", control, body, headers, timeout, idempotent=reads)
         try:
             root = ET.fromstring(payload)
         except ET.ParseError as e:
@@ -325,6 +344,7 @@ async def read(fb: Fritz) -> dict[str, Any]:
     left out; `errors` says what couldn't be read."""
     errors: dict[str, str] = {}
     info = await fb.call("DeviceInfo:1", "GetInfo")
+    fb.note_uptime(_int(info.get("NewUpTime")))
     report: dict[str, Any] = {
         "model": info.get("NewModelName"),
         "firmware": info.get("NewSoftwareVersion"),
@@ -366,8 +386,6 @@ async def read(fb: Fritz) -> dict[str, Any]:
 def _dhcp(info: dict[str, Any] | None, clients: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Its DHCP server (LANHostConfigManagement's GetInfo): on or off, the pool, and the active
     clients with an address in it."""
-    from ..dhcp import in_range
-
     if not info:
         return None
     low, high = info.get("NewMinAddress"), info.get("NewMaxAddress")
@@ -735,19 +753,20 @@ async def confirmed(fb: Fritz, call, wait: float = 90, say=None, poll: float = 2
         try:
             if say:
                 say(f"Confirm on the FRITZ!Box now: {started.get('NewMethods') or 'button'}")
-            async with asyncio.timeout(wait):
-                state = started.get("NewState")
-                while state == "waitingforauth":
-                    await asyncio.sleep(poll)
-                    state = (await fb.call("X_AVM-DE_Auth:1", "GetState")).get("NewState")
-                if state in ("authenticated", "disabled"):
-                    return await call()
+            try:  # only the waiting is bounded by `wait`, not the action after it
+                async with asyncio.timeout(wait):
+                    state = started.get("NewState")
+                    while state == "waitingforauth":
+                        await asyncio.sleep(poll)
+                        state = (await fb.call("X_AVM-DE_Auth:1", "GetState")).get("NewState")
+            except TimeoutError as e:
+                raise FritzError(866, "nobody confirmed it on the FRITZ!Box in time") from e
+            if state not in ("authenticated", "disabled"):
                 raise FritzError(
                     868 if state == "anotherauthprocess" else 867,
                     f"the confirmation on the FRITZ!Box ended ({state})",
                 )
-        except TimeoutError as e:
-            raise FritzError(866, "nobody confirmed it on the FRITZ!Box in time") from e
+            return await call()
         finally:
             try:
                 with contextlib.suppress(Exception):
@@ -770,15 +789,6 @@ async def config_export(fb: Fritz, password: str) -> bytes:
     return data  # The checksum covers the original bytes; never transcode an export.
 
 
-ENCRYPTIONS = {
-    "11i": "WPA2",
-    "WPAand11i": "WPA/WPA2",
-    "11iandWPA3": "WPA2/WPA3",
-    "WPA3": "WPA3",
-    "None": "open",
-}
-
-
 def check_ssid(v: str) -> str:
     if not 1 <= len(v.encode()) <= 32 or any(ord(c) < 32 for c in v):
         raise ValueError("a network name is 1 to 32 bytes, no control characters")
@@ -799,12 +809,11 @@ async def change_wifi(fb: Fritz, index: int, values: dict[str, Any]) -> None:
     """Name, password, encryption, hidden, on/off, channel (0: automatic) of one
     WLANConfiguration."""
     svc = f"WLANConfiguration:{int(index)}"
-    # Validate the whole request before the first change.
-    if values.get("ssid") is not None:
-        check_ssid(str(values["ssid"]))
-    if values.get("key") is not None:
-        check_key(str(values["key"]))
-    if values.get("channel") is not None and not 0 <= int(values["channel"]) <= 233:
+    # The whole request checked before the first change.
+    ssid = check_ssid(str(values["ssid"])) if values.get("ssid") is not None else None
+    key = check_key(str(values["key"])) if values.get("key") is not None else None
+    channel = int(values["channel"]) if values.get("channel") is not None else None
+    if channel is not None and not 0 <= channel <= 233:
         raise ValueError("not a channel")
     if values.get("encryption") and values["encryption"] not in BEACON:
         raise ValueError("a FRITZ!Box takes WPA2, WPA3, WPA2/WPA3 or WPA/WPA2")
@@ -815,9 +824,9 @@ async def change_wifi(fb: Fritz, index: int, values: dict[str, Any]) -> None:
             await fb.call(
                 svc, "SetBeaconAdvertisement", {"NewBeaconAdvertisementEnabled": 0 if values["hidden"] else 1}
             )
-        if values.get("ssid"):
-            await fb.call(svc, "SetSSID", {"NewSSID": check_ssid(str(values["ssid"]))})
-        if values.get("key"):
+        if ssid:
+            await fb.call(svc, "SetSSID", {"NewSSID": ssid})
+        if key:
             await fb.call(
                 svc,
                 "SetSecurityKeys",
@@ -827,14 +836,11 @@ async def change_wifi(fb: Fritz, index: int, values: dict[str, Any]) -> None:
                     "NewWEPKey2": "",
                     "NewWEPKey3": "",
                     "NewPreSharedKey": "",
-                    "NewKeyPassphrase": check_key(str(values["key"])),
+                    "NewKeyPassphrase": key,
                 },
             )
-        if values.get("channel") is not None:
-            ch = int(values["channel"])
-            if not 0 <= ch <= 233:
-                raise ValueError("not a channel")
-            await fb.call(svc, "SetChannel", {"NewChannel": ch})
+        if channel is not None:
+            await fb.call(svc, "SetChannel", {"NewChannel": channel})
         if values.get("enabled") is not None:
             await fb.call(svc, "SetEnable", {"NewEnable": 1 if values["enabled"] else 0})
 

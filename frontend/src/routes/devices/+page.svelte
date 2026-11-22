@@ -96,6 +96,8 @@
 			input?.focus();
 		}
 	}
+	// The list's columns, the same in its header and every row (each row is its own grid).
+	const cols = 'lg:grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_8.5rem_4.5rem]';
 	const filters: { id: Filter; label: string }[] = [
 		{ id: 'all', label: 'All' },
 		{ id: 'problems', label: 'Problems' },
@@ -135,7 +137,7 @@
 				{ id: 'groups', label: 'Groups' }
 			]}
 			current={section}
-			onselect={(t) => goto(t === 'groups' ? '?section=groups' : '?', { replaceState: true })}
+			onselect={(t) => goto(t === 'groups' ? '?section=groups' : '?', { replace: true })}
 		/>
 	</div>
 {/if}
@@ -166,45 +168,23 @@
 				/
 			</kbd>
 		</label>
-		<div
-			class="flex max-w-full flex-wrap gap-1 rounded-xl border border-line bg-surface p-1 shadow-card"
-			role="tablist"
-		>
-			{#each filters as f (f.id)}
-				<button
-					role="tab"
-					aria-selected={filter === f.id}
-					onclick={() => (filter = f.id)}
-					class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors {filter ===
-					f.id
-						? 'bg-surface-3 text-text'
-						: 'text-muted hover:text-text'}"
-				>
-					{f.label}
-					<span class="tabular text-xs text-faint">{counts[f.id]}</span>
-				</button>
-			{/each}
-		</div>
-		<div
-			class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card sm:ml-auto"
-			role="tablist"
-			aria-label="View"
-		>
-			{#each [{ id: 'list', label: 'List', icon: List }, { id: 'graph', label: 'Networks', icon: Workflow }] as const as v (v.id)}
-				<button
-					role="tab"
-					aria-selected={view === v.id}
-					onclick={() => show(v.id)}
-					class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors {view ===
-					v.id
-						? 'bg-surface-3 text-text'
-						: 'text-muted hover:text-text'}"
-				>
-					<v.icon class="size-4" strokeWidth={1.9} />
-					{v.label}
-				</button>
-			{/each}
-		</div>
+		<Tabs
+			label="Show"
+			class="flex-wrap"
+			tabs={filters.map((f) => ({ ...f, count: counts[f.id] }))}
+			current={filter}
+			onselect={(f) => (filter = f)}
+		/>
+		<Tabs
+			label="View"
+			class="sm:ml-auto"
+			tabs={[
+				{ id: 'list' as const, label: 'List', icon: List },
+				{ id: 'graph' as const, label: 'Networks', icon: Workflow }
+			]}
+			current={view}
+			onselect={show}
+		/>
 	</div>
 
 	{#if view === 'graph'}
@@ -218,7 +198,7 @@
 	{:else}
 		<div class="card mt-4 overflow-hidden">
 			<div
-				class="hidden grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_8.5rem_4.5rem] gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted lg:grid"
+				class="hidden {cols} gap-4 border-b border-line px-5 py-2.5 text-xs font-medium text-muted lg:grid"
 			>
 				<span>Device</span><span>Status</span><span>Checks</span><span>Last 24 hours</span><span>
 					Vitals
@@ -245,7 +225,7 @@
 						<li>
 							<a
 								href="/devices/{device.id}"
-								class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-5 py-3.5 transition-colors hover:bg-surface-2/70 lg:grid-cols-[minmax(0,1.6fr)_7rem_minmax(0,1fr)_minmax(0,1.3fr)_8.5rem_4.5rem]"
+								class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-5 py-3.5 transition-colors hover:bg-surface-2/70 {cols}"
 							>
 								<div
 									class="flex min-w-0 items-center gap-3"

@@ -162,7 +162,7 @@ async def test_a_quiet_run_says_it_is_alive(monkeypatch) -> None:
         queue.put_nowait(b"KASTELLAN-DONE {}\n")
         queue.put_nowait(None)
 
-    response = setup_run._hub_task(run(), queue)
+    response = setup_run.hub_task(run(), queue)
     lines = [chunk async for chunk in response.body_iterator]
     assert lines[-1] == b"KASTELLAN-DONE {}\n"
     assert lines.count(b"KASTELLAN-ALIVE\n") >= 2
@@ -239,6 +239,8 @@ def test_a_stored_login_only_for_its_device(tmp_path) -> None:
         setup_run.resolve(hub, "nas", setup_run.Login(stored="ssh-sv1-root"), "ada")
     with pytest.raises(HTTPException):  # a typed login needs both
         setup_run.resolve(hub, "sv1", setup_run.Login(login="root"), "ada")
+    with pytest.raises(HTTPException, match="user names"):  # a whole name, no newline after it
+        setup_run.resolve(hub, "sv1", setup_run.Login(login="root\n", password="pw"), "ada")
 
 
 def test_concurrent_ability_dismissals_keep_every_device(tmp_path) -> None:

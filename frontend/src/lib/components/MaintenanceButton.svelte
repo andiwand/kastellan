@@ -30,21 +30,19 @@
 			error = (e as Error).message;
 		}
 	}
-	const button =
-		'inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong';
 </script>
 
 <div class="relative">
 	{#if fromHere}
 		<button
-			class={button}
+			class="btn-header"
 			onclick={() => set(0)}
 			title="Until {until ? dayClock(until) : ''}: {on.map((m) => m.reason).join(', ')}"
 		>
 			<Wrench class="size-4 text-muted" /> End maintenance
 		</button>
 	{:else}
-		<button class={button} onclick={() => (open = !open)} aria-expanded={open}>
+		<button class="btn-header" onclick={() => (open = !open)} aria-expanded={open}>
 			<Wrench class="size-4 text-muted" /> Maintenance
 		</button>
 	{/if}

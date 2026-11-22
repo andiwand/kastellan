@@ -16,6 +16,19 @@ from .vault import Vault
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
+# Kastellan's own secrets: made and used by Kastellan itself, never named in config.yaml (no login
+# or notification may use them) and never shown or edited on Keys.
+HUB_BACKUP_KEY = "hub-backup-key"
+DEVICE_BACKUPS_KEY = "device-backups"
+FINGERPRINT_SALT = "group-fingerprints"  # keys the password fingerprints Kastellan compares
+SYSLOG_CA_KEY = "syslog-ca-key"
+OWN = {
+    HUB_BACKUP_KEY: "Kastellan's own backup: its key",
+    DEVICE_BACKUPS_KEY: "Device backups: their key",
+    FINGERPRINT_SALT: "Groups: the key for password fingerprints",
+    SYSLOG_CA_KEY: "Syslog over TLS: the certificate authority's key",
+}
+
 
 class Secrets:
     def __init__(self, folder: Path, vault: Vault | None = None) -> None:

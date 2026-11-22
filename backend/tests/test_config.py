@@ -92,10 +92,10 @@ def test_dns_checks() -> None:
 
 def test_sites() -> None:
     one = Config.model_validate({"devices": {"a": {"host": "a"}, "b": {"host": "b", "site": "home"}}})
-    assert not one.multi_site and one.label("a") == "a"
+    assert one.label("a") == "a" and one.label("b") == "b"
     away = {"host": "b", "site": "friends-place"}
     two = Config.model_validate({"devices": {"a": {"host": "a"}, "b": away}})
-    assert two.multi_site and two.label("b") == "b (Friends place)" and two.label("a") == "a"
+    assert two.label("b") == "b (Friends place)" and two.label("a") == "a"
     with pytest.raises(ValidationError):
         Config.model_validate({"devices": {"a": {"host": "a", "site": "Not An Id"}}})
 

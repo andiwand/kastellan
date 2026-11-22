@@ -26,9 +26,11 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, PrivateAttr
 
+from .access import USER_RULE, port_of, valid_user
 from .ssh import ChangedHost, Target, UnknownHost
 
 if TYPE_CHECKING:
+    from .config import Device
     from .hub import Hub
 
 DONE = "KASTELLAN-DONE"
@@ -52,6 +54,16 @@ class Login(BaseModel):
     root_password: str | None = Field(default=None, max_length=1024)
 
 
+def device_of(hub: Hub, id: str) -> Device:
+    """The device to set up or act on: 404 if there is none, 400 if it has no address of its own."""
+    device = hub.config.devices.get(id)
+    if device is None:
+        raise HTTPException(404, "no such device")
+    if not device.host:  # "" would be this machine: the hub's own
+        raise HTTPException(400, f"{id} has no address of its own (a UPS read through its host)")
+    return device
+
+
 def stored_logins(hub: Hub, device: str, user: str | None) -> dict[str, Any]:
     """The People ring's logins a setup on this device may use: the ring open, the admin with
     a way of their own into it, and only logins stored for this device."""
@@ -71,17 +83,20 @@ def stored_logins(hub: Hub, device: str, user: str | None) -> dict[str, Any]:
 
 def resolve(hub: Hub, device: str | None, body: Login, user: str | None) -> None:
     """A stored login into the body (its user and password), checked like the terminal's: only
-    for the devices it was stored for, read for the signed-in admin who asked."""
-    if not body.stored:
-        if not body.login or not body.password:
-            raise HTTPException(400, "a login and its password, or a stored login")
-        return
-    if device is None or not any(e["id"] == body.stored for e in stored_logins(hub, device, user)["stored"]):
-        raise HTTPException(403, "no such stored login for this device (or the People ring is locked)")
-    entry = hub.vault.entry(body.stored)
-    assert entry is not None
-    body.login, body.password = entry.user, hub.vault.get(entry.id, by=user)
-    body.remember = False
+    for the devices it was stored for, read for the signed-in admin who asked. Then the login
+    must be a user name (400). Once per request, before `connect`."""
+    if body.stored:
+        mine = stored_logins(hub, device, user)["stored"] if device is not None else []
+        if not any(e["id"] == body.stored for e in mine):
+            raise HTTPException(403, "no such stored login for this device (or the People ring is locked)")
+        entry = hub.vault.entry(body.stored)
+        assert entry is not None
+        body.login, body.password = entry.user, hub.vault.get(entry.id, by=user)
+        body.remember = False
+    elif not body.login or not body.password:
+        raise HTTPException(400, "a login and its password, or a stored login")
+    if not valid_user(body.login):
+        raise HTTPException(400, USER_RULE)
 
 
 def remember(hub: Hub, device: str, body: Login, user: str | None, address: str | None) -> str | None:
@@ -121,9 +136,8 @@ async def connect(
     device: str | None = None,
     user: str | None = None,
 ) -> asyncssh.SSHClientConnection:
-    """Log in with the typed password (or the stored login); HTTP errors for the page (and
-    audited). A typed login is kept in the People ring when asked, once it worked."""
-    resolve(hub, device, body, user)
+    """Log in with the body's login (`resolve` first); HTTP errors for the page (and audited). A
+    typed login is kept in the People ring when asked, once it worked."""
     if hub.demo:  # its hosts are made up: a real machine at that address must never be touched
         raise HTTPException(409, "demo mode shows a made-up network; nothing is set up there")
     if not host:  # "" would be this machine: the hub's own
@@ -227,14 +241,20 @@ async def _lines(conn: asyncssh.SSHClientConnection, script: str, body: Login) -
 
 
 MARK = "KASTELLAN-ROOT-NOW"
-_running: set[asyncio.Task[None]] = set()  # setups under way: they finish even if the page goes
+_running: set[asyncio.Task[Any]] = set()  # setups under way: they finish even if the page goes
 
 
-def _hub_task(run: Coroutine[Any, Any, None], queue: asyncio.Queue[bytes | None]) -> StreamingResponse:
-    """Runs `run` as the hub's task and streams what it puts in `queue` until None."""
+def spawn(run: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+    """`run` as a task of the hub's, not of the request: it finishes when the page goes."""
     task = asyncio.get_running_loop().create_task(run)
     _running.add(task)
     task.add_done_callback(_running.discard)
+    return task
+
+
+def hub_task(run: Coroutine[Any, Any, None], queue: asyncio.Queue[bytes | None]) -> StreamingResponse:
+    """Runs `run` as the hub's task and streams what it puts in `queue` until None."""
+    spawn(run)
 
     async def follow() -> AsyncIterator[bytes]:
         while True:
@@ -318,7 +338,7 @@ def stream(
         queue.put_nowait(f"{DONE} {json.dumps(outcome)}\n".encode())
         queue.put_nowait(None)
 
-    return _hub_task(run(), queue)
+    return hub_task(run(), queue)
 
 
 def remove_device_key(hub: Hub, user: str | None, address: str | None, id: str, key: str) -> bool:
@@ -357,7 +377,7 @@ def add_device_key(
         return False
     old = config_edit.read(hub.settings.config)
     if value is None:
-        value = {} if port == (device.ssh.port if device.ssh else 22) else {"port": port}
+        value = {} if port == port_of(device) else {"port": port}
     if current is not None and current.model_dump(exclude_defaults=True) == value:
         return False  # already so
     new = config_edit.set_device_key(old, id, key, value)
@@ -401,4 +421,4 @@ def stream_work(
         queue.put_nowait(f"{DONE} {json.dumps(outcome)}\n".encode())
         queue.put_nowait(None)
 
-    return _hub_task(run(), queue)
+    return hub_task(run(), queue)

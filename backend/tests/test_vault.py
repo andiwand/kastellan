@@ -82,7 +82,7 @@ def test_slots_follow_the_admins(tmp_path: Path) -> None:
     v.lock()
     v.unlock("bea", BEA)
     assert v.keep_slot("bea", "bea's new password", "t3", {"bea"})  # changed; ada no admin now
-    assert v.slot_users() == ["bea"]
+    assert v.has_slot(KASTELLAN, "bea", "t3") and not v.has_slot(KASTELLAN, "ada", "t1")
     v.lock()
     assert v.unlock("bea", BEA) == []
     assert v.unlock("bea", "bea's new password") == [KASTELLAN, PEOPLE]
@@ -196,7 +196,6 @@ def test_making_it_takes_the_files_in(tmp_path: Path) -> None:
         signin(c, "ada", ADA)
         assert hub.vault.state == "unlocked"
         signin(c, "bea", BEA)  # signed in while unlocked: she gets her slot
-        assert sorted(hub.vault.slot_users()) == ["ada", "bea"]
         c.post("/api/vault/lock", json={}, headers=H)
         signin(c, "bea", BEA)
         assert hub.vault.state == "unlocked"
@@ -630,3 +629,28 @@ def test_where_a_login_may_go_needs_the_password(tmp_path: Path) -> None:
         assert c.put(url, json=form | {"secret": None, "name": "Box"}, headers=H).status_code == 200
         assert hub.vault.entry("box-root").devices == ["box"]
         assert '"devices"' not in (tmp_path / "vault.json").read_text()  # sealed with user and notes
+
+
+def test_moving_into_a_locked_ring_changes_nothing(tmp_path: Path) -> None:
+    with TestClient(create_app(Settings(config=config(tmp_path), data=tmp_path))) as c:
+        signin(c, "ada", ADA)
+        c.post("/api/vault/create", json={"password": ADA}, headers=H)
+        form = {"name": "Box root", "ring": PEOPLE, "user": "root", "secret": "box pw"}
+        assert c.post("/api/vault/entries", json=form, headers=H).status_code == 200
+        hub = c.app.state.hub
+        hub.vault.lock(KASTELLAN)
+        moved = form | {"ring": KASTELLAN, "secret": "new pw", "name": "Box"}
+        assert c.put("/api/vault/entries/box-root", json=moved, headers=H).status_code == 423
+        entry = hub.vault.entry("box-root")
+        assert entry.ring == PEOPLE and entry.name == "Box root"
+        assert hub.vault.get("box-root", by="ada") == "box pw"
+
+
+def test_kastellans_own_secrets_are_never_shown_or_edited() -> None:
+    """Every name in secrets.OWN (the fingerprint salt too) is Kastellan's own on the Keys page."""
+    from kastellan import vault_api
+    from kastellan.secrets import FINGERPRINT_SALT, OWN
+
+    assert FINGERPRINT_SALT in OWN
+    assert all(vault_api.own(name) for name in OWN)
+    assert vault_api.own("ssh/hub") and not vault_api.own("wg-easy")

@@ -5,7 +5,7 @@ On the host (install_script, run once as root):
 - the script `scripts/kastellan-collect`, root-owned in /usr/local/lib/kastellan/, which reads
   and prints JSON (system, filesystems, RAID, SMART, temperatures, failed services, updates,
   Docker containers: lists only, never a container's environment);
-- one sudo rule: that user may run exactly `python3 -I <the script>`, without arguments;
+- one sudo rule: that user may run exactly `python3 -I -S <the script>`, without arguments;
 - Kastellan's collect key in its authorized_keys, bound to that command (`restrict`, `command=`,
   and `from=` the hub's address).
 
@@ -23,24 +23,13 @@ from typing import Any
 
 import asyncssh
 
-from ..access import authorize, check_user
+from ..access import PYTHON_CHECK, authorize, check_user, port_of
 from ..config import Device
 from ..ssh import Keys, Target
 from .report import normalize
 
 USER = "kastellan-collect"
 
-# Root runs this python3 (-I -S: no environment, no site packages, so no .pth file runs).
-PYTHON_CHECK = r"""py=/usr/bin/python3
-[ -x "$py" ] || py=$(command -v python3) || { echo "needs python3" >&2; exit 1; }
-# Root will run this interpreter: the file, and the folders it is found in, must be root's
-# alone (a link's own rights mean nothing; what it points to counts).
-real=$(readlink -f "$py")
-for p in "$real" "$(dirname "$real")" "$(dirname "$py")"; do
-  if [ "$(stat -c %u "$p")" != 0 ] || [ -n "$(find "$p" -maxdepth 0 -perm /022)" ]; then
-    echo "$p isn't root's alone (owner or write rights): not using it" >&2; exit 1
-  fi
-done"""
 SCRIPT = "/usr/local/lib/kastellan/collect"
 MAX_OUTPUT = 2 * 1024 * 1024
 
@@ -91,14 +80,11 @@ def install_script(public_key: str, hub_ip: str | None, user: str = USER) -> str
         'dropbear_line="command=\\"sudo -n $cmd\\",$limits $key"',
     ]
     # authorize() takes fixed lines; here they are the shell variables built above. An older key
-    # line (another hub address, a rotated key) goes first.
-    from .actor import keep_only_new_key
-
-    for ln in authorize(user, "OPENSSH_LINE", "DROPBEAR_LINE"):
+    # line (another hub address, a rotated key) goes.
+    for ln in authorize(user, "OPENSSH_LINE", "DROPBEAR_LINE", only=True):
         lines.append(
             ln.replace("OPENSSH_LINE", '"$openssh_line"').replace("DROPBEAR_LINE", '"$dropbear_line"')
         )
-    lines += keep_only_new_key()
     lines += [
         "command -v smartctl >/dev/null || echo 'Note: install smartmontools for disk health.' >&2",
         f"echo 'The collector is installed; Kastellan reads as {user}.'",
@@ -145,8 +131,7 @@ def uninstall_script(user: str = USER) -> str:
 def target_of(device: Device) -> Target:
     if device.collect is None:
         raise ValueError("the device has no collect: in config.yaml")
-    port = device.collect.port or (device.ssh.port if device.ssh else 22)
-    return Target(device.host, port, device.collect.user)
+    return Target(device.host, port_of(device, device.collect), device.collect.user)
 
 
 async def collect(keys: Keys, device: Device) -> dict[str, Any]:

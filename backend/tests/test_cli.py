@@ -1,7 +1,4 @@
-"""`kastellan hash-password`: short passwords are allowed after a warning, or with --short."""
-
-import io
-import sys
+"""`kastellan hash-password`: any password but an empty one, typed twice the same."""
 
 import pytest
 
@@ -10,29 +7,22 @@ from kastellan.auth import verify_password
 
 
 def run(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture,
-    password: str,
-    answer: str = "",
-    short=False,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, password: str, again: str | None = None
 ):
-    monkeypatch.setattr("getpass.getpass", lambda prompt="": password)
-    monkeypatch.setattr(sys, "stdin", io.StringIO(answer + "\n"))
-    cli.hash_password_command(allow_short=short)
+    answers = iter([password, password if again is None else again])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+    cli.hash_password_command()
     return capsys.readouterr()
 
 
-def test_a_long_password(monkeypatch, capsys) -> None:
-    out = run(monkeypatch, capsys, "correct horse battery")
-    assert verify_password("correct horse battery", out.out.strip()) and out.err == ""
+def test_any_length(monkeypatch, capsys) -> None:
+    for password in ("correct horse battery", "1234"):
+        out = run(monkeypatch, capsys, password)
+        assert verify_password(password, out.out.strip()) and out.err == ""
 
 
-def test_a_short_one_after_yes_or_with_short(monkeypatch, capsys) -> None:
-    out = run(monkeypatch, capsys, "1234", answer="y")
-    assert verify_password("1234", out.out.strip()) and "easy to guess" in out.err
-    out = run(monkeypatch, capsys, "1234", short=True)
-    assert verify_password("1234", out.out.strip()) and out.err == ""
-    with pytest.raises(SystemExit, match="Not used"):
-        run(monkeypatch, capsys, "1234", answer="")
+def test_empty_or_not_the_same(monkeypatch, capsys) -> None:
     with pytest.raises(SystemExit, match="No password"):
         run(monkeypatch, capsys, "")
+    with pytest.raises(SystemExit, match="don't match"):
+        run(monkeypatch, capsys, "1234", again="12345")

@@ -29,16 +29,21 @@ class Ignored:
         self.path = path
         self._lock = threading.Lock()
 
-    def get(self) -> set[str]:
+    def _read(self) -> list[str]:
+        """Oldest first."""
         try:
             data = json.loads(self.path.read_text())
         except (OSError, ValueError):
-            return set()
-        return {m for m in data if isinstance(m, str)} if isinstance(data, list) else set()
+            return []
+        return [m for m in data if isinstance(m, str)] if isinstance(data, list) else []
+
+    def get(self) -> set[str]:
+        return set(self._read())
 
     def add(self, mac: str) -> None:
+        """Set aside; the oldest go beyond 5000."""
         with self._lock:
-            macs = sorted(self.get() | {mac})[-5000:]
+            macs = [*[m for m in self._read() if m != mac][-4999:], mac]
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
             tmp.write_text(json.dumps(macs))

@@ -232,9 +232,7 @@ def line_from(
         return (conn == "Connected") if conn else None, info
     if report:
         for i in report.get("interfaces") or []:
-            if i.get("name") in ("wan", "wan6") or str(i.get("name", "")).startswith("wan"):
-                if i.get("name") == "wan6":
-                    continue
+            if str(i.get("name") or "").startswith("wan") and i.get("name") != "wan6":
                 return bool(i.get("up")), {
                     "address": (i.get("ipv4") or [None])[0],
                     "connected_for": i.get("uptime"),

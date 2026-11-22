@@ -31,6 +31,7 @@ person is an admin already.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -40,7 +41,7 @@ import secrets
 import stat
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -247,16 +248,17 @@ class Vault:
     def exists(self) -> bool:
         return self.path.exists()
 
+    @contextlib.contextmanager
+    def unchanged(self) -> Iterator[None]:
+        """Nothing in vault.json changes meanwhile (a hub backup reads it)."""
+        with self._lock:
+            yield
+
     def ring_ids(self) -> list[str]:
         return list(self._read()["rings"]) if self.exists else []
 
     def is_open(self, ring: str) -> bool:
         return ring in self._keys
-
-    @property
-    def unlocked(self) -> bool:
-        """Any ring open (an admin's sign-in did, or one opened by itself)."""
-        return bool(self._keys)
 
     @property
     def state(self) -> str:
@@ -447,8 +449,8 @@ class Vault:
 
     def unlock(self, user: str, password: str) -> list[str]:
         """Open every locked ring this admin's password opens (where their policy has it).
-        Which ones it opened; WrongKey if none would open and none was open. A ring whose only
-        slot of theirs was made with a password they no longer have gets a note in `problems`."""
+        Which ones it opened; WrongKey if this admin has no password slot in any of them (a slot
+        made with an older password just doesn't open: `note_stale` says so)."""
         with self._lock:
             opened, slots = [], 0
             for rid, ring in self._read()["rings"].items():
@@ -483,6 +485,8 @@ class Vault:
         """Whether this admin has a password slot of their own in this ring, made with the
         password they have now (`tag`: auth.password_tag of its hash). Using a login there needs
         one: an admin without it doesn't use the ring's logins only because someone opened it."""
+        if not self.exists:
+            return False
         with self._lock:
             ring = self._read()["rings"].get(rid)
             return any(
@@ -675,17 +679,6 @@ class Vault:
             ]
             self._write(doc)
             return recovery
-
-    def slot_users(self) -> list[str]:
-        if not self.exists:
-            return []
-        users = {
-            s.get("user")
-            for r in self._read()["rings"].values()
-            for s in r["slots"]
-            if s["way"] == "password"
-        }
-        return sorted(u for u in users if u)
 
     # --- entries -------------------------------------------------------------------------------
 

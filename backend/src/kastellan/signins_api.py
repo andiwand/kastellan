@@ -1,4 +1,4 @@
-"""The Access page over HTTP: sign-ins and attempts (signins.py) from the central logs and the
+"""The Sign-ins page over HTTP: sign-ins and attempts (signins.py) from the central logs and the
 hub's audit log, per address with flags, and the hub's periodic look that tells a first success
 from an outside address once (an info event)."""
 
@@ -28,10 +28,10 @@ def compute(hub: Hub, hours: float) -> dict[str, Any]:
     lines = hub.logs.matching(since, signins.LIKES)
     events = [e for e in (signins.parse(ln) for ln in lines) if e is not None]
     events += signins.from_audit(hub.audit.recent(5000), since)
-    own = {a for a in (hub.own_address,) if a}
+    own = {a for a in (hub.own_address, hub.own_v6) if a}
     # Kastellan's own checks knock on SSH every few minutes: not attempts worth showing.
     events = [e for e in events if not (e.address in own and e.outcome == "attempt")]
-    signins.mark_paths(events, dict(hub.vpn_addresses))
+    signins.mark_paths(events, {a: who for by_vpn in hub.vpn_addresses.values() for a, who in by_vpn.items()})
     known: dict[str, float] = hub.logs.get_state(KNOWN) or {}
     changed = False
     for e in events:

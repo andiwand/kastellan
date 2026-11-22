@@ -26,7 +26,7 @@ import re
 import asyncssh
 
 from ..ssh import Keys, Target
-from ..sshkeys import DeviceStep, Rotation, _now, _why
+from ..sshkeys import DeviceStep, Rotation, timestamp, why
 
 
 def _blob(key: asyncssh.SSHKey) -> str:
@@ -88,7 +88,7 @@ class VpnRotator:
             await self._add(target, key, self.keys.hub_key("vpn"))
             step.added = True
         except Exception as e:  # one host's trouble is reported, never stops the other
-            step.error = _why(e)
+            step.error = why(e)
         return step
 
     async def _step_remove(self, target: Target, step: DeviceStep, old: asyncssh.SSHKey) -> DeviceStep:
@@ -107,7 +107,7 @@ class VpnRotator:
                 pass  # as it should be
             done.removed = True
         except Exception as e:
-            done.error = _why(e)
+            done.error = why(e)
         return done
 
     async def start(self, hosts: dict[str, Target]) -> Rotation:
@@ -115,7 +115,7 @@ class VpnRotator:
         async with self._lock:
             rot = self.state()
             if rot is None or rot.stage == "done":
-                rot = Rotation(started=_now())
+                rot = Rotation(started=timestamp())
             if rot.stage != "adding":
                 raise ValueError("the switch happened already; finish removing the old key")
             key = self.keys.make_next("vpn")
@@ -148,9 +148,9 @@ class VpnRotator:
                     raise ValueError(f"the new key isn't on {', '.join(missing)} yet")
                 for r in missing:  # stays: it gets the new key with the old one when it answers
                     was = rot.devices.get(r)
-                    why = was.error if was and was.error else "didn't get the new key"
+                    cause = was.error if was and was.error else "didn't get the new key"
                     rot.devices[r] = DeviceStep(
-                        error=f"skipped at the switch: {why}", target=_login(hosts[r])
+                        error=f"skipped at the switch: {cause}", target=_login(hosts[r])
                     )
                 rot.stage = "switching"
                 rot.save(self.path)
@@ -179,22 +179,17 @@ class VpnRotator:
 
     def _settle(self, rot: Rotation) -> None:
         """Done once every host is clean or given up on: then the old private key goes."""
-        if all(s.removed or s.forgotten for s in rot.devices.values()):
+        if rot.settled():
             self.keys.drop("old", "vpn")
-            rot.stage, rot.finished = "done", _now()
+            rot.stage, rot.finished = "done", timestamp()
 
     async def forget(self, host: str) -> Rotation:
         """Give up on one host while removing: the old key may still be trusted there."""
         async with self._lock:
             rot = self.state()
-            if rot is None or rot.stage != "removing" or host not in rot.devices:
+            if rot is None:
                 raise ValueError("nothing to forget")
-            step = rot.devices[host]
-            if not step.removed:
-                step.forgotten = True
-                step.error = (
-                    f"forgotten: the old key may still be trusted on {step.target}; remove it there by hand"
-                )
+            rot.forget(host)
             self._settle(rot)
             rot.save(self.path)
             return rot
@@ -206,7 +201,7 @@ class VpnRotator:
             rot = self.state()
             if rot is not None and rot.stage not in ("adding", "done"):
                 raise ValueError("the switch happened already; finish removing the old key")
-            out = Rotation(started=rot.started if rot else _now(), stage="cancelled")
+            out = Rotation(started=rot.started if rot else timestamp(), stage="cancelled")
             if rot is not None and rot.stage == "adding":
                 current = self.keys.hub_key("vpn")
 
@@ -217,7 +212,7 @@ class VpnRotator:
                     try:
                         step.note = await self._keep(hosts[r], current)
                     except Exception as e:  # without its private key the next key is harmless
-                        step.error = _why(e)
+                        step.error = why(e)
                     return step
 
                 names = list(rot.devices)

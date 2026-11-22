@@ -5,7 +5,7 @@
 	import LogsDialog from './LogsDialog.svelte';
 	import { store } from '#lib/state.svelte.js';
 	import { containerActions, type ContainerAction } from '#lib/actions.js';
-	import { containerAsk, tagOf } from '#lib/updates.js';
+	import { containerAsk, sameTagUpdates, tagOf, updateTarget } from '#lib/updates.js';
 	import ArrowUpCircle from '@lucide/svelte/icons/circle-arrow-up';
 	import CircleHelp from '@lucide/svelte/icons/circle-help';
 	import Check from '@lucide/svelte/icons/check';
@@ -37,14 +37,16 @@
 			compose: c.compose
 		});
 	const restart = (c: Container): Job => ({ device, kind: 'restart', name: c.name });
+	type Action = { job: Job; label: string; ask: string; title?: string; primary?: boolean };
 	/** What can be done to it now (only what can work from its state: actions.ts), each with its
-	 * button and its question. */
-	function actions(c: Container): { job: Job; label: string; ask: string; title?: string }[] {
-		const all: Record<ContainerAction, { job: Job; label: string; ask: string; title?: string }> = {
+	 * button and its question; the update to a new build of its tag stands out. */
+	function actions(c: Container): Action[] {
+		const all: Record<ContainerAction, Action> = {
 			update: {
 				job: update(c),
 				label: tagOf(c.update_to) ? `Update to ${c.update_to}` : 'Update',
-				ask: ask(c, c.update_to ?? 'newer build'),
+				ask: ask(c, updateTarget(c.update_to)),
+				primary: !tagOf(c.update_to),
 				title: tagOf(c.update_to)
 					? `Pull ${c.image}:${c.update_to} and recreate it with the same settings`
 					: 'Pull its image again and recreate it with the same settings'
@@ -95,13 +97,8 @@
 	const keyOf = (j: Job) =>
 		`${j.kind}:${'name' in j ? j.name : ''}${j.kind === 'container' && j.tag ? `:${j.tag}` : ''}`;
 	const busy = (j: Job) => ['queued', 'running'].includes(runner.state(j)?.state ?? '');
-	// "Update all": new builds of the tags they run (another tag is one at a time, asked first).
-	const updatable = $derived(
-		containers.filter(
-			(c) => c.update && !c.unchecked && c.update_to === 'newer build' && !c.skipped
-		)
-	);
-	const waiting = $derived(updatable.filter((c) => !busy(update(c))));
+	// "Update all": new builds of the tags they run, not already queued.
+	const waiting = $derived(sameTagUpdates(containers).filter((c) => !busy(update(c))));
 
 	function go(jobs: Job[]) {
 		runner.add(jobs);
@@ -169,7 +166,7 @@
 					{#if c.update}
 						<ArrowUpCircle class="size-3.5 shrink-0 text-accent" />
 						<span class="font-medium text-accent" class:opacity-60={c.skipped}>
-							{c.update_to ?? 'newer image'}
+							{updateTarget(c.update_to)}
 						</span>
 						{#if c.skipped}<span class="text-muted" title="Said to be not needed on Updates">
 								· not needed
@@ -203,7 +200,7 @@
 					<span class="col-span-full flex flex-wrap justify-end gap-1 lg:col-span-1">
 						{#each actions(c) as a (a.label)}
 							<button
-								class="btn btn-sm {a.label === 'Update' ? '' : 'text-muted'}"
+								class="btn btn-sm {a.primary ? '' : 'text-muted'}"
 								disabled={busy(a.job)}
 								onclick={() => (asking = keyOf(a.job))}
 								title={a.title ?? ''}

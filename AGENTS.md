@@ -12,7 +12,7 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
 ## Layout
 
 - `backend/src/kastellan/` (Python 3.13, FastAPI, managed with uv):
-  - `config.py`: `config.yaml` is the only configuration; SQLite is used only for device logs. A `Device` has a
+  - `config.py`: `config.yaml` is the only configuration; SQLite is used only for device logs and vitals. A `Device` has a
     `host`, a `kind`, an optional `parent` (what it hangs off: alarms fold a device into its parent's; the "via" link; meant for infrastructure links, not which access point
     a client uses), `tags`, `always_on` (default: false
     for `pc` and `laptop`), a `site` (where it is; None is `home`), an optional `runs_on:
@@ -36,7 +36,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     listed address must be among the answers. A dns check is no way in (networks.py).
   - `monitor.py`: one asyncio task per (device, check). `apply(config)` keeps unchanged loops
     running. `restore(rows)` takes the last known state from the history at start, so `since`
-    survives restarts; `since` is None when the state began before the history.
+    survives restarts; when the state began before the history, `since` is its oldest row and
+    `since_exact` is false.
   - `software.py`: what a service says it is, without credentials: the greeting of
     server-first protocols (SSH, FTP, SMTP; a TCP check listens `GREETING_WAIT` after connecting)
     and an HTTP response's `Server` header, page title, known page markers (LuCI), then
@@ -61,7 +62,7 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     sends info events once. `notify.py`: ntfy, webhooks, Gotify, Telegram, e-mail and web push,
     with `min` and `quiet` hours (critical always). `alarms_api.py`: list, acknowledge, mute,
     test. The hub evaluates every 30 s.
-  - Web push: `push.py` (VAPID key `<data>/push/vapid.pem`, subscriptions per user, aes128gcm
+  - Web push: `push.py` (VAPID key `<data>/push/vapid.pem`, or the key ring entry `push/vapid`, subscriptions per user, aes128gcm
     via http-ece, 404/410 drop a browser), `push_api.py` (signed-in people, observers too: `OWN`
     in auth_api are the only writes an observer may make). A `push: <user>` (or `*`) notify
     channel; `frontend/static/sw.js` shows them; browsers need HTTPS (a reverse proxy).
@@ -231,7 +232,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     hub's separate VPN key in restricted mode, or sent over a normal login per call in direct
     mode; `install_script()` is both the copyable instructions and what "Install for me" runs), `vpn_api.py` (lists for everyone signed in; changes and downloads for
     signed-in admins, audited; configs hold private keys: `no-store`). `secrets.py`: secrets by
-    name (from config.yaml): the key ring's entries once it exists, else files in `<data>/secrets`.
+    name (from config.yaml): the key ring's entries once it exists, else files in `<data>/secrets`;
+    `OWN`, Kastellan's own secrets (backup keys, the fingerprint salt, the syslog CA key): no
+    config name may use them and Keys never shows or edits them.
   - `vault.py` + `vault_api.py`: key rings, `<data>/vault.json`. Each ring: its own key, entries
     AES-GCM under it (id, ring and kind bound in), the ring key only wrapped once per way to open
     it (slots): `password` per admin (scrypt; opened by `hub.unlock_on_signin`), `recovery` (shown
@@ -293,8 +296,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     other users' files read and changed *as them* via `su`), removing a key, and rotating the
     hub key (`Rotator`: next key added + verified with `connect(only=...)` everywhere, then
     `Keys.promote_next`, then the old key removed; state in `<data>/ssh/rotation.json`;
-    `Keys.connect` offers current, next and old keys meanwhile). `sshkeys.kastellan_keys`: its
-    own keys, never removed by hand.
+    `Keys.connect` offers current, next and old keys meanwhile). A device that can't be checked
+    at the end (gone from config.yaml, another login) stays open until an admin forgets it
+    (`POST /api/ssh/rotate/forget`, audited); switching `anyway` keeps the devices without the
+    new key as steps "skipped at the switch". `sshkeys.kastellan_keys`: its own keys, never
+    removed by hand.
   - `sshsync.py` (+ routes in `groups_api.py`, `GroupSsh.svelte`): a group's authorized_keys or
     known_hosts, fetch → edit → push. A column per device and user (`@login`: its ssh: login;
     others via su, as sshkeys); rows by entry (key type+data; known host by hosts+type). Push per
@@ -312,9 +318,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     report into problems. The script runs on the hosts' python3 with the stdlib only: keep it so.
     `registry.py`: update checks against the registries (anonymous tokens, digests, version tags),
     cached for hours; `docker.from_collector` builds containers from the report with them.
-    `access_api.run_with_password`: log in once with a typed password and run a script (as root).
+    `setup_run.connect` + `setup_run.stream`: log in once with a typed or stored login and run a
+    script (as root).
     Virtual machines: the collector's `vms` section reads libvirt through `virsh` (fixed argv,
-    `list --all --name`, `dominfo`, `domblklist`; never the XML), shown as `vms` in /api/devices;
+    `-r list --all --uuid --name`, `dominfo`, `domblklist`; never the XML), shown as `vms` in /api/devices;
     an autostart VM that isn't running is a warning (`alarms.host_problems`).
     `disks.py`: hourly disk usage per host and mount (`<data>/disk-usage.json`, 30 days), a line
     through the last 7 days (from the last clean-up) gives `host_forecast` (days until full);
@@ -332,9 +339,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     container `compose`). Hub backups snapshot `vitals.db` through SQLite when history is
     enabled; WAL/SHM files are never copied or restored separately.
   - `host/actor.py` + `host/scripts/act-*` + `act_api.py`: the actor. `act-dispatch` (as
-    kastellan-act, bound to the act key) accepts exact forms and execs `sudo -n python3 -I
-    <ability> <arg>`; each ability is `act-common` + `act-<ability>`, root-owned, checks its
-    argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog. `install_script` is
+    kastellan-act, bound to the act key) accepts exact forms and execs `sudo -n python3 -I -S
+    <ability> <arg>` (update-container: `<name> [<tag>]`); each ability is `act-common` + `act-<ability>`, root-owned, checks its
+    argument again and `/etc/kastellan/act/<ability>.allow`, logs to syslog (also an uncaught
+    error, through `sys.excepthook`). act-common holds the patterns every ability shares (`NAME`,
+    `TAG`, `UNIT`, `CURSOR`, `SINCE`, `ESCAPES`); a test keeps them equal to actor.py, config.py
+    and act-dispatch (standalone, not prepended). `install_script` is
     declarative (abilities not chosen are removed). Containers: update, restart, start, stop
     (`CONTAINER_ABILITIES`, names `NAME`); update and rollback (`REPLACING`) share
     `act-containers` (settings for the new container, the swap that puts the old one back): an
@@ -370,19 +380,24 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     would hash to. Older ones show as `outdated_scripts` (Updates, the device page). Renewing is
     setting up again with a login: the hub's keys may run these scripts, never replace them.
   - `pinned_http.py`: h11 handles HTTP/1.1 framing over pinned TLS; `Pool` keeps idle connections
-    for 8 seconds and checks the pin before sending credentials on each new connection. Only
-    GET/HEAD may retry a dropped connection: replaying a POST could repeat an action. Ubus and
-    Fritz each have a pool; `hub.drop_clients` closes idle and active connections.
+    for 8 seconds and checks the pin before sending credentials on each new connection. A request
+    is sent again on a new connection only when it is idempotent (by default GET/HEAD; ubus
+    `READS`, SOAP Get actions and data.lua reads say so): a write never is. Also `Pins`
+    (`<data>/openwrt|fritzbox/<id>.sha256`), `ChangedCertificate`, `fingerprint_of_der` and
+    `Changing(forget)`, the change lock both clients use. Ubus and Fritz each have a pool;
+    `hub.drop_clients` closes them.
   - `openwrt/` + `openwrt_api.py`: OpenWrt devices through ubus over HTTPS (as LuCI). `Ubus.slow`
-    keeps reads that rarely change (board, uci dhcp, rc list, services.allow, session access,
-    versions) `SLOW_EVERY`; `Ubus.changing` ends them. Logs: the newest `RECENT_LINES` once
+    keeps reads that rarely change (board, uci dhcp, services.allow, session access, versions)
+    `SLOW_EVERY`; `Ubus.changing`, every new login and a lower uptime (`note_uptime`: a reboot or
+    an upgrade) end them; the FRITZ!Box's `read()` drops its kept sections the same way. A -32002
+    is a lost session only if `session access` is refused too, else a denial (no new login). Logs: the newest `RECENT_LINES` once
     caught up (logs_poll). `setup.py`
     makes an rpcd login `kastellan` (md5crypt hash; the password is the secret
     `openwrt-<id>`) and `/usr/share/rpcd/acl.d/kastellan.json` with one group per ability
-    (reboot, wifi, firmware, password, services, openvpn, logs, backup, scan);
+    (reboot, wifi, firmware, password, services, openvpn, logs, backup, scan, bandwidth, roaming);
     services are acted on only through `/usr/libexec/kastellan/service` (allow list in
-    `/etc/kastellan/services.allow`; rpcd/uhttpd restart only), since rpcd's `rc init` would allow any;
-    `client.py` reads/acts (certificate pinned in `<data>/openwrt/<id>.pem`), Wi-Fi via uci
+    `/etc/kastellan/services.allow`; rpcd, uhttpd, firewall and network restart only), since rpcd's `rc init` would allow any;
+    `client.py` reads/acts (certificate pinned as `<data>/openwrt/<id>.sha256`), Wi-Fi via uci
     apply with rollback + confirm; `firmware.py` advises one series step at a time from
     `.versions.json` and builds images via sysupgrade.openwrt.org. `hub._poll_routers` every
     120 s into `status.router`. Tests use a fake rpcd that enforces the real ACL.
@@ -397,20 +412,21 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `setup_run.py`: running a setup once with a typed login (sudo, sudo with another password, or
     su with root's password over a pty), streamed as text, the last line `KASTELLAN-DONE {json}`;
     passwords are masked in every output line; `add_device_key` writes collect:/act:/ssh: after.
-    The run is a hub task (`_running`), not the page's: a browser leaving halfway doesn't stop it,
+    The run is a hub task (`spawn`, `hub_task`), not the page's: a browser leaving halfway doesn't stop it,
     and it is audited ("started", then the outcome) either way. sudo is probed (`sudo -n true`)
     so no password lands on a script's stdin; su gets a marker to tell "root now" from a prompt.
   - `history.py`: check results as CSV, one file per UTC day under `<data>/checks/`. The folder
     is the index; retention deletes files. The only place to change if this becomes SQLite.
-  - `stats.py`: buckets (uptime share and mean latency per slice) and changes (up/down moments)
-    computed from history rows, for the web app.
+  - `stats.py`: buckets (uptime share and mean latency per slice), changes (up/down moments)
+    and `activity` (the day as a person tells it) computed from history rows, for the web app.
   - `hub.py`: ties it together; reloads config.yaml when its mtime changes, keeps the last good
     config on an error (`config_error`, shown in the app).
   - `demo_more.py`: the demo's FRITZ!Box report, logs, device backups (fixed key), a week of
     internet samples and Wi-Fi scans, seeded into the demo's temporary folder at start.
   - `demo.py`: `KASTELLAN_DEMO=1` swaps in a made-up network with simulated results (a pure
-    function of device, check and time) and a backfilled day of history in a temp folder. It
-    never reads config.yaml or touches the real data. Used for trying it out and the website.
+    function of device, check and time) and a backfilled day of history in a temp folder. From
+    config.yaml it takes only the users; sign-in state (sessions, audit log, key rings, push)
+    stays in the real data folder. Used for trying it out and the website.
   - `auth.py`: password hashes (scrypt), sessions (`<data>/sessions.json`, only SHA-256 of the
     tokens, 0600), and `Brake` (5 failed sign-ins per address in 5 minutes). `audit.py`:
     `<data>/audit.log`, JSON lines, append only.
@@ -427,7 +443,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     (Sec-Fetch-Site same-site/cross-site, a foreign Origin; WebSockets need their own Origin) are
     refused. Kastellan's cookies and X-Kastellan never reach the device; a device's Set-Cookie
     loses its Domain; Location/Origin/Referer are rewritten only on an exact origin match.
-  - `ssh.py`: the hub's SSH key (`<data>/ssh/hub_ed25519`) and pinned host keys
+  - `ssh.py`: the hub's SSH keys (hub, vpn, collect, act; with key rings all but the collector's
+    read-only key live in the Kastellan ring, else `<data>/ssh/`) and pinned host keys
     (`<data>/ssh/known_hosts`); never trust on first use by itself: `UnknownHost` until an admin
     trusts the fingerprint, `ChangedHost` until someone forgets the old key. No ssh-agent, no
     passwords. `terminal_api.py`: the terminal WebSocket (JSON input/resize in, binary output),
@@ -436,7 +453,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     hub key is refused) the socket asks the page for a login (`login-needed`), then takes a typed
     one (this connection only; optionally stored in the People ring) or a stored People entry
     (`vault.get(id, by=<the admin>)`); typed passwords go through a per-address `Brake`; the
-    audit says `way` (key, password, stored), never a password.
+    audit says `way` (key, password, stored), never a password. Stored logins are
+    `setup_run.stored_logins`/`remember`, the same as setups use. `terminals.py`: the limits
+    both the terminal and the desktop keep (idle, longest, per person, re-check) and `watch`,
+    which ends a session when its sign-in, rights or device go. A password typed again to
+    confirm (revealing, "Open signed in") is `auth_api.confirm_password` (up to `MAX_PASSWORD`).
   - `guac.py`: the Guacamole protocol (instructions, handshake with guacd). `desktop_api.py`:
     one-time tickets (POST, 60 s, bound to the session) carry the desktop password, so it is never
     in a URL; the WebSocket (subprotocol `guacamole`) relays instructions between guacd and
@@ -450,7 +471,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     config never turns it off. Config errors never include values (`_describe`), since
     config.yaml holds password hashes.
   - `api.py`: `/api/health`, `/api/devices`, `/api/devices/{id}/history`, `/api/series`,
-    `/api/changes`, and the web app (single-page, index.html fallback).
+    `/api/changes`, `/api/activity`, `/api/networks`, `/api/vitals`, the not-needed routes
+    (abilities, container updates, a device's firmware/reboot/packages), and the web app
+    (single-page, index.html fallback).
 - `frontend/` (SvelteKit, static adapter, Svelte 5 runes, Tailwind 4, Lucide icons, Geist):
   - `src/lib/state.svelte.ts`: the store; polls devices every 5 s, buckets and changes every
     30 s, while a page uses it.
@@ -464,6 +487,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `NetworkMap`: the devices by network (networks.py): a zone per network, devices in two on the
     boundary (zones ordered so linked ones are neighbours; otherwise inside, "also ..."), the
     ways in from the internet listed in its zone.
+  - The device page's Status tab is by topic, the same for every kind of device: `ReadingsLine`
+    (uptime, sources, what couldn't be read), `VitalsPanel`, Services (`ServicesTable` with the
+    device's own services from `lib/ownServices.ts`: OpenWrt init scripts and failed systemd units
+    under the check they answer, the rest as rows), `SoftwareSection`, `WifiSection`,
+    `NetworkSection`, `StorageSection`, then backups, containers and VMs.
   - `ServicesTable` (service, software, status, response, for, uptime), used by the device page
     and `/services`; `ActivityItem` (an up/down or a software update).
   - `UptimeStrip` merges neighbouring buckets (`mergeBuckets`) so a bar keeps ~5 px; it never

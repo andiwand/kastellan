@@ -118,6 +118,39 @@ async def test_wifi_cache_respects_config_reload_and_locked_keys(tmp_path, monke
     assert calls == ["ap", "new", "new", "new"]
 
 
+async def test_a_wifi_reading_under_way_survives_its_invalidation(tmp_path, monkeypatch):
+    """A reading begun before a change still answers who waits for it, but isn't kept."""
+    from starlette.requests import Request
+
+    from kastellan import wifi_api
+    from kastellan.auth_api import Who
+    from kastellan.config import Config, Role
+    from kastellan.hub import Hub
+    from kastellan.settings import Settings
+
+    hub = Hub(Settings(config=tmp_path / "config.yaml", data=tmp_path))
+    hub.config = Config.model_validate({"devices": {"ap": {"host": "ap", "openwrt": {}}}})
+    monkeypatch.setattr(hub, "ubus", lambda id: object())
+    monkeypatch.setattr(hub, "own_secret", lambda *args: "salt")
+    gate = asyncio.Event()
+
+    async def survey(members, key):
+        if "ap" in members:
+            await gate.wait()
+        return {"errors": dict.fromkeys(members, "read"), "networks": []}
+
+    monkeypatch.setattr(wifi_api.sync, "survey", survey)
+    overview = next(r.endpoint for r in wifi_api.router(hub).routes if r.path == "/api/wifi")
+    request = Request({"type": "http", "headers": [], "state": {"who": Who("admin", Role.ADMIN)}})
+    first = asyncio.create_task(overview(request))
+    await asyncio.sleep(0.01)
+    hub.config = Config.model_validate({"devices": {"new": {"host": "new", "openwrt": {}}}})
+    assert (await overview(request))["errors"] == {"new": "read"}
+    gate.set()
+    assert (await first)["errors"] == {"ap": "read"}
+    assert (await overview(request))["errors"] == {"new": "read"}
+
+
 @pytest.fixture
 def pings(monkeypatch: pytest.MonkeyPatch):
     """Which addresses answer, and how fast."""

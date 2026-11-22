@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { more, type RoamingView } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { duration } from '#lib/format.js';
+	import { bandOfFrequency, duration } from '#lib/format.js';
 	import { onMount } from 'svelte';
 
 	/** How clients roam at this access point, as usteer here sees it (the `roaming` ability):
@@ -17,8 +17,6 @@
 		}
 	});
 	const name = (id: string | null) => (id ? (store.byId.get(id)?.name ?? id) : null);
-	const band = (mhz: number | null) =>
-		!mhz ? '' : mhz < 3000 ? '2.4 GHz' : mhz < 5950 ? '5 GHz' : '6 GHz';
 	const LABELS: Record<string, string> = {
 		min_snr: 'kick below SNR',
 		min_connect_snr: 'refuse below SNR',
@@ -43,13 +41,13 @@
 				<span class="font-medium">
 					{n.own ? 'Here' : (name(n.device) ?? n.host)}
 				</span>
-				<span class="text-xs text-muted">{n.ssid ?? n.iface} · {band(n.freq)}</span>
-				<span class="text-xs text-muted tabular-nums">
+				<span class="text-xs text-muted">{n.ssid ?? n.iface} · {bandOfFrequency(n.freq)}</span>
+				<span class="tabular text-xs text-muted">
 					{n.clients ?? 0} clients{#if n.load != null}
 						· {n.load} % busy{/if}
 				</span>
 				{#if n.own && (n.roam_source != null || n.roam_target != null)}
-					<span class="text-xs text-faint tabular-nums">
+					<span class="tabular text-xs text-faint">
 						{n.roam_source ?? 0} roamed away · {n.roam_target ?? 0} came here
 					</span>
 				{/if}
@@ -62,7 +60,7 @@
 				<li class="flex justify-between gap-2 py-0.5">
 					<span class="truncate">{c.name ?? c.mac}</span>
 					<span
-						class="tabular-nums"
+						class="tabular"
 						style:color={c.signal != null && c.signal < -75 ? 'var(--warning-text)' : undefined}
 					>
 						{c.signal ?? '–'} dBm{#if c.connected != null}<span class="text-faint">

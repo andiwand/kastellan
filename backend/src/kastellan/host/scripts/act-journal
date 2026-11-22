@@ -4,12 +4,10 @@
 import selectors
 import subprocess
 
-CURSOR = re.compile(r"-|[A-Za-z0-9=;]{1,400}")  # journald's cursors: s=...;i=...;b=...;m=...;t=...;x=...
 if len(sys.argv) != 2 or not CURSOR.fullmatch(sys.argv[1]):
     fail("wrong arguments", 2)
 cursor = sys.argv[1]
 MAX, MAX_LINE, MAX_BYTES = 2000, 2000, 4_000_000
-ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
 JOURNALCTL = next((p for p in ("/usr/bin/journalctl", "/bin/journalctl") if os.path.exists(p)), None)
 if JOURNALCTL is None:
     fail("no journalctl on this host")

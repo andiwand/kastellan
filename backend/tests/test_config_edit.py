@@ -489,6 +489,22 @@ def test_settings_as_forms(hub_client) -> None:
     assert c.get("/api/settings").json()["secrets"]["wg-easy"] is True
 
 
+def test_the_wifi_scan_time_is_written_only_when_it_differs(hub_client) -> None:
+    c, config, _ = hub_client
+    signin(c)
+    v = c.get("/api/settings").json()["version"]
+    cases = (("05:30", "wifi:\n  scan_at: 05:30\n"), (None, "wifi:\n  scan_at:\n"), ("04:00", None))
+    for scan_at, written in cases:
+        body = {"value": {"wifi": {"scan_at": scan_at}}, "version": v}
+        r = c.put("/api/settings/wifi", json=body, headers=H)
+        assert r.status_code == 200, r.text
+        v = r.json()["version"]
+        text = config.read_text()
+        assert (written in text) if written else "wifi" not in text
+    r = c.put("/api/settings/wifi", json={"value": {"wifi": {"scan_at": "25:00"}}, "version": v}, headers=H)
+    assert r.status_code == 400 and "scan_at" in r.json()["detail"]
+
+
 def test_a_service_reachable_from_the_internet_round_trips(hub_client) -> None:
     c, config, _ = hub_client
     signin(c)

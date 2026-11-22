@@ -12,6 +12,7 @@
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ActivityEntryItem from '#lib/components/ActivityEntryItem.svelte';
 	import { api } from '#lib/api.js';
+	import { updatesOf } from '#lib/updates.js';
 
 	const devices = $derived(store.devices ?? []);
 	const counts = $derived(
@@ -45,11 +46,7 @@
 		)
 	);
 	// Container updates over all Docker hosts, and what can't be checked.
-	const updates = $derived(
-		devices.flatMap((d) =>
-			(d.containers ?? []).filter((c) => c.update && !c.unchecked).map((c) => ({ device: d, c }))
-		)
-	);
+	const updates = $derived(updatesOf(devices).filter((u) => u.kind === 'container'));
 	const unchecked = $derived(
 		devices.reduce(
 			(n, d) =>
@@ -201,10 +198,10 @@
 						{updates.length}
 						{updates.length === 1 ? 'container update' : 'container updates'}:
 					</span>
-					{#each updates.slice(0, 6) as { device, c } (`${device.id}/${c.key}`)}
-						<a href="/devices/{device.id}" class="text-muted hover:text-text">
-							{c.name} <span class="text-faint">→</span>
-							{c.update_to ?? 'newer image'}
+					{#each updates.slice(0, 6) as u (`${u.device.id}/${u.key}`)}
+						<a href="/devices/{u.device.id}" class="text-muted hover:text-text">
+							{u.name} <span class="text-faint">→</span>
+							{u.to}
 						</a>
 					{/each}
 				{/if}

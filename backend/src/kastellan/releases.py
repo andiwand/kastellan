@@ -4,13 +4,10 @@ public release list is fetched: no inventory or credentials are sent."""
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 
 import httpx
-
-log = logging.getLogger(__name__)
 
 URL = "https://api.github.com/repos/andiwand/kastellan/releases?per_page=100"
 EVERY = 24 * 3600

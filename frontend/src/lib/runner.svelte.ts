@@ -180,19 +180,6 @@ class Runner {
 		}
 	}
 
-	/** Not started yet: taken off the list. */
-	cancel(j: Job) {
-		const k = jobKey(j);
-		if (this.states[k]?.state !== 'queued') return;
-		const list = this.#hosts.get(j.device) ?? [];
-		this.#hosts.set(
-			j.device,
-			list.filter((x) => jobKey(x) !== k)
-		);
-		delete this.states[k];
-		this.batch = this.batch.filter((x) => x !== k);
-	}
-
 	state(j: Job): JobState | undefined {
 		return this.states[jobKey(j)];
 	}

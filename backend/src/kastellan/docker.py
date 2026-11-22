@@ -10,7 +10,6 @@ WUD already watches the registries; Kastellan reads its API (GET /api/containers
 shows, per container: image and tag, state, and whether a newer image exists, or why that can't
 be known: WUD can't read every registry (linuxserver's lscr.io needs its own WUD setting), and for
 tags like `latest` it sees updates only when it watches the image digest.
-The agent will be the other source later (PLAN.md); this module is where both meet.
 """
 
 from __future__ import annotations
@@ -23,6 +22,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import httpx
+
+from .registry import NEWER_BUILD, parse
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class Container:
     image_id: str  # short id of the image it runs; changes with every pulled update
     state: str  # running, exited, ...
     update: bool
-    update_to: str | None  # the newer tag, or "newer build" for the same tag
+    update_to: str | None  # the newer tag, or NEWER_BUILD for the same tag
     update_digest: str  # the newer image's digest (short), to tell one rebuild from the next
     unchecked: str | None  # why WUD can't tell (or hasn't yet), or None
     registry: str | None
@@ -76,7 +77,7 @@ def from_wud(item: dict[str, Any]) -> Container:
     update_to = None
     if update:
         new_tag = result.get("tag")
-        update_to = _text(new_tag, 100) if new_tag and new_tag != tag else "newer build"
+        update_to = _text(new_tag, 100) if new_tag and new_tag != tag else NEWER_BUILD
     unchecked = _text(_obj(item.get("error")).get("message"), 200) or None
     if not unchecked and not update:
         if not result:
@@ -133,8 +134,6 @@ async def read_wud(url: str) -> list[Container]:
 async def from_collector(items: list[Any], registries: Any) -> list[Container]:
     """Containers as the collector lists them (host/collector.py), with updates asked of their
     registries (registry.py) instead of WUD."""
-    from .registry import parse
-
     out: list[Container] = []
     for item in items:
         if not isinstance(item, dict):

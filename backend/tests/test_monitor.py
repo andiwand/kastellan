@@ -155,3 +155,18 @@ def test_version_log_compaction_and_bad_lines(tmp_path: Path) -> None:
     kept = [(e["device"], e["to"]) for e in versions._entries()]
     assert kept == [("b", "x"), ("a", "v3")]  # b's only entry stays: it is what b runs
     assert versions.changes(now - timedelta(days=30))[0]["to"] == "v3"
+
+
+def test_the_latest_versions_follow_what_is_recorded(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    from kastellan.versions import Versions
+
+    versions = Versions(tmp_path / "versions.log")
+    at = datetime(2026, 11, 22, 12, 0, 0, 500, tzinfo=UTC)
+    versions.record(at, "fb", "@firmware", None, "FRITZ!OS 8.20")
+    assert versions.latest()[("fb", "@firmware")][0] == "FRITZ!OS 8.20"  # read once
+    versions.record(at, "fb", "@firmware", "FRITZ!OS 8.20", "FRITZ!OS 8.21")
+    kept = versions.latest()
+    assert kept == Versions(tmp_path / "versions.log").latest()  # the same as the file says
+    assert kept[("fb", "@firmware")][:2] == ("FRITZ!OS 8.21", at.replace(microsecond=0))

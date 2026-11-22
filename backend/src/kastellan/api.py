@@ -14,10 +14,11 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import __version__, checks, releases, stats
+from . import __version__, checks, stats
 from . import ups as upsmod
 from .access_api import router as access_router
 from .act_api import router as act_router
+from .alarms import overdue, report_fresh
 from .alarms_api import router as alarms_router
 from .auth_api import Guard, HubHeaders, client_address, require_admin
 from .auth_api import router as auth_router
@@ -183,9 +184,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             # Locked rings Kastellan uses by itself: what needs their secrets waits.
             "vault_waiting": vault_waiting(),
             # A newer Kastellan, if one is out (releases.py): {version, url}, or None.
-            "newer": asdict(r)
-            if (r := releases.newer(hub.latest_release if hub.config.check_releases else None, __version__))
-            else None,
+            "newer": asdict(r) if (r := hub.newer_release()) else None,
         }
 
     def check_view(check: Check, status: CheckStatus | None) -> dict[str, Any]:
@@ -209,7 +208,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         # A result much older than the interval means the loop is stuck: say so, don't show the
         # old answer as current.
         interval = check.interval or hub.config.check_interval
-        if status.checked and (now - status.checked).total_seconds() > 3 * interval + 60:
+        if status.checked and overdue(status.checked, interval, now):
             view |= {"up": None, "detail": "no recent result", "stale": True}
         return view
 
@@ -271,11 +270,7 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             return None
         host = device.runs_on.host
         st = hub.monitor.status.get(host)
-        checked = st.host_checked if st else None
-        # An old report (or one from before the hub started) says nothing about now.
-        fresh = (
-            checked is not None and checked >= hub.started and datetime.now(UTC) - checked <= upsmod.MAX_AGE
-        )
+        fresh = st is not None and report_fresh(st.host_checked, hub.started, datetime.now(UTC))
         vms = vms_of(host) if fresh else None
         vm = next((v for v in vms or [] if v.get("name") == device.runs_on.vm), None)
         return {"host": host, "vm": device.runs_on.vm, "state": (vm or {}).get("state") or ""}

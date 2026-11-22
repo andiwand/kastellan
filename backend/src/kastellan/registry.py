@@ -27,6 +27,7 @@ MAX_BODY = 4 * 1024 * 1024  # a page of tags or a token is far less
 MAX_PAGES = 40  # Docker Hub: 1000 tags a page, alphabetical; past this, "can't tell"
 CHECK_TIME = 45.0  # one image, all its requests
 MAX_CACHE = 2000
+NEWER_BUILD = "newer build"  # update_to for a new build of the same tag
 ACCEPT = ", ".join(
     [
         "application/vnd.oci.image.index.v1+json",
@@ -82,7 +83,7 @@ def same_repo(ref: Ref, digest_entry: str) -> bool:
 @dataclass(frozen=True)
 class Update:
     update: bool
-    update_to: str | None  # a newer version tag, or "newer build"
+    update_to: str | None  # a newer version tag, or NEWER_BUILD
     unchecked: str | None  # why it can't be told
     digest: str = ""  # the tag's digest now (short)
     within: str | None = None  # when update_to is a new major version: the newest of this one
@@ -217,7 +218,7 @@ class Registries:
             if not remote:
                 return Update(False, None, "the registry gave no digest")
             if remote not in mine:
-                return Update(True, "newer build", None, remote[7:19])
+                return Update(True, NEWER_BUILD, None, remote[7:19])
             return Update(False, None, None, remote[7:19])
 
     async def _tags(self, client: httpx.AsyncClient, ref: Ref) -> list[str]:

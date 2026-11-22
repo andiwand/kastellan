@@ -4,12 +4,10 @@
 # journal instead, and are left out here. Reads only: no lock, nothing changes.
 from datetime import datetime, timezone
 
-SINCE = re.compile(r"-|\d{1,12}(\.\d{1,9})?")
 if len(sys.argv) != 2 or not SINCE.fullmatch(sys.argv[1]):
     fail("wrong arguments", 2)
 since = sys.argv[1]
 FIRST, MAX_LINES, MAX_LINE, MAX_BYTES = 100, 2000, 2000, 8_000_000
-ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z (.*)$", re.S)
 
 

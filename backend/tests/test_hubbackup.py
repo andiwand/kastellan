@@ -7,6 +7,7 @@ import pytest
 
 from kastellan import hubbackup
 from kastellan.auth import hash_password
+from kastellan.secrets import HUB_BACKUP_KEY
 
 
 def hub_data(root: Path) -> tuple[Path, Path]:
@@ -484,7 +485,7 @@ def test_a_backup_that_opens_with_the_key_rings(tmp_path: Path) -> None:
     vault = Vault(data / "vault.json")
     recovery = vault.create("ada", "ada's password", "tag")[KASTELLAN]
     made = hubbackup.make_keyring_key()
-    vault.put(hubbackup.KEY_SECRET, json.dumps({"salt": "", "key": made["key"]}), ring=KASTELLAN)
+    vault.put(HUB_BACKUP_KEY, json.dumps({"salt": "", "key": made["key"]}), ring=KASTELLAN)
     key = base64.b64decode(made["key"])
     hb = hubbackup.HubBackup(data, lambda: key)
     hb.start(made)

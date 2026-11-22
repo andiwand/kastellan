@@ -17,9 +17,10 @@ from pydantic import BaseModel, Field
 
 from . import setup_run
 from .abilities import ADDED
-from .access import USER, hub_address
+from .access import hub_address, port_of
 from .auth_api import client_address, require_admin, require_signin
 from .host import actor
+from .registry import NEWER_BUILD
 from .setup_run import Login
 from .ssh import ChangedHost, UnknownHost
 
@@ -42,19 +43,12 @@ class Action(BaseModel):
     container: str | None = Field(default=None, max_length=128)
     vm: str | None = Field(default=None, max_length=128)
     unit: str | None = Field(default=None, max_length=210)
+    cursor: str | None = Field(default=None, max_length=400)  # journal, docker-logs: where to go on
     tag: str | None = Field(default=None, max_length=128)  # update-container: the tag to go to
 
 
 def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api/devices")
-
-    def device_of(id: str):
-        device = hub.config.devices.get(id)
-        if device is None:
-            raise HTTPException(404, "no such device")
-        if not device.host:  # "" would be this machine: the hub's own
-            raise HTTPException(400, f"{id} has no address of its own (a UPS read through its host)")
-        return device
 
     def failed(e: Exception) -> HTTPException:
         if isinstance(e, UnknownHost | ChangedHost):
@@ -84,8 +78,8 @@ def router(hub: Hub) -> APIRouter:
     async def act_script(id: str, body: Choice, request: Request) -> dict[str, Any]:
         """The commands for a choice of abilities (to copy), and what the host allows now."""
         require_admin(request)
-        device = device_of(id)
-        port = (device.act.port if device.act else None) or (device.ssh.port if device.ssh else 22)
+        device = setup_run.device_of(hub, id)
+        port = port_of(device, device.act)
         hub_ip = await asyncio.to_thread(hub_address, device.host, port)
         now: dict[str, list[str]] | None = None
         error = None
@@ -109,10 +103,8 @@ def router(hub: Hub) -> APIRouter:
         """Set the host up for exactly this choice (with a login and password typed once),
         streaming the output, and add `act:` to the device in config.yaml."""
         w = require_signin(request)
-        device = device_of(id)
+        device = setup_run.device_of(hub, id)
         setup_run.resolve(hub, id, body, w.user)
-        if not USER.match(body.login):
-            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
         hub_ip = await asyncio.to_thread(hub_address, device.host, body.port)
         script = script_for(body, hub_ip)
         audit = partial(
@@ -135,9 +127,7 @@ def router(hub: Hub) -> APIRouter:
             # What was offered and left out at this setup was a choice: not new any more.
             hub.offered.passed(id, "actor", set(ADDED["actor"]) - set(body.abilities))
             # Its scripts are new now: ask again, not in up to ten minutes (Updates says "older").
-            task = asyncio.get_running_loop().create_task(hub._poll_actor(id))
-            setup_run._running.add(task)
-            task.add_done_callback(setup_run._running.discard)
+            setup_run.spawn(hub.poll_actor(id))
             return {}
 
         return setup_run.stream(conn, script, body, audit, after)
@@ -147,10 +137,8 @@ def router(hub: Hub) -> APIRouter:
         """Take the actor off the host (with a login typed once), streaming the output, and
         remove `act:` from the device in config.yaml."""
         w = require_signin(request)
-        device = device_of(id)
+        device = setup_run.device_of(hub, id)
         setup_run.resolve(hub, id, body, w.user)
-        if not USER.match(body.login):
-            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32)")
         audit = partial(
             hub.audit.record,
             "act.uninstall",
@@ -170,26 +158,31 @@ def router(hub: Hub) -> APIRouter:
 
     def action(id: str, ability: str, body: Action, request: Request):
         w = require_signin(request)
-        device = device_of(id)
+        device = setup_run.device_of(hub, id)
         if device.act is None:
             raise HTTPException(409, "no act: for this device (set up the actor first)")
         if ability not in actor.ABILITIES:
             raise HTTPException(404, "no such ability")
-        # The ability says what it acts on: a VM's name for the VM abilities, a container's for
-        # the container ones, nothing else. The other field set is refused, not ignored, so the
-        # audit line always names what was acted on.
+        # The ability says what it acts on: a VM, a unit, a container, where to read from, or
+        # nothing (reboot). Any other field set is refused, not ignored, so the audit line
+        # always names what was acted on.
         field = (
             "vm"
             if ability in actor.VM_ABILITIES
             else "unit"
             if ability in actor.UNIT_ABILITIES
             else "container"
+            if ability in actor.CONTAINER_ABILITIES
+            else "cursor"
+            if ability in actor.CURSOR_ABILITIES
+            else None
         )
         given = {k: v for k, v in body.model_dump().items() if v is not None}
         tag = given.pop("tag", None)
         if set(given) - {field} or (tag is not None and ability != "update-container"):
-            raise HTTPException(400, f"{ability} takes a {field}, nothing else")
-        target = given.get(field)
+            takes = f"a {field}, nothing else" if field else "nothing"
+            raise HTTPException(400, f"{ability} takes {takes}")
+        target = given.get(field) if field else None
         if tag is not None:
             # Only a tag the hub found for this container (its newer version, or the newest
             # within its major one): the page can't send the host to any tag it likes.
@@ -202,7 +195,7 @@ def router(hub: Hub) -> APIRouter:
                 for c in matches
                 if c.get("update") and not c.get("unchecked")
                 for t in (c.get("update_to"), c.get("update_within"))
-                if t and t != "newer build"
+                if t and t != NEWER_BUILD
             }
             if tag not in offered:
                 raise HTTPException(409, f"{tag} isn't a newer version Kastellan found for {target}")
@@ -257,7 +250,7 @@ def router(hub: Hub) -> APIRouter:
             queue.put_nowait(f"{setup_run.DONE} {json.dumps(outcome)}\n".encode())
             queue.put_nowait(None)
 
-        return setup_run._hub_task(run(), queue)
+        return setup_run.hub_task(run(), queue)
 
     @api.post("/{id}/act/{ability}")
     async def act_now(id: str, ability: str, body: Action, request: Request) -> dict[str, Any]:

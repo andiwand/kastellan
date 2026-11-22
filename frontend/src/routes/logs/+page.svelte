@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Tabs from '#lib/components/Tabs.svelte';
 	import { page } from '$app/state';
 	import {
 		api,
@@ -265,18 +266,7 @@
 				onkeydown={(e) => e.key === 'Enter' && (query = text)}
 			/>
 		</label>
-		<div class="flex gap-1 rounded-xl border border-line bg-surface p-1">
-			{#each RANGES as r (r.id)}
-				<button
-					class="h-7 rounded-lg px-2.5 text-xs font-medium {hours === r.id
-						? 'bg-surface-3 text-text'
-						: 'text-muted hover:text-text'}"
-					onclick={() => (hours = r.id)}
-				>
-					{r.label}
-				</button>
-			{/each}
-		</div>
+		<Tabs small label="Range" tabs={RANGES} current={hours} onselect={(h) => (hours = h)} />
 		<select
 			class="h-9 rounded-lg border border-line bg-surface px-2 text-sm"
 			bind:value={level}

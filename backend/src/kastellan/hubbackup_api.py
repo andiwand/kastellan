@@ -18,7 +18,8 @@ from pydantic import BaseModel, Field
 from . import devbackups, hubbackup
 from .auth import Brake
 from .auth_api import client_address, require_admin, require_signin
-from .groups_api import SALT_SECRET
+from .secrets import FINGERPRINT_SALT, HUB_BACKUP_KEY
+from .vault import KASTELLAN
 
 if TYPE_CHECKING:
     from .hub import Hub
@@ -54,23 +55,19 @@ def router(hub: Hub) -> APIRouter:
         hubbackup.private_write(checks_file, json.dumps(data).encode())
 
     def recovery_version(ring: str) -> str | None:
-        if ring == "kastellan" and (hub.hub_backup.header() or {}).get("keyring"):
+        if ring == KASTELLAN and (hub.hub_backup.header() or {}).get("keyring"):
             path = hub.hub_backup.folder / hubbackup.KEYRING
             return hashlib.sha256(hubbackup.read_bounded(path)).hexdigest() if path.exists() else None
         return hub.vault.recovery_tag(ring)
 
     async def background(work):
-        task = asyncio.create_task(work)
-        hub._background.add(task)
-        task.add_done_callback(hub._background.discard)
-        # Retrieve errors even if the browser leaves while the operation finishes.
-        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
-        return await asyncio.shield(task)
+        # The hub's task: it finishes (and its error is logged) even if the browser leaves.
+        return await asyncio.shield(hub.spawn(work, name="hub backup"))
 
     def local_store(header):
         # Legacy folders can still be downloaded as an authenticated .kbak before rotation.
         return (
-            devbackups.Store(hub.hub_backup.folder, hub._hub_backup_key)
+            devbackups.Store(hub.hub_backup.folder, hub.hub_backup_key)
             if header and header.get("version") == 1
             else hub.hub_backup.store
         )
@@ -119,8 +116,6 @@ def router(hub: Hub) -> APIRouter:
                 if hub.hub_backup.header() is not None and not body.replace:
                     raise HTTPException(409, "there is one already; a new one starts a new backup")
                 if body.mode == "keyring":
-                    from .vault import KASTELLAN
-
                     if not (hub.vault.exists and hub.vault.is_open(KASTELLAN)):
                         raise HTTPException(
                             409, "the backup opens with the key rings: make them (Keys) or open them"
@@ -131,15 +126,15 @@ def router(hub: Hub) -> APIRouter:
                     phrase = hubbackup.new_passphrase()
                     made = await hubbackup.blocking(hubbackup.make_key, phrase)
                 # Fail before moving the store when its existing secret cannot be read (locked ring).
-                if hub.secrets.has(hubbackup.KEY_SECRET):
-                    hub.secrets.get(hubbackup.KEY_SECRET)
+                if hub.secrets.has(HUB_BACKUP_KEY):
+                    hub.secrets.get(HUB_BACKUP_KEY)
 
                 def commit():
                     # One uncancellable file operation: cancellation must not split store and key rotation.
                     aside = hub.hub_backup.start(made)
                     try:
                         hub.secrets.set(
-                            hubbackup.KEY_SECRET,
+                            HUB_BACKUP_KEY,
                             json.dumps({"salt": made.get("salt", ""), "key": made["key"]}),
                         )
                     except BaseException:
@@ -173,7 +168,7 @@ def router(hub: Hub) -> APIRouter:
         w = require_signin(request)
         if hub.demo:
             raise HTTPException(409, "demo mode has no recovery keys to check")
-        address = client_address(request.scope) or "?"
+        address = client_address(request.scope)
         if brake.blocked(address):
             raise HTTPException(429, "too many wrong tries; try again later")
         if body.passphrase:
@@ -195,7 +190,7 @@ def router(hub: Hub) -> APIRouter:
                 if key is None:
                     raise HTTPException(409, "make a backup before checking its recovery key")
                 header = hub.hub_backup.header()
-                if body.ring == "kastellan" and header and header.get("keyring"):
+                if body.ring == KASTELLAN and header and header.get("keyring"):
                     try:
                         await hubbackup.blocking(
                             hubbackup.key_from_keyring,
@@ -261,7 +256,7 @@ def router(hub: Hub) -> APIRouter:
                     hubbackup.ID,
                     older,
                     newer,
-                    hub.own_secret(SALT_SECRET).encode(),
+                    hub.own_secret(FINGERPRINT_SALT).encode(),
                 )
         except KeyError as e:
             raise HTTPException(404, "no such version") from e
@@ -279,7 +274,7 @@ def router(hub: Hub) -> APIRouter:
                 raise HTTPException(404, "no backup yet")
             try:
                 data = await hubbackup.blocking(
-                    hubbackup.encrypted_archive, local_store(header), header, sid, hub._hub_backup_key()
+                    hubbackup.encrypted_archive, local_store(header), header, sid, hub.hub_backup_key()
                 )
             except KeyError as e:
                 raise HTTPException(404, "no such version") from e

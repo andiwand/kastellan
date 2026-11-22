@@ -21,7 +21,8 @@ Care is taken not to wake anyone for nothing:
   flapping service doesn't send "down"/"back up" all night.
 - Resolving because a device was muted, removed, or folded into its parent's alarm is silent.
 
-`evaluate` is a pure function of what is known now; `Alarms` keeps the open ones in
+`evaluate` judges what is known now (its only state: the UPS switch times it is given, and the
+problems it can't judge, which it reports); `Alarms` keeps the open ones in
 <data>/alarms.json and every alarm in <data>/alarms.log, and decides what to send (notify.py).
 """
 
@@ -71,11 +72,23 @@ class Problem:
     hidden: list[str] = field(default_factory=list)  # devices behind it, folded into this one
 
 
+def overdue(checked: datetime, interval: float, now: datetime) -> bool:
+    """A result much older than its check's interval: the check stopped reporting, so it says
+    nothing about now (neither up nor down)."""
+    return (now - checked).total_seconds() > 3 * interval + 60
+
+
+def report_fresh(checked: datetime | None, started: datetime, now: datetime) -> bool:
+    """A collector's report (a host's VMs, a UPS) says something now: it is from after the hub
+    started, and not older than ups.MAX_AGE."""
+    return checked is not None and checked >= started and now - checked <= upsmod.MAX_AGE
+
+
 def _fresh(c: CheckStatus | None, check: Check, interval: float, started: datetime, now: datetime) -> bool:
     """A result that says something now: after the hub started, and not overdue."""
     if c is None or c.up is None or c.checked is None or c.checked < started:
         return False
-    return (now - c.checked).total_seconds() <= 3 * (check.interval or interval) + 60
+    return not overdue(c.checked, check.interval or interval, now)
 
 
 def evaluate(
@@ -144,10 +157,7 @@ def evaluate(
         (an old report, or one from before the hub started, says nothing about now)."""
         runs = config.devices[id].runs_on
         st = status.get(runs.host) if runs else None
-        fresh = (
-            st and st.host_checked and st.host_checked >= started and now - st.host_checked <= upsmod.MAX_AGE
-        )
-        report = st.host if st and fresh else None
+        report = st.host if st and report_fresh(st.host_checked, started, now) else None
         vm = next((v for v in (report or {}).get("vms") or [] if v.get("name") == runs.vm), None)
         return (runs.host, str(vm.get("state") or "")) if runs and vm else None
 
@@ -180,7 +190,7 @@ def evaluate(
     readings: dict[str, dict[str, Any]] = {}
     for id, device in config.devices.items():
         r = upsmod.reading(config, status, id, switched) if device.kind is Kind.UPS else None
-        if r and r.get("checked") and r["checked"] >= started and now - r["checked"] <= upsmod.MAX_AGE:
+        if r and report_fresh(r.get("checked"), started, now):
             readings[id] = r  # only from a fresh report
         if device.ups and unjudged is not None and not is_muted(id):
             if id not in readings:
@@ -618,8 +628,7 @@ class Alarms:
             self.open = {k: Alarm(**v) for k, v in data.get("open", {}).items()}
             self.muted = {k: datetime.fromisoformat(v) for k, v in data.get("muted", {}).items()}
             self.maintenance = data.get("maintenance", {})
-            seen = data.get("seen_events", {})
-            self.seen_events = seen if isinstance(seen, dict) else {k: "" for k in seen}
+            self.seen_events = data.get("seen_events", {})
         except (OSError, ValueError, TypeError) as e:
             if self.path.exists():
                 log.warning("cannot read %s (%s); starting without open alarms", self.path, e)
@@ -737,7 +746,7 @@ class Alarms:
                 elif p.severity.rank > Severity(alarm.severity).rank and not alarm.held:
                     # Worse than when it opened (a CVE became known as exploited): say so again.
                     alarm.severity = p.severity.value
-                    messages.append(Message(p.severity, p.title, p.detail, p.device))
+                    messages.append(Message(p.severity, p.title, _body(p), p.device))
                     self._log(
                         {"time": now.isoformat(timespec="seconds"), "what": "escalated", **asdict(alarm)}
                     )
@@ -865,6 +874,15 @@ class Alarms:
         self._log({"time": alarm.acknowledged_at, "what": "acknowledged", **asdict(alarm)})
         self.save()
         return alarm
+
+    def muted_now(self, now: datetime) -> dict[str, datetime]:
+        """The devices muted now, and until when; mutes that have ended are forgotten."""
+        ended = [d for d, until in self.muted.items() if until <= now]
+        for d in ended:
+            del self.muted[d]
+        if ended:
+            self.save()
+        return dict(self.muted)
 
     def mute(self, device: str, until: datetime | None) -> None:
         if until is None:

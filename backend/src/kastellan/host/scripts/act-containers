@@ -6,7 +6,6 @@ PREVIOUS = "kastellan-previous"  # the image a container ran before an update: <
 # The reference a container ran before an update to another tag (a label on the new container),
 # so rollback-container goes back to that tag, not to the old image under the new tag's name.
 PREVIOUS_REF = "kastellan.previous-image"
-TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")  # an image tag, as Docker allows (fullmatch)
 
 
 def with_tag(ref, tag):

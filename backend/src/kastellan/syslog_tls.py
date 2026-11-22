@@ -37,8 +37,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from . import logs
+from .secrets import SYSLOG_CA_KEY
 
-KEY_SECRET = "syslog-ca-key"
 MAX_MESSAGE = 64 * 1024
 MAX_CONNECTIONS = 64
 
@@ -69,11 +69,13 @@ class Authority:
         self.folder = folder
         self._lock = threading.RLock()
         self._secret = secret  # (name, make) -> value: hub.own_secret
+        self._cache: tuple[int, dict[str, Any]] | None = None  # issued.json's mtime and content
 
     @locked
     def _ca(self) -> tuple[x509.Certificate, ec.EllipticCurvePrivateKey]:
         key = serialization.load_pem_private_key(
-            self._secret(KEY_SECRET, lambda: _pem_key(ec.generate_private_key(ec.SECP256R1()))).encode(), None
+            self._secret(SYSLOG_CA_KEY, lambda: _pem_key(ec.generate_private_key(ec.SECP256R1()))).encode(),
+            None,
         )
         assert isinstance(key, ec.EllipticCurvePrivateKey)
         path = self.folder / "ca.pem"
@@ -130,6 +132,19 @@ class Authority:
     # --- what was issued ----------------------------------------------------------------------
 
     def _issued(self) -> dict[str, Any]:
+        """issued.json, read again only when it changed (the listener asks for every message).
+        Read-only: changes go through `_changed`."""
+        path = self.folder / "issued.json"
+        try:
+            stamp = path.stat().st_mtime_ns
+            if self._cache is None or self._cache[0] != stamp:
+                self._cache = (stamp, json.loads(path.read_text()))
+            return self._cache[1]
+        except (OSError, ValueError):
+            return {"devices": {}}
+
+    def _changed(self) -> dict[str, Any]:
+        """issued.json as it is on disk now, to change and `_save`."""
         try:
             return json.loads((self.folder / "issued.json").read_text())
         except (OSError, ValueError):
@@ -137,9 +152,11 @@ class Authority:
 
     def _save(self, data: dict[str, Any]) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)
+        path = self.folder / "issued.json"
         tmp = self.folder / f".issued.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(data))
-        tmp.replace(self.folder / "issued.json")
+        tmp.replace(path)
+        self._cache = (path.stat().st_mtime_ns, data)
 
     @locked
     def issue(self, device: str) -> dict[str, str]:
@@ -147,7 +164,7 @@ class Authority:
         until revoked."""
         key = ec.generate_private_key(ec.SECP256R1())
         cert = self._signed(device, key.public_key(), ExtendedKeyUsageOID.CLIENT_AUTH)
-        data = self._issued()
+        data = self._changed()
         entry = data["devices"].setdefault(device, {"serials": [], "revoked": []})
         entry["serials"].append(format(cert.serial_number, "x"))
         entry["issued"] = _now().isoformat(timespec="seconds")
@@ -160,15 +177,16 @@ class Authority:
 
     @locked
     def revoke(self, device: str) -> int:
-        """Every certificate of `device` refused from now on; how many."""
-        data = self._issued()
+        """Every certificate of `device` refused from now on; how many were revoked now."""
+        data = self._changed()
         entry = data["devices"].get(device)
-        if not entry:
+        if not entry or not entry["serials"]:
             return 0
-        entry["revoked"] = sorted(set(entry.get("revoked", [])) | set(entry["serials"]))
+        fresh = set(entry["serials"]) - set(entry.get("revoked", []))
+        entry["revoked"] = sorted(set(entry.get("revoked", [])) | fresh)
         entry["serials"] = []
         self._save(data)
-        return len(entry["revoked"])
+        return len(fresh)
 
     def devices(self) -> set[str]:
         """The devices with a certificate that isn't revoked."""

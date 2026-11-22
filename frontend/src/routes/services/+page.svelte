@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Tabs from '#lib/components/Tabs.svelte';
 	import { store } from '#lib/state.svelte.js';
 	import { checkStatusOf } from '#lib/status.js';
 	import ServicesTable from '#lib/components/ServicesTable.svelte';
@@ -64,22 +65,12 @@
 			class="h-10 w-full rounded-xl border border-line bg-surface pr-3 pl-9 text-sm shadow-card outline-none placeholder:text-faint focus:border-accent"
 		/>
 	</label>
-	<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card" role="tablist">
-		{#each filters as f (f.id)}
-			<button
-				role="tab"
-				aria-selected={filter === f.id}
-				onclick={() => (filter = f.id)}
-				class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors {filter ===
-				f.id
-					? 'bg-surface-3 text-text'
-					: 'text-muted hover:text-text'}"
-			>
-				{f.label}
-				<span class="tabular text-xs text-faint">{counts[f.id]}</span>
-			</button>
-		{/each}
-	</div>
+	<Tabs
+		label="Show"
+		tabs={filters.map((f) => ({ ...f, count: counts[f.id] }))}
+		current={filter}
+		onselect={(f) => (filter = f)}
+	/>
 </div>
 
 <div class="mt-4">

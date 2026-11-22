@@ -145,6 +145,24 @@ async def test_a_device_that_fails_holds_the_switch(host) -> None:
     assert keys.side_key("next") is None and rotator.state() is None
 
 
+async def test_a_device_skipped_or_gone_holds_the_end_until_forgotten(host) -> None:
+    keys, device, _, _ = host
+    gone = Device.model_validate({"host": "127.0.0.1", "ssh": {"user": ME, "port": 1}})
+    rotator = sshkeys.Rotator(keys)
+    await rotator.start({"box": device, "gone": gone})
+    rot = await rotator.finish({"box": device, "gone": gone}, anyway=True)
+    # Switched without it, but it stays: the old key is still trusted there.
+    assert rot.stage == "removing" and rot.devices["box"].removed
+    assert not rot.devices["gone"].removed and rot.devices["gone"].error
+    assert keys.side_key("old") is not None
+    rot = await rotator.finish({"box": device})  # it left config.yaml: still not done
+    assert rot.stage == "removing" and "forget it" in (rot.devices["gone"].error or "")
+    rot = await rotator.forget("gone")
+    assert rot.stage == "done" and rot.devices["gone"].forgotten and keys.side_key("old") is None
+    with pytest.raises(ValueError, match="nothing to forget"):
+        await rotator.forget("gone")
+
+
 def test_parse_skips_what_isnt_a_key() -> None:
     out = "\n".join(
         [
@@ -173,6 +191,7 @@ def test_only_signed_in_admins_change_keys(tmp_path: Path) -> None:
         c.post("/api/auth/login", json={"user": "obi", "password": "observer pw"}, headers=h)
         assert c.get("/api/ssh/keys").status_code == 403
         assert c.post("/api/ssh/rotate/start", headers=h).status_code == 403
+        assert c.post("/api/ssh/rotate/forget", json={"device": "box"}, headers=h).status_code == 403
         body = {"user": "me", "file": "/x", "fingerprint": "SHA256:abcdefghijk"}
         assert c.post("/api/devices/box/keys/remove", json=body, headers=h).status_code == 403
     config.write_text("devices:\n  box:\n    host: 127.0.0.1\n")

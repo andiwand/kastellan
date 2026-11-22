@@ -82,7 +82,7 @@
 	);
 	const flagged = $derived(sources.filter((s) => s.flags.length));
 	const color = (o: string) =>
-		o === 'ok' ? 'var(--good-text)' : o === 'failed' ? 'var(--critical-text)' : 'var(--text-muted)';
+		o === 'ok' ? 'var(--good-text)' : o === 'failed' ? 'var(--critical-text)' : 'var(--muted)';
 	const chip =
 		'rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors hover:border-line-strong';
 </script>
@@ -117,7 +117,7 @@
 			{@const c = data.summary.by_service[id] ?? { ok: 0, failed: 0, attempt: 0 }}
 			<div class="card p-3">
 				<div class="text-xs text-muted">{label}</div>
-				<div class="mt-1 text-lg font-semibold tabular-nums">
+				<div class="tabular mt-1 text-lg font-semibold">
 					<span style:color="var(--good-text)">{c.ok}</span>
 					<span class="text-sm font-normal text-faint">ok</span>
 					<span class="ml-1" style:color={c.failed ? 'var(--critical-text)' : undefined}>
@@ -264,7 +264,7 @@
 					<tbody>
 						{#each events.slice(0, 500) as e, i (i)}
 							<tr class="border-t border-line">
-								<td class="px-4 py-1.5 text-xs whitespace-nowrap text-muted tabular-nums">
+								<td class="tabular px-4 py-1.5 text-xs whitespace-nowrap text-muted">
 									{when(e.ts)}
 								</td>
 								<td class="px-2 py-1.5 text-xs font-medium" style:color={color(e.outcome)}>

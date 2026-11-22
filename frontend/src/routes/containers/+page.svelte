@@ -1,8 +1,10 @@
 <script lang="ts">
+	import Tabs from '#lib/components/Tabs.svelte';
 	import { store } from '#lib/state.svelte.js';
 	import { ago } from '#lib/format.js';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import type { Container, Device } from '#lib/api.js';
+	import { sameTagUpdates } from '#lib/updates.js';
 	import ContainersTable from '#lib/components/ContainersTable.svelte';
 	import ReadAgain from '#lib/components/ReadAgain.svelte';
 	import KindIcon from '#lib/components/KindIcon.svelte';
@@ -41,8 +43,7 @@
 	// in its row), on hosts with an actor, not said to be not needed, not already queued.
 	const updatable = $derived(
 		hosts.filter(canAct).flatMap((d) =>
-			(d.containers ?? [])
-				.filter((c) => c.update && !c.unchecked && c.update_to === 'newer build' && !c.skipped)
+			sameTagUpdates(d.containers ?? [])
 				.map((c): Job => ({ device: d.id, kind: 'container', name: c.name }))
 				.filter((j) => !['queued', 'running'].includes(runner.state(j)?.state ?? ''))
 		)
@@ -110,18 +111,12 @@
 				class="h-10 w-full rounded-xl border border-line bg-surface pr-3 pl-9 text-sm shadow-card outline-none placeholder:text-faint focus:border-accent"
 			/>
 		</label>
-		<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-			{#each FILTERS as f (f.id)}
-				<button
-					class="h-8 rounded-lg px-3 text-sm font-medium {filter === f.id
-						? 'bg-surface-3 text-text'
-						: 'text-muted hover:text-text'}"
-					onclick={() => (filter = f.id)}
-				>
-					{f.label} <span class="tabular text-xs text-faint">{counts[f.id]}</span>
-				</button>
-			{/each}
-		</div>
+		<Tabs
+			label="Show"
+			tabs={FILTERS.map((f) => ({ ...f, count: counts[f.id] }))}
+			current={filter}
+			onselect={(f) => (filter = f)}
+		/>
 	</div>
 
 	{#each shown as h (h.device.id)}

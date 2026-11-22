@@ -5,19 +5,21 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import json
 import logging
 import os
 import shutil
 import tempfile
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from secrets import token_urlsafe
 from typing import Any
 
 import httpx
 from pydantic import ValidationError
-from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import (
@@ -26,6 +28,7 @@ from . import (
     demo,
     demo_more,
     devbackups,
+    dhcp,
     discovery,
     docker,
     hubbackup,
@@ -47,16 +50,17 @@ from .alarms import Alarms, Message, Problem, Severity, evaluate
 from .audit import Audit
 from .auth import Sessions, password_tag
 from .backups import Backups
-from .config import Config, Device, NotifyChannel, Role
+from .config import Config, Device, NotifyChannel, OpenVpnSource, Role
 from .desktop_api import Tickets
 from .disks import DiskHistory
 from .drivers import DRIVERS
 from .drivers.fritzbox import firmware_name
 from .fritzbox import client as fritz_client
+from .fritzbox import web as fritz_web_api
 from .fritzbox.client import Fritz
 from .history import History
 from .host import actor, collector
-from .hub_errors import yaml_problem
+from .hub_errors import ConfigProblem, describe, first_line, yaml_problem
 from .hubbackup import HubBackup
 from .internet import Internet
 from .logs import LogStore
@@ -64,12 +68,12 @@ from .monitor import DeviceStatus, Monitor, run_check
 from .networks import Resolver, default_gateway
 from .openwrt import client as openwrt_client
 from .openwrt import setup as openwrt_setup
-from .openwrt.client import Pins, Ubus
+from .openwrt.client import Ubus
 from .openwrt.firmware import Releases, advise
+from .pinned_http import Pins
 from .push import Push
-from .registry import Registries
-from .roaming import SMALL_MEMORY
-from .secrets import Secrets
+from .registry import NEWER_BUILD, Registries
+from .secrets import DEVICE_BACKUPS_KEY, HUB_BACKUP_KEY, Secrets
 from .settings import Settings
 from .skipped import Skipped
 from .ssh import Keys
@@ -102,40 +106,28 @@ ACTIVE_WINDOW = 30 * 60  # a ring that stays open while admins are here: used wi
 ALARMS_EVERY = 30
 VULNS_FIRST = 120
 CRL_FIRST = 300  # seconds after start: the first checks and polls have run
+CRL_EVERY = 86400  # seconds between renewing the CRLs (easy-rsa's CRLs last 180 days)
+NAMES_LOOK = 5  # seconds between looks whether device names changed (resolved on a change)
+RELOCK_EVERY = 30  # seconds between looks whether a ring's policy closes it
+TICKETS_EVERY = 15  # seconds between dropping unused desktop tickets
+RELEASES_FIRST = 60  # seconds after start before asking GitHub for releases
+VPN_HELPERS_FIRST = 120  # seconds after start before asking the VPN scripts their versions
+VPN_HELPERS_EVERY = 12 * 3600  # and between asking them again
+FRITZ_TIMEOUT = 90  # seconds for one FRITZ!Box's whole read
+WEB_TIMEOUT = 10  # seconds for one call to a FRITZ!Box's web interface
+HTTP_TIMEOUT = 10  # seconds for one HTTP call (the heartbeat, a web push)
+OUTBOX_KEEP = 86400  # seconds a failed notification is retried before it is given up
+SEND_TIMEOUT = 20  # seconds for all due retries at once: a dead channel never holds up alarms
+OVPN_STALE = 300  # seconds after which an OpenVPN status file says nothing about now
 
 
-class ConfigProblem(Exception):
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
+def _log_failure(task: asyncio.Task[Any]) -> None:
+    if not task.cancelled() and (e := task.exception()) is not None:
+        log.error("%s failed", task.get_name(), exc_info=e)
 
 
 def _brief(e: Exception) -> str:
     return (str(e) or type(e).__name__)[:200]
-
-
-def packages_skipped(report: dict[str, Any]) -> str | None:
-    """Why an OpenWrt router isn't asked for package updates, or None. opkg update needs a few MB
-    and the lists sit in RAM (/tmp): on a small router the OOM killer then takes usteer, uhttpd
-    or opkg itself."""
-    total = ((report.get("system") or {}).get("memory") or {}).get("total")
-    if isinstance(total, int) and total < SMALL_MEMORY:
-        return f"too little memory ({total // 2**20} MB)"
-    return None
-
-
-def _first_line(text: str) -> str:
-    return text.strip().splitlines()[0][:300] if text.strip() else "unreadable"
-
-
-def _describe(e: ValidationError) -> str:
-    """What is wrong, without the values: config.yaml holds password hashes, and a pasted plain
-    password must not end up in a log or an API answer."""
-    problems = []
-    for err in e.errors(include_input=False, include_url=False):
-        where = ".".join(str(p) for p in err["loc"])
-        problems.append(f"{where}: {err['msg']}" if where else err["msg"])
-    return "; ".join(problems)[:600]
 
 
 class Hub:
@@ -169,7 +161,7 @@ class Hub:
         # Every OpenVPN server on the OpenWrt routers (their `openvpn` ability), by device.
         self.vpn_servers: dict[str, dict[str, Any]] = {}
         # Addresses VPNs gave their clients (address -> "client (VPN)"): the Access page's paths.
-        self.vpn_addresses: dict[str, str] = {}
+        self.vpn_addresses: dict[str, dict[str, str]] = {}  # per VPN: client address → its name
         # OpenVPN helper scripts older than this hub's, by VPN ("pki", "crl"): Updates says so.
         self.vpn_outdated: dict[str, list[str]] = {}
         # nlbwmon's bytes per device, by router (the `bandwidth` ability), with rates.
@@ -201,39 +193,20 @@ class Hub:
             data / "device-backups",
             demo_more.demo_key
             if self.demo
-            else lambda: base64.b64decode(self.own_secret(devbackups.KEY_SECRET, devbackups.new_key)),
+            else lambda: base64.b64decode(self.own_secret(DEVICE_BACKUPS_KEY, devbackups.new_key)),
         )
         self.backup_status: dict[str, dict[str, Any]] = {}  # per device: the last attempt
         self.offered = Offered(data / "abilities-offered.json")  # new abilities passed on
         self.skipped = Skipped(data / "updates-skipped.json")  # container updates passed on
         # Kastellan's own backup (hubbackup.py): its key comes from a passphrase, not the hub.
-        self.hub_backup = HubBackup(data if self.demo else settings.data, self._hub_backup_key)
+        self.hub_backup = HubBackup(data if self.demo else settings.data, self.hub_backup_key)
         self.internet = Internet(data / "internet")  # the internet connection (internet.py)
         self.wifi_scans = Scans(data / "wifi")  # what the radios heard (wifi.py)
         self.wifi_scanning: set[str] = set()  # devices scanning now
-        if self.demo:  # the made-up network's logs, backups, line and scans
-            now_t = time.time()
-            self.logs.add(demo_more.log_lines(now_t - 86400, now_t))
-            demo_more.seed_backups(self.device_backups)
-            demo_more.seed_internet(self.internet, now_t)
-            self.wifi_scans.add(demo_more.scans(now_t))
-            for id in ("repeater-living", "repeater-attic"):
-                self.log_status[id] = {
-                    "how": "openwrt",
-                    "ok": datetime.now(UTC).isoformat(timespec="seconds"),
-                }
-            self.log_status["fritzbox"] = {
-                "how": "fritzbox",
-                "ok": datetime.now(UTC).isoformat(timespec="seconds"),
-            }
+        self._demo_filled = False  # the demo's week of vitals is in (for the charts)
+        if self.demo:
+            demo_more.seed(self)
         self.latest_release: releases.Release | None = None  # Kastellan's newest (releases.py)
-        if self.demo:  # the made-up backups reported in: one last night, one failed this morning
-            now = datetime.now(UTC)
-            self.backups.report("nas-b2", True, "", now - timedelta(hours=7))
-            self.backups.report("homeserver-borg", True, "", now - timedelta(hours=31))
-            self.backups.report(
-                "homeserver-borg", False, "Failed to create/acquire the lock", now - timedelta(hours=7)
-            )
         self.push = Push(settings.data, self.vault)  # web push: the hub's key, the browsers that allowed it
         self._events_since = datetime.now(UTC)
         self.started = datetime.now(UTC)  # alarms use only results from after this
@@ -252,10 +225,13 @@ class Hub:
         self.signin_required = settings.data / "signin-required"
         self.resolver = Resolver()
         self.registries = Registries()
-        self._background: set[asyncio.Task[None]] = set()  # automatic updates under way
+        # Tasks started from a loop that outlive it (automatic updates): kept until done, and
+        # cancelled when the hub stops.
+        self._background: set[asyncio.Task[None]] = set()
         self.pins = Pins(settings.data / "openwrt")
         self.fritz_pins = Pins(settings.data / "fritzbox")  # FRITZ!Boxes' confirmed certificates
         self._fritz: dict[tuple[str, str, int, str], Fritz] = {}
+        self._fritz_web: dict[str, fritz_web_api.Web] = {}  # per FRITZ!Box: its web interface's session
         self._wg_next: dict[str, tuple[float, int]] = {}  # FRITZ!Box WireGuard: next read, failures
         self.releases = Releases()
         self._ubus: dict[tuple[str, str, int, str], Ubus] = {}
@@ -295,6 +271,8 @@ class Hub:
                 log.error("%s; the API stays locked", problem.message)
                 return
         old_users = self.config.users
+        # Vitals of a device read another way (or another device) start over.
+        moved: set[str] = set()
         for id, old in self.config.devices.items():
             new = config.devices.get(id)
             if new is None or (old.host, old.collect, old.openwrt, old.fritzbox) != (
@@ -303,11 +281,13 @@ class Hub:
                 new.openwrt,
                 new.fritzbox,
             ):
-                self._cpu.forget(set(config.devices) - {id})
+                moved.add(id)
                 if status := self.monitor.status.get(id):
                     status.vitals = None
             if new is None or (old.host, old.openwrt, old.fritzbox) != (new.host, new.openwrt, new.fritzbox):
                 self.drop_clients(id)
+        if moved:
+            self._cpu.forget(set(config.devices) - moved)
         self.config, self.config_error, self.locked, self._loaded = config, None, None, True
         # Someone removed from config.yaml is signed out everywhere at once, and a terminal stays
         # open only for an admin whose password did not change.
@@ -331,17 +311,24 @@ class Hub:
     def check(self, text: str) -> Config:
         """A candidate config.yaml (from the app's editor), by the same rules as loading it, or
         ConfigProblem: what is wrong (with the line, for YAML)."""
+        return self._parsed(
+            lambda: config_mod.parse(text),
+            "it has no users, but sign-in is on; that would lock everyone out",
+        )
+
+    def _parsed(self, read: Callable[[], Config], no_users: str) -> Config:
+        """read()'s config, or ConfigProblem: what is wrong, never quoting the file; `no_users`
+        when it has no users while sign-in is on (it never turns itself off)."""
         try:
-            data = YAML(typ="safe").load(text) if text.strip() else {}
-            config = Config.model_validate(data or {})
+            config = read()
         except ValidationError as e:
-            raise ConfigProblem(_describe(e)) from e
+            raise ConfigProblem(describe(e)) from e
         except YAMLError as e:
             raise ConfigProblem(yaml_problem(e)) from e
-        except ValueError as e:
-            raise ConfigProblem(_first_line(str(e))) from e
+        except (OSError, ValueError) as e:
+            raise ConfigProblem(first_line(str(e))) from e
         if not config.users and self._signin_was_on():
-            raise ConfigProblem("it has no users, but sign-in is on; that would lock everyone out")
+            raise ConfigProblem(no_users)
         return config
 
     def save_config(self, old: str, new: str) -> None:
@@ -354,31 +341,24 @@ class Hub:
     def _load(self) -> Config:
         """The config to use now, or ConfigProblem."""
         path = self.settings.config
-        try:
+
+        def read() -> Config:
             stat = path.stat() if path.exists() else None
             self._mtime = stat.st_mtime if stat else None
             if self.demo:
                 # The made-up network, with the users of the real config.yaml (if it has any).
                 users = config_mod.load(path).users
-                config = demo.config().model_copy(update={"users": users})
-            else:
-                if stat is not None and stat.st_size == 0 and self._loaded:
-                    raise ConfigProblem("the file is empty (maybe being saved)")
-                if stat is None and self._loaded:
-                    raise ConfigProblem("the file is missing")
-                config = config_mod.load(path)
-        except ValidationError as e:
-            raise ConfigProblem(_describe(e)) from e
-        except YAMLError as e:
-            raise ConfigProblem(yaml_problem(e)) from e
-        except (OSError, ValueError) as e:
-            raise ConfigProblem(_first_line(str(e))) from e
-        if not config.users and self._signin_was_on():
-            raise ConfigProblem(
-                "it has no users, but sign-in was on; to turn sign-in off, also delete "
-                f"{self.signin_required}"
-            )
-        return config
+                return demo.config().model_copy(update={"users": users})
+            if stat is not None and stat.st_size == 0 and self._loaded:
+                raise ConfigProblem("the file is empty (maybe being saved)")
+            if stat is None and self._loaded:
+                raise ConfigProblem("the file is missing")
+            return config_mod.load(path)
+
+        return self._parsed(
+            read,
+            f"it has no users, but sign-in was on; to turn sign-in off, also delete {self.signin_required}",
+        )
 
     def _signin_was_on(self) -> bool:
         """Whether the marker exists; when it can't be looked at, assume it does (fail closed)."""
@@ -421,7 +401,7 @@ class Hub:
 
     async def start(self) -> None:
         if self.demo:
-            log.info("demo mode: a made-up network, simulated results; config.yaml is not read")
+            log.info("demo mode: a made-up network, simulated results; config.yaml gives only its users")
             await asyncio.to_thread(self.demo.backfill, self.history, demo.config(), self.versions)
         self.reload()
         self._tasks = [
@@ -487,7 +467,7 @@ class Hub:
                     self.own_v6 = await asyncio.to_thread(hub_address, "2606:4700:4700::1111", 53)
                     self.gateway = default_gateway()
                 seen, last = hosts, now
-            await asyncio.sleep(5)
+            await asyncio.sleep(NAMES_LOOK)
 
     async def _watch_config(self) -> None:
         while True:
@@ -513,7 +493,7 @@ class Hub:
         async def one(id: str, device: Device) -> None:
             async with limit:
                 if device.act is not None and not self.demo:
-                    await self._poll_actor(id)  # never raises
+                    await self.poll_actor(id)  # never raises
                 try:
                     # With a collector, it lists the containers (except in the demo, which has none).
                     if device.docker is not None and (device.collect is None or self.demo):
@@ -555,9 +535,9 @@ class Hub:
 
     async def _demo_vitals(self) -> None:
         """The made-up devices' vitals now, and a week of them the first time (for the charts)."""
-        ids = [i for i in (*demo.HOST, *demo.ROUTER, *demo.FRITZ) if i in self.monitor.status]
+        ids = [i for i in (*demo.HOST, *demo.ROUTER, *demo_more.FRITZ) if i in self.monitor.status]
         now = time.time()
-        if not getattr(self, "_demo_filled", False):
+        if not self._demo_filled:
             self._demo_filled = True
 
             def fill() -> None:
@@ -692,10 +672,15 @@ class Hub:
         """Lock one ring (or all), and forget what was opened with Kastellan's (logins kept in
         memory). Which rings were open."""
         gone = self.vault.lock(ring, by_hand=by_hand)
+        self._forget_if_locked()
+        return gone
+
+    def _forget_if_locked(self) -> None:
+        """With the kastellan ring locked, what was opened with its secrets goes: push's key and
+        the device clients (their logins)."""
         if not self.vault.is_open(KASTELLAN):
             self.push.forget_key()
             self.drop_clients()
-        return gone
 
     def drop_clients(self, id: str | None = None, ubus: bool = True, fritz: bool = True) -> None:
         """Forget the device clients (one device's, or all) and close their kept connections."""
@@ -709,28 +694,25 @@ class Hub:
             if not wanted:
                 continue
             for k in [k for k in cache if id is None or k[0] == id]:
-                pool = getattr(cache.pop(k), "pool", None)  # tests may keep fakes here
-                if pool is not None:
-                    pool.close()
+                cache.pop(k).pool.close()
+        if fritz:
+            for k in [k for k in self._fritz_web if id is None or k == id]:
+                del self._fritz_web[k]
 
     async def _relock(self) -> None:
         """Rings that stay open only while an admin uses the app (within ACTIVE_WINDOW), or until
         idle, close then."""
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(RELOCK_EVERY)
             using = bool(self.sessions.active(ACTIVE_WINDOW) & self.admins())
             for rid in self.vault.relock(using):
                 log.info("key ring %s: closed (its policy)", rid)
                 self.audit.record("vault.lock", None, None, ring=rid, by="its policy")
-            if not self.vault.is_open(KASTELLAN):
-                self.push.forget_key()
-                self.drop_clients()
+            self._forget_if_locked()
 
-    def _hub_backup_key(self) -> bytes:
+    def hub_backup_key(self) -> bytes:
         """The key of Kastellan's own backup (made from its passphrase; hubbackup.py)."""
-        import json as _json
-
-        return base64.b64decode(_json.loads(self.secrets.get(hubbackup.KEY_SECRET))["key"])
+        return base64.b64decode(json.loads(self.secrets.get(HUB_BACKUP_KEY))["key"])
 
     def own_secret(self, name: str, make=None) -> str:
         """A secret Kastellan makes for itself (a key, a password only it uses): read, or made
@@ -738,9 +720,7 @@ class Hub:
         try:
             return self.secrets.get(name)
         except KeyError:
-            import secrets as random
-
-            value = make() if make else random.token_urlsafe(24)
+            value = make() if make else token_urlsafe(24)
             self.secrets.set(name, value)
             return value
 
@@ -794,7 +774,7 @@ class Hub:
                     report["packages_checked"] = old.get("packages_checked")
                     if err := (old.get("errors") or {}).get("packages"):
                         report["errors"]["packages"] = err
-                    report["packages_skipped"] = packages_skipped(report)
+                    report["packages_skipped"] = openwrt_client.packages_skipped(report)
                     if report["packages_skipped"]:
                         report["packages"] = None
                         report["errors"].pop("packages", None)
@@ -881,12 +861,11 @@ class Hub:
 
     def fritz_web(self, id: str):
         """The FRITZ!Box's web interface API (fritzbox/web.py), with its TR-064 client's user."""
-        from .fritzbox.web import Web
-
         box = self.fritz(id)
-        if getattr(box, "web", None) is None:
-            box.web = Web(box)
-        return box.web
+        web = self._fritz_web.get(id)
+        if web is None or web.fb is not box:  # a new client (login, address): its own session
+            web = self._fritz_web[id] = fritz_web_api.Web(box)
+        return web
 
     async def _poll_fritzboxes(self) -> None:
         """Every FRITZ!Box with a login: its state every FRITZ_EVERY seconds."""
@@ -896,7 +875,7 @@ class Hub:
             if status is None:
                 return
             try:
-                async with asyncio.timeout(90):
+                async with asyncio.timeout(FRITZ_TIMEOUT):
                     report = await fritz_client.read(self.fritz(id))
                     # The web interface's own API (undocumented): WireGuard. Every WG_EVERY, the
                     # last answer kept between; after a failure (no such page, no right: a
@@ -910,10 +889,8 @@ class Hub:
                             report["errors"]["wireguard"] = err
                     else:
                         try:
-                            from .fritzbox import web
-
-                            async with asyncio.timeout(10):
-                                report["wireguard"] = web.wireguard(
+                            async with asyncio.timeout(WEB_TIMEOUT):
+                                report["wireguard"] = fritz_web_api.wireguard(
                                     await self.fritz_web(id).data("shareWireguard")
                                 )
                             self._wg_next[id] = (time.monotonic() + WG_EVERY, 0)
@@ -946,7 +923,7 @@ class Hub:
 
         while True:
             if self.demo:
-                for id, report in demo.FRITZ.items():
+                for id, report in demo_more.FRITZ.items():
                     if status := self.monitor.status.get(id):
                         status.fritz, status.fritz_checked = report, datetime.now(UTC)
             else:
@@ -962,7 +939,7 @@ class Hub:
         if time.monotonic() < due:
             return
         try:
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(WEB_TIMEOUT):
                 v = from_fritz(await self.fritz_web(id).data("ecoStat"))
             if v.empty():
                 raise ValueError("the energy monitor said nothing readable")
@@ -1045,7 +1022,9 @@ class Hub:
         }
         for vid in vids:
             s = self.config.vpns.get(vid)
-            instance = getattr(s, "instance", None)
+            if not isinstance(s, OpenVpnSource):
+                continue  # removed from config.yaml meanwhile
+            instance = s.instance
             connected: list = []
             error = None
             if none or not servers:
@@ -1059,7 +1038,7 @@ class Hub:
                 part = servers[instance or next(iter(servers))]
                 connected = parse_status(part)
                 meta = server_meta(part)
-                if meta["running"] is False or (meta["age"] is not None and meta["age"] > 300):
+                if meta["running"] is False or (meta["age"] is not None and meta["age"] > OVPN_STALE):
                     connected = []
                     error = f"the OpenVPN server on {id} is stopped or its status is stale"
                 markers = {ln for ln in part.splitlines() if ln.startswith("!")}
@@ -1077,7 +1056,7 @@ class Hub:
     async def _check_releases(self) -> None:
         """Whether a newer Kastellan is out, once a day (releases.py); the Updates page shows it
         and an info event tells it once."""
-        await asyncio.sleep(60)
+        await asyncio.sleep(RELEASES_FIRST)
         while True:
             if self.config.check_releases and not self.demo:
                 try:
@@ -1087,9 +1066,13 @@ class Hub:
                     log.info("can't ask for Kastellan's releases: %s", _brief(e))
             await asyncio.sleep(releases.EVERY)
 
+    def newer_release(self) -> releases.Release | None:
+        """A newer Kastellan, if one is out (and asking for releases is on)."""
+        return releases.newer(self.latest_release if self.config.check_releases else None, __version__)
+
     async def _heartbeat(self) -> None:
         """Call the heartbeat URL every minute while the hub runs (a dead man's switch)."""
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             while True:
                 url = self.config.heartbeat
                 if url and not self.demo:
@@ -1118,7 +1101,7 @@ class Hub:
         if info.firmware:
             self._note_firmware(id, info.firmware, now)
 
-    async def _poll_actor(self, id: str) -> None:
+    async def poll_actor(self, id: str) -> None:
         """Which of the actor's scripts on the host are older than the hub's (for Updates)."""
         status, device = self.monitor.status.get(id), self.config.devices.get(id)
         if status is None or device is None:
@@ -1140,7 +1123,7 @@ class Hub:
             containers = await docker.read_wud(wud)
         except Exception as e:
             # Keep what we knew; the app shows since when it's old.
-            reason = e or type(e).__name__
+            reason = _brief(e)
             status.containers_error = f"cannot read WUD at {wud} (docker: in config.yaml): {reason}"
             log.info("%s: %s", id, status.containers_error)
             return
@@ -1193,7 +1176,7 @@ class Hub:
                     self.config,
                     self.monitor.status,
                     now,
-                    self.alarms.muted,
+                    self.alarms.muted_now(now),
                     self.started,
                     unjudged,
                     self.ups_switched,
@@ -1209,8 +1192,13 @@ class Hub:
                 problems += self.alarms.carry(self._vuln_keys_unknown())
                 problems += self.alarms.carry(unjudged)
                 # Muted or removed devices: their alarms end without a "back up".
-                quiet = {d for d, until in self.alarms.muted.items() if until > now}
-                quiet |= {a.device for a in self.alarms.open.values() if a.device not in self.config.devices}
+                quiet = set(self.alarms.muted_now(now))
+                # (Kastellan's own alarms have no device: "" is the hub, never a removed device.)
+                quiet |= {
+                    a.device
+                    for a in self.alarms.open.values()
+                    if a.device and a.device not in self.config.devices
+                }
                 for device in self.alarms.ended_maintenance(now):
                     self.audit.record("device.maintenance.end", None, device=device, by="time")
                 held = set(maintenance.active(self.config, now, self.alarms.maintenance))
@@ -1234,7 +1222,7 @@ class Hub:
         self._outbox.extend((c, m, now, now, 1) for c, m in failed)
 
     def _quiet_notifications(self, now: datetime) -> set[str]:
-        return {d for d, until in self.alarms.muted.items() if until > now} | set(
+        return set(self.alarms.muted_now(now)) | set(
             maintenance.active(self.config, now, self.alarms.maintenance)
         )
 
@@ -1246,7 +1234,7 @@ class Hub:
         for channel, message, first_try, last_try, tries in self._outbox:
             if message.device in quiet:
                 continue  # maintenance ends with a fresh alarm if the problem remains
-            if (now - first_try).total_seconds() > 86400:
+            if (now - first_try).total_seconds() > OUTBOX_KEEP:
                 log.warning("giving up on a notification after a day: %s", message.title)
             elif channel not in self.config.notify:
                 continue  # the channel was removed from config.yaml
@@ -1256,9 +1244,9 @@ class Hub:
                 later.append((channel, message, first_try, last_try, tries))
         self._outbox = later
         # Push tries each browser again on its own (push.py), within the same kind of limit.
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(20):
+                async with asyncio.timeout(SEND_TIMEOUT):
                     await self.push.retry_due(client, blocked_urls={f"/devices/{d}" for d in quiet})
         if not due:
             return
@@ -1267,7 +1255,7 @@ class Hub:
             return not await notify.send([channel], [message], now, push=self.push, secrets=self.secrets.get)
 
         try:
-            async with asyncio.timeout(20):
+            async with asyncio.timeout(SEND_TIMEOUT):
                 results = await asyncio.gather(*(one(c, m) for c, m, _, _ in due))
         except TimeoutError:
             results = [False] * len(due)
@@ -1405,9 +1393,7 @@ class Hub:
                 noun = "vulnerability" if len(new) == 1 else "vulnerabilities"
                 title = f"{label}: {len(new)} new known {noun}"
                 out.append(Message(Severity.INFO, title, "; ".join(new[:8]), id))
-        if new_release := releases.newer(
-            self.latest_release if self.config.check_releases else None, __version__
-        ):
+        if new_release := self.newer_release():
             key = f"kastellan:{new_release.version}"
             title = f"Kastellan {new_release.version} is out (this hub runs {__version__})"
             if m := self.alarms.event(key, title, new_release.url, None, now, send):
@@ -1430,8 +1416,6 @@ class Hub:
         """DHCP: a router's pool nearly used up (warning, from 90 %); a DHCP server answering that
         isn't the one a device's dhcp check expects (warning: a second router, a misconfigured
         device, or someone handing out addresses)."""
-        from . import dhcp
-
         out: list[Problem] = []
         now = datetime.now(UTC)
         for id, status in self.monitor.status.items():
@@ -1606,9 +1590,9 @@ class Hub:
             if reason is None:
                 continue
             if device.act is not None:
-                # The actor pulls the container's own tag again, never another one: a fix in a
-                # newer version tag needs that tag in its settings, a person's decision.
-                if c.get("update_to") != "newer build":
+                # By policy, only a new build of the tag it runs: going to another version tag
+                # is a person's decision (Updates), never automatic.
+                if c.get("update_to") != NEWER_BUILD:
                     continue
                 if allowed is None:
                     try:
@@ -1621,9 +1605,16 @@ class Hub:
             if done in self.alarms.seen_events:
                 continue  # once per new image
             self.alarms.event(done, "", "", id, datetime.now(UTC), send=False)
-            task = asyncio.create_task(self._update_one(id, device, c, reason), name=f"update {id} {key}")
-            self._background.add(task)
-            task.add_done_callback(self._background.discard)
+            self.spawn(self._update_one(id, device, c, reason), name=f"update {id} {key}")
+
+    def spawn(self, run: Coroutine[Any, Any, Any], name: str | None = None) -> asyncio.Task[Any]:
+        """`run` as one of the hub's own tasks: kept until done, cancelled when the hub stops, and
+        its error read (logged) instead of left for the garbage collector to complain about."""
+        task = asyncio.create_task(run, name=name)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        task.add_done_callback(_log_failure)
+        return task
 
     async def _update_one(self, id: str, device: Device, c: dict[str, Any], reason: str) -> None:
         key = c.get("key", c["name"])
@@ -1664,7 +1655,7 @@ class Hub:
 
     async def _check_vpn_helpers(self) -> None:
         """Twice a day: whether the scripts Kastellan's VPN key runs are this hub's versions."""
-        await asyncio.sleep(120)
+        await asyncio.sleep(VPN_HELPERS_FIRST)
         while True:
             if not self.demo:
                 for vid, s in list(self.config.vpns.items()):
@@ -1677,7 +1668,7 @@ class Hub:
                     except Exception as e:  # its devices are gone from the config: next time
                         log.info("VPN helpers of %s: %s", vid, _brief(e))
                 self.vpn_outdated = {v: o for v, o in self.vpn_outdated.items() if v in self.config.vpns}
-            await asyncio.sleep(12 * 3600)
+            await asyncio.sleep(VPN_HELPERS_EVERY)
 
     def vpn_outdated_on(self, device: str) -> list[str]:
         """The VPN helper scripts on this device older than this hub's ("vpn-pki", "vpn-crl")."""
@@ -1724,12 +1715,12 @@ class Hub:
                     title = f"{s.name or vid}: the CRL couldn't be renewed"
                     with contextlib.suppress(Exception):
                         await self._send([Message(Severity.WARNING, title, str(e)[:200])], datetime.now(UTC))
-            await asyncio.sleep(86400)
+            await asyncio.sleep(CRL_EVERY)
 
     async def _expire_tickets(self) -> None:
         """A ticket holds a desktop password until used; unused ones go after their minute."""
         while True:
-            await asyncio.sleep(15)
+            await asyncio.sleep(TICKETS_EVERY)
             self.tickets.expire()
 
     async def _prune(self) -> None:

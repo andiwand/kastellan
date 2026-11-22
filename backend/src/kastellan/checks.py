@@ -1,5 +1,5 @@
-"""Reachability checks: ping, a TCP connect, an HTTP request, a DNS lookup. Each returns a Result and
-never raises."""
+"""Reachability checks: ping, a TCP connect, an HTTP request, a DNS lookup, a DHCP request. Each
+returns a Result and never raises."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import httpx
 from icmplib import async_ping
 from icmplib.exceptions import ICMPLibError, SocketPermissionError
 
-from . import tls
+from . import dhcp, tls
 from .config import Check, CheckType
 from .software import Software, from_greeting, from_http
 
@@ -100,8 +100,6 @@ async def _ping(host: str, check: Check) -> Result:
 async def _dhcp(host: str, check: Check) -> Result:
     """Ask for an address like a new device (dhcp.py): up when this device's server offers one.
     Offers from other servers are noted (an unexpected DHCP server is an alarm of its own)."""
-    from . import dhcp
-
     loop = asyncio.get_running_loop()
     expected = set()
     try:

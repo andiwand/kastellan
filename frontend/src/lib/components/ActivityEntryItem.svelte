@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ActivityEntry } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { clock, dayClock, duration } from '#lib/format.js';
+	import { clock, dayClock, duration, versionSubject } from '#lib/format.js';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import Activity from '@lucide/svelte/icons/activity';
 	import Unplug from '@lucide/svelte/icons/unplug';
@@ -85,7 +85,7 @@
 			<span class="tabular block text-xs text-faint">{span(entry.start, entry.end)}</span>
 		{:else}
 			<span class="font-medium">{name(entry.device)}</span>
-			<span class="text-muted">{entry.check} updated</span>
+			<span class="text-muted">{versionSubject(entry.check)} updated</span>
 			<span class="block text-xs text-muted">
 				{entry.from} <span class="text-faint">→</span> <span class="text-text">{entry.to}</span>
 			</span>

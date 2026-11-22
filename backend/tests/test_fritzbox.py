@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from kastellan.fritzbox import client as fb
-from kastellan.openwrt.client import Pins
+from kastellan.pinned_http import Pins
 
 DESC = """<?xml version="1.0"?>
 <root xmlns="urn:dslforum-org:device-1-0"><device>
@@ -40,6 +40,7 @@ class FakeBox:
         self.calls: list[tuple[str, dict]] = []
         self.ssid = {1: "Castle", 2: "Castle", 3: "Castle guests"}
         self.key = {1: "k1", 2: "k1", 3: "guest"}
+        self.uptime = "99"
         self.log = "21.11.26 10:00:02 WLAN-Gerät angemeldet\n21.11.26 09:59:00 Anmeldung fehlgeschlagen\n"
 
     def authorized(self, request: httpx.Request) -> bool:
@@ -93,7 +94,7 @@ class FakeBox:
                 "DeviceInfo": {
                     "NewModelName": "FRITZ!Box 7590",
                     "NewSoftwareVersion": "154.08.20",
-                    "NewUpTime": "99",
+                    "NewUpTime": self.uptime,
                 },
                 "UserInterface": {"NewUpgradeAvailable": "1", "NewX_AVM-DE_Version": "FRITZ!OS 8.21"},
                 "WANPPPConnection": {
@@ -359,6 +360,11 @@ def test_the_wifi_environment_and_wireguard_as_fritzos_8_25_shows_them() -> None
     assert wg["port"] == "51820" and wg["connections"][0]["name"] == "phone"
     with pytest.raises(fb.FritzError, match="can't be read"):
         web.wireguard({})  # an unknown schema is not an empty connection list
+    lists = {"userConnections": [], "boxConnections": []}
+    assert (
+        web.wireguard({"init": lists | {"wg_global_error": {"eventMsg": "no route"}}})["error"] == "no route"
+    )
+    assert web.wireguard({"init": lists | {"wg_global_error": "odd"}})["error"] is None
 
 
 async def test_the_mesh_and_each_networks_clients(tmp_path: Path) -> None:
@@ -513,6 +519,41 @@ async def test_what_rarely_changes_is_asked_less_often(tmp_path: Path) -> None:
     m = len(fake.calls)
     await fb.read(b)
     assert any(c.startswith("WLANConfiguration") for c, _ in fake.calls[m:])
+
+
+async def test_a_restart_reads_everything_anew(tmp_path: Path) -> None:
+    """A lower uptime: the box restarted (new FRITZ!OS perhaps), so the kept sections and its
+    service list are read again."""
+    fake = FakeBox()
+    b = box(tmp_path, fake)
+    await fb.read(b)
+    services = b._services
+    fake.uptime = "5"
+    m = len(fake.calls)
+    await fb.read(b)
+    assert "UserInterface:1#GetInfo" in [c for c, _ in fake.calls[m:]]
+    assert b._services is not services
+
+
+async def test_the_action_after_a_confirmation_has_its_own_time(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    b = box(tmp_path, FakeBox())
+
+    async def call(service, action, args=None, timeout=30):
+        return {"NewToken": "t", "NewState": "authenticated"} if action == "SetConfig" else {}
+
+    monkeypatch.setattr(b, "call", call)
+    tries = []
+
+    async def action():
+        tries.append(1)
+        if len(tries) == 1:
+            raise fb.FritzError(866, "confirm it")
+        await asyncio.sleep(0.1)  # longer than the confirmation may take
+        return "done"
+
+    assert await fb.confirmed(b, action, wait=0.05, poll=0) == "done"
 
 
 async def test_an_old_read_cannot_repopulate_an_invalidated_cache(tmp_path: Path) -> None:

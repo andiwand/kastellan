@@ -57,7 +57,7 @@ def test_versions_dedup_and_diff(tmp_path: Path) -> None:
     assert "-\toption channel '6'" in text and "+\toption channel '11'" in text
     assert "secret-one" not in text and "secret-two" not in text
     assert "option key '[secret " in text  # changed, as fingerprints
-    assert store.text("ap", first.id, "etc/shadow", SALT).startswith("(a secret as a whole")
+    assert devbackups.secret_file("etc/shadow")  # never shown as text, only fingerprinted
 
 
 def test_the_archive_comes_back_whole(tmp_path: Path) -> None:
@@ -191,7 +191,7 @@ async def test_fritz_backup_keeps_original_bytes_and_restore_password(tmp_path, 
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         assert archive.read(next(n for n in archive.namelist() if n.endswith(".export"))) == raw
         assert archive.read("export-password.txt") == b"restore-password"
-    assert "restore-password" not in store.text("gw", snap.id, "export-password.txt", SALT)
+    assert devbackups.secret_file("export-password.txt")
 
 
 def test_metadata_changes_and_reduced_retention(tmp_path: Path) -> None:

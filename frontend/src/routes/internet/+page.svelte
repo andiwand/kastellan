@@ -1,7 +1,8 @@
 <script lang="ts">
+	import Tabs from '#lib/components/Tabs.svelte';
 	import { more, type Bucket, type InternetView } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { dayClock, duration } from '#lib/format.js';
+	import { bitrate, bytes, dayClock, duration, kbitrate } from '#lib/format.js';
 	import LatencyChart from '#lib/components/LatencyChart.svelte';
 	import UptimeStrip from '#lib/components/UptimeStrip.svelte';
 	import Gauge from '@lucide/svelte/icons/gauge';
@@ -41,7 +42,7 @@
 		testNote = null;
 		try {
 			const r = await more.speedtest();
-			testNote = `↓ ${mbit(r.down)} · ↑ ${mbit(r.up)} · latency ${r.ms_idle ?? '–'} ms idle, ${r.ms_loaded ?? '–'} ms under load`;
+			testNote = `↓ ${bitrate(r.down)} · ↑ ${bitrate(r.up)} · latency ${r.ms_idle ?? '–'} ms idle, ${r.ms_loaded ?? '–'} ms under load`;
 			await load();
 		} catch (e) {
 			testNote = (e as Error).message;
@@ -51,14 +52,6 @@
 	}
 
 	const name = (id: string) => store.devices?.find((d) => d.id === id)?.name ?? id;
-	const gb = (bytes: number) =>
-		bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
-	const mbit = (b: number | null | undefined) =>
-		b == null
-			? '–'
-			: b >= 1e9
-				? `${(b / 1e9).toFixed(2)} Gbit/s`
-				: `${(b / 1e6).toFixed(b < 1e7 ? 1 : 0)} Mbit/s`;
 	const pct = (v: number | null | undefined, digits = 2) =>
 		v == null ? '–' : `${(v * 100).toFixed(digits)} %`;
 	const STATE: Record<string, [string, string]> = {
@@ -103,18 +96,13 @@
 				</a>{:else}the hub's gateway{/if}.
 		</p>
 	</div>
-	<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-		{#each RANGES as r (r.hours)}
-			<button
-				onclick={() => (hours = r.hours)}
-				class="h-7 rounded-lg px-3 text-xs font-medium {hours === r.hours
-					? 'bg-surface-3 text-text'
-					: 'text-muted hover:text-text'}"
-			>
-				{r.label}
-			</button>
-		{/each}
-	</div>
+	<Tabs
+		small
+		label="Range"
+		tabs={RANGES.map((r) => ({ id: r.hours, label: r.label }))}
+		current={hours}
+		onselect={(h) => (hours = h)}
+	/>
 </div>
 
 {#if error}<p class="mt-4 text-sm" style:color="var(--critical-text)">{error}</p>{/if}
@@ -165,7 +153,7 @@
 			</div>
 			<div>
 				<dt class="text-xs text-muted">In use now</dt>
-				<dd class="tabular">↓ {mbit(now?.down)} · ↑ {mbit(now?.up)}</dd>
+				<dd class="tabular">↓ {bitrate(now?.down)} · ↑ {bitrate(now?.up)}</dd>
 			</div>
 			<div>
 				<dt class="text-xs text-muted">Public address</dt>
@@ -194,8 +182,8 @@
 			<p class="mt-3 text-xs text-muted">
 				{#if view.line.access}{view.line.access}{/if}
 				{#if view.line.connected_for}· connected for {duration(view.line.connected_for)}{/if}
-				{#if view.line.dsl}· synced at ↓ {mbit((view.line.dsl.down ?? 0) * 1000)} · ↑ {mbit(
-						(view.line.dsl.up ?? 0) * 1000
+				{#if view.line.dsl}· synced at ↓ {kbitrate(view.line.dsl.down)} · ↑ {kbitrate(
+						view.line.dsl.up
 					)}{/if}
 			</p>
 		{/if}
@@ -327,8 +315,8 @@
 									{c.name ?? c.mac}
 									{#if c.name}<span class="font-mono text-xs text-faint">{c.mac}</span>{/if}
 								</td>
-								<td>{mbit(c.rx_rate)} · {mbit(c.tx_rate)}</td>
-								<td>{gb(c.rx)} · {gb(c.tx)}</td>
+								<td>{bitrate(c.rx_rate)} · {bitrate(c.tx_rate)}</td>
+								<td>{bytes(c.rx)} · {bytes(c.tx)}</td>
 							</tr>
 						{/each}
 					</tbody>
@@ -384,8 +372,8 @@
 							t.down < view.speedtest.booked_down * 5e5}
 						<tr class="border-t border-line">
 							<td class="py-1">{dayClock(new Date(t.t * 1000))}</td>
-							<td style:color={low ? 'var(--warning-text)' : undefined}>{mbit(t.down)}</td>
-							<td>{mbit(t.up)}</td>
+							<td style:color={low ? 'var(--warning-text)' : undefined}>{bitrate(t.down)}</td>
+							<td>{bitrate(t.up)}</td>
 							<td>
 								{t.ms_idle ?? '–'} → {t.ms_loaded ?? '–'} ms
 								{#if t.ms_idle && t.ms_loaded && t.ms_loaded > t.ms_idle * 4}<span

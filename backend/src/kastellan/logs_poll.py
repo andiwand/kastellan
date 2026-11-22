@@ -1,5 +1,8 @@
-"""Bringing log lines in (logs.py): fetched from the devices that allow it, every minute, and
-taken from the open syslog port when it is on. The hub runs `run(hub)` as one task."""
+"""Bringing log lines in (logs.py), every minute: fetched from the devices that allow it
+(OpenWrt's logd, a FRITZ!Box's event log, Linux hosts' journals and containers' own logs through
+the actor), made from wg-easy's handshakes (WireGuard presence), and taken from the TLS syslog
+listener (verified, syslog_tls.py) and the open UDP syslog port when it is on (unverified). The
+hub runs `run(hub)` as one task."""
 
 from __future__ import annotations
 
@@ -220,9 +223,10 @@ async def wireguard(hub: Hub) -> None:
     from .vpn.wireguard import WgEasy
 
     now = time.time()
-    for vid, vpn in hub.config.vpns.items():
-        if vpn.kind != "wireguard":
-            continue
+    wanted = {vid: vpn for vid, vpn in hub.config.vpns.items() if vpn.kind == "wireguard"}
+    for gone in set(hub.vpn_addresses) - set(wanted):
+        del hub.vpn_addresses[gone]
+    for vid, vpn in wanted.items():
         try:
             clients = await WgEasy(vpn.wg_easy, vpn.user, hub.secrets.get(vpn.password_secret)).clients()
         except Exception:
@@ -239,16 +243,20 @@ async def wireguard(hub: Hub) -> None:
         key = f"wireguard:{vid}"
         was: dict[str, bool] = await asyncio.to_thread(hub.logs.get_state, key) or {}
         now_on: dict[str, bool] = {}
+        addresses: dict[str, str] = {}
         lines = []
         for c in clients:
-            if c.address:
-                for a in c.address.split(","):
-                    hub.vpn_addresses[a.strip().split("/")[0]] = f"{c.name} ({vpn.name or vid})"
-            last = (
-                datetime.fromisoformat(c.last_handshake.replace("Z", "+00:00")).timestamp()
-                if c.last_handshake
-                else None
-            )
+            for a in (c.address or "").split(","):
+                if a.strip():
+                    addresses[a.strip().split("/")[0]] = f"{c.name} ({vpn.name or vid})"
+            try:
+                last = (
+                    datetime.fromisoformat(c.last_handshake.replace("Z", "+00:00")).timestamp()
+                    if c.last_handshake
+                    else None
+                )
+            except ValueError:  # one odd entry doesn't stop the others
+                continue
             active = last is not None and 0 <= now - last < QUIET_AFTER
             now_on[c.id] = active
             if active and not was.get(c.id):
@@ -273,6 +281,7 @@ async def wireguard(hub: Hub) -> None:
                         f"{c.name} went quiet (no handshake for {QUIET_AFTER // 60} min)",
                     )
                 )
+        hub.vpn_addresses[vid] = addresses  # this VPN's clients now (only these)
         if lines:
             await asyncio.to_thread(hub.logs.add, lines)
         await asyncio.to_thread(hub.logs.set_state, key, now_on)
@@ -305,7 +314,7 @@ class Syslog:
 
         try:
             self.transport, self.protocol = await loop.create_datagram_endpoint(
-                lambda: logs.SyslogReceiver(who, hub.logs), local_addr=("0.0.0.0", port)
+                lambda: logs.SyslogReceiver(who), local_addr=("0.0.0.0", port)
             )
             self.port, self.error = port, None
             log.info("syslog: listening on UDP %d", port)

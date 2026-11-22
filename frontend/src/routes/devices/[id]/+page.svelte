@@ -88,16 +88,16 @@
 	function show(t: Tab, v: 'form' | 'yaml' = 'form') {
 		const q =
 			t === 'status' ? '?' : `?tab=${t}${t === 'config' && v === 'yaml' ? '&view=yaml' : ''}`;
-		goto(q, { replaceState: true });
+		goto(q, { replace: true });
 	}
-	/** One action through the host's actor; what happened, in words. */
 	// Through the hub on its own name (webproxy.py) for signed-in admins when web: is set: the
 	// hub hands out a one-time ticket and sends the browser there; else the device directly.
 	const webUi = $derived.by(() => {
 		if (!device?.web_url) return undefined;
-		if (store.health?.web_domain && store.me?.role === 'admin' && store.me.user)
+		if (store.health?.web_domain && signedAdmin)
 			return `/api/devices/${encodeURIComponent(device.id)}/web`;
-		return (device.checks.find((c) => c.type === 'http')?.target as string) ?? device.web_url;
+		const http = device.checks.find((c) => c.type === 'http')?.target;
+		return typeof http === 'string' ? http : device.web_url;
 	});
 
 	const ranges = [
@@ -105,7 +105,8 @@
 		{ hours: 24, buckets: 96, label: '24 h' },
 		{ hours: 24 * 7, buckets: 84, label: '7 d' }
 	];
-	let range = $state(ranges[1]);
+	let hours = $state(24);
+	const range = $derived(ranges.find((r) => r.hours === hours) ?? ranges[1]);
 	let series = $state<Series | null>(null);
 	let changes = $state<Change[]>([]);
 	let chosen = $state<string | null>(null);
@@ -114,6 +115,12 @@
 	let firmwareOpen = $state(false);
 	let fritzUpdate = $state<'asking' | 'started' | null>(null);
 	let fritzNote = $state<string | null>(null);
+	// Going to another device keeps this page: what was chosen or open here was for the last one
+	// (the components below are keyed on the device and start afresh by themselves).
+	$effect.pre(() => {
+		void id;
+		[chosen, wifiOpen, firmwareOpen, fritzUpdate, fritzNote] = [null, false, false, null, null];
+	});
 	async function updateFritz() {
 		try {
 			await more.fritzFirmware(id);
@@ -185,286 +192,283 @@
 		There is no device <code class="font-mono">{id}</code> in config.yaml.
 	</div>
 {:else if device}
-	<header class="mt-4 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-		<div class="flex min-w-0 flex-1 items-start gap-4">
-			<div class="card grid size-14 shrink-0 place-items-center rounded-2xl text-muted">
-				<KindIcon kind={device.kind} class="size-6" />
-			</div>
-			<div class="min-w-0">
-				<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-					<h1 class="text-2xl font-semibold tracking-tight">{device.name}</h1>
-					<StatusBadge {status} />
-					{#if store.alarms?.maintenance?.[device.id]}
-						{@const m = store.alarms.maintenance[device.id]}
-						<span
-							class="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted"
-							title="Problems show but are sent only if still there when it ends"
-						>
-							<Wrench class="size-3.5" />
-							{m.reason} · until {dayClock(m.until)}
-						</span>
-					{/if}
+	<!-- Keyed: another device's page starts afresh, never keeping (or saving) this one's forms,
+	     questions or answers. -->
+	{#key device.id}
+		<header class="mt-4 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+			<div class="flex min-w-0 flex-1 items-start gap-4">
+				<div class="card grid size-14 shrink-0 place-items-center rounded-2xl text-muted">
+					<KindIcon kind={device.kind} class="size-6" />
 				</div>
-				<div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
-					{#if device.host}
-						<button
-							onclick={copyHost}
-							class="inline-flex items-center gap-1.5 font-mono text-[13px] hover:text-text"
-							title="Copy the address"
-						>
-							{device.host}
-							{#if copied}<Check class="size-3.5" style="color: var(--good-text)" />{:else}<Copy
-									class="size-3.5 text-faint"
-								/>{/if}
-						</button>
-						<span class="text-faint">·</span>
-					{/if}
-					<span>{kindLabel[device.kind] ?? device.kind}</span>
-					{#if parent}
-						<span class="text-faint">·</span>
-						<span>
-							via <a href="/devices/{parent.id}" class="text-text hover:underline">{parent.name}</a>
-						</span>
-					{/if}
-					{#if device.powered_by}
-						{@const u = store.byId.get(device.powered_by.ups)}
-						<span class="text-faint">·</span>
-						<span>
-							on <a class="text-text hover:underline" href="/devices/{device.powered_by.ups}">
-								{u?.name ?? device.powered_by.ups}
-							</a>
-							<span style:color={statusColor[upsStatus[device.powered_by.state] ?? 'waiting'].text}>
-								· {upsLabel[device.powered_by.state] ?? device.powered_by.state}
-							</span>
-						</span>
-					{/if}
-					{#each device.reads_ups ?? [] as r (r.device)}
-						<span class="text-faint">·</span>
-						<span>
-							UPS <a class="text-text hover:underline" href="/devices/{r.device}">
-								{store.byId.get(r.device)?.name ?? r.device}
-							</a>
-							<span style:color={statusColor[upsStatus[r.state] ?? 'waiting'].text}>
-								· {upsLabel[r.state] ?? r.state}
-							</span>
-						</span>
-					{/each}
-					{#if device.runs_on}
-						{@const host = store.byId.get(device.runs_on.host)}
-						<span class="text-faint">·</span>
-						<span>
-							virtual machine on <a
-								class="text-text hover:underline"
-								href="/devices/{device.runs_on.host}"
+				<div class="min-w-0">
+					<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+						<h1 class="text-2xl font-semibold tracking-tight">{device.name}</h1>
+						<StatusBadge {status} />
+						{#if store.alarms?.maintenance?.[device.id]}
+							{@const m = store.alarms.maintenance[device.id]}
+							<span
+								class="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-muted"
+								title="Problems show but are sent only if still there when it ends"
 							>
-								{host?.name ?? device.runs_on.host}
-							</a>
-							<span style:color={vmTone(device.runs_on.state ?? '')}>
-								· {device.runs_on.state || 'not reported'}
+								<Wrench class="size-3.5" />
+								{m.reason} · until {dayClock(m.until)}
 							</span>
-						</span>
-					{/if}
-					{#if device.info?.model}
-						<span class="text-faint">·</span>
-						<span>{device.info.model}</span>
-					{/if}
-					{#if device.info?.firmware}
-						<span class="text-faint">·</span>
-						<span title="Reported by the device">{device.info.firmware}</span>
-					{/if}
-					{#each device.tags as tag (tag)}
-						<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs">{tag}</span>
-					{/each}
+						{/if}
+					</div>
+					<div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+						{#if device.host}
+							<button
+								onclick={copyHost}
+								class="inline-flex items-center gap-1.5 font-mono text-[13px] hover:text-text"
+								title="Copy the address"
+							>
+								{device.host}
+								{#if copied}<Check class="size-3.5" style="color: var(--good-text)" />{:else}<Copy
+										class="size-3.5 text-faint"
+									/>{/if}
+							</button>
+							<span class="text-faint">·</span>
+						{/if}
+						<span>{kindLabel[device.kind] ?? device.kind}</span>
+						{#if parent}
+							<span class="text-faint">·</span>
+							<span>
+								via <a href="/devices/{parent.id}" class="text-text hover:underline">
+									{parent.name}
+								</a>
+							</span>
+						{/if}
+						{#if device.powered_by}
+							{@const u = store.byId.get(device.powered_by.ups)}
+							<span class="text-faint">·</span>
+							<span>
+								on <a class="text-text hover:underline" href="/devices/{device.powered_by.ups}">
+									{u?.name ?? device.powered_by.ups}
+								</a>
+								<span
+									style:color={statusColor[upsStatus[device.powered_by.state] ?? 'waiting'].text}
+								>
+									· {upsLabel[device.powered_by.state] ?? device.powered_by.state}
+								</span>
+							</span>
+						{/if}
+						{#each device.reads_ups ?? [] as r (r.device)}
+							<span class="text-faint">·</span>
+							<span>
+								UPS <a class="text-text hover:underline" href="/devices/{r.device}">
+									{store.byId.get(r.device)?.name ?? r.device}
+								</a>
+								<span style:color={statusColor[upsStatus[r.state] ?? 'waiting'].text}>
+									· {upsLabel[r.state] ?? r.state}
+								</span>
+							</span>
+						{/each}
+						{#if device.runs_on}
+							{@const host = store.byId.get(device.runs_on.host)}
+							<span class="text-faint">·</span>
+							<span>
+								virtual machine on <a
+									class="text-text hover:underline"
+									href="/devices/{device.runs_on.host}"
+								>
+									{host?.name ?? device.runs_on.host}
+								</a>
+								<span style:color={vmTone(device.runs_on.state ?? '')}>
+									· {device.runs_on.state || 'not reported'}
+								</span>
+							</span>
+						{/if}
+						{#if device.info?.model}
+							<span class="text-faint">·</span>
+							<span>{device.info.model}</span>
+						{/if}
+						{#if device.info?.firmware}
+							<span class="text-faint">·</span>
+							<span title="Reported by the device">{device.info.firmware}</span>
+						{/if}
+						{#each device.tags as tag (tag)}
+							<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs">{tag}</span>
+						{/each}
+					</div>
 				</div>
 			</div>
-		</div>
-		<!-- The actions wrap within at most about half the width: the name keeps the rest. -->
-		<div class="flex flex-wrap gap-2 self-start lg:max-w-[55%] lg:justify-end">
-			<!-- Getting to it, acting on it, then its alarms. -->
-			{#if device.ssh_port && store.me?.role === 'admin' && store.me.user}
-				<a
-					href="/devices/{device.id}/terminal"
-					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
-				>
-					<SquareTerminal class="size-4 text-muted" /> Terminal
-				</a>
-			{/if}
-			{#if device.desktop && store.me?.role === 'admin' && store.me.user}
-				<a
-					href="/devices/{device.id}/desktop"
-					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
-				>
-					<MonitorPlay class="size-4 text-muted" /> Desktop
-				</a>
-			{/if}
-			{#if webUi}
-				<a
-					href={webUi}
-					target="_blank"
-					rel="noopener noreferrer"
-					class="inline-flex h-9 shrink-0 items-center gap-2 self-start rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
-				>
-					Open web interface <ExternalLink class="size-3.5 text-muted" />
-				</a>
-			{/if}
-			{#if webUi && store.me?.role === 'admin' && store.me.user}
-				{#key device.id}<WebLogin device={device.id} proxied={!!store.health?.web_domain} />{/key}
-			{/if}
-			{#if device.fritzbox && device.fritz && store.me?.role === 'admin' && store.me.user}
-				<RouterReboot device={device.id} kind="fritzbox" />
-				{#if device.fritz.update?.available}
-					<button
-						class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
-						title="Install {device.fritz.update.version ?? 'the update FRITZ!OS offers'}"
-						onclick={() => (fritzUpdate = 'asking')}
+			<!-- The actions wrap within at most about half the width: the name keeps the rest. -->
+			<div class="flex flex-wrap gap-2 self-start lg:max-w-[55%] lg:justify-end">
+				<!-- Getting to it, acting on it, then its alarms. -->
+				{#if device.ssh_port && signedAdmin}
+					<a href="/devices/{device.id}/terminal" class="btn-header">
+						<SquareTerminal class="size-4 text-muted" /> Terminal
+					</a>
+				{/if}
+				{#if device.desktop && signedAdmin}
+					<a href="/devices/{device.id}/desktop" class="btn-header">
+						<MonitorPlay class="size-4 text-muted" /> Desktop
+					</a>
+				{/if}
+				{#if webUi}
+					<a
+						href={webUi}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="btn-header shrink-0 self-start"
 					>
-						<CircleFadingArrowUp class="size-4 text-muted" />
-						{fritzUpdate === 'asking'
-							? 'Install it?'
-							: fritzUpdate === 'started'
-								? 'Updating…'
-								: 'Update firmware'}
-					</button>
-					{#if fritzUpdate === 'asking'}
-						<span class="inline-flex h-9 items-center gap-2 text-sm">
-							<button class="underline" style:color="var(--critical-text)" onclick={updateFritz}>
-								Yes, it restarts
-							</button>
-							<button class="underline" onclick={() => (fritzUpdate = null)}>No</button>
-						</span>
+						Open web interface <ExternalLink class="size-3.5 text-muted" />
+					</a>
+				{/if}
+				{#if webUi && signedAdmin}
+					<WebLogin device={device.id} proxied={!!store.health?.web_domain} />
+				{/if}
+				{#if device.fritzbox && device.fritz && signedAdmin}
+					<RouterReboot device={device.id} kind="fritzbox" />
+					{#if device.fritz.update?.available}
+						<button
+							class="btn-header"
+							title="Install {device.fritz.update.version ?? 'the update FRITZ!OS offers'}"
+							onclick={() => (fritzUpdate = 'asking')}
+						>
+							<CircleFadingArrowUp class="size-4 text-muted" />
+							{fritzUpdate === 'asking'
+								? 'Install it?'
+								: fritzUpdate === 'started'
+									? 'Updating…'
+									: 'Update firmware'}
+						</button>
+						{#if fritzUpdate === 'asking'}
+							<span class="inline-flex h-9 items-center gap-2 text-sm">
+								<button class="underline" style:color="var(--critical-text)" onclick={updateFritz}>
+									Yes, it restarts
+								</button>
+								<button class="underline" onclick={() => (fritzUpdate = null)}>No</button>
+							</span>
+						{/if}
+					{/if}
+					{#if fritzNote}<span class="self-center text-xs" style:color="var(--critical-text)">
+							{fritzNote}
+						</span>{/if}
+				{/if}
+				{#if device.act && signedAdmin}
+					<HostReboot device={device.id} wanted={!!device.host_report?.updates?.reboot} />
+				{/if}
+				{#if device.openwrt && device.router && signedAdmin}
+					<RouterReboot device={device.id} />
+					{#if device.router.firmware?.next_step}
+						<button
+							class="btn-header"
+							title="To OpenWrt {device.router.firmware.next_step}"
+							onclick={() => (firmwareOpen = true)}
+						>
+							<CircleFadingArrowUp class="size-4 text-muted" /> Update firmware
+						</button>
+					{/if}
+					{#if firmwareOpen && device.router.firmware}
+						<FirmwareDialog
+							device={device.id}
+							advice={device.router.firmware}
+							model={device.router.board.model}
+							onclose={() => (firmwareOpen = false)}
+						/>
 					{/if}
 				{/if}
-				{#if fritzNote}<span class="self-center text-xs" style:color="var(--critical-text)">
-						{fritzNote}
-					</span>{/if}
-			{/if}
-			{#if device.act && store.me?.role === 'admin' && store.me.user}
-				<HostReboot device={device.id} wanted={!!device.host_report?.updates?.reboot} />
-			{/if}
-			{#if device.openwrt && device.router && store.me?.role === 'admin' && store.me.user}
-				<RouterReboot device={device.id} />
-				{#if device.router.firmware?.next_step}
+				{#if admin}
+					{@const mutedUntil = store.alarms?.muted[device.id]}
 					<button
-						class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
-						title="To OpenWrt {device.router.firmware.next_step}"
-						onclick={() => (firmwareOpen = true)}
+						onclick={async () => {
+							await api.mute(device.id, mutedUntil ? 0 : 60);
+							store.refreshHistory();
+						}}
+						class="btn-header"
+						title={mutedUntil ? `No alarms until ${dayClock(mutedUntil)}` : 'No alarms for an hour'}
 					>
-						<CircleFadingArrowUp class="size-4 text-muted" /> Update firmware
+						{#if mutedUntil}<BellOff class="size-4 text-muted" /> Muted{:else}<Bell
+								class="size-4 text-muted"
+							/> Mute 1 h{/if}
 					</button>
+					<MaintenanceButton kind="devices" id={device.id} devices={[device.id]} />
 				{/if}
-				{#if firmwareOpen && device.router.firmware}
-					<FirmwareDialog
-						device={device.id}
-						advice={device.router.firmware}
-						model={device.router.board.model}
-						onclose={() => (firmwareOpen = false)}
-					/>
-				{/if}
-			{/if}
-			{#if store.me?.role === 'admin'}
-				{@const mutedUntil = store.alarms?.muted[device.id]}
-				<button
-					onclick={async () => {
-						await api.mute(device.id, mutedUntil ? 0 : 60);
-						store.refreshHistory();
-					}}
-					class="inline-flex h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3.5 text-sm font-medium shadow-card transition-colors hover:border-line-strong"
-					title={mutedUntil ? `No alarms until ${dayClock(mutedUntil)}` : 'No alarms for an hour'}
-				>
-					{#if mutedUntil}<BellOff class="size-4 text-muted" /> Muted{:else}<Bell
-							class="size-4 text-muted"
-						/> Mute 1 h{/if}
-				</button>
-				<MaintenanceButton kind="devices" id={device.id} devices={[device.id]} />
-			{/if}
-		</div>
-	</header>
-
-	{#if admin}
-		<div class="mt-6">
-			<Tabs
-				tabs={[
-					{ id: 'status', label: 'Status' },
-					...(device.host ? [{ id: 'setup' as const, label: 'Setup' }] : []),
-					{ id: 'config', label: 'Config' }
-				]}
-				current={tab}
-				onselect={(t) => show(t)}
-			/>
-		</div>
-	{/if}
-
-	{#if tab === 'config'}
-		{#if store.editBlocked !== null}
-			<div class="card mt-6 p-5 text-sm text-muted">
-				Its config can't be changed from here: {store.editBlocked}.
 			</div>
-		{:else}
-			<div class="mt-6 flex flex-wrap items-center gap-3">
+		</header>
+
+		{#if admin}
+			<div class="mt-6">
 				<Tabs
 					tabs={[
-						{ id: 'form', label: 'Form' },
-						{ id: 'yaml', label: 'YAML', mono: true }
+						{ id: 'status', label: 'Status' },
+						...(device.host ? [{ id: 'setup' as const, label: 'Setup' }] : []),
+						{ id: 'config', label: 'Config' }
 					]}
-					current={view}
-					onselect={(v) => show('config', v)}
+					current={tab}
+					onselect={(t) => show(t)}
 				/>
-				<p class="text-xs text-muted">
-					{view === 'form'
-						? 'Name, address, kind, tags and services; the rest stays as it is in config.yaml.'
-						: 'Its part of config.yaml, comments and all.'}
-				</p>
 			</div>
-			<!-- Keyed: another device's page must never keep (and save) this one's form or text. -->
-			{#key device.id}
+		{/if}
+
+		{#if tab === 'config'}
+			{#if store.editBlocked !== null}
+				<div class="card mt-6 p-5 text-sm text-muted">
+					Its config can't be changed from here: {store.editBlocked}.
+				</div>
+			{:else}
+				<div class="mt-6 flex flex-wrap items-center gap-3">
+					<Tabs
+						tabs={[
+							{ id: 'form', label: 'Form' },
+							{ id: 'yaml', label: 'YAML', mono: true }
+						]}
+						current={view}
+						onselect={(v) => show('config', v)}
+					/>
+					<p class="text-xs text-muted">
+						{view === 'form'
+							? 'Name, address, kind, tags and services; the rest stays as it is in config.yaml.'
+							: 'Its part of config.yaml, comments and all.'}
+					</p>
+				</div>
 				{#if view === 'form'}
 					<div class="mt-4"><DeviceEditor id={device.id} onclose={() => show('status')} /></div>
 				{:else}
 					<div class="mt-4"><ConfigFile device={device.id} /></div>
 				{/if}
-			{/key}
-		{/if}
-	{:else if tab === 'setup'}
-		{#if store.me}
-			<p class="mt-6 mb-4 max-w-2xl text-sm text-muted">
-				How Kastellan reaches this device and what it may do there. Each part is set up once, with
-				your login (used for that one connection) or with commands to run yourself.
-			</p>
-			{#if device.outdated_scripts.length}
-				<p class="mb-3 text-sm" style:color="var(--warning-text)">
-					Kastellan's {device.outdated_scripts.map(scriptName).join(' and ')} here {device
-						.outdated_scripts.length === 1
-						? 'is'
-						: 'are'} outdated. Renew the host or OpenWrt setup below.
-					{#if device.outdated_scripts.some((n) => n.startsWith('vpn-'))}
-						Renew VPN helpers in <a class="underline" href="/vpn?tab=setup">VPN → Setup</a>.
-					{/if}
-				</p>
 			{/if}
-			{@const hostLike = !device.openwrt && HOSTS.includes(device.kind)}
-			{@const fritzish = !!device.fritzbox || device.driver === 'fritzbox'}
-			{@const parts = [
-				{
-					id: 'openwrt',
-					shown:
-						!!device.openwrt ||
-						(!fritzish && ['router', 'access-point', 'switch'].includes(device.kind)),
-					set: !!device.openwrt
-				},
-				{
-					id: 'fritzbox',
-					shown: fritzish || (!device.openwrt && ['router', 'access-point'].includes(device.kind)),
-					set: !!device.fritzbox
-				},
-				{ id: 'wifi', shown: !!device.openwrt && !!device.router?.radios?.length, set: true },
-				{ id: 'collector', shown: !!device.collect || hostLike, set: !!device.collect },
-				{ id: 'actor', shown: !!device.act || hostLike, set: !!device.act },
-				{ id: 'access', shown: true, set: !!device.ssh },
-				{ id: 'syslog', shown: !device.openwrt && !fritzish, set: !!device.syslog_cert },
-				{ id: 'keys', shown: !!device.ssh, set: true }
-			].filter((p) => p.shown)}
-			<!-- Keyed: going from one device's page to another's starts these afresh. -->
-			{#key device.id}
+		{:else if tab === 'setup'}
+			{#if store.me}
+				<p class="mt-6 mb-4 max-w-2xl text-sm text-muted">
+					How Kastellan reaches this device and what it may do there. Each part is set up once, with
+					your login (used for that one connection) or with commands to run yourself.
+				</p>
+				{#if device.outdated_scripts.length}
+					<p class="mb-3 text-sm" style:color="var(--warning-text)">
+						Kastellan's {device.outdated_scripts.map(scriptName).join(' and ')} here {device
+							.outdated_scripts.length === 1
+							? 'is'
+							: 'are'} outdated. Renew the host or OpenWrt setup below.
+						{#if device.outdated_scripts.some((n) => n.startsWith('vpn-'))}
+							Renew VPN helpers in <a class="underline" href="/vpn?tab=setup">VPN → Setup</a>.
+						{/if}
+					</p>
+				{/if}
+				{@const hostLike = !device.openwrt && HOSTS.includes(device.kind)}
+				{@const fritzish = !!device.fritzbox || device.driver === 'fritzbox'}
+				{@const parts = [
+					{
+						id: 'openwrt',
+						shown:
+							!!device.openwrt ||
+							(!fritzish && ['router', 'access-point', 'switch'].includes(device.kind)),
+						set: !!device.openwrt
+					},
+					{
+						id: 'fritzbox',
+						shown:
+							fritzish || (!device.openwrt && ['router', 'access-point'].includes(device.kind)),
+						set: !!device.fritzbox
+					},
+					{ id: 'wifi', shown: !!device.openwrt && !!device.router?.radios?.length, set: true },
+					{ id: 'collector', shown: !!device.collect || hostLike, set: !!device.collect },
+					{ id: 'actor', shown: !!device.act || hostLike, set: !!device.act },
+					{ id: 'access', shown: true, set: !!device.ssh },
+					{ id: 'syslog', shown: !device.openwrt && !fritzish, set: !!device.syslog_cert },
+					{ id: 'keys', shown: !!device.ssh, set: true }
+				].filter((p) => p.shown)}
 				{#each [{ title: 'Set up', set: true }, { title: 'Can be set up', set: false }] as group (group.title)}
 					{@const these = parts.filter((p) => p.set === group.set)}
 					{#if these.length}
@@ -474,12 +478,12 @@
 								{#if p.id === 'openwrt'}
 									<OpenWrtSetup
 										device={device.id}
-										canInstall={!!store.me.user}
+										canInstall={signedAdmin}
 										services={(device.router?.services ?? []).map((s) => s.name)}
 										allowedServices={device.router?.services_allowed ?? []}
 									/>
 								{:else if p.id === 'fritzbox'}
-									<FritzSetup device={device.id} canSetUp={!!store.me.user} />
+									<FritzSetup device={device.id} canSetUp={signedAdmin} />
 								{:else if p.id === 'wifi'}
 									{@const names = (device.router?.radios ?? []).flatMap((r) =>
 										r.interfaces.map((i) => i.ssid ?? i.section)
@@ -493,34 +497,32 @@
 										onclick={() => (wifiOpen = true)}
 									/>
 								{:else if p.id === 'syslog'}
-									<SyslogSetup device={device.id} canSetUp={!!store.me.user} />
+									<SyslogSetup device={device.id} canSetUp={signedAdmin} />
 								{:else if p.id === 'collector'}
-									<CollectorSetup device={device.id} canInstall={!!store.me.user} />
+									<CollectorSetup device={device.id} canInstall={signedAdmin} />
 								{:else if p.id === 'actor'}
 									<ActorSetup
 										device={device.id}
 										containers={(device.containers ?? []).map((c) => c.name)}
-										canInstall={!!store.me.user}
+										canInstall={signedAdmin}
 									/>
 								{:else if p.id === 'access'}
-									<AccessSetup device={device.id} canSetUp={!!store.me.user} />
+									<AccessSetup device={device.id} canSetUp={signedAdmin} />
 								{:else}
-									<DeviceKeys device={device.id} canChange={!!store.me.user} />
+									<DeviceKeys device={device.id} canChange={signedAdmin} />
 								{/if}
 							{/each}
 						</div>
 					{/if}
 				{/each}
-			{/key}
-			{#if wifiOpen}
-				<WifiDialog device={device.id} onclose={() => (wifiOpen = false)} />
+				{#if wifiOpen}
+					<WifiDialog device={device.id} onclose={() => (wifiOpen = false)} />
+				{/if}
 			{/if}
-		{/if}
-	{:else}
-		{#if device.kind === 'ups'}
-			<UpsCard {device} canChange={store.editBlocked === null && store.me?.role === 'admin'} />
-		{/if}
-		{#key device.id}
+		{:else}
+			{#if device.kind === 'ups'}
+				<UpsCard {device} canChange={store.editBlocked === null} />
+			{/if}
 			<ReadingsLine {device} />
 			{#if device.vitals}
 				<VitalsPanel device={device.id} vitals={device.vitals} />
@@ -530,19 +532,13 @@
 					class="mt-8 flex items-center justify-between"
 				>
 					<h2 class="text-sm font-semibold">Services</h2>
-					<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
-						{#each ranges as r (r.label)}
-							<button
-								onclick={() => (range = r)}
-								class="h-7 rounded-lg px-3 text-xs font-medium transition-colors {range.hours ===
-								r.hours
-									? 'bg-surface-3 text-text'
-									: 'text-muted hover:text-text'}"
-							>
-								{r.label}
-							</button>
-						{/each}
-					</div>
+					<Tabs
+						small
+						label="Range"
+						tabs={ranges.map((r) => ({ id: r.hours, label: r.label }))}
+						current={hours}
+						onselect={(h) => (hours = h)}
+					/>
 				</div>
 
 				{#if loadError}
@@ -571,146 +567,140 @@
 			{#if device.host_report}
 				<StorageSection report={device.host_report} forecast={device.host_forecast ?? {}} />
 			{/if}
-		{/key}
 
-		<BackupsCard device={device.id} />
-		{#if admin}<div id="config-backups"><ConfigBackups device={device.id} /></div>{/if}
+			<BackupsCard device={device.id} />
+			{#if admin}<div id="config-backups"><ConfigBackups device={device.id} /></div>{/if}
 
-		{#if device.containers || device.containers_error}
-			<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">
-				<h2 class="text-sm font-semibold">
-					Containers
-					{#if device.containers}<span class="tabular ml-1 font-normal text-faint">
-							{device.containers.length}
-						</span>{/if}
-				</h2>
-				<p class="text-xs text-muted">
-					{#if device.containers_error}
-						<span style:color="var(--warning-text)">{device.containers_error}</span>
-						{#if device.containers_checked}
-							· last read {ago(device.containers_checked, store.now)}
-						{/if}
-					{:else}
-						from {device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
-							device.containers_checked,
-							store.now
-						)}
-					{/if}
-					{#if device.collect && device.host_report?.docker}· <ReadAgain device={device.id} />{/if}
-				</p>
-			</div>
-			{#if device.containers}<ContainersTable
-					device={device.id}
-					containers={device.containers}
-					stale={!!device.containers_error}
-					canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
-				/>{/if}
-		{/if}
-
-		{#if device.runs_on}
-			{@const host = store.byId.get(device.runs_on.host)}
-			{@const vm = host?.vms?.find((v) => v.name === device.runs_on?.vm)}
-			{#if host && vm}
-				<h2 class="mt-8 mb-3 text-sm font-semibold">
-					Its virtual machine <span class="font-normal text-faint">on {host.name}</span>
-				</h2>
-				<VmsTable
-					device={host.id}
-					vms={[vm]}
-					canAct={!!host.act && store.me?.role === 'admin' && !!store.me.user}
-				/>
-			{/if}
-		{/if}
-
-		{#if device.vms?.length}
-			<h2 class="mt-8 mb-3 text-sm font-semibold">
-				Virtual machines <span class="tabular ml-1 font-normal text-faint">
-					{device.vms.length}
-				</span>
-			</h2>
-			<VmsTable
-				device={device.id}
-				vms={device.vms}
-				canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
-			/>
-		{/if}
-
-		{#if device.vulns}
-			<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
-			<VulnsList vulns={device.vulns} exposed={device.exposed} />
-		{/if}
-
-		<!-- Nothing checked (a UPS read through its host): no response time, only its activity. -->
-		<div
-			class="mt-8 grid min-w-0 grid-cols-1 gap-8 {device.checks.length
-				? 'xl:grid-cols-[minmax(0,1fr)_20rem]'
-				: ''}"
-		>
-			{#if device.checks.length}<section class="min-w-0">
-					<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-						<h2 class="text-sm font-semibold">Response time</h2>
-						{#if device.checks.length > 1}
-							<div class="flex flex-wrap gap-1">
-								{#each device.checks as check (check.name)}
-									<button
-										onclick={() => (chosen = check.name)}
-										class="h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors {latencyCheck ===
-										check.name
-											? 'border-accent bg-accent-soft text-accent'
-											: 'border-line text-muted hover:text-text'}"
-									>
-										{check.name}
-									</button>
-								{/each}
-							</div>
-						{/if}
-					</div>
-					<div class="card px-2 pt-4 pb-1">
-						{#if series && latencyCheck && checkSeries[latencyCheck]}
-							<LatencyChart
-								buckets={checkSeries[latencyCheck]}
-								start={series.start}
-								step={series.step_seconds}
-								height={220}
-							/>
+			{#if device.containers || device.containers_error}
+				<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">
+					<h2 class="text-sm font-semibold">
+						Containers
+						{#if device.containers}<span class="tabular ml-1 font-normal text-faint">
+								{device.containers.length}
+							</span>{/if}
+					</h2>
+					<p class="text-xs text-muted">
+						{#if device.containers_error}
+							<span style:color="var(--warning-text)">{device.containers_error}</span>
+							{#if device.containers_checked}
+								· last read {ago(device.containers_checked, store.now)}
+							{/if}
 						{:else}
-							<div class="h-[220px] animate-pulse rounded-lg bg-surface-2"></div>
+							from {device.host_report?.docker ? 'the collector' : 'WUD'}, {ago(
+								device.containers_checked,
+								store.now
+							)}
+						{/if}
+						{#if device.collect && device.host_report?.docker}· <ReadAgain
+								device={device.id}
+							/>{/if}
+					</p>
+				</div>
+				{#if device.containers}<ContainersTable
+						device={device.id}
+						containers={device.containers}
+						stale={!!device.containers_error}
+						canAct={!!device.act && signedAdmin}
+					/>{/if}
+			{/if}
+
+			{#if device.runs_on}
+				{@const host = store.byId.get(device.runs_on.host)}
+				{@const vm = host?.vms?.find((v) => v.name === device.runs_on?.vm)}
+				{#if host && vm}
+					<h2 class="mt-8 mb-3 text-sm font-semibold">
+						Its virtual machine <span class="font-normal text-faint">on {host.name}</span>
+					</h2>
+					<VmsTable device={host.id} vms={[vm]} canAct={!!host.act && signedAdmin} />
+				{/if}
+			{/if}
+
+			{#if device.vms?.length}
+				<h2 class="mt-8 mb-3 text-sm font-semibold">
+					Virtual machines <span class="tabular ml-1 font-normal text-faint">
+						{device.vms.length}
+					</span>
+				</h2>
+				<VmsTable device={device.id} vms={device.vms} canAct={!!device.act && signedAdmin} />
+			{/if}
+
+			{#if device.vulns}
+				<h2 class="mt-8 mb-3 text-sm font-semibold">Vulnerabilities</h2>
+				<VulnsList vulns={device.vulns} exposed={device.exposed} />
+			{/if}
+
+			<!-- Nothing checked (a UPS read through its host): no response time, only its activity. -->
+			<div
+				class="mt-8 grid min-w-0 grid-cols-1 gap-8 {device.checks.length
+					? 'xl:grid-cols-[minmax(0,1fr)_20rem]'
+					: ''}"
+			>
+				{#if device.checks.length}<section class="min-w-0">
+						<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+							<h2 class="text-sm font-semibold">Response time</h2>
+							{#if device.checks.length > 1}
+								<div class="flex flex-wrap gap-1">
+									{#each device.checks as check (check.name)}
+										<button
+											onclick={() => (chosen = check.name)}
+											class="h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors {latencyCheck ===
+											check.name
+												? 'border-accent bg-accent-soft text-accent'
+												: 'border-line text-muted hover:text-text'}"
+										>
+											{check.name}
+										</button>
+									{/each}
+								</div>
+							{/if}
+						</div>
+						<div class="card px-2 pt-4 pb-1">
+							{#if series && latencyCheck && checkSeries[latencyCheck]}
+								<LatencyChart
+									buckets={checkSeries[latencyCheck]}
+									start={series.start}
+									step={series.step_seconds}
+									height={220}
+								/>
+							{:else}
+								<div class="h-[220px] animate-pulse rounded-lg bg-surface-2"></div>
+							{/if}
+						</div>
+					</section>{/if}
+
+				<section>
+					<h2 class="mb-3 text-sm font-semibold">Activity</h2>
+					<div class="card p-2">
+						{#if changes.length === 0}
+							<p class="px-3 py-6 text-center text-sm text-muted">
+								No changes in the last {range.label}.
+							</p>
+						{:else}
+							<ol class="max-h-[22rem] overflow-y-auto">
+								{#each changes as change (`${change.kind}/${change.time}/${change.check}`)}
+									<li><ActivityItem {change} {device} /></li>
+								{/each}
+							</ol>
 						{/if}
 					</div>
-				</section>{/if}
 
-			<section>
-				<h2 class="mb-3 text-sm font-semibold">Activity</h2>
-				<div class="card p-2">
-					{#if changes.length === 0}
-						<p class="px-3 py-6 text-center text-sm text-muted">
-							No changes in the last {range.label}.
-						</p>
-					{:else}
-						<ol class="max-h-[22rem] overflow-y-auto">
-							{#each changes as change (`${change.kind}/${change.time}/${change.check}`)}
-								<li><ActivityItem {change} {device} /></li>
+					{#if children.length}
+						<h2 class="mt-8 mb-3 text-sm font-semibold">Connected through it</h2>
+						<div class="card divide-y divide-line">
+							{#each children as child (child.id)}
+								<a
+									href="/devices/{child.id}"
+									class="flex items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-surface-2/70"
+								>
+									<KindIcon kind={child.kind} class="size-4 text-muted" />
+									<span class="flex-1 truncate">{child.name}</span>
+									<StatusBadge status={statusOf(child)} />
+								</a>
 							{/each}
-						</ol>
+						</div>
 					{/if}
-				</div>
-
-				{#if children.length}
-					<h2 class="mt-8 mb-3 text-sm font-semibold">Connected through it</h2>
-					<div class="card divide-y divide-line">
-						{#each children as child (child.id)}
-							<a
-								href="/devices/{child.id}"
-								class="flex items-center gap-3 px-4 py-2.5 text-sm transition-colors hover:bg-surface-2/70"
-							>
-								<KindIcon kind={child.kind} class="size-4 text-muted" />
-								<span class="flex-1 truncate">{child.name}</span>
-								<StatusBadge status={statusOf(child)} />
-							</a>
-						{/each}
-					</div>
-				{/if}
-			</section>
-		</div>
-	{/if}
+				</section>
+			</div>
+		{/if}
+	{/key}
 {/if}

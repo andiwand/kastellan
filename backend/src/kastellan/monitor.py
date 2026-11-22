@@ -43,7 +43,7 @@ class CheckStatus:
 @dataclass
 class DeviceStatus:
     checks: dict[str, CheckStatus] = field(default_factory=dict)
-    info: dict[str, Any] | None = None  # from the device's driver: model, name, firmware, ...
+    info: dict[str, Any] | None = None  # model, name, firmware: a driver's, OpenWrt's or FRITZ!Box's
     info_checked: datetime | None = None
     containers: list[dict[str, Any]] | None = None  # from docker.py
     containers_checked: datetime | None = None
@@ -156,14 +156,17 @@ class Monitor:
             status = self.status.setdefault(id, DeviceStatus())
             moved = self._hosts.get(id, device.host) != device.host
             if device.collect is None or moved:
-                status.host = status.host_checked = status.host_error = None
+                status.host = status.host_checked = status.host_error = status.host_forecast = None
             if device.openwrt is None or moved:
                 status.router = status.router_checked = status.router_error = None
+            if device.fritzbox is None or moved:
+                status.fritz = status.fritz_checked = status.fritz_error = None
             if (device.docker is None and device.collect is None) or moved:
                 status.containers = status.containers_checked = status.containers_error = None
             if device.act is None or moved:
                 status.actor_outdated = None
-            if device.driver is None or moved:
+            # Model and firmware come from a driver or the OpenWrt and FRITZ!Box polls.
+            if (device.driver is None and device.openwrt is None and device.fritzbox is None) or moved:
                 status.info = status.info_checked = None
             self._hosts[id] = device.host
             names = {c.name for c in device.checks}

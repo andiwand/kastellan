@@ -22,7 +22,8 @@ from typing import Any
 
 from .networks import is_public
 
-# The words a line must contain to be read at all (SQL LIKE, for LogStore.matching).
+# The words a line must contain to be read at all (SQL LIKE, for LogStore.matching; it ignores
+# the case of ASCII letters).
 LIKES = [
     "%Accepted %",
     "%Failed password%",
@@ -31,7 +32,6 @@ LIKES = [
     "%Failed keyboard-interactive%",
     "%Invalid user%",
     "%authenticating user%",
-    "%invalid user%",
     "%auth succeeded%",
     "%Bad password attempt%",
     "%nonexistent user%",

@@ -19,10 +19,12 @@
 	let { devices, matching }: { devices: Device[]; matching: Set<string> | null } = $props();
 
 	let networks = $state<Networks | null>(null);
-	// Fetched again with each refresh of the devices: right after the hub starts, its own
-	// address isn't known yet.
+	// Fetched again with each refresh of the devices until the hub's own network is known (right
+	// after the hub starts, its address isn't yet); then once is enough.
+	const hubKnown = $derived(!!networks?.hub);
 	$effect(() => {
 		void devices;
+		if (hubKnown) return;
 		api
 			.networks()
 			.then((n) => (networks = n))

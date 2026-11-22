@@ -1,16 +1,28 @@
-"""The open terminals, so ending a session can end its shells at once.
+"""The open terminals and remote desktops, so ending a session can end its shells at once.
 
-A terminal registers with the user and the session it was opened with. Signing out ends the
-session's terminals; signing out everywhere, or a config.yaml without the user, with a new
-password or another role, ends all of the user's. Each terminal also re-checks its session
-every few seconds (terminal_api), in case something here was missed.
+A terminal (or desktop) registers with the user and the session it was opened with. Signing out
+ends the session's terminals; signing out everywhere, or a config.yaml without the user, with a
+new password or another role, ends all of the user's. Each one also re-checks its session every
+few seconds (`watch`), in case something here was missed, and ends when idle or too old.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .auth_api import Who
+
+IDLE_LIMIT = 30 * 60  # one nobody typed in (or moved the mouse in) for this long closes
+MAX_SECONDS = 8 * 3600  # however busy, it ends after this long
+MAX_PER_USER = 4  # terminals and desktops together
+RECHECK_EVERY = 15  # seconds between checks that the session is still good
 
 
 def token_key(token: str | None) -> str:
@@ -24,6 +36,31 @@ class Handle:
     device: str
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     reason: str = ""
+    opened: float = field(default_factory=time.monotonic)
+
+    def ended(self, now: Who | None) -> str | None:
+        """Why it must end now, or None; `now`: who its session belongs to at this moment."""
+        if self.stop.is_set():
+            return self.reason or "signed out"
+        if now is None or now.user != self.user or not now.is_admin:
+            return "your session ended"
+        if time.monotonic() - self.opened > MAX_SECONDS:
+            return f"closed after {MAX_SECONDS // 3600} hours"
+        return None
+
+
+async def watch(
+    stop: asyncio.Event, allowed: Callable[[], str | None], last_input: Callable[[], float]
+) -> str:
+    """Wait until a terminal or desktop must end (its session ends, the user loses access, or it
+    idles); why."""
+    while True:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), RECHECK_EVERY)
+        if reason := allowed():
+            return reason
+        if time.monotonic() - last_input() > IDLE_LIMIT:
+            return f"closed after {IDLE_LIMIT // 60} minutes without input"
 
 
 class Terminals:

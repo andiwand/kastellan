@@ -1,10 +1,11 @@
-"""What software each service ran, and when that changed: <data>/versions.log, one JSON object
-per line, written when a check first sees a service's software and whenever it changes.
+"""What each device runs, and when that changed: <data>/versions.log, one JSON object per line,
+written at the first sighting and at every change. Keys are a service's check name, `@firmware`
+(the device's firmware) or `@container <key>` (a container's running image).
 
     {"time": "...", "device": "sv1", "check": "ssh", "from": "OpenSSH 10.1p1 (Ubuntu)",
      "to": "OpenSSH 10.2p1 (Ubuntu)"}
 
-Small by nature (a line per update), so it is read whole.
+Small by nature (a line per update), so it is read whole; what each runs now is kept in memory.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 class Versions:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._latest: dict[tuple[str, str], tuple[str, datetime, str | None]] | None = None
 
     def _entries(self) -> list[dict[str, Any]]:
         try:
@@ -59,6 +61,9 @@ class Versions:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as e:
             log.warning("cannot write the version log: %s", e)
+            return
+        if self._latest is not None:  # as read back: whole seconds
+            self._latest[(device, check)] = (new, datetime.fromisoformat(entry["time"]), target)
 
     def compact(self, keep_days: int, now: datetime | None = None) -> None:
         """Keep the changes of the last `keep_days`, and the latest entry of every check (what it
@@ -85,11 +90,13 @@ class Versions:
             log.warning("cannot compact the version log: %s", e)
 
     def latest(self) -> dict[tuple[str, str], tuple[str, datetime, str | None]]:
-        """Per (device, check): the software last seen, since when, and what the check pointed at."""
-        out: dict[tuple[str, str], tuple[str, datetime, str | None]] = {}
-        for e in self._entries():
-            out[(e["device"], e["check"])] = (e["to"], e["time"], e["target"])
-        return out
+        """Per (device, check): the software last seen, since when, and what the check pointed at.
+        Read from the file once, then kept up to date by record()."""
+        if self._latest is None:
+            self._latest = {
+                (e["device"], e["check"]): (e["to"], e["time"], e["target"]) for e in self._entries()
+            }
+        return dict(self._latest)
 
     def changes(self, since: datetime, device: str | None = None) -> list[dict[str, Any]]:
         """Real changes (not first sightings) since a time, newest first."""

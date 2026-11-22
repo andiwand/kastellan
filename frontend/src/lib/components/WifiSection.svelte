@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { more, type Device } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
+	import { bandLabel } from '#lib/format.js';
 	import FritzMesh from './FritzMesh.svelte';
 	import RoamingInfo from './RoamingInfo.svelte';
 
@@ -9,7 +10,6 @@
 	 * passwords and channels are changed on the Wi-Fi page (or under Setup). */
 	let { device, canChange = false }: { device: Device; canChange?: boolean } = $props();
 
-	const BAND: Record<string, string> = { '2g': '2.4 GHz', '5g': '5 GHz', '6g': '6 GHz' };
 	const ENC: Record<string, string> = {
 		'11i': 'WPA2',
 		WPAand11i: 'WPA/WPA2',
@@ -38,9 +38,11 @@
 	<section class="mt-8">
 		<div class="flex flex-wrap items-baseline justify-between gap-2">
 			<h2 class="text-sm font-semibold">Wi-Fi</h2>
-			<a class="text-xs text-muted hover:text-text" href="/wifi">
-				Names, passwords and channels: on the Wi-Fi page
-			</a>
+			{#if store.me?.role === 'admin'}
+				<a class="text-xs text-muted hover:text-text" href="/wifi">
+					Names, passwords and channels: on the Wi-Fi page
+				</a>
+			{/if}
 		</div>
 		<div class="mt-3 grid gap-3 md:grid-cols-2">
 			{#each radios as radio (radio.name)}
@@ -48,7 +50,7 @@
 				<div class="card p-4" class:opacity-60={radio.disabled}>
 					<div class="flex items-baseline justify-between gap-2">
 						<p class="text-sm font-medium">
-							{radio.band ? (BAND[radio.band] ?? radio.band) : radio.name}
+							{bandLabel(radio.band) || radio.name}
 							<span class="font-normal text-muted">
 								· channel {radio.channel ?? 'auto'}{radio.htmode ? ` · ${radio.htmode}` : ''}
 							</span>
@@ -92,13 +94,12 @@
 						</span>
 					</div>
 					<p class="mt-1 text-xs text-muted">
-						{w.band ? BAND[w.band] : ''} · channel {w.channel || 'auto'} · {ENC[
-							w.encryption ?? ''
-						] ?? w.encryption}
+						{bandLabel(w.band)} · channel {w.channel || 'auto'} · {ENC[w.encryption ?? ''] ??
+							w.encryption}
 					</p>
 					{#if w.associated?.length}
 						<ul class="mt-2 space-y-0.5 text-xs">
-							{#each w.associated as a (a.mac)}
+							{#each w.associated as a, i (a.mac ?? i)}
 								<li class="flex justify-between gap-3">
 									<span class="truncate">{a.address ?? a.mac}</span>
 									<span class="tabular shrink-0 text-muted">

@@ -39,7 +39,7 @@ def router(hub: Hub) -> APIRouter:
         now = datetime.now(UTC)
         return {
             "open": [asdict(a) for a in hub.alarms.open.values()],
-            "muted": {k: v for k, v in hub.alarms.muted.items() if v > now},
+            "muted": hub.alarms.muted_now(now),
             "maintenance": {
                 k: asdict(a) for k, a in maintenance.active(hub.config, now, hub.alarms.maintenance).items()
             },

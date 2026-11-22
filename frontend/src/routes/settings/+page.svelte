@@ -18,7 +18,7 @@
 
 	function show(t: Tab) {
 		if (t === 'settings') settings.load(); // the file may have changed in the other tab
-		goto(t === 'settings' ? '?' : `?tab=${t}`, { replaceState: true });
+		goto(t === 'settings' ? '?' : `?tab=${t}`, { replace: true });
 	}
 </script>
 

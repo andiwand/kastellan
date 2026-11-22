@@ -155,7 +155,6 @@ export interface ActSetup {
 	uninstall: string; // the commands that take it off the host again
 }
 
-/** An OpenWrt device's state (openwrt/client.py). */
 /** A router's DHCP server (openwrt/client.py, fritzbox/client.py). */
 export interface DhcpPool {
 	server?: boolean;
@@ -177,6 +176,7 @@ export interface DhcpPool {
 	}[];
 }
 
+/** An OpenWrt device's state (openwrt/client.py). */
 export interface RouterReport {
 	dhcp?: DhcpPool | null;
 	board: {
@@ -622,7 +622,7 @@ export interface OvpnClient {
 
 /** Rotating the VPN key: the steps per host ("<vpn>:pki", "<vpn>:server"), as for the hub key. */
 export interface VpnKey {
-	fingerprint: string;
+	fingerprint: string | null; // null while the key ring is locked and no copy is known
 	next: string | null;
 	rotation: {
 		started: string;
@@ -868,8 +868,9 @@ export interface Vitals {
 	load: number | null; // 1-minute load average (where there is no CPU percentage)
 	cores: number | null;
 	memory: number | null; // percent
-	memory_used: number | null; // bytes (FRITZ!Box: shares only, total 100)
+	memory_used: number | null; // bytes
 	memory_total: number | null;
+	memory_share: number | null; // percent, where only that is known (a FRITZ!Box)
 	storage: number | null; // percent, of the fullest filesystem
 	storage_used: number | null;
 	storage_total: number | null;
@@ -950,6 +951,8 @@ export interface RotationStep {
 	removed: boolean;
 	error: string | null;
 	current: boolean; // done for the login the device has now
+	target: string | null; // the login it was done for (user@host:port)
+	forgotten: boolean; // given up on: the old key may still be trusted there
 }
 
 export interface Rotation {
@@ -1037,6 +1040,9 @@ function get<T>(path: string, params: Record<string, string | number | undefined
 	return call<T>('GET', `${path}${query.size ? `?${query}` : ''}`);
 }
 
+/** A device's path in the API. */
+const dev = (id: string) => `/devices/${encodeURIComponent(id)}`;
+
 export interface SetupOutcome {
 	ok: boolean;
 	error?: string;
@@ -1111,7 +1117,7 @@ export async function actStream(
 	tag?: string // update-container: another tag of its image (one the hub found)
 ): Promise<ActResult> {
 	const outcome = (await streamSetup(
-		`/devices/${encodeURIComponent(device)}/act/${ability}/stream`,
+		`${dev(device)}/act/${ability}/stream`,
 		ability.startsWith('vm-') ? { vm: name } : { container: name, ...(tag ? { tag } : {}) },
 		(line) => {
 			if (line.startsWith('KASTELLAN-STEP ')) onStep(line.slice(15));
@@ -1230,6 +1236,42 @@ export interface DeviceBackupSummary {
 	versions: number;
 	latest: BackupVersion | null;
 	status: BackupStatus;
+}
+
+/** Kastellan's own backup (hubbackup.py): its key, versions, copies away from the hub, checks. */
+export interface HubBackup {
+	ready: boolean;
+	legacy: boolean;
+	keyring: boolean; // opens with the key rings (an admin's password, a recovery key)
+	vault: boolean; // the hub has key rings
+	made: string | null;
+	status: {
+		ok?: string;
+		local_ok?: string;
+		error?: string | null;
+		running?: boolean;
+		targets?: Record<string, { ok?: string; error?: string; written?: number; path?: string }>;
+	};
+	versions: {
+		id: string;
+		taken: string;
+		checked: string;
+		files: number;
+		size: number;
+		by: string | null;
+	}[];
+	every_hours: number;
+	keep: number;
+	targets: { path: string; device: string | null }[];
+	checks: Record<string, string>;
+	rings: string[];
+}
+
+/** A login in the People key ring a setup or the web interface may use here (never its secret). */
+export interface StoredLogin {
+	id: string;
+	name: string;
+	user: string;
 }
 
 export interface BackupDiff {
@@ -1629,8 +1671,6 @@ function logQuery(f: LogFilter): string {
 	return q.size ? `?${q}` : '';
 }
 
-const dev = (id: string) => `/devices/${encodeURIComponent(id)}`;
-
 /** A device the routers see that Kastellan doesn't know (discovery.py). */
 export interface Discovered {
 	mac: string;
@@ -1691,20 +1731,14 @@ export const more = {
 	logFacets: (hours = 24) => get<LogFacets>('/logs/facets', { hours }),
 	logSources: () => get<LogSources>('/logs/sources'),
 	deviceUpdateNotNeeded: (id: string, kind: 'firmware' | 'reboot' | 'packages') =>
-		call<{ skipped: string }>(
-			'POST',
-			`/devices/${encodeURIComponent(id)}/updates/${kind}/not-needed`
-		),
+		call<{ skipped: string }>('POST', `${dev(id)}/updates/${kind}/not-needed`),
 	updateNotNeeded: (id: string, key: string) =>
 		call<{ skipped: string }>(
 			'POST',
-			`/devices/${encodeURIComponent(id)}/containers/${encodeURIComponent(key)}/not-needed`
+			`${dev(id)}/containers/${encodeURIComponent(key)}/not-needed`
 		),
 	notNeeded: (id: string, kind: 'actor' | 'openwrt') =>
-		call<{ passed: string[] }>(
-			'POST',
-			`/devices/${encodeURIComponent(id)}/abilities/${kind}/not-needed`
-		),
+		call<{ passed: string[] }>('POST', `${dev(id)}/abilities/${kind}/not-needed`),
 	syslogState: (id: string) =>
 		get<{
 			issued: boolean;
@@ -1725,10 +1759,6 @@ export const more = {
 	backupNow: (id: string) => call<DeviceBackups & { new: boolean }>('POST', `${dev(id)}/backups`),
 	backupDiff: (id: string, older: string, newer: string) =>
 		get<BackupDiff>(`${dev(id)}/backups/diff`, { older, newer }),
-	backupFiles: (id: string, sid: string) =>
-		get<{ path: string; size: number; secret: boolean }[]>(`${dev(id)}/backups/${sid}/files`),
-	backupFile: (id: string, sid: string, path: string) =>
-		get<{ path: string; text: string | null }>(`${dev(id)}/backups/${sid}/file`, { path }),
 	backupDownload: (id: string, sid: string) => `/api${dev(id)}/backups/${sid}/download`,
 	fritzCertificate: (id: string, port: number) =>
 		call<{ fingerprint: string; pinned: string | null; port: number }>(
@@ -1761,7 +1791,22 @@ export const more = {
 		txpower?: number;
 		country?: string;
 	}) => call<{ done: boolean }>('PUT', '/wifi/radios', body),
-	deviceRoaming: (id: string) => get<RoamingView>(`/devices/${encodeURIComponent(id)}/roaming`)
+	deviceRoaming: (id: string) => get<RoamingView>(`${dev(id)}/roaming`),
+	/** The logins stored for a device, and whether the key ring that holds them is open. */
+	storedLogins: (id: string) =>
+		get<{ vault: boolean; ring_open: boolean; stored: StoredLogin[] }>(`${dev(id)}/stored-logins`),
+	/** The hub signs in to the device's page with a stored login: a link that opens it so. */
+	webSignIn: (id: string, entry: string, password: string) =>
+		call<{ url: string }>('POST', `${dev(id)}/web/sign-in`, { entry, password }),
+	hubBackup: () => get<HubBackup>('/hub-backup'),
+	hubBackupNow: () => call<{ error?: string | null; new?: boolean }>('POST', '/hub-backup'),
+	hubBackupPassphrase: (replace: boolean, mode: 'keyring' | 'passphrase') =>
+		call<{ passphrase: string | null }>('POST', '/hub-backup/passphrase', { replace, mode }),
+	/** Whether a passphrase, or a ring's recovery key, still opens the backup. */
+	hubBackupCheck: (key: { passphrase: string } | { ring: string; recovery: string }) =>
+		call<{ right: boolean }>('POST', '/hub-backup/check', key),
+	hubBackupDiff: (older: string, newer: string) =>
+		get<BackupDiff>('/hub-backup/diff', { older, newer })
 };
 
 export const api = {
@@ -1800,9 +1845,7 @@ export const api = {
 		call<VpnKey>('POST', `/vpn/key/rotate/${step}`, step === 'finish' ? { anyway } : undefined),
 	vpnKeyForget: (host: string) => call<VpnKey>('POST', '/vpn/key/rotate/forget', { host }),
 	access: (device: string, login?: string) =>
-		get<Access>(
-			`/devices/${encodeURIComponent(device)}/access${login ? `?login=${encodeURIComponent(login)}` : ''}`
-		),
+		get<Access>(`${dev(device)}/access${login ? `?login=${encodeURIComponent(login)}` : ''}`),
 	ovpnInstall: (vid: string, role: string) =>
 		call<{ output: string }>('POST', `/vpns/${vid}/openvpn/setup/${role}/install`),
 	config: () => get<{ text: string; version: string; error: string | null }>('/config'),
@@ -1810,33 +1853,28 @@ export const api = {
 		call<{ ok: boolean; error: string | null }>('POST', '/config/check', { text }),
 	saveConfig: (text: string, version: string) =>
 		call<{ version: string }>('PUT', '/config', { text, version }),
-	deviceForm: (id: string) => get<DeviceForm>(`/devices/${encodeURIComponent(id)}/form`),
+	deviceForm: (id: string) => get<DeviceForm>(`${dev(id)}/form`),
 	/** Which devices a UPS powers (each one's powered_by), at the file's version. */
 	setPowered: (id: string, devices: string[], version: string) =>
-		call<{ version: string }>('PUT', `/devices/${encodeURIComponent(id)}/powered`, {
+		call<{ version: string }>('PUT', `${dev(id)}/powered`, {
 			devices,
 			version
 		}),
-	deviceYaml: (id: string) =>
-		get<{ text: string; version: string }>(`/devices/${encodeURIComponent(id)}/yaml`),
+	deviceYaml: (id: string) => get<{ text: string; version: string }>(`${dev(id)}/yaml`),
 	saveDeviceYaml: (id: string, text: string, version: string) =>
-		call<{ version: string }>('PUT', `/devices/${encodeURIComponent(id)}/yaml`, { text, version }),
+		call<{ version: string }>('PUT', `${dev(id)}/yaml`, { text, version }),
 	addDevice: (form: DeviceForm & { id: string }) => call<{ id: string }>('POST', '/devices', form),
-	changeDevice: (id: string, form: DeviceForm) =>
-		call<{ id: string }>('PUT', `/devices/${encodeURIComponent(id)}`, form),
+	changeDevice: (id: string, form: DeviceForm) => call<{ id: string }>('PUT', `${dev(id)}`, form),
 	deleteDevice: (id: string, version?: string) =>
 		call<{ id: string }>(
 			'DELETE',
-			`/devices/${encodeURIComponent(id)}${version ? `?version=${encodeURIComponent(version)}` : ''}`
+			`${dev(id)}${version ? `?version=${encodeURIComponent(version)}` : ''}`
 		),
 	networks: () => get<Networks>('/networks'),
 	activity: (hours = 24) => get<ActivityEntry[]>('/activity', { hours }),
-	collectSetup: (id: string) => get<CollectSetup>(`/devices/${encodeURIComponent(id)}/collect`),
+	collectSetup: (id: string) => get<CollectSetup>(`${dev(id)}/collect`),
 	collectTest: (id: string) =>
-		call<{ ok: boolean; errors: Record<string, string> }>(
-			'POST',
-			`/devices/${encodeURIComponent(id)}/collect/test`
-		),
+		call<{ ok: boolean; errors: Record<string, string> }>('POST', `${dev(id)}/collect/test`),
 	actScript: (
 		id: string,
 		abilities: string[],
@@ -1844,25 +1882,13 @@ export const api = {
 		vms: string[] = [],
 		allowed?: Record<string, string[]>
 	) =>
-		call<ActSetup>('POST', `/devices/${encodeURIComponent(id)}/act/script`, {
+		call<ActSetup>('POST', `${dev(id)}/act/script`, {
 			abilities,
 			containers,
 			vms,
 			allowed
 		}),
-	act: (id: string, ability: string, container?: string) =>
-		call<{
-			updated?: boolean;
-			from?: string;
-			to?: string;
-			why?: string;
-			reboot?: string | boolean;
-			upgraded?: number;
-		}>('POST', `/devices/${encodeURIComponent(id)}/act/${ability}`, {
-			container: container ?? null
-		}),
-	collectNow: (id: string) =>
-		call<{ checked: string | null }>('POST', `/devices/${encodeURIComponent(id)}/collect/now`),
+	collectNow: (id: string) => call<{ checked: string | null }>('POST', `${dev(id)}/collect/now`),
 	backups: () => get<Backup[]>('/backups'),
 	backupToken: (id: string) =>
 		call<{ token: string }>('POST', `/backups/${encodeURIComponent(id)}/token`),
@@ -1870,27 +1896,24 @@ export const api = {
 	logs: (id: string, what: { container: string } | { unit: string }) =>
 		call<{ lines: string[]; running?: boolean; state?: string }>(
 			'POST',
-			`/devices/${encodeURIComponent(id)}/act/${'unit' in what ? 'unit-logs' : 'container-logs'}`,
+			`${dev(id)}/act/${'unit' in what ? 'unit-logs' : 'container-logs'}`,
 			what
 		),
 	openwrtScript: (id: string, abilities: string[], services: string[] = []) =>
-		call<OpenWrtSetup>('POST', `/devices/${encodeURIComponent(id)}/openwrt/script`, {
+		call<OpenWrtSetup>('POST', `${dev(id)}/openwrt/script`, {
 			abilities,
 			services
 		}),
 	openwrtService: (id: string, name: string, action: string) =>
-		call<{ output: string }>(
-			'POST',
-			`/devices/${encodeURIComponent(id)}/openwrt/services/${encodeURIComponent(name)}`,
-			{ action }
-		),
-	openwrtReboot: (id: string) =>
-		call<{ rebooting: boolean }>('POST', `/devices/${encodeURIComponent(id)}/openwrt/reboot`),
-	wifi: (id: string) => get<WifiSettings>(`/devices/${encodeURIComponent(id)}/openwrt/wifi`),
+		call<{ output: string }>('POST', `${dev(id)}/openwrt/services/${encodeURIComponent(name)}`, {
+			action
+		}),
+	openwrtReboot: (id: string) => call<{ rebooting: boolean }>('POST', `${dev(id)}/openwrt/reboot`),
+	wifi: (id: string) => get<WifiSettings>(`${dev(id)}/openwrt/wifi`),
 	setWifi: (
 		id: string,
 		changes: Record<string, Record<string, string | number | boolean | null>>
-	) => call<WifiSettings>('PUT', `/devices/${encodeURIComponent(id)}/openwrt/wifi`, { changes }),
+	) => call<WifiSettings>('PUT', `${dev(id)}/openwrt/wifi`, { changes }),
 	groups: () =>
 		get<{ id: string; name: string; devices: string[]; openwrt: string[]; ssh: string[] }[]>(
 			'/groups'
@@ -1908,14 +1931,14 @@ export const api = {
 	group: (id: string) => get<GroupSurvey>(`/groups/${encodeURIComponent(id)}`),
 	hubKeys: () => get<HubKeys>('/ssh/keys'),
 	deviceKeys: (id: string) =>
-		get<{ everyone: boolean; login: string; keys: AuthorizedKey[] }>(
-			`/devices/${encodeURIComponent(id)}/keys`
-		),
+		get<{ everyone: boolean; login: string; keys: AuthorizedKey[] }>(`${dev(id)}/keys`),
 	removeKey: (id: string, key: { user: string; file: string; fingerprint: string }) =>
-		call<{ removed: number }>('POST', `/devices/${encodeURIComponent(id)}/keys/remove`, key),
+		call<{ removed: number }>('POST', `${dev(id)}/keys/remove`, key),
 	rotateStart: () => call<{ rotation: Rotation | null }>('POST', '/ssh/rotate/start'),
 	rotateFinish: (anyway = false) =>
 		call<{ rotation: Rotation | null }>('POST', '/ssh/rotate/finish', { anyway }),
+	rotateForget: (device: string) =>
+		call<{ rotation: Rotation | null }>('POST', '/ssh/rotate/forget', { device }),
 	rotateCancel: () => call<{ rotation: null }>('POST', '/ssh/rotate/cancel'),
 	acknowledge: (key: string, note = '') =>
 		call<Alarm>('POST', `/alarms/${encodeURIComponent(key)}/ack`, { note }),
@@ -1966,7 +1989,7 @@ export const api = {
 			{ minutes, reason }
 		),
 	mute: (device: string, minutes: number) =>
-		call<{ muted_until: string | null }>('POST', `/devices/${encodeURIComponent(device)}/mute`, {
+		call<{ muted_until: string | null }>('POST', `${dev(device)}/mute`, {
 			minutes
 		}),
 	login: (user: string, password: string) =>
@@ -1974,22 +1997,14 @@ export const api = {
 	logout: () => call<{ ok: boolean }>('POST', '/auth/logout'),
 	sshKey: () => get<{ public_key: string }>('/ssh/key'),
 	trustHost: (device: string, fingerprint: string, port?: number) =>
-		call<{ state: string }>('POST', `/devices/${encodeURIComponent(device)}/ssh/trust`, {
+		call<{ state: string }>('POST', `${dev(device)}/ssh/trust`, {
 			fingerprint,
 			port
 		}),
 	desktopTicket: (
 		device: string,
 		credentials: { username: string; password: string; domain: string }
-	) =>
-		call<{ ticket: string }>(
-			'POST',
-			`/devices/${encodeURIComponent(device)}/desktop/ticket`,
-			credentials
-		),
+	) => call<{ ticket: string }>('POST', `${dev(device)}/desktop/ticket`, credentials),
 	forgetHost: (device: string, port?: number) =>
-		call<{ state: string }>(
-			'POST',
-			`/devices/${encodeURIComponent(device)}/ssh/forget${port ? `?port=${port}` : ''}`
-		)
+		call<{ state: string }>('POST', `${dev(device)}/ssh/forget${port ? `?port=${port}` : ''}`)
 };

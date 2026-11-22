@@ -190,7 +190,7 @@ class Push:
         try:
             results = await asyncio.gather(*(self._post(client, known[e], p) for e, p, _, _ in due))
         except asyncio.CancelledError:  # the hub's time limit: they stay due, nothing is lost
-            self._pending += [(e, p, first, last, tries) for e, p, first, tries in due for last in [0.0]]
+            self._pending += [(e, p, first, 0.0, tries) for e, p, first, tries in due]
             raise
         for (endpoint, payload, first, tries), ok in zip(due, results, strict=True):
             if not ok:

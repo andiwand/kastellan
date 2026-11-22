@@ -23,6 +23,7 @@ whole (shadow, private keys), plus unknown formats, show only that they changed.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import difflib
 import gzip
@@ -30,6 +31,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import re
 import secrets as random
@@ -37,6 +39,7 @@ import shlex
 import tarfile
 import threading
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
@@ -45,7 +48,11 @@ from typing import Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-KEY_SECRET = "device-backups"
+from .config import ID
+from .config_edit import masked_text
+
+log = logging.getLogger(__name__)
+
 MAX_FILE = 16 * 1024 * 1024
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_MEMBERS = 10_000
@@ -80,7 +87,7 @@ class File:
     mode: int = 0o644
     mtime: int = 0
     link: str = ""
-    same: str = ""  # retained for reading earlier indexes; never used to discard content
+    same: str = ""  # only in indexes written before; never set or used now
     uid: int = 0
     gid: int = 0
     uname: str = ""
@@ -142,7 +149,7 @@ def unpack_tar(data: bytes) -> list[tuple[File, bytes]]:
                 f = tar.extractfile(m)
                 content = f.read() if f else b""
                 sha = hashlib.sha256(content).hexdigest()
-                out.append((File(path, sha, len(content), "file", m.mode, int(m.mtime), "", sha), content))
+                out.append((File(path, sha, len(content), "file", m.mode, int(m.mtime)), content))
             elif m.isdir():
                 out.append((File(path, "", 0, "dir", m.mode, int(m.mtime)), b""))
             elif m.issym():
@@ -172,12 +179,16 @@ def locked(method):
 class Store:
     """The versions of every device's backups, and their files (encrypted)."""
 
-    def __init__(self, folder: Path, key: callable) -> None:  # type: ignore[valid-type]
+    def __init__(self, folder: Path, key: Callable[[], bytes]) -> None:
         self.folder = folder
-        self._key = key  # () -> bytes (32), from the secrets
+        self._key = key  # 32 bytes, from the secrets
         self._lock = threading.RLock()
 
     # --- objects ------------------------------------------------------------------------------
+
+    def unchanged(self) -> threading.RLock:
+        """Held: no version is added or removed meanwhile (a consistent copy of the store)."""
+        return self._lock
 
     def _object(self, sha: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{64}", sha):
@@ -209,7 +220,7 @@ class Store:
     # --- the index per device -----------------------------------------------------------------
 
     def _index(self, device: str) -> Path:
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", device):
+        if not ID.fullmatch(device):
             raise ValueError("not a device id")
         return self.folder / f"{device}.json"
 
@@ -367,18 +378,6 @@ class Store:
             changed.append(entry)
         return {"added": added, "removed": removed, "changed": changed}
 
-    @locked
-    def text(self, device: str, sid: str, path: str, salt: bytes) -> str | None:
-        """One file of a version as text, secrets masked; None for binary files."""
-        snap = self.snapshot(device, sid)
-        f = next((f for f in snap.files if f.path == path and f.type == "file"), None)
-        if f is None:
-            raise KeyError(path)
-        if secret_file(path):
-            return f"(a secret as a whole: {fingerprint(self.get(f.sha), salt)})"
-        t = _text(self.get(f.sha), path)
-        return None if t is None else mask(path, t, salt)
-
 
 def secret_file(path: str) -> bool:
     """Unknown file formats are hidden too: a filename cannot prove they contain no secrets."""
@@ -404,9 +403,7 @@ def mask(path: str, text: str, salt: bytes) -> str:
     if secret_file(path):
         return fingerprint(text, salt)
     if path == "@config/config.yaml":
-        from .config_edit import _masked_text
-
-        return _masked_text(text) or fingerprint(text, salt)
+        return masked_text(text) or fingerprint(text, salt)
     if path in TEXT_CONFIGS:
         # A multiline value or an unfamiliar statement needs a real UCI parser;
         # hide the whole file rather than accidentally showing its continuation.
@@ -450,8 +447,6 @@ def kind_of(device: Any) -> str | None:
 async def fetch(hub: Any, id: str, at_the_box: bool = False) -> list[tuple[File, bytes]]:
     """A device's backup now, as files. `at_the_box`: someone asked and can confirm a FRITZ!Box's
     second factor (its export asks for it), so it is waited for."""
-    import asyncio
-
     device = hub.config.devices[id]
     if device.openwrt is not None:
         from .openwrt import client as ow
@@ -490,8 +485,6 @@ SECOND_FACTOR_NOTE = (
 
 async def take(hub: Any, id: str, by: str | None = None) -> dict[str, Any]:
     """Back one device up now; what happened (also kept in hub.backup_status)."""
-    import asyncio
-
     kind = kind_of(hub.config.devices[id])
     now = _now()
     state = dict(hub.backup_status.get(id) or {})
@@ -535,10 +528,6 @@ def due(hub: Any, id: str, now: datetime) -> bool:
 
 async def run(hub: Any) -> None:
     """Every device whose login allows it, every `device_backups.every_hours`."""
-    import asyncio
-    import logging
-
-    log = logging.getLogger(__name__)
     await asyncio.sleep(180)  # after the first polls
     while True:
         if not hub.demo:

@@ -9,16 +9,39 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any, Literal, Self
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import config_edit
+from .auth import hash_password
 from .auth_api import Who, client_address, require_signin
-from .config import Check, Kind, NotifyChannel, Role
-from .hub_errors import yaml_problem
+from .config import (
+    ID,
+    AlarmSettings,
+    BackupCheck,
+    Check,
+    Config,
+    DeviceBackupSettings,
+    GroupSettings,
+    HubBackupSettings,
+    InternetSettings,
+    Kind,
+    LogSettings,
+    MaintenanceWindow,
+    NetworkSettings,
+    NotifyChannel,
+    OpenVpnSource,
+    Role,
+    VulnSettings,
+    WifiSettings,
+    WireGuardSource,
+)
+from .hub_errors import ConfigProblem, describe, yaml_problem
+from .secrets import OWN
 
 if TYPE_CHECKING:
     from .hub import Hub
@@ -129,8 +152,6 @@ class SectionBody(BaseModel):
 
 def _hide_password(url: str) -> str:
     """smtps://user:secret@host → smtps://user:__keep__@host (the page never gets it)."""
-    from urllib.parse import urlsplit, urlunsplit
-
     parts = urlsplit(url)
     if parts.password is None:
         return url
@@ -140,23 +161,11 @@ def _hide_password(url: str) -> str:
 
 def _restore_password(url: str, old: str) -> str:
     """The password from `old` back into `url`, if the server and user stayed the same."""
-    from urllib.parse import urlsplit, urlunsplit
-
     new, was = urlsplit(url), urlsplit(old)
     if (new.username, new.hostname, new.port) != (was.username, was.hostname, was.port):
         raise HTTPException(400, "the mail server changed: enter its password again")
     host = new.netloc.rsplit("@", 1)[1]
     return urlunsplit(new._replace(netloc=f"{new.username or ''}:{was.password or ''}@{host}"))
-
-
-def _first_problem(e: Exception) -> str:
-    """A validation error as one line: where, and what."""
-    errors = getattr(e, "errors", None)
-    if callable(errors):
-        first = errors()[0]
-        where = ".".join(str(p) for p in first.get("loc", ()))
-        return f"{where}: {first.get('msg', '')}".strip(": ")
-    return str(e)
 
 
 def router(hub: Hub) -> APIRouter:
@@ -169,8 +178,6 @@ def router(hub: Hub) -> APIRouter:
         return w
 
     def save(request: Request, w: Who, old: str, new: str, what: str, **details: Any) -> str:
-        from .hub import ConfigProblem
-
         try:
             config = hub.check(new)
         except ConfigProblem as e:
@@ -211,8 +218,6 @@ def router(hub: Hub) -> APIRouter:
     @api.post("/config/check")
     def check_file(body: FileBody, request: Request) -> dict[str, Any]:
         guard(request)
-        from .hub import ConfigProblem
-
         try:
             hub.check(body.text)
         except ConfigProblem as e:
@@ -299,8 +304,6 @@ def router(hub: Hub) -> APIRouter:
     def get_settings(request: Request, response: Response) -> dict[str, Any]:
         guard(request)
         response.headers["Cache-Control"] = "no-store"
-        from .hub import ConfigProblem
-
         text = current()
         try:
             config = hub.check(text)
@@ -311,8 +314,6 @@ def router(hub: Hub) -> APIRouter:
 
     def _unmask(section: str, value: dict[str, Any], old_config) -> dict[str, Any]:
         """Secrets left as KEEP get their current value back; users get password hashes."""
-        from .auth import hash_password
-
         if section == "notify":
             old = old_config.notify
             for ch in value.get("notify") or []:
@@ -350,8 +351,6 @@ def router(hub: Hub) -> APIRouter:
                     raise HTTPException(400, f"{name!r}: user names are lowercase letters, digits, . _ -")
                 password = u.get("password")
                 if password:
-                    if len(password) < 10:
-                        raise HTTPException(400, f"{name}: a password of at least 10 characters")
                     stored = hash_password(password)
                 elif name in old_config.users:
                     stored = old_config.users[name].password
@@ -363,21 +362,6 @@ def router(hub: Hub) -> APIRouter:
 
     def _compact(section: str, value: dict[str, Any]) -> dict[str, Any]:
         """Defaults left out, so config.yaml says only what differs."""
-        from .config import (
-            AlarmSettings,
-            BackupCheck,
-            Config,
-            DeviceBackupSettings,
-            GroupSettings,
-            HubBackupSettings,
-            InternetSettings,
-            LogSettings,
-            MaintenanceWindow,
-            NetworkSettings,
-            NotifyChannel,
-            VulnSettings,
-            WifiSettings,
-        )
 
         def dump(model, v):
             return model.model_validate(v).model_dump(mode="json", exclude_defaults=True)
@@ -399,10 +383,7 @@ def router(hub: Hub) -> APIRouter:
             if section == "hub_backup":
                 return {"hub_backup": dump(HubBackupSettings, value.get("hub_backup") or {}) or None}
             if section == "wifi":
-                v = value.get("wifi") or {}
-                out = {"scan_at": v.get("scan_at")} if v.get("scan_at", "04:00") != "04:00" else {}
-                WifiSettings.model_validate(v)
-                return {"wifi": out or None}
+                return {"wifi": dump(WifiSettings, value.get("wifi") or {}) or None}
             if section == "internet":
                 return {"internet": dump(InternetSettings, value.get("internet") or {}) or None}
             if section == "vulns":
@@ -432,8 +413,8 @@ def router(hub: Hub) -> APIRouter:
                 return {"maintenance": windows or None}
             if section == "sites":  # a site without a name needs no line: its id stands in
                 return {"sites": {k: str(v) for k, v in (value.get("sites") or {}).items() if v} or None}
-        except ValueError as e:  # pydantic's ValidationError is one
-            raise HTTPException(400, _first_problem(e)) from e
+        except ValidationError as e:
+            raise HTTPException(400, describe(e)) from e
         return value
 
     @api.put("/settings/{section}")
@@ -445,8 +426,6 @@ def router(hub: Hub) -> APIRouter:
         old = current()
         if body.version != config_edit.version_of(old):
             raise HTTPException(409, "config.yaml changed since the form was opened; open it again")
-        from .hub import ConfigProblem
-
         try:
             old_config = hub.check(old)
         except ConfigProblem as e:
@@ -474,10 +453,7 @@ def router(hub: Hub) -> APIRouter:
         # Kastellan's own: OpenWrt logins and the group fingerprints' key. A VPN's form names its
         # wg-easy secret, so that name alone must not let a form overwrite one of these.
         own = {
-            "group-fingerprints",
-            "device-backups",
-            "syslog-ca-key",
-            "hub-backup-key",
+            *OWN,
             *(hub.openwrt_secret(id) for id in hub.config.devices),
             *(hub.fritz_secret(id) for id in hub.config.devices),
         }
@@ -495,8 +471,6 @@ def router(hub: Hub) -> APIRouter:
 
     def vpns_now(text: str) -> dict[str, dict[str, Any]]:
         """The VPNs as config.yaml says them (an old `vpn:` read as `vpns:`), defaults left out."""
-        from .hub import ConfigProblem
-
         try:
             config = hub.check(text)
         except ConfigProblem as e:
@@ -517,8 +491,6 @@ def router(hub: Hub) -> APIRouter:
     @api.put("/vpns/{vid}")
     async def put_vpn(vid: str, body: VpnBody, request: Request) -> dict[str, Any]:
         """Add a VPN, or change one: its kind's settings (secrets stay secrets: set apart)."""
-        from .config import ID, OpenVpnSource, WireGuardSource
-
         w = guard(request)
         if not ID.match(vid) or len(vid) > 40:
             raise HTTPException(400, "ids are lowercase letters, digits, - and _ (up to 40)")
@@ -548,8 +520,8 @@ def router(hub: Hub) -> APIRouter:
             entry = model.model_validate({**value, "kind": kind}).model_dump(
                 mode="json", exclude_defaults=True
             )
-        except ValueError as e:
-            raise HTTPException(400, _first_problem(e)) from e
+        except ValidationError as e:
+            raise HTTPException(400, describe(e)) from e
         vpns[vid] = {"kind": kind, **entry}
         return {
             "id": vid,
@@ -595,11 +567,18 @@ def router(hub: Hub) -> APIRouter:
         if body.version != config_edit.version_of(old):
             raise HTTPException(409, "config.yaml changed since the page was loaded; load it again")
         text, wanted = old, set(body.devices)
-        for did, device in hub.config.devices.items():
-            if did in wanted and device.powered_by != id:
-                text = config_edit.set_device_key(text, did, "powered_by", id)
-            elif did not in wanted and device.powered_by == id:
-                text = config_edit.set_device_key(text, did, "powered_by", None)
+        try:
+            for did, device in hub.config.devices.items():
+                if did in wanted and device.powered_by != id:
+                    text = config_edit.set_device_key(text, did, "powered_by", id)
+                elif did not in wanted and device.powered_by == id:
+                    text = config_edit.set_device_key(text, did, "powered_by", None)
+        except YAMLError as e:
+            raise HTTPException(409, f"config.yaml can't be read: {yaml_problem(e)}") from e
+        except KeyError as e:  # loaded, but not (or no longer) in the file as written
+            raise HTTPException(
+                409, f"{e.args[0] if e.args else 'a device'} isn't in config.yaml as written"
+            ) from e
         return {"version": save(request, w, old, text, "ups.powered", device=id)}
 
     @api.get("/devices/{id}/yaml")

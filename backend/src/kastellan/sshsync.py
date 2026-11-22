@@ -24,10 +24,10 @@ from typing import Any, Literal
 
 import asyncssh
 
-from .access import DROPBEAR, USER
+from .access import DROPBEAR, valid_user
 from .config import Device
 from .ssh import Keys
-from .sshkeys import KEY_TYPE, MAX_OUTPUT, _privileged, parse_line, target_of
+from .sshkeys import KEY_TYPE, MAX_OUTPUT, parse_line, privileged, target_of
 
 File = Literal["authorized_keys", "known_hosts"]
 FILES = ("authorized_keys", "known_hosts")
@@ -107,7 +107,8 @@ class Copy:
     entries: list[Entry] = field(default_factory=list)
 
 
-def _fingerprint(kind: str, data: str) -> str | None:
+def fingerprint_of(kind: str, data: str) -> str | None:
+    """A public key's fingerprint, or None if it isn't one."""
     try:
         return asyncssh.import_public_key(f"{kind} {data}").get_fingerprint()
     except (ValueError, asyncssh.KeyImportError):
@@ -123,7 +124,7 @@ def parse_entry(file: File, line: str) -> Entry | None:
         if parsed is None:
             return None
         options, kind, data, comment = parsed
-        fp = _fingerprint(kind, data)
+        fp = fingerprint_of(kind, data)
         if fp is None:
             return None
         return Entry(f"{kind} {data}", text, kind, fp, comment.strip(), f"{options} {comment}".strip())
@@ -135,7 +136,7 @@ def parse_entry(file: File, line: str) -> Entry | None:
         return None
     if not BASE64.match(words[2]):
         return None
-    fp = _fingerprint(words[1], words[2])
+    fp = fingerprint_of(words[1], words[2])
     if fp is None:
         return None
     hosts = words[0]
@@ -225,7 +226,7 @@ def users_of(device: Device, users: list[str]) -> list[str]:
     out: list[str] = []
     for u in users or [LOGIN]:
         name = me if u == LOGIN else u
-        if not USER.match(name):
+        if not valid_user(name):
             raise ValueError(f"user names are letters, digits, . _ - (up to 32): {u[:40]!r}")
         if name not in out:
             out.append(name)
@@ -255,7 +256,7 @@ async def fetch(keys: Keys, device: Device, file: File, users: list[str]) -> dic
     names = users_of(device, users)
     out: dict[str, Copy | Exception] = {}
     async with await keys.connect(target_of(device)) as conn:
-        how = await _privileged(conn) if any(n != me for n in names) else None
+        how = await privileged(conn) if any(n != me for n in names) else None
         for name in names:
             try:
                 out[name] = await _read(conn, file, name, me, how)
@@ -276,10 +277,10 @@ async def push(
     """Change one user's file on one device, if it is still as fetched; read back to see it
     took. Returns (added, removed)."""
     me = target_of(device).user
-    if not USER.match(user):
+    if not valid_user(user):
         raise ValueError("user names are letters, digits, . _ - (up to 32)")
     async with await keys.connect(target_of(device)) as conn:
-        how = await _privileged(conn) if user != me else None
+        how = await privileged(conn) if user != me else None
         copy = await _read(conn, file, user, me, how)
         if copy.version != version:
             raise RuntimeError("changed since it was fetched: fetch again")

@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import Field
 
 from . import setup_run
-from .access import USER, hub_address, setup_script, ssh_greeting
+from .access import USER_RULE, hub_address, setup_script, ssh_greeting, valid_user
 from .auth_api import client_address, require_admin, require_signin
 from .setup_run import Login, reason
 from .ssh import ChangedHost, Target, UnknownHost
@@ -47,21 +47,13 @@ def router(hub: Hub) -> APIRouter:
             raise HTTPException(404, "no such device")
         return setup_run.stored_logins(hub, id, w.user)
 
-    def device_of(id: str):
-        device = hub.config.devices.get(id)
-        if device is None:
-            raise HTTPException(404, "no such device")
-        if not device.host:  # "" would be this machine: the hub's own
-            raise HTTPException(400, f"{id} has no address of its own (a UPS read through its host)")
-        return device
-
     @api.get("/{id}/access")
     async def access(id: str, request: Request, login: str | None = None) -> dict[str, Any]:
         """What works, and the commands; `login`: the existing account to show them for."""
         require_admin(request)
-        if login is not None and not USER.fullmatch(login):
-            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32, not starting with -)")
-        device = device_of(id)
+        if login is not None and not valid_user(login):
+            raise HTTPException(400, USER_RULE)
+        device = setup_run.device_of(hub, id)
         port = ssh_port(device) or 22
         # OpenWrt has one login, root, and no sudo: Kastellan's key goes to root there. Known by
         # its API being set up, or by dropbear answering (OpenWrt's own SSH server); asked while
@@ -138,10 +130,10 @@ def router(hub: Hub) -> APIRouter:
         """Log in once with the typed password and run the commands the page shows (as root
         when they need it), streaming the output; then `ssh:` goes into config.yaml."""
         w = require_signin(request)
-        device = device_of(id)
+        device = setup_run.device_of(hub, id)
         setup_run.resolve(hub, id, body, w.user)
-        if not (USER.match(body.login) and USER.match(body.user)):
-            raise HTTPException(400, "user names are letters, digits, . _ - (up to 32, not starting with -)")
+        if not valid_user(body.user):
+            raise HTTPException(400, USER_RULE)
         hub_ip = await asyncio.to_thread(hub_address, device.host, body.port)
         script = setup_script(body.user, hub.keys.public_key(), hub_ip, body.create, body.sudo)
         if not (body.create or body.sudo or body.user != body.login):

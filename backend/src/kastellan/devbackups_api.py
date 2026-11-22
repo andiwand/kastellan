@@ -12,7 +12,7 @@ from fastapi.responses import Response
 
 from . import devbackups
 from .auth_api import client_address, require_admin, require_signin
-from .groups_api import SALT_SECRET
+from .secrets import FINGERPRINT_SALT
 
 if TYPE_CHECKING:
     from .hub import Hub
@@ -28,7 +28,7 @@ def router(hub: Hub) -> APIRouter:
         return device
 
     def salt() -> bytes:
-        return hub.own_secret(SALT_SECRET).encode()
+        return hub.own_secret(FINGERPRINT_SALT).encode()
 
     def view(id: str) -> dict[str, Any]:
         device = hub.config.devices[id]
@@ -114,37 +114,6 @@ def router(hub: Hub) -> APIRouter:
             "backup.compare", w.user, client_address(request.scope), device=id, older=older, newer=newer
         )
         return out
-
-    @api.get("/devices/{id}/backups/{sid}/files")
-    async def files(id: str, sid: str, request: Request) -> list[dict[str, Any]]:
-        require_admin(request)
-        device_of(id)
-        try:
-            snap = await asyncio.to_thread(hub.device_backups.snapshot, id, sid)
-        except KeyError as e:
-            raise HTTPException(404, "no such version") from e
-        return [
-            {"path": f.path, "size": f.size, "secret": devbackups.secret_file(f.path)}
-            for f in snap.files
-            if f.type == "file"
-        ]
-
-    @api.get("/devices/{id}/backups/{sid}/file")
-    async def file(
-        id: str, sid: str, request: Request, response: Response, path: str = Query(max_length=500)
-    ) -> dict[str, Any]:
-        """One file of a version as text, secrets masked."""
-        w = require_signin(request)
-        response.headers["Cache-Control"] = "no-store"
-        device_of(id)
-        try:
-            text = await asyncio.to_thread(hub.device_backups.text, id, sid, path, salt())
-        except KeyError as e:
-            raise HTTPException(404, "no such version or file") from e
-        hub.audit.record(
-            "backup.read", w.user, client_address(request.scope), device=id, version=sid, path=path
-        )
-        return {"path": path, "text": text}
 
     @api.get("/devices/{id}/backups/{sid}/download")
     async def download(id: str, sid: str, request: Request) -> Response:

@@ -34,6 +34,7 @@ class Vitals:
     cores: int | None = None
     memory_used: int | None = None  # bytes
     memory_total: int | None = None
+    memory_share: float | None = None  # percent, where only that is known (a FRITZ!Box)
     storage_used: int | None = None  # bytes, of the fullest filesystem that counts
     storage_total: int | None = None
     storage_mount: str | None = None
@@ -41,6 +42,8 @@ class Vitals:
 
     @property
     def memory(self) -> float | None:
+        if self.memory_share is not None:
+            return self.memory_share
         return _pct(self.memory_used, self.memory_total)
 
     @property
@@ -173,7 +176,7 @@ def from_fritz(eco: dict[str, Any] | None) -> Vitals:
     v.temperature = temp if temp is not None and 0 < temp < 150 else None
     free = newest("ramusage", 2)
     if free is not None and 0 <= free <= 100:
-        v.memory_used, v.memory_total = round(100 - free), 100  # shares only: no bytes
+        v.memory_share = 100.0 - free
     return v
 
 

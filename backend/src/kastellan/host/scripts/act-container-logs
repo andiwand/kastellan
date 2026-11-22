@@ -3,7 +3,6 @@
 # characters go; the answer stays under MAX_BYTES (the newest lines).
 name = one_name()
 TAIL, MAX_LINE, MAX_BYTES = 300, 500, 48_000
-ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
 
 found = exact(name)
 if found is None:

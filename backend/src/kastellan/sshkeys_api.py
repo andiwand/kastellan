@@ -31,6 +31,10 @@ class Finish(BaseModel):
     anyway: bool = False  # switch although the new key isn't on every device
 
 
+class Forget(BaseModel):
+    device: str = Field(min_length=1, max_length=200)
+
+
 def _brief(e: Exception) -> str:
     return f"{type(e).__name__}: {str(e)[:120]}"
 
@@ -134,10 +138,7 @@ def router(hub: Hub) -> APIRouter:
         return {id: d for id, d in hub.config.devices.items() if d.ssh}
 
     def audit_rotation(request: Request, user: str | None, what: str, rot: sshkeys.Rotation | None) -> None:
-        steps = {
-            id: "removed the old key" if s.removed else "has the new key" if s.added else s.error
-            for id, s in (rot.devices.items() if rot else [])
-        }
+        steps = {id: s.summary() for id, s in (rot.devices.items() if rot else [])}
         hub.audit.record(
             f"ssh.rotate.{what}",
             user,
@@ -164,6 +165,18 @@ def router(hub: Hub) -> APIRouter:
         except (ValueError, FileNotFoundError) as e:
             raise HTTPException(409, str(e)) from e
         audit_rotation(request, w.user, "finish", rot)
+        return {"rotation": rotation_view()}
+
+    @api.post("/ssh/rotate/forget")
+    async def rotate_forget(body: Forget, request: Request) -> dict[str, Any]:
+        """Give up on one device while removing (gone, another login, or out of reach): the
+        rotation ends without it, and the old key may stay trusted there; audited as such."""
+        w = require_signin(request)
+        try:
+            rot = await rotator.forget(body.device)
+        except ValueError as e:
+            raise HTTPException(409, str(e)) from e
+        audit_rotation(request, w.user, "forget", rot)
         return {"rotation": rotation_view()}
 
     @api.post("/ssh/rotate/cancel")

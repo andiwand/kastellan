@@ -108,6 +108,9 @@ class DiskHistory:
             mounts[mount] = [r for r in rows if r[0] >= cutoff]
             changed = True
         if changed:
+            # A mount no longer reported goes once its newest sample is past KEEP_DAYS.
+            for mount in [m for m, rows in mounts.items() if not rows or rows[-1][0] < cutoff]:
+                del mounts[mount]
             self._save()
 
     def forecasts(self, device: str, now: datetime) -> dict[str, float]:

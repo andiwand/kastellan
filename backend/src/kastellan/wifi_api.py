@@ -17,13 +17,12 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import setup_run, wifi
+from . import demo_more, setup_run, wifi
 from .auth_api import client_address, require_admin, require_signin
 from .fritzbox import client as fb
-from .groups_api import SALT_SECRET
 from .openwrt import client as ow
 from .openwrt import sync
-from .openwrt.sync import _fp
+from .secrets import FINGERPRINT_SALT
 
 if TYPE_CHECKING:
     from .hub import Hub
@@ -79,7 +78,7 @@ def router(hub: Hub) -> APIRouter:
     scans = hub.wifi_scans
 
     def salt() -> bytes:
-        return hub.own_secret(SALT_SECRET).encode()
+        return hub.own_secret(FINGERPRINT_SALT).encode()
 
     def openwrt_ids() -> list[str]:
         return [id for id, d in hub.config.devices.items() if d.openwrt]
@@ -147,12 +146,12 @@ def router(hub: Hub) -> APIRouter:
 
     # What the access points say live (their Wi-Fi configuration, password fingerprints): asked
     # of all at once, each within LIVE_WAIT, and kept LIVE_FRESH seconds; older, it is shown
-    # while a fresh reading is under way.
-    cache: dict[str, Any] = {"t": 0.0, "value": None, "task": None, "context": None}
+    # while a fresh reading is under way. A reading begun before `invalidate` still answers who
+    # waits for it, but isn't kept (its generation is over).
+    cache: dict[str, Any] = {"t": 0.0, "value": None, "task": None, "context": None, "generation": 0}
 
     def invalidate() -> None:
-        if cache["task"] is not None:
-            cache["task"].cancel()
+        cache["generation"] += 1
         cache.update(t=0.0, value=None, task=None)
 
     async def read_live() -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
@@ -175,7 +174,7 @@ def router(hub: Hub) -> APIRouter:
         async def fingerprint(id: str, index: int) -> tuple[tuple[str, int], str | None]:
             try:
                 secret = await asyncio.wait_for(fb.wifi_key(hub.fritz(id), index), LIVE_WAIT)
-                return (id, index), _fp(secret, key)
+                return (id, index), sync.fingerprint(secret, key)
             except Exception:
                 return (id, index), None
 
@@ -202,14 +201,13 @@ def router(hub: Hub) -> APIRouter:
         if cache["task"] is None or cache["task"].done():
 
             async def refresh() -> tuple[dict[str, Any], dict[tuple[str, int], str | None]]:
+                generation = cache["generation"]
                 value = await read_live()
-                cache["t"], cache["value"] = time.monotonic(), value
+                if cache["generation"] == generation:
+                    cache["t"], cache["value"] = time.monotonic(), value
                 return value
 
-            cache["task"] = asyncio.create_task(refresh())
-            hub._background.add(cache["task"])
-            cache["task"].add_done_callback(hub._background.discard)
-            cache["task"].add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            cache["task"] = hub.spawn(refresh(), name="Wi-Fi reading")
         if cache["value"] is not None:  # stale: shown now, the fresh one comes with the next look
             return cache["value"]
         return await asyncio.shield(cache["task"])
@@ -219,9 +217,7 @@ def router(hub: Hub) -> APIRouter:
         require_admin(request)
         fritz = fritz_networks()
         if hub.demo:
-            from . import demo
-
-            survey, keys = demo.WIFI_SURVEY, {}
+            survey, keys = demo_more.WIFI_SURVEY, {}
         else:
             survey, keys = await live(auto=request.headers.get("x-kastellan-auto") == "1")
         settings = router_settings()
@@ -292,8 +288,11 @@ def router(hub: Hub) -> APIRouter:
                     fb.check_ssid(body.new_ssid)
                 if body.key is not None:
                     fb.check_key(body.key)
+                if body.encryption and body.encryption not in fb.BEACON:
+                    raise ValueError(f"{id}: a FRITZ!Box takes WPA2, WPA3, WPA2/WPA3 or WPA/WPA2")
                 if body.encryption and any(
-                    wifi._enc(n.get("encryption")) != wifi._enc(body.encryption) for n in matching
+                    wifi.encryption_word(n.get("encryption")) != wifi.encryption_word(body.encryption)
+                    for n in matching
                 ):
                     raise ValueError(f"{id}: change encryption in FRITZ!OS first")
             except ValueError as e:
@@ -515,9 +514,7 @@ def router(hub: Hub) -> APIRouter:
                     with contextlib.suppress(Exception):
                         await scan_all(hub)
 
-                task = asyncio.create_task(scan_later())
-                hub._background.add(task)
-                task.add_done_callback(hub._background.discard)
+                hub.spawn(scan_later(), name="Wi-Fi scan after a plan")
             return {"outcome": outcome}
 
         return job("plan", request, w, work, radios=[r.model_dump() for r in body.radios])

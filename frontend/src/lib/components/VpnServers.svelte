@@ -35,7 +35,7 @@
 				text: s.state && s.state !== 'running' ? s.state : 'stopped',
 				color: 'var(--critical-text)'
 			};
-		return { text: 'unknown', color: 'var(--text-muted)' };
+		return { text: 'unknown', color: 'var(--muted)' };
 	}
 	function listen(s: VpnServer) {
 		const parts = [];
@@ -96,7 +96,7 @@
 								{/if}
 								<span class="block text-faint">{SOURCE[s.source] ?? s.source}</span>
 							</td>
-							<td class="px-2 py-2 text-xs tabular-nums">{listen(s) || '–'}</td>
+							<td class="tabular px-2 py-2 text-xs">{listen(s) || '–'}</td>
 							<td class="px-2 py-2 text-xs">
 								<span style:color={st.color} title={s.error ?? undefined}>{st.text}</span>
 								{#if s.checked && !s.checked.startsWith('x')}

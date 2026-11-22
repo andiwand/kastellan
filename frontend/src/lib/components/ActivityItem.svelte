@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Change, Device } from '#lib/api.js';
-	import { dayClock } from '#lib/format.js';
+	import { dayClock, versionSubject } from '#lib/format.js';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -36,7 +36,7 @@
 		{/if}
 	</span>
 	<span class="min-w-0 flex-1 text-sm leading-snug">
-		<span class="font-medium">{change.check}</span>
+		<span class="font-medium">{versionSubject(change.check)}</span>
 		{#if change.kind === 'version'}
 			<span class="text-muted">updated</span>
 			<span class="block text-xs text-muted">

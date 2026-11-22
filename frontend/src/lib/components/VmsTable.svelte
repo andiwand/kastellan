@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Vm } from '#lib/api.js';
+	import { bytes } from '#lib/format.js';
 	import { runner, type Job } from '#lib/runner.svelte.js';
 	import JobStatus from './JobStatus.svelte';
 	import { VM_NAME, vmActions, vmTone, type VmAction } from '#lib/actions.js';
@@ -53,8 +54,6 @@
 	}
 
 	const tone = vmTone;
-	const gb = (bytes: number | null) =>
-		bytes == null ? '–' : `${(bytes / 1024 ** 3).toFixed(bytes % 1024 ** 3 ? 1 : 0)} GB`;
 	const sorted = $derived([...vms].sort((a, b) => a.name.localeCompare(b.name)));
 </script>
 
@@ -96,7 +95,7 @@
 					{vm.state || 'unknown'}
 				</span>
 				<span class="hidden text-xs text-muted md:block">{vm.vcpus ?? '–'}</span>
-				<span class="hidden text-xs text-muted md:block">{gb(vm.memory)}</span>
+				<span class="hidden text-xs text-muted md:block">{bytes(vm.memory)}</span>
 				<span class="col-span-full flex justify-end gap-1 md:col-span-1">
 					{#if canAct}
 						{#each actions(vm) as a (a.kind)}

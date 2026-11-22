@@ -22,9 +22,28 @@ import contextlib
 import re
 import shlex
 import socket
+from typing import TYPE_CHECKING
 
-# What config.yaml allows for a login (SshAccess.user), never starting with "-".
-USER = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,31}$")
+if TYPE_CHECKING:
+    from .config import ActAccess, CollectAccess, Device
+
+# What config.yaml allows for a login (SshAccess.user), never starting with "-". Checked with
+# valid_user or check_user (fullmatch: "root\n" is no name).
+USER = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._-]{0,31}")  # with fullmatch (valid_user)
+USER_RULE = "user names are letters, digits, . _ - (up to 32, not starting with -)"
+
+# Root runs this python3 (-I -S: no environment, no site packages, so no .pth file runs); shell
+# lines that set $py to it, for the collector's and the actor's install scripts.
+PYTHON_CHECK = r"""py=/usr/bin/python3
+[ -x "$py" ] || py=$(command -v python3) || { echo "needs python3" >&2; exit 1; }
+# Root will run this interpreter: the file, and the folders it is found in, must be root's
+# alone (a link's own rights mean nothing; what it points to counts).
+real=$(readlink -f "$py")
+for p in "$real" "$(dirname "$real")" "$(dirname "$py")"; do
+  if [ "$(stat -c %u "$p")" != 0 ] || [ -n "$(find "$p" -maxdepth 0 -perm /022)" ]; then
+    echo "$p isn't root's alone (owner or write rights): not using it" >&2; exit 1
+  fi
+done"""
 
 # True in sh on an OpenWrt device whose SSH server is dropbear (its default). One with
 # openssh-server running instead reads ~/.ssh/authorized_keys, also root's, and knows `from=`.
@@ -36,6 +55,9 @@ _ADD = (
     'grep -qxF "$1" "$0" 2>/dev/null || printf "%s\\n" "$1" >> "$0"; chmod 600 "$0"'
 )
 
+# Run as the target user: $0 is the authorized_keys file, $1 the line just added, which stays
+# the only one (only if it is there: an interruption never leaves the file without it).
+_ONLY = 'grep -qxF -- "$1" "$0" && grep -m1 -xF -- "$1" "$0" > "$0.k" && cat "$0.k" > "$0"; rm -f "$0.k"'
 
 # Run as the file's owner: $0 the file, $1 the line about to be added, $2 a script path, $3 a
 # key's data. Removes the lines that bind that key to that script with other options (a VPN set
@@ -73,10 +95,20 @@ async def ssh_greeting(host: str, port: int = 22, wait: float = 3.0) -> str:
     return ""
 
 
+def valid_user(user: str) -> bool:
+    return USER.fullmatch(user) is not None
+
+
 def check_user(user: str) -> str:
-    if not USER.fullmatch(user):
-        raise ValueError("user names are letters, digits, . _ - (up to 32, not starting with -)")
+    if not valid_user(user):
+        raise ValueError(USER_RULE)
     return user
+
+
+def port_of(device: Device, login: ActAccess | CollectAccess | None = None) -> int:
+    """The SSH port for one of Kastellan's logins on the device (act:, collect:): its own, else
+    the ssh: login's, else 22."""
+    return (login.port if login else None) or (device.ssh.port if device.ssh else 22)
 
 
 def openssh_options(hub_ip: str | None, *more: str) -> str:
@@ -86,16 +118,23 @@ def openssh_options(hub_ip: str | None, *more: str) -> str:
 
 
 def authorize(
-    user: str, openssh_line: str, dropbear_line: str, replace: tuple[str, str] | None = None
+    user: str,
+    openssh_line: str,
+    dropbear_line: str,
+    replace: tuple[str, str] | None = None,
+    only: bool = False,
 ) -> list[str]:
     """Shell lines adding a key for `user` (run as root, or as that user). With `replace`
-    (script path, key data): lines binding that key to that script otherwise go first."""
+    (script path, key data): lines binding that key to that script otherwise go first. With
+    `only` (a user of Kastellan's own): the file keeps only this line, so an older key or hub
+    address doesn't stay valid."""
     q = shlex.quote
     script, data = replace or ("", "")
-    dedupe = q(_DEDUPE) if replace else ""
+    none = chr(39) * 2
     return [
         f"user={q(check_user(user))}",
-        f"script={q(script)}; keydata={q(data)}; dedupe={dedupe or chr(39) * 2}",
+        f"script={q(script)}; keydata={q(data)}; dedupe={q(_DEDUPE) if replace else none}",
+        f"only={q(_ONLY) if only else none}",
         f"if {DROPBEAR}; then dropbear=1; else dropbear=; fi",
         'if [ -n "$dropbear" ]; then line=' + q(dropbear_line) + "; else line=" + q(openssh_line) + "; fi",
         'if [ -n "$dropbear" ] && [ "$user" = root ]; then',
@@ -115,9 +154,11 @@ def authorize(
         '  if [ "$(id -un)" = "$user" ]; then',
         '    [ -z "$dedupe" ] || sh -c "$dedupe" "$f" "$line" "$script" "$keydata"',
         '    sh -c "$add" "$f" "$line"',
+        '    [ -z "$only" ] || sh -c "$only" "$f" "$line"',
         "  else",
         '    [ -z "$dedupe" ] || su -s /bin/sh "$user" -c "$dedupe" "$f" "$line" "$script" "$keydata"',
         '    su -s /bin/sh "$user" -c "$add" "$f" "$line"',
+        '    [ -z "$only" ] || su -s /bin/sh "$user" -c "$only" "$f" "$line"',
         "  fi",
         "fi",
     ]

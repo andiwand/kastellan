@@ -61,7 +61,7 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 # Checked against when the user does not exist, so a wrong name takes as long as a wrong password.
-_DUMMY_HASH = hash_password(secrets.token_hex(8))
+DUMMY_HASH = hash_password(secrets.token_hex(8))
 
 
 def password_tag(stored_hash: str) -> str:

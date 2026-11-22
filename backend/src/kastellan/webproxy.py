@@ -130,6 +130,12 @@ def _port(headers: dict[str, str]) -> str:
     return ":" + host.rsplit(":", 1)[1] if host.count(":") == 1 else ""
 
 
+def page_origin(scope: Scope, headers: dict[str, str], id: str, domain: str) -> str:
+    """Where the browser reaches a device's page: scheme://<label>.<domain>[:port], as it reached
+    the hub."""
+    return f"{_scheme(scope, headers)}://{label(id)}.{domain}{_port(headers)}"
+
+
 def origin_of(url: str) -> tuple[str, str, int] | None:
     """scheme, host, port (default ports filled in), or None for a relative or odd URL."""
     try:
@@ -184,9 +190,9 @@ class _Ticket:
     session: str  # the hub session's token (in memory only)
     name: str  # the device's name under the domain
     expires: float
+    target: str  # the upstream at issuance; credentials must never follow a config change
     cookies: list[str] | None = None  # the device's own, from a sign-in for the admin (weblogin.py)
     basic: str | None = None  # an Authorization header the hub adds (weblogin.py), never the browser
-    target: str | None = None  # the upstream at issuance; credentials must never follow a config change
 
 
 class Access:
@@ -195,23 +201,23 @@ class Access:
 
     def __init__(self) -> None:
         self._tickets: dict[str, _Ticket] = {}
-        self._entries: dict[str, tuple[str, str, str | None]] = {}  # cookie -> (session, name, target)
+        self._entries: dict[str, tuple[str, str, str]] = {}  # cookie -> (session, name, target)
         self._basic: dict[str, str] = {}  # cookie -> Authorization the hub adds for that page
 
     def ticket(
         self,
         session: str,
         name: str,
+        target: str,
         cookies: list[str] | None = None,
         basic: str | None = None,
-        target: str | None = None,
     ) -> str:
         now = time.monotonic()
         self._tickets = {k: t for k, t in self._tickets.items() if t.expires > now}
         while len(self._tickets) >= 1000:
             del self._tickets[next(iter(self._tickets))]
         key = secrets.token_urlsafe(24)
-        self._tickets[key] = _Ticket(session, name, now + TICKET_SECONDS, cookies, basic, target)
+        self._tickets[key] = _Ticket(session, name, now + TICKET_SECONDS, target, cookies, basic)
         return key
 
     def enter(self, key: str, name: str) -> tuple[str, list[str]] | None:
@@ -238,8 +244,9 @@ class Access:
         return entry[0] if entry and entry[1] == name else None
 
     def matches(self, value: str | None, target: str | None) -> bool:
+        """The cookie was issued for this upstream (None: the device has none now)."""
         entry = self._entries.get(value or "")
-        return bool(entry and target and (entry[2] is None or entry[2] == target))
+        return entry is not None and target is not None and entry[2] == target
 
     def forget(self, value: str | None) -> None:
         self._entries.pop(value or "", None)
@@ -254,11 +261,12 @@ def router(hub: Hub, access: Access) -> APIRouter:
         """The device's page through the hub: a one-time ticket, then its own name."""
         w = require_signin(request)
         web, device = hub.config.web, hub.config.devices.get(id)
-        if web is None or device is None or upstream(device) is None:
+        target = upstream(device) if device else None
+        if web is None or target is None:
             raise HTTPException(404, "no web interface for that device through Kastellan")
-        key = access.ticket(request.cookies.get(SESSION_COOKIE) or "", label(id), target=upstream(device))
+        key = access.ticket(request.cookies.get(SESSION_COOKIE) or "", label(id), target)
         headers = {k.lower(): v for k, v in request.headers.items()}
-        where = f"{_scheme(request.scope, headers)}://{label(id)}.{web.domain}{_port(headers)}"
+        where = page_origin(request.scope, headers, id, web.domain)
         hub.audit.record("web.open", w.user, client_address(request.scope), device=id)
         return RedirectResponse(
             f"{where}{ENTER}?ticket={key}", status_code=303, headers={"Referrer-Policy": "no-referrer"}

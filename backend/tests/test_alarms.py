@@ -218,3 +218,12 @@ def test_a_virtual_router_and_its_host_do_not_hide_each_others_alarm() -> None:
     found = evaluate(config, st, NOW, {}, STARTED)
     assert [p.key for p in found] == ["down:router"]
     assert found[0].hidden == ["guest", "server"]
+
+
+def test_mutes_that_ended_are_forgotten(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 22, 12, tzinfo=UTC)
+    alarms = Alarms(tmp_path)
+    alarms.mute("a", now + timedelta(minutes=5))
+    alarms.mute("b", now - timedelta(minutes=5))
+    assert alarms.muted_now(now) == {"a": now + timedelta(minutes=5)}
+    assert set(Alarms(tmp_path).muted) == {"a"}  # saved without the ended one

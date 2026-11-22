@@ -8,7 +8,7 @@
 		type WifiRadio
 	} from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { ago, dayClock } from '#lib/format.js';
+	import { ago, bandLabel, dayClock } from '#lib/format.js';
 	import JobDialog from '#lib/components/JobDialog.svelte';
 	import FritzMesh from '#lib/components/FritzMesh.svelte';
 	import Radar from '@lucide/svelte/icons/radar';
@@ -97,7 +97,6 @@
 	}
 
 	const name = (id: string) => store.byId.get(id)?.name ?? id;
-	const BAND: Record<string, string> = { '2g': '2.4 GHz', '5g': '5 GHz', '6g': '6 GHz' };
 	const ENCRYPTIONS = [
 		['sae-mixed', 'WPA2/WPA3'],
 		['sae', 'WPA3'],
@@ -173,7 +172,7 @@
 					{#if net.guest}<span class="rounded-md bg-surface-2 px-1.5 py-0.5 text-xs">
 							guest
 						</span>{/if}
-					<span class="text-xs text-muted">{net.bands.map((b) => BAND[b] ?? b).join(' · ')}</span>
+					<span class="text-xs text-muted">{net.bands.map(bandLabel).join(' · ')}</span>
 				</div>
 				<ul class="mt-2 space-y-0.5 text-sm">
 					{#each net.devices as d (d)}
@@ -181,7 +180,7 @@
 						<li class="flex flex-wrap items-baseline gap-x-2">
 							<a class="hover:underline" href="/devices/{d}">{name(d)}</a>
 							<span class="text-xs text-muted">
-								{entries.map((e) => (e.band ? BAND[e.band] : e.radio)).join(', ')}
+								{entries.map((e) => bandLabel(e.band) || e.radio).join(', ')}
 								{#if entries[0]?.kind === 'fritzbox'}· FRITZ!Box{/if}
 							</span>
 							{#if net.off.includes(d)}<span class="text-xs text-faint">off</span>{/if}
@@ -271,7 +270,7 @@
 							<a class="font-medium hover:underline" href="/devices/{r.device}">{name(r.device)}</a>
 							<span class="font-mono text-xs text-faint">{r.radio}</span>
 						</td>
-						<td>{BAND[r.band]}</td>
+						<td>{bandLabel(r.band)}</td>
 						<td class="tabular">{r.channel ?? 'auto'}</td>
 						<td class="tabular">{r.width} MHz</td>
 						<td class="tabular">{r.clients ?? '–'}</td>
@@ -378,7 +377,7 @@
 							</td>
 							<td class="text-xs">
 								{name(c.device)}
-								<span class="text-faint">{c.band ? BAND[c.band as '2g'] : c.radio}</span>
+								<span class="text-faint">{bandLabel(c.band) || c.radio}</span>
 							</td>
 							<td class="tabular text-xs">
 								{#if c.signal == null}–{:else if c.kind === 'fritzbox'}{c.signal} %{:else}{c.signal}
@@ -429,7 +428,7 @@
 					<p class="text-sm font-medium">
 						{name(key.split('/')[0])}
 						<span class="text-xs font-normal text-muted">
-							{BAND[scan.band]} · on {scan.channel} · {ago(
+							{bandLabel(scan.band)} · on {scan.channel} · {ago(
 								new Date(scan.t * 1000).toISOString(),
 								store.now
 							)}
@@ -515,7 +514,7 @@
 					/>
 					<span class="min-w-0">
 						<span class="font-medium">{name(r.device)}</span>
-						<span class="text-xs text-muted">{BAND[r.band]}</span>
+						<span class="text-xs text-muted">{bandLabel(r.band)}</span>
 						<span class="tabular ml-1">
 							{r.current ?? 'auto'} → <b>{r.channel}</b>{r.htmode
 								? ` (${r.htmode.replace('HE', '')} MHz)`
@@ -637,7 +636,7 @@
 						targets = next;
 					}}
 				/>
-				{name(r.device)} <span class="text-xs text-muted">{BAND[r.band]} ({r.radio})</span>
+				{name(r.device)} <span class="text-xs text-muted">{bandLabel(r.band)} ({r.radio})</span>
 				{#if has}<span class="text-xs text-faint">has it</span>{/if}
 			</label>
 		{/each}
@@ -683,7 +682,7 @@
 					}}
 				/>
 				{name(e.device)}
-				<span class="text-xs text-muted">{e.band ? BAND[e.band] : ''} ({e.section})</span>
+				<span class="text-xs text-muted">{bandLabel(e.band)} ({e.section})</span>
 			</label>
 		{/each}
 	</JobDialog>

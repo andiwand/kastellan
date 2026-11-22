@@ -3,10 +3,8 @@
 import subprocess
 import selectors
 
-UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9@_.:-]{0,200}\.(service|socket|timer|mount|path|target)")
 name = one_name(UNIT)
 TAIL, MAX_LINE, MAX_BYTES = 300, 500, 48_000
-ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f]")
 JOURNALCTL = next((p for p in ("/usr/bin/journalctl", "/bin/journalctl") if os.path.exists(p)), None)
 SYSTEMCTL = next((p for p in ("/usr/bin/systemctl", "/bin/systemctl") if os.path.exists(p)), None)
 if JOURNALCTL is None:

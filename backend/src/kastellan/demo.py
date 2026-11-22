@@ -17,11 +17,12 @@ from urllib.parse import urlsplit
 
 from .checks import Result
 from .config import Check, Config, Device
-from .demo_more import FRITZ, WIFI_SURVEY  # noqa: F401  (the demo's other made-up parts)
+from .demo_more import FRITZ
 from .history import History, Row
 from .software import Software
 from .tls import Cert, public_name
 from .versions import Versions
+from .vitals import Vitals
 
 CONFIG = {
     "check_interval": 15,
@@ -794,70 +795,8 @@ ROUTER = {
 }
 
 
-def _entry(device: str, section: str, band: str, key: str = "k1") -> dict:
-    return {
-        "device": device,
-        "section": section,
-        "radio": "radio0" if band == "2g" else "radio1",
-        "band": band,
-        "encryption": "sae-mixed",
-        "key": key,
-        "disabled": False,
-    }
-
-
-GROUP = {
-    "members": ["repeater-attic", "repeater-living"],
-    "errors": {},
-    "radios": {
-        d: [
-            {"section": "radio0", "band": "2g", "channel": "6"},
-            {"section": "radio1", "band": "5g", "channel": "36"},
-        ]
-        for d in ("repeater-attic", "repeater-living")
-    },
-    "can_mesh": {"repeater-attic": True, "repeater-living": True},
-    "networks": [
-        {
-            "ssid": "Castle",
-            "on": [
-                _entry(d, f"default_radio{r}", b, "k1" if d == "repeater-living" else "k2")
-                for d in ("repeater-attic", "repeater-living")
-                for r, b in ((0, "2g"), (1, "5g"))
-            ],
-            "devices": ["repeater-attic", "repeater-living"],
-            "missing": [],
-            "same_key": False,
-            "same_encryption": True,
-        },
-        {
-            "ssid": "Castle guests",
-            "on": [_entry("repeater-living", "guest", "2g")],
-            "devices": ["repeater-living"],
-            "missing": ["repeater-attic"],
-            "same_key": True,
-            "same_encryption": True,
-        },
-    ],
-    "mesh": [
-        {
-            "mesh_id": "castle-mesh",
-            "on": [_entry(d, "mesh1", "5g") for d in ("repeater-attic", "repeater-living")],
-            "devices": ["repeater-attic", "repeater-living"],
-            "missing": [],
-            "same_key": True,
-        }
-    ],
-}
-
-
-def vitals(id: str, t: float):
+def vitals(id: str, t: float) -> Vitals:
     """The made-up devices' vitals at time t: a daily rhythm, a little noise, steady storage."""
-    import math
-    import random
-
-    from .vitals import Vitals
-
     seed = sum(map(ord, id))
     rnd = random.Random(int(t // 300) * 1000 + seed)  # the same value for the same 5 minutes
     day = math.sin((t / 86400 + seed % 7 / 7) * 2 * math.pi)

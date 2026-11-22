@@ -57,13 +57,10 @@ async def test_handshake() -> None:
     async with server:
         r, w = await asyncio.open_connection("127.0.0.1", port)
         params = {"hostname": "pc.lan", "port": "3389", "username": "andreas", "password": "pw"}
-        assert (
-            await guac.handshake(guac.Reader(r), w, "rdp", params, (1280, 720, 96), "Europe/Vienna") == "$abc"
-        )
+        assert await guac.handshake(guac.Reader(r), w, "rdp", params, (1280, 720, 96)) == "$abc"
         w.close()
     assert log[0] == ["select", "rdp"]
     assert ["size", "1280", "720", "96"] in log
-    assert ["timezone", "Europe/Vienna"] in log
     assert log[-1] == ["connect", "VERSION_1_5_0", "pc.lan", "3389", "andreas", "pw"]
 
 

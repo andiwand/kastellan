@@ -4,9 +4,7 @@ WPS off. Changing: signed-in admins, every change audited (never a password)."""
 
 from __future__ import annotations
 
-import contextlib
 from functools import partial
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -15,7 +13,7 @@ from pydantic import BaseModel, Field
 from . import setup_run
 from .auth_api import client_address, require_admin, require_signin
 from .fritzbox import client as fb
-from .openwrt.client import ChangedCertificate
+from .pinned_http import ChangedCertificate
 
 if TYPE_CHECKING:
     from .hub import Hub
@@ -29,6 +27,16 @@ class Setup(Port):
     user: str = Field(pattern=r"^[A-Za-z0-9_.@-]{1,64}$")
     password: str = Field(min_length=1, max_length=128)
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")  # the one the admin compared and confirmed
+
+
+class _Confirmed:
+    """In place of Pins for a trial login: the one fingerprint an admin confirmed, not yet kept."""
+
+    def __init__(self, fingerprint: str) -> None:
+        self.fingerprint = fingerprint
+
+    def get(self, id: str) -> str | None:
+        return self.fingerprint
 
 
 class WifiChange(BaseModel):
@@ -102,19 +110,14 @@ def router(hub: Hub) -> APIRouter:
             audit(outcome="refused: another certificate")
             raise HTTPException(409, "the FRITZ!Box shows another certificate than the one confirmed")
         # A failed or cancelled trial must never replace the live pin.
-        trial = fb.Fritz(
-            id,
-            device.host,
-            body.port,
-            body.user,
-            body.password,
-            SimpleNamespace(get=lambda _: body.fingerprint),
-        )
+        trial = fb.Fritz(id, device.host, body.port, body.user, body.password, _Confirmed(body.fingerprint))
         try:
             info = await trial.call("DeviceInfo:1", "GetInfo")
         except Exception as e:
             audit(outcome=f"failed: {type(e).__name__}")
             raise failed(e) from e
+        finally:
+            trial.pool.close()
         name = (device.fritzbox.password_secret if device.fritzbox else None) or f"fritzbox-{id}"
         if hub.config.devices.get(id) != device:
             raise HTTPException(409, "the device changed during setup; try again")
@@ -198,13 +201,9 @@ def router(hub: Hub) -> APIRouter:
         values = body.model_dump(exclude_none=True)
         logged = {k: ("***" if k == "key" else v) for k, v in values.items()}
 
-        async def work(box: fb.Fritz) -> dict[str, Any]:
+        # The change shows with the next poll (`changing` forgets what the client kept).
+        async def work(box: fb.Fritz) -> None:
             await fb.change_wifi(box, index, values)
-            with contextlib.suppress(Exception):
-                st = hub.monitor.status.get(id)
-                if st is not None:
-                    st.fritz = await fb.read(box)
-            return {"done": True}
 
         return await act(id, request, "wifi", work, network=index, changes=logged)
 

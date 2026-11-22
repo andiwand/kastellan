@@ -2,7 +2,7 @@
 	import { modal } from '#lib/modal.js';
 	import CodeBlock from '#lib/components/CodeBlock.svelte';
 	import { untrack } from 'svelte';
-	import { api, streamSetup, type SetupOutcome } from '#lib/api.js';
+	import { api, more, streamSetup, type SetupOutcome, type StoredLogin } from '#lib/api.js';
 	import X from '@lucide/svelte/icons/x';
 	import Check from '@lucide/svelte/icons/check';
 
@@ -46,7 +46,7 @@
 	let how = $state<'sudo' | 'sudo-other' | 'su'>('sudo');
 	let rootPassword = $state('');
 	// Logins stored in the People key ring for this device (vault: the terminal offers them too).
-	let stored = $state<{ id: string; name: string; user: string }[]>([]);
+	let stored = $state<StoredLogin[]>([]);
 	let vaultExists = $state(false);
 	let useStored = $state('');
 	let keep = $state(false);
@@ -68,10 +68,9 @@
 	let trusting = $state(false);
 	$effect(() => {
 		if (!device || !canRun) return;
-		fetch(`/api/devices/${encodeURIComponent(device)}/stored-logins`)
-			.then((r) => (r.ok ? r.json() : null))
+		more
+			.storedLogins(device)
 			.then((d) => {
-				if (!d) return;
 				stored = d.stored;
 				vaultExists = d.vault;
 				if (stored.length && !login) useStored = stored[0].id;

@@ -31,16 +31,21 @@
 	let selected = $state<string[]>([]);
 	let renewing = $state<{ device: string; names: string[] } | null>(null);
 	let firmware = $state<Extract<Update, { kind: 'firmware' }> | null>(null);
+	let dismissing = $state<string | null>(null); // the update said to be not needed, until the hub has it
 	let dismissError = $state<string | null>(null);
-	let dismissing = $state<string | null>(null);
 
 	const keyOf = (u: Update) =>
 		`${u.device.id}:${u.kind}:${u.kind === 'container' ? u.key : u.kind === 'abilities' ? u.login : ''}`;
-	async function dismiss(u: Update, login: 'actor' | 'openwrt') {
+	/** Updates stops showing it: a container's update or a device's (until a newer one), new
+	 * abilities (with the OpenWrt helpers' row: those it offers). */
+	async function notNeeded(u: Update) {
 		dismissing = keyOf(u);
 		dismissError = null;
 		try {
-			await more.notNeeded(u.device.id, login);
+			if (u.kind === 'container') await more.updateNotNeeded(u.device.id, u.key);
+			else if (u.kind === 'abilities') await more.notNeeded(u.device.id, u.login);
+			else if (u.kind === 'scripts') await more.notNeeded(u.device.id, 'openwrt');
+			else await more.deviceUpdateNotNeeded(u.device.id, u.kind);
 			await store.refresh();
 		} catch (e) {
 			dismissError = (e as Error).message;
@@ -100,31 +105,12 @@
 		runner.add([{ device: u.device.id, kind: 'container', name: u.name, tag: u.within! }]);
 		confirm = null;
 	}
-	let skipError = $state<string | null>(null);
-	async function notNeeded(u: Update) {
-		dismissing = keyOf(u);
-		skipError = null;
-		try {
-			if (u.kind === 'container') await more.updateNotNeeded(u.device.id, u.key);
-			else if (u.kind === 'firmware' || u.kind === 'reboot' || u.kind === 'packages')
-				await more.deviceUpdateNotNeeded(u.device.id, u.kind);
-			await store.refresh();
-		} catch (e) {
-			skipError = (e as Error).message;
-		} finally {
-			dismissing = null;
-		}
-	}
 	const admin = $derived(store.me?.role === 'admin');
 	const counts = $derived({
 		devices: new Set(updates.map((u) => u.device.id)).size,
 		security: updates.filter((u) => u.kind === 'packages' && u.security).length
 	});
 </script>
-
-{#if dismissError || skipError}<p class="mt-3 text-sm" style:color="var(--critical-text)">
-		{dismissError ?? skipError}
-	</p>{/if}
 
 <svelte:head><title>Updates · Kastellan</title></svelte:head>
 
@@ -341,7 +327,7 @@
 						<button
 							class="btn btn-sm"
 							title="Updates stops showing this one; a newer version shows again"
-							disabled={dismissing !== null}
+							disabled={dismissing !== null || busyOf(u)}
 							onclick={() => notNeeded(u)}
 						>
 							Not needed
@@ -393,7 +379,7 @@
 								class="btn btn-sm"
 								title="Updates stops offering these for this device"
 								disabled={dismissing !== null}
-								onclick={() => dismiss(u, u.login)}
+								onclick={() => notNeeded(u)}
 							>
 								Not needed
 							</button>
@@ -412,7 +398,7 @@
 										class="btn btn-sm"
 										title="Stop offering these new abilities"
 										disabled={dismissing !== null}
-										onclick={() => dismiss(u, 'openwrt')}
+										onclick={() => notNeeded(u)}
 									>
 										Not needed
 									</button>
@@ -435,6 +421,9 @@
 			</li>
 		{/each}
 	</ul>
+	{#if dismissError}<p class="mt-3 text-sm" style:color="var(--critical-text)">
+			{dismissError}
+		</p>{/if}
 {/if}
 
 {#if renewing}

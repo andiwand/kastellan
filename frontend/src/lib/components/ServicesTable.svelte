@@ -33,7 +33,7 @@
 		// One device's page: its own services under the check each answers, and the others.
 		own?: Record<string, OwnService[]>;
 		rest?: OwnService[];
-		onDevice?: Device; // the device of `rest` (it may have no checks)
+		onDevice?: Device; // the device of `rest` (it may have no checks): given with it
 		canChange?: (s: OwnService) => boolean;
 	} = $props();
 	const SOURCE = { openwrt: 'OpenWrt service', systemd: 'systemd unit' };
@@ -143,7 +143,6 @@
 			</li>
 		{/each}
 		{#each rest as svc (svc.source + svc.name)}
-			{@const device = rows[0]?.device ?? onDevice}
 			<li
 				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-2.5 {cols}"
 			>
@@ -152,8 +151,8 @@
 					<p class="truncate text-xs text-faint">{SOURCE[svc.source]}</p>
 				</div>
 				<div class="col-span-2 min-w-0 lg:col-span-5">
-					{#if device}<OwnServiceLine
-							device={device.id}
+					{#if onDevice}<OwnServiceLine
+							device={onDevice.id}
 							service={svc}
 							canChange={canChange(svc)}
 							named={false}
