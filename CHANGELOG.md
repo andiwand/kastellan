@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.14.0 (2026-11-22)
+
+Vitals for every device, device pages by topic, "Not needed" for every kind of update, a view
+of what Kastellan itself costs, and a full audit: many fixes, less code, faster tests.
+
 ### Upgrading
 
 - OpenWrt routers: set up again (Updates lists the outdated script) so the package check no
