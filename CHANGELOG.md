@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.15.0 (2026-11-22)
+
+A reworked interface: one list behind every count, an overview as a status board, Wi-Fi made
+over, one table per kind of thing, device pages ordered by what the device is for, grouped
+navigation and a phone bar; disks over time; down services alarm urgently unless a check says
+otherwise.
+
 ### Upgrading
 
 - Set up the Linux collector again (Updates lists it) so containers say which service they
