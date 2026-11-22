@@ -82,17 +82,11 @@
 		packages: 'Install',
 		reboot: 'Reboot',
 		firmware: 'Update firmware',
-		'router-packages': '',
 		scripts: '',
 		abilities: ''
 	};
 	// Whether Kastellan may do it on that device at all (the host decides in the end).
-	const possible = (u: Update) =>
-		u.kind === 'firmware'
-			? !!u.device.openwrt
-			: u.kind === 'router-packages'
-				? false
-				: !!u.device.act;
+	const possible = (u: Update) => (u.kind === 'firmware' ? !!u.device.openwrt : !!u.device.act);
 	type ContainerUpdate = Extract<Update, { kind: 'container' }>;
 	const askOf = (u: ContainerUpdate, to: string) =>
 		containerAsk({
@@ -312,9 +306,6 @@
 						New for its {u.login === 'actor' ? 'actor' : 'OpenWrt login'}:
 						{u.names.map((n) => ABILITY[n] ?? n).join(', ')}
 						<span class="text-xs text-muted">· not ticked there yet</span>
-					{:else}
-						{u.names.length} OpenWrt {u.names.length === 1 ? 'package' : 'packages'}
-						<span class="text-xs text-muted">· come with the next firmware</span>
 					{/if}
 					{#if jobOf(u)}<JobStatus job={runner.state(jobOf(u)!)} />{/if}
 				</div>

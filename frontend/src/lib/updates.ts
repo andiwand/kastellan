@@ -23,7 +23,6 @@ export type Update =
 			to: string;
 			supported: boolean;
 	  }
-	| { kind: 'router-packages'; device: Device; names: string[] }
 	// offered: new OpenWrt abilities, shown here since one setup brings both (not a row of its own)
 	| { kind: 'scripts'; device: Device; names: string[]; offered?: string[] }
 	| { kind: 'abilities'; device: Device; login: 'actor' | 'openwrt'; names: string[] };
@@ -57,8 +56,8 @@ export function updatesOf(devices: Device[]): Update[] {
 				to: fw.next_step,
 				supported: fw.supported
 			});
-		const pk = d.router?.packages;
-		if (pk?.length) out.push({ kind: 'router-packages', device: d, names: pk });
+		// An OpenWrt device's package updates aren't listed: they come with its next firmware,
+		// which Kastellan offers (firmware); the device page lists them.
 		// The OpenWrt setup renews its helpers and adds abilities at once: one row for both.
 		const fold = !!d.outdated_scripts?.includes('openwrt') && !!d.new_abilities?.openwrt?.length;
 		if (d.outdated_scripts?.length)

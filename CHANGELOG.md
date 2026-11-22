@@ -7,6 +7,11 @@
 - OpenWrt routers: set up again (Updates lists the outdated script) so the package check no
   longer leaves its lists in the router's memory.
 
+### Changed
+
+- Updates no longer lists OpenWrt packages: they come with the next firmware, which Updates
+  offers; the device page still names them.
+
 ### Fixed
 
 - OpenWrt routers with less than 64 MB aren't asked for package updates any more: `opkg update`
