@@ -7,6 +7,8 @@
 	import UptimeStrip from './UptimeStrip.svelte';
 	import KindIcon from './KindIcon.svelte';
 	import CertNote from './CertNote.svelte';
+	import OwnServiceLine from './OwnServiceLine.svelte';
+	import type { OwnService } from '#lib/ownServices.js';
 
 	/** Services with what they run, their state, how long, and their uptime. With `showDevice`,
 	 * each row names its device (the Services page); without, it is one device's page. */
@@ -16,7 +18,11 @@
 		start,
 		step,
 		rangeLabel = '24 h',
-		showDevice = false
+		showDevice = false,
+		own = {},
+		rest = [],
+		onDevice,
+		canChange = () => false
 	}: {
 		rows: { device: Device; check: CheckStatus }[];
 		buckets: (device: string, check: string) => Bucket[];
@@ -24,7 +30,13 @@
 		step: number;
 		rangeLabel?: string;
 		showDevice?: boolean;
+		// One device's page: its own services under the check each answers, and the others.
+		own?: Record<string, OwnService[]>;
+		rest?: OwnService[];
+		onDevice?: Device; // the device of `rest` (it may have no checks)
+		canChange?: (s: OwnService) => boolean;
 	} = $props();
+	const SOURCE = { openwrt: 'OpenWrt service', systemd: 'systemd unit' };
 
 	const target = (check: CheckStatus) =>
 		check.type === 'ping' || check.type === 'dhcp'
@@ -72,6 +84,11 @@
 						<p class="truncate font-mono text-xs text-faint" title={target(check)}>
 							{target(check)}
 						</p>
+						{#each own[check.name] ?? [] as svc (svc.name)}
+							<div class="mt-1">
+								<OwnServiceLine device={device.id} service={svc} canChange={canChange(svc)} />
+							</div>
+						{/each}
 						{#if check.cert || check.address}
 							<div class="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-faint">
 								{#if check.cert}<CertNote cert={check.cert} />{/if}
@@ -122,6 +139,25 @@
 					<span class="tabular w-14 shrink-0 text-right text-xs text-muted">
 						{percent(uptimeOf(b))}
 					</span>
+				</div>
+			</li>
+		{/each}
+		{#each rest as svc (svc.source + svc.name)}
+			{@const device = rows[0]?.device ?? onDevice}
+			<li
+				class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-2.5 {cols}"
+			>
+				<div class="min-w-0">
+					<p class="truncate font-mono text-sm">{svc.name}</p>
+					<p class="truncate text-xs text-faint">{SOURCE[svc.source]}</p>
+				</div>
+				<div class="col-span-2 min-w-0 lg:col-span-5">
+					{#if device}<OwnServiceLine
+							device={device.id}
+							service={svc}
+							canChange={canChange(svc)}
+							named={false}
+						/>{/if}
 				</div>
 			</li>
 		{/each}

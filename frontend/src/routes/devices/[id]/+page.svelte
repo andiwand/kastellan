@@ -34,13 +34,16 @@
 	import DeviceKeys from '#lib/components/DeviceKeys.svelte';
 	import CollectorSetup from '#lib/components/CollectorSetup.svelte';
 	import ActorSetup from '#lib/components/ActorSetup.svelte';
-	import HostHealth from '#lib/components/HostHealth.svelte';
+	import SoftwareSection from '#lib/components/SoftwareSection.svelte';
+	import WifiSection from '#lib/components/WifiSection.svelte';
+	import NetworkSection from '#lib/components/NetworkSection.svelte';
+	import StorageSection from '#lib/components/StorageSection.svelte';
+	import ReadingsLine from '#lib/components/ReadingsLine.svelte';
+	import { groupOwn, ownServicesOf, type OwnService } from '#lib/ownServices.js';
 	import VitalsPanel from '#lib/components/VitalsPanel.svelte';
 	import BackupsCard from '#lib/components/BackupsCard.svelte';
 	import ConfigBackups from '#lib/components/ConfigBackups.svelte';
 	import ReadAgain from '#lib/components/ReadAgain.svelte';
-	import RouterCard from '#lib/components/RouterCard.svelte';
-	import FritzCard from '#lib/components/FritzCard.svelte';
 	import FritzSetup from '#lib/components/FritzSetup.svelte';
 	import SyslogSetup from '#lib/components/SyslogSetup.svelte';
 	import OpenWrtSetup from '#lib/components/OpenWrtSetup.svelte';
@@ -62,6 +65,13 @@
 	// lead to the right place.
 	type Tab = 'status' | 'setup' | 'config';
 	const admin = $derived(store.me?.role === 'admin');
+	// The device's own services (OpenWrt's, failed systemd units): under their check, or rows.
+	const own = $derived(
+		device ? groupOwn(device, ownServicesOf(device)) : { byCheck: {}, rest: [] }
+	);
+	const signedAdmin = $derived(store.me?.role === 'admin' && !!store.me.user);
+	const canChangeOwn = (s: OwnService) =>
+		signedAdmin && (s.source === 'openwrt' ? true : !!device?.act);
 	const tab = $derived.by((): Tab => {
 		const t = page.url.searchParams.get('tab');
 		if (!admin) return 'status';
@@ -510,11 +520,14 @@
 		{#if device.kind === 'ups'}
 			<UpsCard {device} canChange={store.editBlocked === null && store.me?.role === 'admin'} />
 		{/if}
+		<ReadingsLine {device} />
 		{#if device.vitals}
 			{#key device.id}<VitalsPanel device={device.id} vitals={device.vitals} />{/key}
 		{/if}
 		<!-- Range (a UPS read through its host has no services of its own) -->
-		{#if device.checks.length}<div class="mt-8 flex items-center justify-between">
+		{#if device.checks.length || own.rest.length}<div
+				class="mt-8 flex items-center justify-between"
+			>
 				<h2 class="text-sm font-semibold">Services</h2>
 				<div class="flex gap-1 rounded-xl border border-line bg-surface p-1 shadow-card">
 					{#each ranges as r (r.label)}
@@ -543,52 +556,22 @@
 					start={series?.start ?? null}
 					step={series?.step_seconds ?? 0}
 					rangeLabel={range.label}
+					own={own.byCheck}
+					rest={own.rest}
+					onDevice={device}
+					canChange={canChangeOwn}
 				/>
 			</div>{/if}
 
-		{#if device.router}
-			<RouterCard
-				device={device.id}
-				report={device.router}
-				checked={device.router_checked ?? null}
-				error={device.router_error ?? null}
-				canChange={store.me?.role === 'admin' && !!store.me.user}
-			/>
-		{:else if device.openwrt && device.router_error}
-			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
-				Kastellan can't read this OpenWrt device: {device.router_error}
-			</p>
-		{/if}
-		{#if device.fritz}
-			<FritzCard
-				device={device.id}
-				report={device.fritz}
-				checked={device.fritz_checked ?? null}
-				error={device.fritz_error ?? null}
-				canChange={store.me?.role === 'admin' && !!store.me.user}
-			/>
-		{:else if device.fritzbox && device.fritz_error}
-			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
-				Kastellan can't read this FRITZ!Box: {device.fritz_error}
-			</p>
+		<SoftwareSection {device} canAct={!!device.act && signedAdmin} />
+		<WifiSection {device} canChange={signedAdmin} />
+		<NetworkSection {device} />
+		{#if device.host_report}
+			<StorageSection report={device.host_report} forecast={device.host_forecast ?? {}} />
 		{/if}
 
 		<BackupsCard device={device.id} />
 		{#if admin}<div id="config-backups"><ConfigBackups device={device.id} /></div>{/if}
-		{#if device.host_report}
-			<HostHealth
-				report={device.host_report}
-				checked={device.host_checked ?? null}
-				error={device.host_error ?? null}
-				forecast={device.host_forecast ?? {}}
-				device={device.id}
-				canAct={!!device.act && store.me?.role === 'admin' && !!store.me.user}
-			/>
-		{:else if device.collect && device.host_error}
-			<p class="card mt-8 p-4 text-sm" style:color="var(--warning-text)">
-				The collector doesn't answer: {device.host_error}
-			</p>
-		{/if}
 
 		{#if device.containers || device.containers_error}
 			<div class="mt-8 mb-3 flex flex-wrap items-baseline justify-between gap-2">

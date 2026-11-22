@@ -21,7 +21,14 @@
 
 - Updates no longer lists OpenWrt packages: they come with the next firmware, which Updates
   offers; the device page still names them.
-- Load and memory moved from the host and OpenWrt cards to the vitals.
+- The device page has no OpenWrt, FRITZ!Box or Host cards any more; their parts sit where they
+  belong for every kind of device: the device's own services (OpenWrt's init scripts, failed
+  systemd units) in Services, under the check they answer (dropbear under SSH, uhttpd under the
+  web check), the others as rows with their buttons; Software (release, next firmware step and
+  its packages, FRITZ!OS update, system updates with Install); Wi-Fi as a card per radio or
+  network, with roaming and the FRITZ!Mesh; Network (internet line, ways in, DHCP, WireGuard,
+  who is connected); Storage and hardware (space, disks, temperatures). Uptime, kernel, where
+  readings come from and what couldn't be read: one line under the tabs.
 
 ### Fixed
 
