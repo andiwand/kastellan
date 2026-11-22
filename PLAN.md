@@ -81,6 +81,20 @@ These are suggestions, not implemented features or release commitments.
    from FRITZ!Box hosts, OpenWrt leases and Wi-Fi clients, added only by an admin).
 4. **SNMPv3 monitoring:** read switch ports, printer consumables and network UPS status on
    devices that cannot run the Linux collector. Keep initial support read-only.
+5. **Traffic:** what goes in and out through the WAN over time: volume per day and month, peaks,
+   the busiest devices, and a warning on unusual traffic. The rate is already read (FRITZ!Box
+   byte counters and online monitor, OpenWrt WAN counters) and per device on OpenWrt
+   (nlbwmon); missing are keeping it, the FRITZ!Box's monthly counter (its web interface), and
+   per device on a FRITZ!Box, which TR-064 doesn't offer.
+6. **Diagnostics:** answers to "why", from what Kastellan already knows, as a guided check per
+   device or VPN. Host not reachable: the path through its parents, its address and lease, ping
+   versus port, the name it resolves to. VPN not working: the server running, the port forward
+   on the router, the public address or name matching, the last handshake, the client's key.
+7. **More devices and sources, toward an open replacement for UniFi and Omada controllers:**
+   one place to watch and manage switches, access points and routers across vendors, still
+   agentless with restricted logins. Candidates: OpenWrt as the managed platform (VLANs, more
+   networks, switch ports), SNMP for read-only switches, MikroTik RouterOS and OPNsense through
+   their APIs. Adopting UniFi or Omada hardware itself needs their protocols: decide later.
 
 ## Later
 
