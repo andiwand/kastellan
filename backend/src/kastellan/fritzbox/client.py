@@ -366,6 +366,7 @@ async def read(fb: Fritz) -> dict[str, Any]:
         networks = await _wifi(fb, e)
         for w in networks:
             w["associated"] = await _associated(fb, w["index"])
+        await _own_clients(fb, networks)
         return networks
 
     if (update_info := await _kept(fb, "update", errors, update)) is not None:
@@ -487,6 +488,34 @@ async def _associated(fb: Fritz, index: int) -> list[dict[str, Any]]:
             }
         )
     return out[:200]
+
+
+async def _own_clients(fb: Fritz, networks: list[dict[str, Any]]) -> None:
+    """Some FRITZ!OS versions answer every network's device list with all of the box's Wi-Fi
+    clients, so each showed once per network (2.4 GHz, 5 GHz, guest). When a client is in more
+    than one list, each network keeps the clients it names itself (GetGenericAssociatedDeviceInfo,
+    one call per client); a network that can't say keeps its list."""
+    macs = [c["mac"] for w in networks for c in w.get("associated") or [] if c["mac"]]
+    if len(macs) == len(set(macs)):
+        return
+    for w in networks:
+        if not w.get("associated"):
+            continue
+        own: set[str] = set()
+        for i in range(min(w.get("clients") or 0, 200)):
+            got = await _try(
+                fb.call(
+                    f"WLANConfiguration:{w['index']}",
+                    "GetGenericAssociatedDeviceInfo",
+                    {"NewAssociatedDeviceIndex": i},
+                )
+            )
+            if got is None:
+                break
+            if mac := (got.get("NewAssociatedDeviceMACAddress") or "").lower():
+                own.add(mac)
+        else:
+            w["associated"] = [c for c in w["associated"] if c["mac"] in own]
 
 
 async def _internet(fb: Fritz, errors: dict[str, str]) -> dict[str, Any]:

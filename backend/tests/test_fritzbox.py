@@ -458,6 +458,53 @@ async def test_the_mesh_and_each_networks_clients(tmp_path: Path) -> None:
         await fb.change_wifi(b, 1, {"encryption": "owe"})
 
 
+async def test_a_box_wide_device_list_is_split_by_network(tmp_path: Path) -> None:
+    # Some FRITZ!OS versions give every network the same list: all of the box's Wi-Fi clients.
+    fake = FakeBox()
+    on = {1: ["AA:00:00:00:00:01"], 2: ["AA:00:00:00:00:02"], 3: []}
+    original = fake.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        action = request.headers.get("soapaction", "")
+        n = request.url.path.removeprefix("/upnp/control/wlanconfiguration")
+        if request.url.path == "/wlan.lua" and fake.authorized(request):
+            items = "".join(
+                f"<Item><AssociatedDeviceMACAddress>{m}</AssociatedDeviceMACAddress></Item>"
+                for m in ("AA:00:00:00:00:01", "AA:00:00:00:00:02")
+            )
+            return httpx.Response(200, text=f"<List>{items}</List>")
+        if fake.authorized(request) and n.isdigit():
+            name = action.strip('"').split("#")[1]
+            args = dict(re.findall(r"<(New[\w-]+)>(.*?)</\1>", request.content.decode()))
+            out = {
+                "X_AVM-DE_GetWLANDeviceListPath": {"NewX_AVM-DE_WLANDeviceListPath": "/wlan.lua"},
+                "GetTotalAssociations": {"NewTotalAssociations": str(len(on[int(n)]))},
+                "GetGenericAssociatedDeviceInfo": {
+                    "NewAssociatedDeviceMACAddress": on[int(n)][int(args.get("NewAssociatedDeviceIndex", 0))]
+                }
+                if on[int(n)]
+                else None,
+            }.get(name)
+            if out is not None:
+                body = "".join(f"<{k}>{v}</{k}>" for k, v in out.items())
+                return httpx.Response(
+                    200,
+                    text=f'<s:Envelope xmlns:s="x"><s:Body><u:{name}Response xmlns:u="y">{body}'
+                    f"</u:{name}Response></s:Body></s:Envelope>",
+                )
+        return original(request)
+
+    b = fb.Fritz(
+        "gw", "192.168.178.1", 49443, "kastellan", "pw", Pins(tmp_path), transport=httpx.MockTransport(handle)
+    )
+    report = await fb.read(b)
+    assert {w["index"]: [c["mac"] for c in w["associated"]] for w in report["wifi"]} == {
+        1: ["aa:00:00:00:00:01"],
+        2: ["aa:00:00:00:00:02"],
+        3: [],
+    }
+
+
 async def test_the_second_factor_is_waited_for(tmp_path: Path) -> None:
     fake = FakeBox(second_factor=True)
     b = box(tmp_path, fake)
