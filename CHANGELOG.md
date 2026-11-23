@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.16.0 (2026-11-23)
+
+Wi-Fi fixes: a change never leaves a network off the air (roaming assistance turned on 802.11v
+where a basic wpad can't do it, and that access point went silent); an alarm when a network is
+off the air while its radio is on; the channel chart explains its colours and each channel;
+FRITZ!Box clients show once instead of once per network; tables give their width to the column
+that needs it.
+
 ## 0.15.0 (2026-11-22)
 
 A reworked interface: one list behind every count, an overview as a status board, Wi-Fi made
