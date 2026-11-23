@@ -313,12 +313,12 @@
 			{#if store.health?.vault_waiting?.length}
 				<!-- After a restart: what needs a secret waits until its ring opens. -->
 				<div
-					class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-4 py-3 text-sm"
+					class="mb-6 flex items-center gap-3 rounded-xl border px-4 py-3 text-sm"
 					style="border-color: color-mix(in srgb, var(--warning) 40%, transparent); background: color-mix(in srgb, var(--warning) 8%, transparent)"
 					role="status"
 				>
 					<LockKeyhole class="size-4 shrink-0" style="color: var(--warning-text)" />
-					<span>
+					<span class="min-w-0 flex-1">
 						<b style:color="var(--warning-text)">
 							{store.health.vault_waiting.length > 1 ? 'Key rings' : 'A key ring'} Kastellan uses
 							{store.health.vault_waiting.length > 1 ? 'are' : 'is'} locked ({store.health.vault_waiting.join(
@@ -331,7 +331,7 @@
 					{#if store.me?.role === 'admin'}
 						<a
 							href="/settings?tab=keys"
-							class="ml-auto text-sm font-medium"
+							class="shrink-0 text-sm font-medium"
 							style:color="var(--warning-text)"
 						>
 							Unlock
@@ -341,17 +341,17 @@
 			{/if}
 			{#if store.health?.vault === 'damaged' && store.me?.role === 'admin'}
 				<div
-					class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-4 py-3 text-sm"
+					class="mb-6 flex items-center gap-3 rounded-xl border px-4 py-3 text-sm"
 					style="border-color: color-mix(in srgb, var(--critical) 40%, transparent); background: color-mix(in srgb, var(--critical) 8%, transparent)"
 					role="alert"
 				>
 					<LockKeyhole class="size-4 shrink-0" style="color: var(--critical-text)" />
-					<span>
+					<span class="min-w-0 flex-1">
 						<b style:color="var(--critical-text)">The key rings can't be read.</b> What needs them waits.
 					</span>
 					<a
 						href="/settings?tab=keys"
-						class="ml-auto text-sm font-medium"
+						class="shrink-0 text-sm font-medium"
 						style:color="var(--critical-text)"
 					>
 						Details
