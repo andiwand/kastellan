@@ -786,6 +786,7 @@ class Hub:
                             text = None
                         status.router_outdated = openwrt_setup.outdated(text)
                     old = status.router or {}
+                    openwrt_client.note_off_air(report, old, time.time())
                     report["packages"] = old.get("packages")
                     report["packages_checked"] = old.get("packages_checked")
                     if err := (old.get("errors") or {}).get("packages"):

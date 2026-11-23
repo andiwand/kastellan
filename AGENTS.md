@@ -186,7 +186,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     k/v per shared network, channels apart (not for meshed radios), usteer on every member and
     each seeing the others (usteer `remote_info` hosts vs. the members' addresses), memory.
     `assistance` → `POST /api/groups/{id}/roaming` sets 802.11r/k/v member by member (rollback
-    each). `problems`: usteer stopped where it ran, a member out of view, a small device low on
+    each); 802.11v (`bss_transition`) only where hostapd has it (`sync.survey` `can_steer`: LuCI's
+    hostapd `eap`, which the basic wpad variants lack with WNM; they refuse the option and send
+    nothing), and off again where it is set but can't work. `problems`: usteer stopped where it ran, a member out of view, a small device low on
     memory. usteer's view per AP (`roaming` ability: local/remote_info, connected_clients,
     get_config) in `hub.roaming`, shown on the device page (`GET /api/devices/{id}/roaming`).
   - `signins.py` + `signins_api.py`: the Sign-ins page. SSH (OpenSSH, dropbear), OpenVPN,
@@ -419,7 +421,10 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     services are acted on only through `/usr/libexec/kastellan/service` (allow list in
     `/etc/kastellan/services.allow`; rpcd, uhttpd, firewall and network restart only), since rpcd's `rc init` would allow any;
     `client.py` reads/acts (certificate pinned as `<data>/openwrt/<id>.sha256`), Wi-Fi via uci
-    apply with rollback + confirm; `firmware.py` advises one series step at a time from
+    apply with rollback + confirm (confirmed only when the radios are up and every network sent
+    before is on the air again, iwinfo's SSID; up to ~100 s for a radar channel); each access
+    point interface's `on_air`, `off_air_since` kept by `note_off_air`, an alarm
+    (`router:<id>:air:…`) after `OFF_AIR_AFTER`; `firmware.py` advises one series step at a time from
     `.versions.json` and builds images via sysupgrade.openwrt.org. `hub._poll_routers` every
     120 s into `status.router`. Tests use a fake rpcd that enforces the real ACL.
     `openwrt/sync.py` + `groups_api.py`: `groups:` read live (no stored desired state), networks

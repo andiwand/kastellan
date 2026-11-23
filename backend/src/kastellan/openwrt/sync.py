@@ -31,18 +31,19 @@ def _ifaces(values: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 async def survey(members: dict[str, ow.Ubus | Exception], salt: bytes) -> dict[str, Any]:
     """Every member's Wi-Fi networks and mesh, lined up; what differs."""
 
-    async def one(id: str, ubus: ow.Ubus | Exception) -> tuple[str, dict | Exception, bool | None]:
+    async def one(id: str, ubus: ow.Ubus | Exception) -> tuple[str, dict | Exception, dict | None]:
         if isinstance(ubus, Exception):  # e.g. its login isn't set up yet
             return id, ubus, None
         try:
             values = (await ubus.call("uci", "get", {"config": "wireless"})).get("values", {})
         except Exception as e:
             return id, e, None
-        return id, values, await can_mesh(ubus)
+        return id, values, await features(ubus)
 
     rows = await asyncio.gather(*(one(i, u) for i, u in members.items()))
     got = {id: values for id, values, _ in rows}
-    mesh_ok = {id: ok for id, _, ok in rows}
+    mesh_ok = {id: _mesh_in(f) for id, _, f in rows}
+    v_ok = {id: _steering_in(f) for id, _, f in rows}
     networks: dict[str, dict[str, Any]] = {}
     mesh: dict[str, list[dict[str, Any]]] = {}
     errors = {i: str(v)[:200] for i, v in got.items() if isinstance(v, Exception)}
@@ -94,6 +95,7 @@ async def survey(members: dict[str, ow.Ubus | Exception], salt: bytes) -> dict[s
         "errors": errors,
         "radios": radios,
         "can_mesh": mesh_ok,
+        "can_steer": v_ok,
         "networks": sorted(networks.values(), key=lambda n: (-len(n["devices"]), n["ssid"])),
         "mesh": [
             {
@@ -162,18 +164,35 @@ async def set_root_password(members: dict[str, ow.Ubus], password: str, say=None
     return outcome
 
 
-async def can_mesh(ubus: ow.Ubus) -> bool | None:
-    """Whether the device's Wi-Fi software can do 802.11s mesh with a password (the full
-    wpad/wpa_supplicant, e.g. wpad-mesh-mbedtls; the default wpad-basic can't). As LuCI tells
-    it (luci getFeatures); None: can't tell."""
+async def features(ubus: ow.Ubus) -> dict[str, Any] | None:
+    """What the device's software can do, as LuCI tells it (luci getFeatures); None: can't tell."""
     try:
-        features = await ubus.call("luci", "getFeatures")
+        return await ubus.call("luci", "getFeatures")
     except Exception:
         return None
-    wpa = features.get("wpasupplicant") or {}
+
+
+def _mesh_in(features: dict[str, Any] | None) -> bool | None:
+    wpa = (features or {}).get("wpasupplicant") or {}
     if "mesh" not in wpa:  # LuCI before 24.10 doesn't say
         return None
     return bool(wpa.get("mesh") and wpa.get("sae"))
+
+
+def _steering_in(features: dict[str, Any] | None) -> bool | None:
+    """Whether hostapd can do 802.11v (bss_transition). LuCI doesn't say so itself; the basic
+    variants (wpad-basic-*, wpad-mini) leave it out together with EAP, the full ones have both.
+    hostapd refuses an option it lacks and then sends no network at all."""
+    hostapd = (features or {}).get("hostapd") or {}
+    if "eap" not in hostapd:
+        return None
+    return bool(hostapd.get("eap"))
+
+
+async def can_mesh(ubus: ow.Ubus) -> bool | None:
+    """Whether the device's Wi-Fi software can do 802.11s mesh with a password (the full
+    wpad/wpa_supplicant, e.g. wpad-mesh-mbedtls; the default wpad-basic can't). None: can't tell."""
+    return _mesh_in(await features(ubus))
 
 
 async def _staged_ok(

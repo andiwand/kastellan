@@ -688,3 +688,36 @@ def test_those_who_may_only_look_see_the_wifi_as_a_phone_nearby_would(demo_clien
     kept = {f["key"].split(":")[0] for f in seen["findings"]}
     assert "wps" in kept and "channel" in kept
     assert not kept & {"key", "clients", "roaming", "error", "mesh"}
+
+
+def test_roaming_assistance_sets_steering_only_where_hostapd_has_it() -> None:
+    from kastellan import roaming
+
+    def entry(d, v):
+        return {
+            "device": d,
+            "section": "wifinet1",
+            "encryption": "psk2+ccmp",
+            "ft": True,
+            "mobility_domain": "02fc",
+            "k": True,
+            "v": v,
+        }
+
+    survey = {
+        # a: the full wpad, steering off; b: wpad-basic with bss_transition set (it sends nothing)
+        "networks": [
+            {
+                "ssid": "Stefl",
+                "on": [entry("a", False), entry("b", True)],
+                "same_key": True,
+                "same_encryption": True,
+            }
+        ],
+        "can_steer": {"a": True, "b": False},
+    }
+    changes = roaming.assistance(survey)
+    assert changes["a"]["wifinet1"]["bss_transition"] == "1"
+    assert changes["b"]["wifinet1"]["bss_transition"] == "0"
+    survey["networks"][0]["on"] = [entry("a", True), entry("b", False)]
+    assert roaming.assistance(survey) == {}

@@ -111,6 +111,7 @@ class FakeRpcd:
         self.rolled_back = False
         self.mesh = True
         self.break_on_apply = False
+        self.silent_on_apply = False  # radios up, nothing sent (hostapd refused its config)
         self.status_refused = False  # OpenWrt 25.12: network.wireless status says invalid argument
         self.added = 0
         self.uptime = 100
@@ -269,7 +270,7 @@ class FakeRpcd:
                         0,
                         {
                             "phy": args["device"].split("-")[0],
-                            "ssid": "home",
+                            "ssid": "" if self.applied and self.silent_on_apply else "home",
                             "mode": "Master",
                             "channel": 36 if five else 6,
                             "frequency": 5180 if five else 2437,
@@ -402,7 +403,7 @@ async def test_wifi_with_rollback_and_keys_hidden(tmp_path: Path) -> None:
     assert rpcd.wireless["radio0"]["channel"] == "44"
     kinds = [(o, m) for o, m, _ in rpcd.calls if o == "uci"]
     assert ("uci", "apply") in kinds and kinds[-1] == ("uci", "confirm")
-    assert next(a for o, m, a in rpcd.calls if m == "apply") == {"rollback": True, "timeout": 90}
+    assert next(a for o, m, a in rpcd.calls if m == "apply") == {"rollback": True, "timeout": 120}
 
 
 async def test_installing_firmware(tmp_path: Path) -> None:
@@ -546,6 +547,17 @@ async def test_a_radio_that_doesnt_come_up_is_rolled_back(tmp_path: Path) -> Non
         await ow.change_wifi(ubus(tmp_path, rpcd), {"radio0": {"channel": "165"}}, confirm_after=0)
     assert rpcd.rolled_back and rpcd.wireless["radio0"]["channel"] == "36"
     assert not any(m == "confirm" for _, m, _ in rpcd.calls)
+
+
+async def test_a_change_that_leaves_the_radios_silent_is_rolled_back(tmp_path: Path) -> None:
+    # wpad-basic refuses bss_transition: the radios are up, but no network is sent out.
+    rpcd = FakeRpcd(["kastellan-wifi"])
+    rpcd.silent_on_apply = True
+    with pytest.raises(ValueError, match="nothing sent"):
+        await ow.change_wifi(
+            ubus(tmp_path, rpcd), {"default_radio0": {"bss_transition": "1"}}, confirm_after=0
+        )
+    assert rpcd.rolled_back and not any(m == "confirm" for _, m, _ in rpcd.calls)
 
 
 async def test_a_change_nobody_could_check_is_rolled_back(tmp_path: Path) -> None:
@@ -1103,3 +1115,17 @@ def test_firmware_only_the_advised_step(admin_client) -> None:
     assert c.post(url, json={"version": "23.05.6"}).status_code == 409  # its model unknown yet
     log = c.app.state.hub.audit.path
     assert not log.exists() or "openwrt.firmware" not in log.read_text()  # nothing was started
+
+
+def test_how_long_a_network_has_been_off_the_air_is_kept() -> None:
+    def report(on_air: bool) -> dict:
+        return {"radios": [{"name": "radio1", "interfaces": [{"section": "wifinet2", "on_air": on_air}]}]}
+
+    first = report(False)
+    ow.note_off_air(first, {}, 100.0)
+    later = report(False)
+    ow.note_off_air(later, first, 400.0)
+    assert later["radios"][0]["interfaces"][0]["off_air_since"] == 100.0
+    back = report(True)
+    ow.note_off_air(back, later, 500.0)
+    assert "off_air_since" not in back["radios"][0]["interfaces"][0]

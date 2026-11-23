@@ -76,8 +76,8 @@
 			{#if !settings && !error}<p class="text-sm text-muted">Loading…</p>{/if}
 			{#if settings}
 				<p class="text-xs text-muted">
-					Applied with a rollback: kept only if the device still answers and its radios come back
-					up; otherwise undone (by the device itself after 90 seconds if it can't be reached).
+					Applied with a rollback: kept only if the device still answers and its networks are on the
+					air again; otherwise undone (by the device itself after 2 minutes if it can't be reached).
 				</p>
 				{#each settings.interfaces as iface (iface.section)}
 					<fieldset class="grid gap-3 rounded-xl border border-line p-3 sm:grid-cols-2">

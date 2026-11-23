@@ -46,6 +46,9 @@ from .monitor import CheckStatus, DeviceStatus
 log = logging.getLogger(__name__)
 
 RESOLVE_AFTER = 90  # seconds a problem must be gone before its alarm resolves
+# Seconds an access point's network may be off the air while its radio is on: a radar channel
+# listens a minute first, ten on weather radar channels.
+OFF_AIR_AFTER = 15 * 60
 EVENTS_KEPT_DAYS = 60
 
 
@@ -411,6 +414,26 @@ def evaluate(
                 )
             )
             continue
+        for r in (st.router or {}).get("radios") or []:
+            if r.get("disabled") or not r.get("up"):
+                continue
+            for i in r.get("interfaces") or []:
+                since = i.get("off_air_since")
+                if i.get("on_air") is not False or not since or now.timestamp() - since < OFF_AIR_AFTER:
+                    continue
+                ssid = i.get("ssid") or i.get("ifname") or i.get("section")
+                problems.append(
+                    Problem(
+                        f"router:{id}:air:{r.get('name')}:{i.get('section')}",
+                        Severity.WARNING,
+                        id,
+                        f"{name}: {ssid}",
+                        f"{name}: {ssid} isn't on the air",
+                        "Its radio is on, but the Wi-Fi software didn't start the network; the"
+                        " device's system log says why (often an option its wpad variant lacks)",
+                        datetime.fromtimestamp(since, now.tzinfo),
+                    )
+                )
         fw = (st.router or {}).get("firmware") or {}
         if fw and fw.get("supported") is False:
             step = f"; next: {fw['next_step']}" if fw.get("next_step") else ""

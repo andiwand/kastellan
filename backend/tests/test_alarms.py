@@ -232,3 +232,21 @@ def test_mutes_that_ended_are_forgotten(tmp_path: Path) -> None:
     alarms.mute("b", now - timedelta(minutes=5))
     assert alarms.muted_now(now) == {"a": now + timedelta(minutes=5)}
     assert set(Alarms(tmp_path).muted) == {"a"}  # saved without the ended one
+
+
+def test_a_network_long_off_the_air_raises_an_alarm() -> None:
+    # The radio is up, but hostapd refused the network's config: nothing is sent out.
+    config = Config.model_validate({"devices": {"ap": {"host": "a", "kind": "access-point", "openwrt": {}}}})
+
+    def silent_for(minutes: int) -> dict[str, DeviceStatus]:
+        since = (NOW - timedelta(minutes=minutes)).timestamp()
+        iface = {"section": "wifinet2", "ssid": "home", "on_air": False, "off_air_since": since}
+        radio = {"name": "radio1", "up": True, "interfaces": [iface]}
+        return {"ap": DeviceStatus(router={"radios": [radio]}, router_checked=NOW)}
+
+    def air(st):
+        return [p for p in evaluate(config, st, NOW, {}, STARTED) if ":air:" in p.key]
+
+    assert air(silent_for(2)) == []  # a radar channel listens first
+    (p,) = air(silent_for(20))
+    assert p.title == "ap: home isn't on the air"

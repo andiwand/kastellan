@@ -25,13 +25,14 @@ if TYPE_CHECKING:
 
 LOW_FREE = 8 * 2**20
 
-# What roaming assistance sets on each member's network (with its mobility domain).
+# What roaming assistance sets on each member's network (with its mobility domain). 802.11v
+# (bss_transition) only where hostapd has it (sync.survey's can_steer): the basic variants
+# refuse the option and then send no network at all.
 FT_OPTIONS = {
     "ieee80211r": "1",
     "ft_over_ds": "0",
     "ft_psk_generate_local": "1",
     "ieee80211k": "1",
-    "bss_transition": "1",
 }
 
 
@@ -103,7 +104,10 @@ def check(hub: Hub, members: list[str], survey: dict[str, Any] | None) -> dict[s
                 sorted({e["device"] for e in on}),
                 n["ssid"],
             )
-        no_kv = sorted({e["device"] for e in on if not (e.get("k") and e.get("v"))})
+        steer = (survey or {}).get("can_steer") or {}
+        no_kv = sorted(
+            {e["device"] for e in on if not (e.get("k") and (e.get("v") or steer.get(e["device"]) is False))}
+        )
         if no_kv and not no_ft:
             say(
                 "kv",
@@ -242,8 +246,16 @@ def assistance(survey: dict[str, Any]) -> dict[str, dict[str, dict[str, str]]]:
         domains = {e.get("mobility_domain") for e in on if e.get("mobility_domain")}
         md = next(iter(domains)) if len(domains) == 1 else mobility_domain(n["ssid"])
         for e in on:
-            if not (e.get("ft") and e.get("mobility_domain") == md and e.get("k") and e.get("v")):
-                out.setdefault(e["device"], {})[e["section"]] = {**FT_OPTIONS, "mobility_domain": md}
+            # Unknown (an older LuCI doesn't say): left as it is, never turned on.
+            steer = (survey.get("can_steer") or {}).get(e["device"])
+            v = {"bss_transition": "1"} if steer else {"bss_transition": "0"} if steer is False else {}
+            want_v = e.get("v") if steer is None else steer
+            if not (e.get("ft") and e.get("mobility_domain") == md and e.get("k") and e.get("v") == want_v):
+                out.setdefault(e["device"], {})[e["section"]] = {
+                    **FT_OPTIONS,
+                    **(v if steer is not None else {}),
+                    "mobility_domain": md,
+                }
     return out
 
 

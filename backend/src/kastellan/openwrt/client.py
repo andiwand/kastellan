@@ -375,6 +375,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
             for iface in radio.get("interfaces") or []:
                 ic = iface.get("config") or {}
                 ifname = iface.get("ifname")
+                ap = ic.get("mode", "ap") == "ap"
                 ifaces.append(
                     {
                         "section": iface.get("section"),
@@ -382,6 +383,7 @@ async def read(ubus: Ubus) -> dict[str, Any]:
                         "ssid": ic.get("ssid") or ic.get("mesh_id"),
                         "mode": ic.get("mode"),
                         "network": ic.get("network"),
+                        "on_air": await _on_air(ubus, ifname) if ap and radio.get("up") else None,
                         "clients": await _clients(ubus, ifname, leases) if ifname else [],
                     }
                 )
@@ -427,6 +429,47 @@ def _band(info: dict[str, Any]) -> str | None:
     return "2g" if mhz < 3000 else "5g" if mhz < 5950 else "6g"
 
 
+async def _on_air(ubus: Ubus, ifname: str | None) -> bool | None:
+    """Whether an access point interface sends its network out: the Wi-Fi software (hostapd)
+    started it, so the interface has its SSID. A radio can be up with its interface there and
+    nothing sent, e.g. when hostapd refuses an option its variant lacks. None: can't tell."""
+    if not ifname:
+        return None
+    try:
+        info = await ubus.call("iwinfo", "info", {"device": ifname})
+    except Exception:
+        return None
+    return bool(info.get("ssid"))
+
+
+def note_off_air(report: dict[str, Any], old: dict[str, Any], now: float) -> None:
+    """Since when each access point interface that sends nothing has been so (`off_air_since`,
+    epoch seconds), carried over from the last report: a radar channel listens a minute (ten
+    on weather radar channels) before it may send, so only a long silence is a problem."""
+    before = {
+        (r.get("name"), i.get("section")): i.get("off_air_since")
+        for r in old.get("radios") or []
+        for i in r.get("interfaces") or []
+    }
+    for r in report.get("radios") or []:
+        for i in r.get("interfaces") or []:
+            if i.get("on_air") is False:
+                i["off_air_since"] = before.get((r.get("name"), i.get("section"))) or now
+
+
+async def on_air(ubus: Ubus, session: str) -> dict[str, bool]:
+    """Each access point interface (iwinfo's devices) and whether it sends its network out."""
+    devices = (await ubus.call("iwinfo", "devices", session=session)).get("devices") or []
+    out = {}
+    for ifname in devices:
+        if not isinstance(ifname, str):
+            continue
+        info = await ubus.call("iwinfo", "info", {"device": ifname}, session=session)
+        if str(info.get("mode") or "").lower().startswith("master"):
+            out[ifname] = bool(info.get("ssid"))
+    return out
+
+
 async def _clients(ubus: Ubus, ifname: str, leases: dict[str, str]) -> list[dict[str, Any]]:
     clients = []
     with contextlib.suppress(Exception):
@@ -470,6 +513,7 @@ async def _radios_from_iwinfo(ubus: Ubus, leases: dict[str, str]) -> list[dict[s
                 "ssid": info.get("ssid") or info.get("meshid"),
                 "mode": "ap" if mode.startswith("master") else "mesh" if "mesh" in mode else mode or None,
                 "network": None,
+                "on_air": bool(info.get("ssid")) if mode.startswith("master") else None,
                 "clients": await _clients(ubus, ifname, leases),
             }
         )
@@ -1064,26 +1108,40 @@ async def radios_up(ubus: Ubus, session: str) -> dict[str, bool]:
     }
 
 
+async def _sent_before(ubus: Ubus, session: str) -> dict[str, bool]:
+    try:
+        return await on_air(ubus, session)
+    except Exception:  # without iwinfo: the radios alone are judged
+        return {}
+
+
 async def apply_with_rollback(ubus: Ubus, session: str, confirm_after: float | None = None) -> None:
-    """Apply the session's staged changes. The device undoes them by itself after 90 s unless
-    confirmed, and Kastellan confirms only if it still answers and every radio that is meant to
-    be on came up; otherwise it rolls back at once."""
+    """Apply the session's staged changes. The device undoes them by itself after 120 s unless
+    confirmed, and Kastellan confirms only if it still answers, every radio that is meant to be
+    on came up and every network that was sent out before is sent again (a radio can be up with
+    nothing on the air); otherwise it rolls back at once. A radar channel listens a minute before
+    it may send: it is waited for, up to about 100 s."""
     wait = CONFIRM_AFTER if confirm_after is None else confirm_after
     try:
         before = await radios_up(ubus, session)
-        await ubus.call("uci", "apply", {"rollback": True, "timeout": 90}, session=session)
+        sent = await _sent_before(ubus, session)
+        await ubus.call("uci", "apply", {"rollback": True, "timeout": 120}, session=session)
     except BaseException:  # nothing applied: the staged changes mustn't ride along with the next one
         with contextlib.suppress(Exception):
             await ubus.call("uci", "revert", {"config": "wireless"}, session=session)
         raise
     broken: list[str] | None = None  # None: not one status read answered, so nothing is known
-    for _ in range(6):  # the radios restart: up to about half a minute
+    for _ in range(20):  # the radios restart, a radar channel listens first: up to about 100 s
         await asyncio.sleep(wait)
         try:
             now = await radios_up(ubus, session)
+            air = await on_air(ubus, session) if sent else {}
         except Exception:
             continue
         broken = [n for n, up in now.items() if not up and before.get(n, True)]
+        broken += [f"{i} (nothing sent)" for i, was in sent.items() if was and air.get(i) is False]
+        if sent and any(sent.values()) and not any(air.values()):
+            broken = broken or ["Wi-Fi (nothing sent)"]
         if not broken:
             break
     if broken is None or broken:
