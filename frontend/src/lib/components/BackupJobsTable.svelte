@@ -50,7 +50,7 @@
 		].join('\n');
 
 	const columns: Column<Backup>[] = $derived([
-		{ key: 'name', label: 'Job', grow: true, cell: jobName },
+		{ key: 'name', label: 'Job', cell: jobName },
 		{ key: 'state', label: 'State', cell: jobState, width: '8rem' },
 		{
 			key: 'ok',
@@ -68,7 +68,7 @@
 			key: 'message',
 			label: 'Last failure',
 			priority: 3,
-			grow: true,
+			wrap: true,
 			value: (b) =>
 				b.failed ? `${ago(b.failed, store.now)}${b.message ? `: ${b.message}` : ''}` : null
 		},

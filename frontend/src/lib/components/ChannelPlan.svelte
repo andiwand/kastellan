@@ -53,10 +53,10 @@
 
 	const columns: Column<Row>[] = [
 		{ key: 'pick', label: '', width: '2.5rem', cell: pick },
-		{ key: 'ap', label: 'Access point', grow: true, cell: apCell },
+		{ key: 'ap', label: 'Access point', cell: apCell },
 		{ key: 'now', label: 'Now', priority: 2, width: '6rem', cell: nowCell },
 		{ key: 'then', label: 'Suggested', width: '7rem', cell: thenCell },
-		{ key: 'why', label: 'Why', priority: 3, grow: true, cell: whyCell }
+		{ key: 'why', label: 'Why', priority: 3, wrap: true, cell: whyCell }
 	];
 </script>
 
@@ -82,7 +82,7 @@
 		<span class="tabular font-medium">{r.channel}</span>
 		{#if r.htmode}<span class="block text-meta text-muted sm:inline"> · {width(r)} MHz</span>{/if}
 	{:else}<span class="text-muted">
-			<span class="sm:hidden">{r.current ?? 'auto'} · </span>stays
+			<span class="sm:hidden">{r.current ?? 'auto'}{' · '}</span>stays
 		</span>{/if}
 {/snippet}
 {#snippet whyCell(r: Row)}

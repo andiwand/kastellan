@@ -12,7 +12,7 @@
 		numeric?: boolean; // tabular numbers, right-aligned
 		mono?: boolean; // identifiers: an address, an image
 		width?: string; // a CSS width, e.g. '7rem'
-		grow?: boolean; // takes the width that is left; long text is cut with "…"
+		grow?: boolean; // takes the width that is left; long text is cut with "…". At most one per table: a second gets no width at all
 		wrap?: boolean; // its text may wrap (other cells keep to one line, so a long column can't squeeze them)
 		title?: string; // the header's tooltip: what the column means
 		value?: (row: T) => string | number | null | undefined; // plain text ('–' when empty)
