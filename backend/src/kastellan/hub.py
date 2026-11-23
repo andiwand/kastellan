@@ -228,6 +228,8 @@ class Hub:
         self.ups_switched: dict[str, dict[str, Any]] = {}
         self._loaded = False  # a config has been loaded since the start
         self.locked: str | None = None  # why the API refuses everything (fail closed), or None
+        # KASTELLAN_HOSTS when it couldn't be written into config.yaml (seed_from_env): this run only.
+        self._env_hosts: tuple[str, ...] = ()
         self.signin_required = settings.data / "signin-required"
         self.resolver = Resolver()
         self.registries = Registries()
@@ -315,6 +317,41 @@ class Hub:
         if not self.demo:
             self.open_rings_by_themselves()
         log.info("config: %d devices, %d users", len(config.devices), len(config.users))
+
+    def hosts(self) -> tuple[str, ...]:
+        """The names the hub answers to (besides IP addresses and localhost): config.yaml's."""
+        return tuple(self.config.hosts) or self._env_hosts
+
+    def seed_from_env(self) -> None:
+        """What the container's environment says about the hub goes into config.yaml once, at
+        the first start that has it; from then on config.yaml is the only source (the Settings
+        page changes it there). KASTELLAN_HOSTS → `hosts`. If config.yaml can't be written, the
+        variable counts for this run only (else the hub would refuse its own name)."""
+        wanted = list(dict.fromkeys(h.strip().lower().rstrip(".") for h in self.settings.hosts if h.strip()))
+        marker = self.settings.data / "env-seeded.json"
+        if not wanted or self.demo or self.locked or marker.exists():
+            return
+        old = config_edit.read(self.settings.config)
+        if self.config.hosts:  # set in the file already: it wins
+            if list(self.config.hosts) != wanted:
+                log.warning("KASTELLAN_HOSTS is not used: config.yaml has hosts (change them there)")
+            new = old
+        else:
+            new = config_edit.set_top(old, "hosts", wanted)
+        try:
+            if new != old:
+                self.check(new)
+                self.save_config(old, new)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps({"hosts": wanted}) + "\n")
+        except (ConfigProblem, OSError) as e:
+            self._env_hosts = self.settings.hosts
+            why = e.message if isinstance(e, ConfigProblem) else (e.strerror or type(e).__name__)
+            log.error("couldn't write KASTELLAN_HOSTS into config.yaml (%s): using it for this run", why)
+            return
+        if new != old:
+            log.info("config.yaml: hosts taken from KASTELLAN_HOSTS (%s)", ", ".join(wanted))
+            self.audit.record("config.from_env", None, None, hosts=wanted)
 
     def check(self, text: str) -> Config:
         """A candidate config.yaml (from the app's editor), by the same rules as loading it, or
@@ -413,6 +450,7 @@ class Hub:
             log.info("demo mode: a made-up network, simulated results; config.yaml gives only its users")
             await asyncio.to_thread(self.demo.backfill, self.history, demo.config(), self.versions)
         self.reload()
+        self.seed_from_env()
         self._tasks = [
             asyncio.create_task(self._poll_drivers(), name="poll drivers"),
             asyncio.create_task(self._watch_config(), name="watch config"),

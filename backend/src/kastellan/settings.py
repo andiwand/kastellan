@@ -15,7 +15,8 @@ class Settings:
     port: int = 8100
     log_level: str = "info"
     demo: bool = False  # a made-up network with simulated results, for trying the app
-    # Names the hub may be reached by (besides IP addresses and localhost); see auth_api.Guard.
+    # KASTELLAN_HOSTS: written into config.yaml's `hosts` at the first start that has it
+    # (hub.seed_from_env); config.yaml is the source after that.
     hosts: tuple[str, ...] = ()
     guacd: str = "127.0.0.1:4822"  # where guacd listens (remote desktop)
 

@@ -17,6 +17,7 @@
 	 * that part stay). Devices, groups and the VPN have their own pages. */
 	type S = Settings['sections'];
 	let general = $state<S['general']>({ check_interval: 60, retention_days: 30, heartbeat: null });
+	let names = $state(''); // config.yaml's hosts, comma-separated in the form
 	let alarms = $state<S['alarms']['alarms']>({
 		down_after: 180,
 		cert_days: 14,
@@ -123,6 +124,10 @@
 		if (clean('general', general)) {
 			general = copy(s.general);
 			next.general = json(general);
+		}
+		if (clean('names', names)) {
+			names = (s.names?.hosts ?? []).join(', ');
+			next.names = json(names);
 		}
 		if (clean('alarms', alarms)) {
 			alarms = copy(s.alarms.alarms);
@@ -326,6 +331,25 @@
 					onchange={(e) => (general.check_releases = e.currentTarget.checked)}
 				/>
 				Tell me when a newer Kastellan is out (asks GitHub once a day; sends nothing about this hub)
+			</label>
+		</SettingsCard>
+
+		<SettingsCard
+			title="Names"
+			description="The names you open Kastellan by, besides its IP addresses and localhost. It refuses requests for any other name, so a web page on someone else's name can't reach it (DNS rebinding). The names in KASTELLAN_HOSTS are taken in once, at the first start; from then on they are set here."
+			dirty={json(names) !== base.names}
+			reset={() => (names = JSON.parse(base.names))}
+			save={() =>
+				save('names', {
+					hosts: names
+						.split(/[\s,]+/)
+						.map((n) => n.trim())
+						.filter(Boolean)
+				})}
+		>
+			<label class="field">
+				Names (comma-separated)
+				<input class="input font-mono" placeholder="kastellan.lan" bind:value={names} />
 			</label>
 		</SettingsCard>
 

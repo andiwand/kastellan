@@ -760,3 +760,16 @@ def test_a_ups_through_the_form(hub_client) -> None:
     assert c.get("/api/devices/router/form").json()["powered_by"] == "ups1"
     bad = {**body, "id": "ups2", "kind": "server"}  # no host, and not a UPS
     assert c.post("/api/devices", json=bad, headers=H).status_code == 400
+
+
+def test_the_names_form_keeps_the_name_in_use(admin_client) -> None:
+    c = admin_client("hosts: [kastellan.lan]\ndevices: {}\n", base_url="http://kastellan.lan")
+    v = c.get("/api/settings").json()["version"]
+    put = lambda hosts: c.put("/api/settings/names", json={"value": {"hosts": hosts}, "version": v})  # noqa: E731
+    r = put(["hub.home"])  # the page was opened as kastellan.lan: saving that would lock it out
+    assert r.status_code == 400 and "kastellan.lan" in r.json()["detail"]
+    r = put(["kastellan.lan", "hub.home"])
+    assert r.status_code == 200 and c.get("/api/settings").json()["sections"]["names"]["hosts"] == [
+        "kastellan.lan",
+        "hub.home",
+    ]

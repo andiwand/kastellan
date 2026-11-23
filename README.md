@@ -104,7 +104,7 @@ still shows it down).
 | `KASTELLAN_CONFIG` | `data/config.yaml` | Config path; `/config/config.yaml` in Docker. |
 | `KASTELLAN_DATA` | Config directory | State, keys and logs; `/data` in Docker. |
 | `KASTELLAN_PORT` | `8100` | HTTP port. |
-| `KASTELLAN_HOSTS` | Empty | Allowed hostnames, comma-separated; IP addresses and localhost also work. |
+| `KASTELLAN_HOSTS` | Empty | Names you open it by, comma-separated (IP addresses and localhost always work). Taken into config.yaml's `hosts:` at the first start; after that, set them there or under Settings → Names. |
 | `KASTELLAN_GUACD` | `127.0.0.1:4822` | Remote desktop daemon. |
 | `KASTELLAN_DEMO` | Unset | `1` enables simulated devices. |
 | `KASTELLAN_LOG_LEVEL` | `info` | Logging verbosity. |

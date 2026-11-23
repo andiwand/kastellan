@@ -363,7 +363,7 @@ class SyslogTls:
         if port is None:
             return
         try:
-            names = [n for n in (hub.own_address, hub.own_v6, *hub.settings.hosts) if n]
+            names = [n for n in (hub.own_address, hub.own_v6, *hub.hosts()) if n]
             ctx = await asyncio.to_thread(hub.syslog_ca.server_context, names)
             self.listener = syslog_tls.Listener(hub.syslog_ca, lambda d: d in hub.config.devices)
             self.server = await asyncio.start_server(

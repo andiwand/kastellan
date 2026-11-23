@@ -112,3 +112,14 @@ def test_runs_on_names_a_vm_on_another_device() -> None:
     ):
         with pytest.raises(ValueError):
             Config.model_validate({"devices": {"sv1": {"host": "s"}, "ha": {"host": "h", "runs_on": bad}}})
+
+
+def test_hosts_are_host_names() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from kastellan.config import Config
+
+    assert Config(hosts=["Kastellan.LAN.", "kastellan.lan"]).hosts == ["kastellan.lan"]
+    with pytest.raises(ValidationError):
+        Config(hosts=["evil example"])

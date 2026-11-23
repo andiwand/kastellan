@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from kastellan.api import create_app
 from kastellan.auth import hash_password
+from kastellan.config import parse
 from kastellan.settings import Settings
 
 H = {"X-Kastellan": "1"}
@@ -230,3 +231,27 @@ def test_only_the_hubs_own_page_may_ask(client: TestClient) -> None:
     assert r.status_code == 200
     assert r.headers["x-frame-options"] == "DENY" and r.headers["origin-agent-cluster"] == "?1"
     assert r.headers["cross-origin-opener-policy"] == "same-origin"
+
+
+def test_kastellan_hosts_seeds_config_yaml_once(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    write_config(config)
+
+    def start(*hosts: str):
+        return TestClient(create_app(Settings(config=config, data=tmp_path, hosts=hosts)))
+
+    def hosts() -> list[str]:
+        return parse(config.read_text()).hosts
+
+    with start("Kastellan.lan") as c:  # the first start with it: written into config.yaml
+        assert hosts() == ["kastellan.lan"]
+        assert c.get("/api/health", headers={"host": "kastellan.lan:8100"}).status_code == 200
+    text = config.read_text().replace("kastellan.lan", "hub.home")
+    config.write_text(text)
+    with start("kastellan.lan") as c:  # config.yaml is the source now
+        assert c.get("/api/health", headers={"host": "kastellan.lan"}).status_code == 421
+        assert c.get("/api/health", headers={"host": "hub.home"}).status_code == 200
+    config.write_text(text.replace("hosts:\n  - hub.home\n", ""))
+    assert hosts() == []
+    with start("kastellan.lan"):  # taken out of config.yaml: not put back
+        assert hosts() == []

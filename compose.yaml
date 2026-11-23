@@ -17,7 +17,7 @@ services:
     #   - "6514:6514" # only with syslog over TLS (Settings → Logs)
     environment:
       TZ: Etc/UTC # your time zone
-      # KASTELLAN_HOSTS: kastellan.lan # names you open it by; IP addresses always work
+      # KASTELLAN_HOSTS: kastellan.lan # names you open it by (IP addresses always work); taken into config.yaml once
       # KASTELLAN_DEMO: "1" # a made-up network with simulated results, to try it out
     volumes:
       - ./config:/config # config.yaml

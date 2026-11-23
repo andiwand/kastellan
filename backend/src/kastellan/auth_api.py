@@ -197,11 +197,12 @@ class Guard:
         users = self.hub.config.users
 
         web = self.hub.config.web
-        names = (*self.hub.settings.hosts, web.domain) if web else self.hub.settings.hosts
+        names = (*self.hub.hosts(), web.domain) if web else self.hub.hosts()
         if not allowed_host(headers.get("host", ""), names):
             # DNS rebinding: a page on an attacker's name that now points here. Its requests carry
             # that name, which the hub doesn't answer to.
-            await _deny(scope, send, 421, "this hub doesn't answer to that name (see KASTELLAN_HOSTS)")
+            why = "this hub doesn't answer to that name (add it to hosts: in config.yaml)"
+            await _deny(scope, send, 421, why)
             return
         if self.hub.locked and scope["path"] != "/api/health":
             # config.yaml was broken at start: refuse everything rather than run without sign-in.

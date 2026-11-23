@@ -870,6 +870,9 @@ def _aware(t: datetime) -> datetime:
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Names the hub is opened by, besides IP addresses and localhost: a request for any other
+    # name is refused (DNS rebinding). Taken once from KASTELLAN_HOSTS (hub.seed_from_env).
+    hosts: list[str] = Field(default_factory=list, max_length=50)
     check_interval: float = Field(default=60, ge=5)
     retention_days: int = Field(default=30, ge=1)
     devices: dict[str, Device] = Field(default_factory=dict)
@@ -909,6 +912,14 @@ class Config(BaseModel):
         site = self.site_of(id)
         name = self.devices[id].name
         return name if site == HOME else f"{name} ({self.site_name(site)})"
+
+    @model_validator(mode="after")
+    def _hosts(self) -> Self:
+        self.hosts = list(dict.fromkeys(h.strip().lower().rstrip(".") for h in self.hosts))
+        for h in self.hosts:
+            if not re.match(DOMAIN, h) or len(h) > 253:
+                raise ValueError(f"hosts: {h!r} isn't a host name")
+        return self
 
     @model_validator(mode="after")
     def _groups(self) -> Self:

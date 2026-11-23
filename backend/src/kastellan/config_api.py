@@ -18,7 +18,7 @@ from ruamel.yaml.error import YAMLError
 
 from . import config_edit
 from .auth import hash_password
-from .auth_api import Who, client_address, require_signin
+from .auth_api import Who, allowed_host, client_address, require_signin
 from .config import (
     ID,
     AlarmSettings,
@@ -114,6 +114,7 @@ KEEP = "__keep__"  # in a form: "leave this secret as it is" (it is never sent t
 # The forms on the Config page, Groups and VPN: each a part of config.yaml, by top-level keys.
 SECTIONS: dict[str, tuple[str, ...]] = {
     "general": ("check_interval", "retention_days", "heartbeat", "check_releases"),
+    "names": ("hosts",),
     "alarms": ("alarms",),
     "notify": ("notify",),
     "vulns": ("vulns",),
@@ -183,6 +184,11 @@ def router(hub: Hub) -> APIRouter:
             config = hub.check(new)
         except ConfigProblem as e:
             raise HTTPException(400, e.message) from e
+        # Nor out of the hub: the name this page was opened by must still be one it answers to.
+        names = (*(config.hosts or hub._env_hosts), *([config.web.domain] if config.web else []))
+        host = request.headers.get("host", "")
+        if not allowed_host(host, tuple(names)):
+            raise HTTPException(400, f"you opened Kastellan as {host.split(':')[0]}: keep that name in hosts")
         # Nobody saves themselves out of being an admin (they'd need the file to undo it).
         me = config.users.get(w.user or "")
         if me is None or me.role is not Role.ADMIN:

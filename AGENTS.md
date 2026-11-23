@@ -12,7 +12,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
 ## Layout
 
 - `backend/src/kastellan/` (Python 3.13, FastAPI, managed with uv):
-  - `config.py`: `config.yaml` is the only configuration; SQLite is used only for device logs and vitals. A `Device` has a
+  - `config.py`: `config.yaml` is the only configuration; environment variables are the
+    process's (paths, port, guacd, demo, log level), except `KASTELLAN_HOSTS`, which
+    `hub.seed_from_env` writes into `hosts:` once (marker `<data>/env-seeded.json`; if it can't
+    write, the variable counts for that run only); saving refuses a config without the name the
+    page was opened by. SQLite is used only for device logs and vitals. A `Device` has a
     `host`, a `kind`, an optional `parent` (what it hangs off: alarms fold a device into its parent's; the "via" link; meant for infrastructure links, not which access point
     a client uses), `tags`, `always_on` (default: false
     for `pc` and `laptop`), a `site` (where it is; None is `home`), an optional `runs_on:

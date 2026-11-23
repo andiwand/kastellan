@@ -286,6 +286,8 @@ export interface Settings {
 	version: string;
 	secrets: Record<string, boolean>;
 	sections: {
+		/** The names the hub is opened by (besides IP addresses and localhost). */
+		names: { hosts?: string[] };
 		general: {
 			check_interval: number;
 			retention_days: number;
