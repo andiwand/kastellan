@@ -42,6 +42,10 @@
 	const own = $derived(new Set(mine.map((r) => r.channel)));
 	let hover = $state<number | null>(null);
 	const shown = $derived(use.find((u) => u.channel === hover) ?? null);
+	const shownAt = $derived(hover == null ? -1 : (index.get(hover) ?? -1));
+	const BUSY = 60; // from here a bar turns amber
+	// How much a neighbour network gets in the way, from its signal where our radio heard it.
+	const strength = (dbm: number) => (dbm >= -65 ? 'strong' : dbm >= -80 ? 'moderate' : 'faint');
 	const cols = $derived(`repeat(${use.length}, minmax(0, 1fr))`);
 	const dense = $derived(use.length > 16);
 	// Leave space between axis labels; every channel remains available by hovering or tapping.
@@ -70,6 +74,7 @@
 				style:grid-template-columns={cols}
 				role="group"
 				aria-label="How busy each {bandLabel(band)} channel was"
+				onmouseleave={() => (hover = null)}
 			>
 				<span
 					class="pointer-events-none absolute inset-x-0 top-0 border-t border-dashed border-line"
@@ -95,7 +100,7 @@
 							<span
 								class="block w-full rounded-t-[4px]"
 								style:height="{Math.max(2, Math.min(100, u.busy))}%"
-								style:background={u.busy >= 60 ? 'var(--warning)' : 'var(--faint)'}
+								style:background={u.busy >= BUSY ? 'var(--warning)' : 'var(--faint)'}
 							></span>
 						{/if}
 					</button>
@@ -133,22 +138,73 @@
 			{/each}
 		</div>
 	{/if}
-	<p class="mt-3 min-h-[2lh] text-meta text-muted" aria-live="polite">
-		{#if shown}
-			<span class="font-medium text-text">Channel {shown.channel}</span>
-			· {shown.busy != null
-				? `${shown.busy} % busy (${shown.by.map((b) => `${b.name} ${b.busy} %`).join(', ')})`
-				: 'not measured'}
-			{#if shown.heard.length}
-				· heard: {shown.heard
-					.slice(0, 5)
-					.map((h) => `${h.ssid}${h.signal != null ? ` ${h.signal} dBm` : ''}`)
-					.join(', ')}{shown.heard.length > 5 ? ` and ${shown.heard.length - 5} more` : ''}
-			{:else}
-				· no neighbours heard
-			{/if}
-		{:else}
-			Outlined: your access points’ channels. Point at a channel for who uses it.
+	<!-- what the marks mean -->
+	<ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-meta text-muted">
+		<li class="flex items-center gap-1.5">
+			<span class="size-2.5 rounded-[2px]" style:background="var(--faint)"></span>
+			How busy the air was (your own traffic too)
+		</li>
+		<li class="flex items-center gap-1.5">
+			<span class="size-2.5 rounded-[2px]" style:background="var(--warning)"></span>
+			Busy {BUSY} % or more
+		</li>
+		{#if mine.length}
+			<li class="flex items-center gap-1.5">
+				<span class="size-2.5 rounded-[2px] border-2 border-accent"></span>
+				Your access points’ channels; the lines show how far each spreads
+			</li>
 		{/if}
-	</p>
+	</ul>
+	<!-- the channel pointed at -->
+	<div class="mt-2 min-h-[3lh] text-meta text-muted" aria-live="polite">
+		{#if shown}
+			{@const here = mine.filter((r) => r.from <= shownAt && shownAt <= r.to)}
+			<p class="font-medium text-text">Channel {shown.channel}</p>
+			<dl class="mt-0.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+				<dt>Busy</dt>
+				<dd>
+					{#if shown.busy != null}
+						<span class="tabular">{shown.busy} %</span> of the time{#if shown.by.length > 1}, the
+							most any of your radios measured ({[...shown.by]
+								.sort((a, b) => b.busy - a.busy)
+								.map((b) => `${b.name} ${b.busy} %`)
+								.join(', ')}){:else}, measured by {shown.by[0].name}{/if}
+					{:else}
+						Not measured: none of your radios listened here
+					{/if}
+				</dd>
+				<dt>Your access points</dt>
+				<dd>
+					{#if here.length}
+						{here
+							.map((r) =>
+								r.channel === shown.channel ? r.name : `${r.name} (on ${r.channel}, reaches here)`
+							)
+							.join(', ')}
+					{:else}
+						None on or near it
+					{/if}
+				</dd>
+				<dt>Other networks</dt>
+				<dd>
+					{#if shown.heard.length}
+						{@const heard = [...shown.heard].sort(
+							(a, b) => (b.signal ?? -200) - (a.signal ?? -200)
+						)}
+						{heard
+							.slice(0, 5)
+							.map(
+								(h) =>
+									`${h.ssid || 'hidden network'}${h.signal != null ? ` (${strength(h.signal)}, ${h.signal} dBm)` : ''}`
+							)
+							.join(', ')}{heard.length > 5 ? ` and ${heard.length - 5} more` : ''}
+					{:else}
+						None heard
+					{/if}
+				</dd>
+			</dl>
+		{:else}
+			<p>Point at or tap a channel to see who uses it.</p>
+		{/if}
+	</div>
 </div>
