@@ -57,6 +57,7 @@
 	interface RingForm {
 		own: boolean; // its own ways (else: the level's)
 		password: boolean;
+		session: boolean;
 		config: boolean;
 		keyfile: string;
 		makeKeyfile: boolean;
@@ -178,6 +179,7 @@
 		return {
 			own: false,
 			password: !!way('password'),
+			session: !!way('session'),
 			config: !!way('config'),
 			keyfile: way('keyfile')?.source ?? '',
 			makeKeyfile: false,
@@ -195,6 +197,7 @@
 	function choiceOf(f: RingForm): RingChoice {
 		const unlock: UnlockItem[] = [];
 		if (f.password) unlock.push('password');
+		if (f.session) unlock.push('session');
 		if (f.config) unlock.push('config');
 		if (f.keyfile.trim()) unlock.push({ keyfile: f.keyfile.trim() });
 		if (f.env.trim()) unlock.push({ env: f.env.trim() });
@@ -215,12 +218,12 @@
 		{
 			id: 'convenient',
 			title: 'Convenient',
-			text: "Kastellan's ring opens by itself at start, with a key kept in config.yaml: everything works again after a power cut. Whoever has a copy of the config folder can open it. People's logins open when an admin signs in."
+			text: "Kastellan's ring opens by itself at start, with a key kept in config.yaml: everything works again after a power cut. Whoever has a copy of the config folder can open it. People's logins open when an admin signs in. After a restart, an admin's browser can open Kastellan's ring with one click for a week after their password."
 		},
 		{
 			id: 'balanced',
 			title: 'Balanced',
-			text: "Nothing opens by itself. Once an admin signs in, Kastellan's ring stays open until a restart; people's logins close again when the last admin signs out."
+			text: "Nothing opens by itself. Once an admin signs in, Kastellan's ring stays open until a restart; after one, their browser opens it again with one click, for a week after their password. People's logins close again when the last admin signs out and need the password."
 		},
 		{
 			id: 'strict',
@@ -237,6 +240,8 @@
 	function way(w: Ring['ways'][number]): string {
 		if (w.way === 'password')
 			return w.users.length ? `an admin's password (${w.users.join(', ')})` : "an admin's password";
+		if (w.way === 'session')
+			return "an admin's browser for a week after their password, when they click Unlock";
 		if (w.way === 'keyfile') return `the key file ${w.source}`;
 		if (w.way === 'env') return `$${w.source}`;
 		return 'the key in config.yaml';
@@ -370,7 +375,7 @@
 						<li>
 							Opens with {r.ways.map(way).join(', or ') || 'only its recovery key'}.
 						</li>
-						{#each r.ways.filter((w) => !w.ready && w.way !== 'password') as w (w.way + w.source)}
+						{#each r.ways.filter((w) => !w.ready && w.way !== 'password' && w.way !== 'session') as w (w.way + w.source)}
 							<li style:color="var(--warning-text)">
 								Not set up yet: {way(w)} (it is, once the ring is open and the settings saved).
 							</li>
@@ -536,6 +541,12 @@
 										<label class="choice">
 											<input type="checkbox" bind:checked={f.password} /> An admin's password
 										</label>
+										{#if r.id !== 'people'}
+											<label class="choice">
+												<input type="checkbox" bind:checked={f.session} />
+												<span>An admin's browser, for a week after their password</span>
+											</label>
+										{/if}
 										<label class="choice">
 											<input type="checkbox" bind:checked={f.config} /> A key in config.yaml
 										</label>

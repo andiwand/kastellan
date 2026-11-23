@@ -807,6 +807,8 @@ export interface Health {
 	vault: VaultState;
 	/** Locked rings Kastellan uses by itself: what needs their secrets waits. */
 	vault_waiting: string[];
+	/** Whether this admin's browser may open them without the password (a week after it). */
+	vault_by_browser?: boolean;
 	/** A newer Kastellan, if one is out (releases.py). */
 	newer?: { version: string; url: string } | null;
 }
@@ -817,7 +819,7 @@ export type VaultLevel = 'convenient' | 'balanced' | 'strict';
 /** A way a ring opens: an admin's password, a key file, an environment variable, a key in
  * config.yaml; `ready`: set up (for password: some admin has a slot). */
 export interface RingWay {
-	way: 'password' | 'keyfile' | 'env' | 'config';
+	way: 'password' | 'session' | 'keyfile' | 'env' | 'config';
 	source: string;
 	ready: boolean;
 	users: string[];
@@ -871,7 +873,7 @@ export interface VaultForm {
 	password?: string; // typed again: needed to change its devices
 }
 
-export type UnlockItem = 'password' | 'config' | { keyfile: string } | { env: string };
+export type UnlockItem = 'password' | 'session' | 'config' | { keyfile: string } | { env: string };
 
 export interface RingChoice {
 	unlock: UnlockItem[] | null; // null: as the level says
@@ -2062,6 +2064,8 @@ export const api = {
 		),
 	vaultUnlock: (how: { password?: string; recovery?: string; ring?: string }) =>
 		call<{ state: VaultState; opened: string[] }>('POST', '/vault/unlock', how),
+	vaultUnlockBrowser: () =>
+		call<{ state: VaultState; opened: string[] }>('POST', '/vault/unlock-browser'),
 	vaultLock: (ring?: string) => call<{ state: VaultState }>('POST', '/vault/lock', { ring }),
 	vaultRecovery: (ring: string, password: string) =>
 		call<{ recovery: string }>('POST', `/vault/rings/${ring}/recovery`, { password }),

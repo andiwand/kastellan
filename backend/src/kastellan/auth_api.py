@@ -309,7 +309,7 @@ def router(hub: Hub) -> APIRouter:
         # The session first: rings that stay open while an admin is here see them at once.
         token = hub.sessions.create(body.user, password_tag(user.password))
         # The password just typed opens the key ring (an admin's): it is never kept.
-        if opened := await hub.unlock_on_signin(body.user, body.password):
+        if opened := await hub.unlock_on_signin(body.user, body.password, token):
             hub.audit.record("vault.unlock", body.user, address, by="sign-in", rings=opened)
         response.set_cookie(
             SESSION_COOKIE,
@@ -334,6 +334,7 @@ def router(hub: Hub) -> APIRouter:
         hub.terminals.stop(token=token)  # its open terminals and desktops end with it
         hub.tickets.drop(session=token_key(token))
         hub.sessions.end(token)
+        hub.drop_session_slots()  # its browser opens no key ring any more
         response.delete_cookie(SESSION_COOKIE, path="/")
         if w and w.user:
             hub.audit.record("signout", w.user, client_address(request.scope))

@@ -746,8 +746,9 @@ class RingSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # Ways it opens, besides its recovery key: `password` (an admin signing in), `config` (`key`
-    # below), `{keyfile: /path}`, `{env: VARIABLE}`.
+    # Ways it opens, besides its recovery key: `password` (an admin signing in), `session` (an
+    # admin's browser for a week after their password, when they ask; never people's logins),
+    # `config` (`key` below), `{keyfile: /path}`, `{env: VARIABLE}`.
     unlock: list[str | dict[str, str]] | None = None
     stays_unlocked: str | None = Field(default=None, pattern=r"^(restart|lock|signed_in|idle:\d{1,4})$")
     background: bool | None = None  # may Kastellan use its entries by itself (never `people`)
@@ -758,9 +759,9 @@ class RingSettings(BaseModel):
     def _ways(self) -> Self:
         for item in self.unlock or []:
             if isinstance(item, str):
-                if item not in ("password", "config"):
+                if item not in ("password", "session", "config"):
                     raise ValueError(
-                        f"unlock: {item!r}: password, config, {{keyfile: /path}} or {{env: NAME}}"
+                        f"unlock: {item!r}: password, session, config, {{keyfile: /path}} or {{env: NAME}}"
                     )
                 continue
             if len(item) != 1 or next(iter(item)) not in ("keyfile", "env"):

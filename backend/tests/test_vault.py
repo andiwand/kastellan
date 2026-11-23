@@ -335,8 +335,10 @@ def test_moving_an_entry(tmp_path: Path) -> None:
 
 
 def test_the_levels() -> None:
-    assert policy(settings("convenient"), KASTELLAN).unlock == (("password", ""), ("config", ""))
-    assert policy(settings("balanced"), KASTELLAN).unlock == (("password", ""),)
+    convenient = policy(settings("convenient"), KASTELLAN).unlock
+    assert convenient == (("password", ""), ("config", ""), ("session", ""))
+    assert policy(settings("balanced"), KASTELLAN).unlock == (("password", ""), ("session", ""))
+    assert ("session", "") not in policy(settings("strict"), KASTELLAN).unlock
     assert policy(settings("strict"), PEOPLE).stays == "idle:15"
     assert policy(settings("balanced"), "site").stays == "signed_in"
     own = policy(
@@ -629,3 +631,55 @@ def test_kastellans_own_secrets_are_never_shown_or_edited() -> None:
     assert FINGERPRINT_SALT in OWN
     assert all(vault_api.own(name) for name in OWN)
     assert vault_api.own("ssh/hub") and not vault_api.own("wg-easy")
+
+
+def test_a_browser_opens_kastellans_ring_after_the_password(tmp_path: Path) -> None:
+    with TestClient(create_app(Settings(config=config(tmp_path), data=tmp_path))) as c:
+        signin(c, "ada", ADA)
+        assert c.post("/api/vault/create", json={"password": ADA}, headers=H).status_code == 200
+        hub = c.app.state.hub
+        c.post("/api/vault/lock", json={}, headers=H)
+        health = c.get("/api/health").json()
+        assert health["vault_waiting"] == [KASTELLAN] and health["vault_by_browser"]
+        r = c.post("/api/vault/unlock-browser", headers=H)
+        assert r.status_code == 200 and r.json()["opened"] == [KASTELLAN]
+        assert not hub.vault.is_open(PEOPLE)  # people's logins: only with the password
+        assert c.get("/api/health").json()["vault_by_browser"] is False  # nothing left to open
+
+        c.post("/api/vault/lock", json={}, headers=H)
+        other = TestClient(c.app)  # signed in while the rings were locked: no slot of its own
+        signin(other, "bea", BEA)
+        assert other.post("/api/vault/unlock-browser", headers=H).status_code == 403
+        assert other.get("/api/health").json()["vault_by_browser"] is False
+        observer = TestClient(c.app)
+        signin(observer, "obi", OBI)
+        assert observer.post("/api/vault/unlock-browser", headers=H).status_code == 403
+
+        c.post("/api/auth/logout", headers=H)  # signed out: its slot goes
+        slots = json.loads((tmp_path / "vault.json").read_text())["rings"][KASTELLAN]["slots"]
+        assert not [s for s in slots if s["way"] == "session"]
+
+
+def test_a_browser_slot_ends(tmp_path: Path) -> None:
+    v = Vault(tmp_path / "vault.json")
+    v.create("ada", ADA, "t")
+    v.keep_session("ada", "sid", "token", {"ada"}, now=1000.0)
+    assert json.loads(v.path.read_text())["rings"][PEOPLE]["slots"][-1]["way"] != "session"
+    v.lock()
+    assert v.session_rings("ada", "sid", now=1001.0) == [KASTELLAN]
+    with pytest.raises(WrongKey):  # another token, another session, another user
+        v.unlock_session("ada", "sid", "other", now=1001.0)
+    with pytest.raises(WrongKey):
+        v.unlock_session("bea", "sid", "token", now=1001.0)
+    week = 7 * 86400
+    with pytest.raises(WrongKey):  # a week on: the password again
+        v.unlock_session("ada", "sid", "token", now=1000.0 + week + 1)
+    assert v.unlock_session("ada", "sid", "token", now=1001.0) == [KASTELLAN]
+    assert v.drop_sessions({"sid"}, now=1000.0 + week + 1)  # expired: gone
+    v.lock()
+    assert v.session_rings("ada", "sid", now=1001.0) == []
+
+
+def test_a_browser_never_opens_peoples_logins() -> None:
+    chosen = settings(people={"unlock": ["password", "session"]})
+    assert policy(chosen, PEOPLE).unlock == (("password", ""),)

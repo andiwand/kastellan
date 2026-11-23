@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from . import config_edit
-from .auth import password_tag
+from .auth import SESSION_COOKIE, Sessions, password_tag
 from .auth_api import MAX_PASSWORD, Who, client_address, confirm_password, require_signin
 from .hub_errors import ConfigProblem
 from .push import VAULT_ID as PUSH_ID
@@ -25,6 +25,7 @@ from .vault import (
     ID,
     LEVELS,
     PEOPLE,
+    SESSION,
     Locked,
     WrongKey,
     new_ring_key,
@@ -135,8 +136,8 @@ def router(hub: Hub) -> APIRouter:
         slots = ring.pop("slots")
         ways = []
         for way, source in p.unlock:
-            if way == "password":
-                users = sorted({s["user"] for s in slots if s["way"] == "password"})
+            if way in ("password", SESSION):
+                users = sorted({s["user"] for s in slots if s["way"] == way})
                 ways.append({"way": way, "source": "", "ready": bool(users), "users": users})
             else:
                 ready = any(s["way"] == way and s["source"] == source for s in slots)
@@ -198,6 +199,7 @@ def router(hub: Hub) -> APIRouter:
                 shred(path)
             except OSError as e:
                 notes.append(f"couldn't remove {path}: {e.strerror or type(e).__name__}; remove it by hand")
+        await hub.keep_session(w.user or "", request.cookies.get(SESSION_COOKIE))
         hub.sync_slots()
         audit("create", w, request, taken=taken, rings=list(recovery), notes=notes)
         return {"recovery": recovery, "taken": taken, "notes": notes}
@@ -223,6 +225,7 @@ def router(hub: Hub) -> APIRouter:
             raise HTTPException(403, str(e)) from e
         if body.password:  # their slots made again if their password changed since
             await hub.keep_slot(w.user or "", body.password)
+            await hub.keep_session(w.user or "", request.cookies.get(SESSION_COOKIE))
         hub.sync_slots()  # ways chosen while it was locked are set now
         audit(
             "unlock",
@@ -232,6 +235,23 @@ def router(hub: Hub) -> APIRouter:
             rings=opened,
             by="recovery key" if body.recovery else "password",
         )
+        return {"state": hub.vault.state, "opened": opened}
+
+    @api.post("/unlock-browser")
+    async def unlock_browser(request: Request) -> dict[str, Any]:
+        """Open the rings this admin's browser may open (for SESSION_DAYS after they gave their
+        password here; vault.py), without the password. Only when asked: never by itself."""
+        w = admin_signed_in(request)
+        token = request.cookies.get(SESSION_COOKIE)
+        if not w.is_admin or not token or not w.user:
+            raise HTTPException(403, "only an admin's own browser")
+        try:
+            opened = await asyncio.to_thread(hub.vault.unlock_session, w.user, Sessions.id_of(token), token)
+        except WrongKey as e:
+            audit("unlock", w, request, outcome="refused", by="this browser")
+            raise HTTPException(403, str(e)) from e
+        hub.sync_slots()
+        audit("unlock", w, request, outcome="done", rings=opened, by="this browser")
         return {"state": hub.vault.state, "opened": opened}
 
     @api.post("/lock")

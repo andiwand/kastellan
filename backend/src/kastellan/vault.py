@@ -9,7 +9,12 @@ never on disk as is: it is kept only wrapped, once per way to unlock the ring (a
 - recovery: a random recovery key, shown once when the ring is made;
 - keyfile / env / config: a random key read at start from a file, an environment variable, or
   config.yaml itself, so the ring opens by itself (how much that protects is the user's choice:
-  a key in config.yaml opens the ring for whoever has a copy of the config folder).
+  a key in config.yaml opens the ring for whoever has a copy of the config folder);
+- session: an admin's browser, for `SESSION_DAYS` after they gave their password there. The
+  slot is wrapped with a key made from their session token, which only the browser has (the hub
+  keeps the token's SHA-256, which doesn't give that key), and opens the ring only when they ask
+  (Unlock), never by itself. It ends with the session (sign-out, expiry) and is never a way for
+  people's logins: a stolen cookie must not open those.
 
 Unwrapped, a ring key lives only in this process's memory. When it is forgotten again is the
 ring's policy (config.yaml `vault:`, `policy()`): at Lock or a restart, when the last admin
@@ -58,6 +63,8 @@ RING = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 KASTELLAN, PEOPLE = "kastellan", "people"
 DEFAULT_RINGS = {KASTELLAN: "Kastellan", PEOPLE: "People's logins"}
 AUTO = ("keyfile", "env", "config")  # ways a ring opens by itself, at start
+SESSION = "session"  # an admin's browser opens it, when they ask
+SESSION_DAYS = 7  # how long after the password a browser may open a ring
 
 # scrypt for slots: stronger than the login hashes (a leaked vault.json alone is an offline
 # target for an admin's password): ~128 MB and a few hundred ms per try.
@@ -88,6 +95,15 @@ def _b64(data: bytes) -> str:
 
 def _kek(secret: str, salt: bytes) -> bytes:
     return hashlib.scrypt(secret.encode(), salt=salt, n=_N, r=_R, p=_P, maxmem=256 * 1024 * 1024, dklen=32)
+
+
+def _kek_of(way: str, secret: str, salt: bytes) -> bytes:
+    """The key that wraps a ring key in a slot. A session token is 256 random bits: a keyed hash
+    (salted, and not the SHA-256 the hub keeps of it) is enough; passwords and recovery keys go
+    through scrypt."""
+    if way == SESSION:
+        return hmac.new(salt, b"kastellan vault session\0" + secret.encode(), hashlib.sha256).digest()
+    return _kek(secret, salt)
 
 
 def _mac(key: bytes, secret: str) -> str:
@@ -145,13 +161,13 @@ LEVELS: dict[str, dict[str, Policy]] = {
     # Kastellan's ring opens by itself at start (a key in config.yaml unless a key file or an
     # environment variable is chosen): everything works after a power cut.
     "convenient": {
-        KASTELLAN: Policy((("password", ""), ("config", "")), "lock", True),
+        KASTELLAN: Policy((("password", ""), ("config", ""), (SESSION, "")), "lock", True),
         PEOPLE: Policy((("password", ""),), "signed_in", False),
         "*": Policy((("password", ""),), "signed_in", False),
     },
     # Nothing opens by itself; once an admin signs in, Kastellan's ring stays open until a restart.
     "balanced": {
-        KASTELLAN: Policy((("password", ""),), "lock", True),
+        KASTELLAN: Policy((("password", ""), (SESSION, "")), "lock", True),
         PEOPLE: Policy((("password", ""),), "signed_in", False),
         "*": Policy((("password", ""),), "signed_in", False),
     },
@@ -182,8 +198,10 @@ def policy(settings: VaultSettings | None, ring: str) -> Policy:
     if own is None:
         return base
     stays = own.stays_unlocked or base.stays
+    unlock = ways_of(own.unlock) if own.unlock is not None else base.unlock
     return Policy(
-        ways_of(own.unlock) if own.unlock is not None else base.unlock,
+        # A browser never opens people's logins, whatever the file says.
+        tuple(w for w in unlock if not (ring == PEOPLE and w[0] == SESSION)),
         "lock" if stays == "restart" else stays,
         # People's logins are never Kastellan's to use, whatever the file says.
         False if ring == PEOPLE else (own.background if own.background is not None else base.background),
@@ -344,18 +362,23 @@ class Vault:
 
     @staticmethod
     def _who(ring: str, slot: dict[str, Any]) -> bytes:
+        if slot["way"] == SESSION:  # its session and end bound in: neither can be edited
+            return _aad(
+                ring, SESSION, slot.get("user") or "", slot.get("session") or "", str(slot.get("expires"))
+            )
         return _aad(ring, slot["way"], slot.get("user") or slot.get("source") or "")
 
-    def _slot(self, ring: str, way: str, secret: str, key: bytes, **about: str) -> dict[str, Any]:
+    def _slot(self, ring: str, way: str, secret: str, key: bytes, **about: Any) -> dict[str, Any]:
         salt = os.urandom(16)
         slot: dict[str, Any] = {"way": way, **about, "salt": _b64(salt)}
         if way in AUTO:
             slot["mac"] = _mac(key, secret)
-        return slot | _seal(_kek(secret, salt), key, self._who(ring, slot))
+        return slot | _seal(_kek_of(way, secret, salt), key, self._who(ring, slot))
 
     def _try(self, ring: str, slot: dict[str, Any], secret: str) -> bytes | None:
         try:
-            return _open(_kek(secret, base64.b64decode(slot["salt"])), slot, self._who(ring, slot))
+            kek = _kek_of(slot["way"], secret, base64.b64decode(slot["salt"]))
+            return _open(kek, slot, self._who(ring, slot))
         except (InvalidTag, KeyError, ValueError):
             return None
 
@@ -621,10 +644,12 @@ class Vault:
                     continue
                 key = self._keys[rid]
                 by_password = ("password", "") in self.policy(rid).unlock
+                by_browser = (SESSION, "") in self.policy(rid).unlock
                 keep = [
                     s
                     for s in ring["slots"]
-                    if s["way"] != "password" or (by_password and s.get("user") in admins)
+                    if (s["way"] != "password" or (by_password and s.get("user") in admins))
+                    and (s["way"] != SESSION or (by_browser and s.get("user") in admins))
                 ]
                 if by_password and user in admins:
                     mine = next((s for s in keep if s["way"] == "password" and s.get("user") == user), None)
@@ -632,8 +657,99 @@ class Vault:
                     if mine is None or mine.get("tag") != tag:
                         keep = [s for s in keep if not (s["way"] == "password" and s.get("user") == user)]
                         keep.append(self._slot(rid, "password", password, key, user=user, tag=tag))
-                if not any(s["way"] != "recovery" for s in keep):
+                if not any(s["way"] not in ("recovery", SESSION) for s in keep):
                     keep = [s for s in ring["slots"]]  # never down to the recovery key alone
+                if keep != ring["slots"]:
+                    ring["slots"], changed = keep, True
+            if changed:
+                self._write(doc)
+            return changed
+
+    # --- an admin's browser (SESSION) ------------------------------------------------------------
+
+    def keep_session(
+        self, user: str, sid: str, token: str, admins: set[str], now: float | None = None
+    ) -> bool:
+        """After this admin gave their password in this session (`sid`: the SHA-256 the hub
+        keeps, `token`: the session's own token): in every OPEN ring whose policy has it, a slot
+        for this session good for SESSION_DAYS from now (made again, so each password starts the
+        days anew). Whether it changed the file."""
+        now = time.time() if now is None else now
+        expires = int(now + SESSION_DAYS * 86400)
+        with self._lock:
+            doc, changed = self._read(), False
+            for rid, ring in doc["rings"].items():
+                if (
+                    rid not in self._keys
+                    or (SESSION, "") not in self.policy(rid).unlock
+                    or user not in admins
+                ):
+                    continue
+                ring["slots"] = [
+                    s for s in ring["slots"] if not (s["way"] == SESSION and s.get("session") == sid)
+                ]
+                ring["slots"].append(
+                    self._slot(rid, SESSION, token, self._keys[rid], user=user, session=sid, expires=expires)
+                )
+                changed = True
+            if changed:
+                self._write(doc)
+            return changed
+
+    def session_rings(self, user: str, sid: str, now: float | None = None) -> list[str]:
+        """The locked rings this admin's browser may open now (a slot of its session, not
+        expired, and the ring's policy still has the way)."""
+        now = time.time() if now is None else now
+        if not self.exists:
+            return []
+        with self._lock:
+            return [
+                rid
+                for rid, ring in self._read()["rings"].items()
+                if rid not in self._keys
+                and (SESSION, "") in self.policy(rid).unlock
+                and any(
+                    s["way"] == SESSION
+                    and s.get("user") == user
+                    and s.get("session") == sid
+                    and s.get("expires", 0) > now
+                    for s in ring["slots"]
+                )
+            ]
+
+    def unlock_session(self, user: str, sid: str, token: str, now: float | None = None) -> list[str]:
+        """Open the locked rings this admin's browser may open. Which it opened; WrongKey when
+        it may open none."""
+        now = time.time() if now is None else now
+        with self._lock:
+            opened = []
+            ring_slots = self._read()["rings"]
+            for rid in self.session_rings(user, sid, now):
+                for slot in ring_slots[rid]["slots"]:
+                    if slot["way"] != SESSION or slot.get("session") != sid or slot.get("user") != user:
+                        continue
+                    if slot.get("expires", 0) > now and (key := self._try(rid, slot, token)) is not None:
+                        self._opened(rid, key)
+                        opened.append(rid)
+                        break
+            if not opened:
+                raise WrongKey("this browser can't open a key ring now: unlock with your password")
+            return opened
+
+    def drop_sessions(self, live: set[str], now: float | None = None) -> bool:
+        """Browser slots of sessions that ended (`live`: the sessions there are) or expired go,
+        locked rings too (removing a slot needs no key). Whether it changed the file."""
+        now = time.time() if now is None else now
+        if not self.exists:
+            return False
+        with self._lock:
+            doc, changed = self._read(), False
+            for ring in doc["rings"].values():
+                keep = [
+                    s
+                    for s in ring["slots"]
+                    if s["way"] != SESSION or (s.get("session") in live and s.get("expires", 0) > now)
+                ]
                 if keep != ring["slots"]:
                     ring["slots"], changed = keep, True
             if changed:
@@ -660,7 +776,8 @@ class Vault:
                     kept.append(old)
                 else:
                     kept.append(self._slot(rid, way, secret, key, source=source))
-            if not any(s["way"] != "recovery" for s in kept):
+            # A browser's slot ends with its session: it doesn't count as a way to keep.
+            if not any(s["way"] not in ("recovery", SESSION) for s in kept):
                 raise ValueError("that would leave only its recovery key to open it")
             if kept == ring["slots"]:
                 return False

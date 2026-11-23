@@ -20,6 +20,7 @@ from .access_api import router as access_router
 from .act_api import router as act_router
 from .alarms import overdue, report_fresh
 from .alarms_api import router as alarms_router
+from .auth import SESSION_COOKIE, Sessions
 from .auth_api import Guard, HubHeaders, client_address, require_admin
 from .auth_api import router as auth_router
 from .backups_api import router as backups_router
@@ -165,6 +166,15 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
         except Damaged:
             return []
 
+    def by_browser(w: Any, request: Request) -> bool:
+        token = request.cookies.get(SESSION_COOKIE)
+        if w is None or not w.is_admin or not w.user or not token or hub.demo:
+            return False
+        try:
+            return bool(set(hub.vault.session_rings(w.user, Sessions.id_of(token))) & set(vault_waiting()))
+        except Damaged:
+            return False
+
     @app.get("/api/health")
     def health(request: Request) -> dict[str, Any]:
         # Public: what's wrong is only for admins (config errors name hosts and settings).
@@ -183,6 +193,8 @@ def create_app(settings: Settings, hub: Hub | None = None) -> FastAPI:
             "vault": hub.vault.state,  # absent | locked | partly | unlocked | damaged (vault.py)
             # Locked rings Kastellan uses by itself: what needs their secrets waits.
             "vault_waiting": vault_waiting(),
+            # Whether this admin's browser may open them without the password (vault.SESSION).
+            "vault_by_browser": by_browser(w, request),
             # A newer Kastellan, if one is out (releases.py): {version, url}, or None.
             "newer": asdict(r) if (r := hub.newer_release()) else None,
         }

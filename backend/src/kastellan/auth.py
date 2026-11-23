@@ -97,6 +97,17 @@ class Sessions:
     def _key(token: str) -> str:
         return hashlib.sha256(token.encode()).hexdigest()
 
+    @classmethod
+    def id_of(cls, token: str) -> str:
+        """A session's identifier (what the file keeps): names its key ring slot (vault.py)."""
+        return cls._key(token)
+
+    def ids(self) -> set[str]:
+        """The identifiers of the sessions there are (not idled out)."""
+        now = time.time()
+        with self._lock:
+            return {k for k, s in self._sessions.items() if now - s.used <= SESSION_IDLE}
+
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")

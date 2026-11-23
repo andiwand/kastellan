@@ -2,6 +2,7 @@
 	import './layout.css';
 	import { page } from '$app/state';
 	import { store } from '#lib/state.svelte.js';
+	import { api } from '#lib/api.js';
 	import { badgeOf, isActive, moreBadge, navFor, type NavItem } from '#lib/nav.js';
 	import { toneColor } from '#lib/states.js';
 	import { modal } from '#lib/modal.js';
@@ -72,6 +73,20 @@
 		void page.url.pathname;
 		moreOpen = false; // a place was chosen
 	});
+	// A locked key ring this browser may open (a week after the password here): one click.
+	let unlocking = $state(false);
+	let browserRefused = $state(false); // then the Keys page, with the password
+	async function unlockHere() {
+		unlocking = true;
+		try {
+			await api.vaultUnlockBrowser();
+			await store.refresh();
+		} catch {
+			browserRefused = true;
+		} finally {
+			unlocking = false;
+		}
+	}
 	// Before the first answer it is connecting, not unreachable (no red flash on every load).
 	const link = $derived(store.error ? 'down' : store.updated != null ? 'up' : 'connecting');
 </script>
@@ -328,7 +343,17 @@
 						Checks go on; what needs a password, key or token waits (router logins, actions, the terminal,
 						push){store.me?.role === 'admin' ? '.' : ': waiting for an admin to sign in.'}
 					</span>
-					{#if store.me?.role === 'admin'}
+					{#if store.me?.role === 'admin' && store.health.vault_by_browser && !browserRefused}
+						<!-- This browser was given the password within the week: one click opens it. -->
+						<button
+							class="shrink-0 text-sm font-medium disabled:opacity-50"
+							style:color="var(--warning-text)"
+							disabled={unlocking}
+							onclick={unlockHere}
+						>
+							{unlocking ? 'Unlocking…' : 'Unlock'}
+						</button>
+					{:else if store.me?.role === 'admin'}
 						<a
 							href="/settings?tab=keys"
 							class="shrink-0 text-sm font-medium"

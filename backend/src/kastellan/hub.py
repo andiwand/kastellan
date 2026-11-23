@@ -615,10 +615,27 @@ class Hub:
         except Damaged as e:
             log.error("key ring: %s", e)
 
-    async def unlock_on_signin(self, user: str, password: str) -> list[str]:
+    async def keep_session(self, user: str, token: str | None) -> None:
+        """This admin just gave their password in this session: their browser may open the
+        rings whose policy has it, for SESSION_DAYS (vault.py)."""
+        if not token or not self.vault.exists or user not in self.admins():
+            return
+        try:
+            await asyncio.to_thread(
+                self.vault.keep_session, user, Sessions.id_of(token), token, self.admins()
+            )
+        except Damaged as e:
+            log.error("key ring: %s", e)
+
+    def drop_session_slots(self) -> None:
+        """Browser slots of sessions that ended (signed out, expired, removed) go."""
+        with contextlib.suppress(Damaged):
+            self.vault.drop_sessions(self.sessions.ids())
+
+    async def unlock_on_signin(self, user: str, password: str, token: str | None = None) -> list[str]:
         """An admin signed in: open the rings their password opens, and keep their slots
-        current. Which rings this opened. Observers never open any; a damaged vault.json never
-        stops a sign-in."""
+        current (also this session's, `token`). Which rings this opened. Observers never open
+        any; a damaged vault.json never stops a sign-in."""
         account = self.config.users.get(user)
         if account is None or account.role is not Role.ADMIN or not self.vault.exists:
             return []
@@ -630,6 +647,7 @@ class Hub:
             log.error("key ring: %s", e)
             return []
         await self.keep_slot(user, password)
+        await self.keep_session(user, token)
         with contextlib.suppress(Damaged):
             self.vault.note_stale(user, password_tag(account.password))
         self.sync_slots()
@@ -721,6 +739,7 @@ class Hub:
         while True:
             await asyncio.sleep(RELOCK_EVERY)
             using = bool(self.sessions.active(ACTIVE_WINDOW) & self.admins())
+            self.drop_session_slots()
             for rid in self.vault.relock(using):
                 log.info("key ring %s: closed (its policy)", rid)
                 self.audit.record("vault.lock", None, None, ring=rid, by="its policy")

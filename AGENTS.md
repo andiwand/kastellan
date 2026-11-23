@@ -245,7 +245,13 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
   - `vault.py` + `vault_api.py`: key rings, `<data>/vault.json`. Each ring: its own key, entries
     AES-GCM under it (id, ring and kind bound in), the ring key only wrapped once per way to open
     it (slots): `password` per admin (scrypt; opened by `hub.unlock_on_signin`), `recovery` (shown
-    once), `keyfile` / `env` / `config` (a key read at start: `hub.open_rings_by_themselves`).
+    once), `keyfile` / `env` / `config` (a key read at start: `hub.open_rings_by_themselves`),
+    `session` (an admin's browser: made when they give their password while the ring is open,
+    wrapped with a key from the session token, which the hub keeps only hashed; its session id
+    and end bound in; `SESSION_DAYS`; opened only by `POST /api/vault/unlock-browser`, the
+    banner's Unlock when `/api/health` `vault_by_browser`; gone at sign-out, session end or
+    expiry, `hub.drop_session_slots`; never for `people`, and never counted as a ring's way
+    besides its recovery key). Levels convenient and balanced have it for `kastellan`.
     Two rings from the start: `kastellan` (Kastellan uses its entries by itself) and `people`
     (only `get(id, by=<user>)` from an action a signed-in admin started; background use raises,
     whatever config says). The policy is config.yaml `vault:` (`level`: convenient | balanced |
