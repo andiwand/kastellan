@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.17.1 (2026-11-28)
+
+Container updates show sooner: the hub keeps a registry's answer for 2 hours instead of 6, and
+"read again" on a host asks the registries anew. Kastellan's own updates showed late or not at
+all, since it checked right after each update and kept that answer.
+
 ## 0.17.0 (2026-11-28)
 
 Log collection from OpenWrt devices works again: a garbage entry from logd (dated thousands of
