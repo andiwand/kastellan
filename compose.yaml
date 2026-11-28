@@ -6,7 +6,7 @@
 
 services:
   kastellan:
-    image: ghcr.io/andiwand/kastellan:0.17.3
+    image: ghcr.io/andiwand/kastellan:0.18.0
     # build: . # or build it from this checkout
     container_name: kastellan
     restart: unless-stopped

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.18.0 (2026-11-28)
+
 The VPN page is one row of tabs: Servers (every VPN server Kastellan sees; the default), Clients
 and Setup, instead of the servers above and Clients / Setup below them.
 
