@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.17.2 (2026-11-28)
+
+Acknowledged alarms stay acknowledged: a restart of the hub, or an OpenWrt device that is slow
+to read, no longer ends its alarms and opens them again, and a small access point's memory alarm
+no longer ends and reopens as free memory hovers (it ends above 12 MB free).
+
 ## 0.17.1 (2026-11-28)
 
 Container updates show sooner: the hub keeps a registry's answer for 2 hours instead of 6, and
