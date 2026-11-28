@@ -125,11 +125,13 @@
 		<span class="flex items-center justify-end gap-1.5">
 			{#if s.error}
 				<StateDot tone="warning" label="Not read" />
-				<span title={s.error}>{s.name}: {s.error}</span>
+				<span>{s.name} · not read</span>
 			{:else}
 				<span>{s.name}{s.at ? ` · ${ago(s.at, store.now)}` : ''}</span>
 			{/if}
 		</span>
+		<!-- Why, under it and smaller: a long reason wraps here instead of pushing the label. -->
+		{#if s.error}<span class="block text-meta break-words text-faint">{s.error}</span>{/if}
 		{#if s.collector}<ReadAgain device={device.id} />{/if}
 	{/each}
 	{#if unread.length}
