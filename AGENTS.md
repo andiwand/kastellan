@@ -335,7 +335,9 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `collect()` reads its JSON; `hub._poll_hosts` every minute; `alarms.host_problems` turns a
     report into problems. The script runs on the hosts' python3 with the stdlib only: keep it so.
     `registry.py`: update checks against the registries (anonymous tokens, digests, version tags),
-    cached for hours; `docker.from_collector` builds containers from the report with them.
+    kept for 2 hours (`KEPT`); `docker.from_collector` builds containers from the report with
+    them. A page's "read again" (`collect/now`) asks the registries anew (`Registries.recheck`,
+    an answer younger than `FRESH` stays) and waits up to 30 s for them.
     `setup_run.connect` + `setup_run.stream`: log in once with a typed or stored login and run a
     script (as root).
     Virtual machines: the collector's `vms` section reads libvirt through `virsh` (fixed argv,

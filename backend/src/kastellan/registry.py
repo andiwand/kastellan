@@ -7,7 +7,8 @@ ghcr.io, lscr.io, quay.io, any registry speaking the v2 API), anonymously.
   of the same shape (prefix, number of parts, suffix) that is greater.
 
 No access to the host is needed for this. Answers are kept for hours: registries limit how often
-they may be asked (Docker Hub especially), and images don't change by the minute.
+they may be asked (Docker Hub especially), and images don't change by the minute. A page's "read
+again" asks anew (`recheck`), unless the answer is younger than FRESH.
 """
 
 from __future__ import annotations
@@ -21,8 +22,9 @@ from dataclasses import dataclass
 
 import httpx
 
-KEPT = 6 * 3600.0
+KEPT = 2 * 3600.0
 KEPT_FAILED = 1800.0
+FRESH = 60.0  # an answer this young is kept even when asked anew
 MAX_BODY = 4 * 1024 * 1024  # a page of tags or a token is far less
 MAX_PAGES = 40  # Docker Hub: 1000 tags a page, alphabetical; past this, "can't tell"
 CHECK_TIME = 45.0  # one image, all its requests
@@ -166,13 +168,29 @@ class Registries:
             task.add_done_callback(lambda _: self._running.pop(key, None))
         return hit[1] if hit else Update(False, None, "not checked yet")
 
-    async def check(self, image: str, digests: list[str]) -> Update:
+    def recheck(self, image: str, digests: list[str]) -> asyncio.Task[Update] | None:
+        """Ask the registry again now, not when the kept answer runs out (a page's "read
+        again"); peek then reads the new answer. None if there is nothing to ask."""
+        ref = parse(image)
+        if ref is None:
+            return None
+        key = self._key(ref, digests)
+        if key not in self._running:
+            task = asyncio.get_running_loop().create_task(self.check(image, digests, max_age=FRESH))
+            self._running[key] = task
+            task.add_done_callback(lambda _: self._running.pop(key, None))
+        return self._running[key]
+
+    async def check(self, image: str, digests: list[str], max_age: float | None = None) -> Update:
+        """The image's update, from the registry or kept from an earlier answer (no older than
+        max_age, if given)."""
         ref = parse(image)
         if ref is None:
             return Update(False, None, "pinned to a digest" if "@" in image else "can't read the image name")
         key = self._key(ref, digests)
         hit = self._cache.get(key)
-        if hit and time.monotonic() - hit[0] < (KEPT if hit[1].unchecked is None else KEPT_FAILED):
+        kept = KEPT if hit is None or hit[1].unchecked is None else KEPT_FAILED
+        if hit and time.monotonic() - hit[0] < (kept if max_age is None else min(kept, max_age)):
             return hit[1]
         async with self._limit:
             try:

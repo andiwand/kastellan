@@ -132,15 +132,23 @@ async def read_wud(url: str) -> list[Container]:
     return list(unique.values())
 
 
-async def from_collector(items: list[Any], registries: Any) -> list[Container]:
+async def from_collector(items: list[Any], registries: Any, wait: float = 0) -> list[Container]:
     """Containers as the collector lists them (host/collector.py), with updates asked of their
-    registries (registry.py) instead of WUD."""
+    registries (registry.py) instead of WUD. With `wait`, the registries are asked anew and
+    their answers awaited for up to that many seconds (a page's "read again"); otherwise what
+    they said last is used."""
+    if wait:
+        checks = [
+            registries.recheck(_text(i.get("image"), 300), _digests(i)) for i in items if isinstance(i, dict)
+        ]
+        if tasks := [t for t in checks if t is not None]:
+            await asyncio.wait(tasks, timeout=wait)  # the rest goes on and shows next time
     out: list[Container] = []
     for item in items:
         if not isinstance(item, dict):
             continue
         image_ref = _text(item.get("image"), 300)
-        digests = [d for d in item.get("digests") or [] if isinstance(d, str)][:20]
+        digests = _digests(item)
         ref = parse(image_ref)
         update = registries.peek(image_ref, digests)  # never waits for a registry
         name = _text(item.get("name") or "?", 100)
@@ -165,6 +173,10 @@ async def from_collector(items: list[Any], registries: Any) -> list[Container]:
             )
         )
     return sorted(out, key=lambda c: c.key.lower())
+
+
+def _digests(item: dict[str, Any]) -> list[str]:
+    return [d for d in item.get("digests") or [] if isinstance(d, str)][:20]
 
 
 def as_dicts(containers: list[Container]) -> list[dict[str, Any]]:

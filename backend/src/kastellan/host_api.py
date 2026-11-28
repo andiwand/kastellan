@@ -29,7 +29,8 @@ def router(hub: Hub) -> APIRouter:
 
     @api.post("/{id}/collect/now")
     async def collect_now(id: str, request: Request) -> dict[str, Any]:
-        """Read the host's collector now, not at the next minute (a page's "read again")."""
+        """Read the host's collector now, not at the next minute (a page's "read again"), and
+        ask the registries anew whether its containers have updates."""
         require_admin(request)
         device = setup_run.device_of(hub, id)
         if device.collect is None:
@@ -40,7 +41,7 @@ def router(hub: Hub) -> APIRouter:
         last_asked[id] = now
         try:
             async with asyncio.timeout(60):
-                await hub.collect_host(id, device)
+                await hub.collect_host(id, device, recheck=30)
         except TimeoutError as e:
             raise HTTPException(504, "the collector took too long") from e
         status = hub.monitor.status.get(id)

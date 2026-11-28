@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 
-from kastellan import config_edit, docker
+from kastellan import config_edit, docker, registry
 from kastellan.alarms import Severity, evaluate, host_problems
 from kastellan.config import AlarmSettings, Config
 from kastellan.host import collector
@@ -168,6 +168,23 @@ async def test_containers_from_the_collector() -> None:
         "newer build",
         "reg.example",
     )
+
+
+async def test_read_again_asks_the_registry_anew() -> None:
+    tags = ["1.0.0"]
+    regs, seen = fake_registry("sha256:" + "a" * 64, tags)
+    items = [{"name": "app", "image": "reg.example/me/app:1.0.0", "state": "running"}]
+    assert not (await regs.check("reg.example/me/app:1.0.0", [])).update
+    tags.append("1.1.0")  # released after the hub asked
+    (c,) = await docker.from_collector(items, regs)
+    assert not c.update  # the kept answer
+    (c,) = await docker.from_collector(items, regs, wait=5)
+    assert not c.update  # asked a moment ago: not again
+    for key, (at, update) in list(regs._cache.items()):
+        regs._cache[key] = (at - registry.FRESH - 1, update)
+    (c,) = await docker.from_collector(items, regs, wait=5)
+    assert (c.update, c.update_to) == (True, "1.1.0")
+    assert seen.count("GET /v2/me/app/tags/list") == 2
 
 
 def test_collect_is_added_to_the_device(tmp_path: Path) -> None:

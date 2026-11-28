@@ -3,7 +3,8 @@
 	import { store } from '#lib/state.svelte.js';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
-	/** Read a host's collector now (its health, containers, VMs), instead of at the next minute. */
+	/** Read a host's collector now (its health, containers, VMs), instead of at the next minute,
+		and ask the registries anew whether its containers have updates. */
 	let { device }: { device: string } = $props();
 	let busy = $state(false);
 	let error = $state<string | null>(null);
@@ -28,7 +29,7 @@
 		class="inline text-xs text-muted hover:text-text disabled:opacity-60"
 		onclick={read}
 		disabled={busy}
-		title={error ?? 'Read the host now'}
+		title={error ?? 'Read the host now, and ask the registries for updates'}
 	>
 		<RefreshCw class="mr-0.5 inline size-3 align-[-0.125em] {busy ? 'animate-spin' : ''}" />
 		{busy ? 'reading…' : error ? "couldn't read" : 'read again'}

@@ -554,9 +554,10 @@ class Hub:
             await asyncio.gather(*(one(id, d) for id, d in list(self.config.devices.items())))
             await asyncio.sleep(DRIVER_EVERY)
 
-    async def collect_host(self, id: str, device: Device) -> None:
+    async def collect_host(self, id: str, device: Device, recheck: float = 0) -> None:
         """Read one host's collector now (host health; its containers, with updates from the
-        registries). Also right after the actor changed something there, so pages see it."""
+        registries). Also right after the actor changed something there, so pages see it. With
+        `recheck`, the registries are asked anew too, waiting up to that many seconds for them."""
         status = self.monitor.status.get(id)
         if status is None or device.collect is None or self.demo:
             return
@@ -579,7 +580,7 @@ class Hub:
         items = report.get("docker")
         if isinstance(items, list):
             try:
-                self._set_containers(id, status, await docker.from_collector(items, self.registries))
+                self._set_containers(id, status, await docker.from_collector(items, self.registries, recheck))
                 status.containers_error = None
             except Exception as e:
                 status.containers_error = _brief(e)
