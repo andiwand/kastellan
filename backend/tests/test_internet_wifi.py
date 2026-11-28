@@ -498,6 +498,7 @@ def test_roaming_in_a_group() -> None:
         config=config,
         monitor=SimpleNamespace(status=status),
         resolver=SimpleNamespace(address=lambda h: None),
+        alarms=SimpleNamespace(open={}),
         roaming={
             "a": {"nodes": [{"own": True}], "clients": [], "config": {"roam_trigger_snr": 20}},
             "b": {
@@ -521,11 +522,21 @@ def test_roaming_in_a_group() -> None:
     assert keys == {"roaming:aps:b:usteer", "roaming:aps:a:view", "roaming:aps:b:memory"}
     survey["networks"][0]["same_key"] = False
     assert roaming.assistance(survey) == {}
+    # Free memory hovers: once alarmed, it ends only when clearly better.
+    status["b"].router["system"]["memory"]["available"] = 9 * 2**20
+    assert "roaming:aps:b:memory" not in {p.key for p in roaming.problems(hub)}
+    hub.alarms.open["roaming:aps:b:memory"] = object()
+    assert "roaming:aps:b:memory" in {p.key for p in roaming.problems(hub)}
     status["b"].router["system"]["memory"]["available"] = 0
     assert roaming.check(hub, ["a", "b"], None)["members"]["b"]["free"] == 0
     for s in status.values():
         s.router_checked = None
-    assert roaming.problems(hub) == []
+    unjudged: set[str] = set()
+    assert roaming.problems(hub, unjudged) == []
+    assert unjudged == {"roaming:aps:a:*", "roaming:aps:b:*"}  # their alarms stay as they are
+    hub.roaming = {}  # after a restart, before usteer was asked
+    roaming.problems(hub, unjudged := set())
+    assert unjudged == {"roaming:aps:*"}
     assert (
         roaming.mobility_domain("Castle") == roaming.mobility_domain("Castle")
         and len(roaming.mobility_domain("x")) == 4

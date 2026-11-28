@@ -106,8 +106,9 @@ def evaluate(
 ) -> list[Problem]:
     """The problems now (critical and warning). `unjudged` gets the keys of UPS and certificate
     problems that can't be judged now (the certificate can't be seen: the service or device is
-    down, or behind one that is, or no fresh result): their open alarms stay as they are
-    (Alarms.carry), as an alarm about a certificate ends when a good one is seen. `switched`: the
+    down, or behind one that is, or no fresh result), and `router:<id>:*` for an OpenWrt device
+    not read lately: their open alarms stay as they are (Alarms.carry), as an alarm about a
+    certificate ends when a good one is seen. `switched`: the
     hub's memory of when each UPS switched to and from battery (ups.reading keeps it; NUT tells
     no times): the only state this reads and updates besides its arguments."""
     after = timedelta(seconds=config.alarms.down_after)
@@ -388,6 +389,11 @@ def evaluate(
             continue
         name = config.label(id)
         checked = st.router_checked
+        unread = checked is None or checked < started or (now - checked).total_seconds() > 15 * 60
+        if unread and unjudged is not None:
+            # Its firmware and networks aren't known now (not read since the hub started, or for a
+            # while): their alarms stay as they are rather than end and open again.
+            unjudged.add(f"router:{id}:*")
         if checked is None or checked < started:
             if st.router_error and (now - started).total_seconds() > 15 * 60:
                 problems.append(
@@ -852,9 +858,13 @@ class Alarms:
 
     def carry(self, keys: set[str]) -> list[Problem]:
         """Open alarms to keep as they are, because what decides them isn't known right now (a
-        device not swept yet after a restart, a source that couldn't be asked)."""
+        device not swept yet after a restart, a source that couldn't be asked). A key ending in
+        `*` stands for every open alarm whose key starts with what comes before it."""
         out = []
-        for key in keys:
+        prefixes = tuple(k[:-1] for k in keys if k.endswith("*"))
+        found = {k for k in keys if k in self.open}
+        found |= {k for k in self.open if prefixes and k.startswith(prefixes)}
+        for key in found:
             a = self.open.get(key)
             if a is not None:
                 since = datetime.fromisoformat(a.since) if a.since else None

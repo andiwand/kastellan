@@ -300,7 +300,11 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     cached 10 min, failures 2 min); `checks._http` waits for it at most 0.4 s, so it never makes a
     service down. `Check.watch_cert`: public names, `verify: true` or `tls: true` raise alarms;
     `evaluate(..., unjudged)` lists certificate alarms that can't be judged now, which the hub
-    carries (they end only when a good certificate is seen).
+    carries (they end only when a good certificate is seen). The same for an OpenWrt device not
+    read lately (`router:<id>:*`) and roaming members (`roaming.problems(hub, unjudged)`): a
+    restart or a slow device must not end an alarm (and its acknowledgement) and open it again;
+    `Alarms.carry` takes `prefix*` keys. Free memory on roaming members has hysteresis
+    (`LOW_FREE` to open, `RECOVERED_FREE` to end).
   - `config_edit.py` + `config_api.py`: changing config.yaml from the app. **Every write to
     config.yaml goes through `config_edit.write`** (backup in `<data>/config-backups/`, atomic
     replace) after `hub.check` (the load rules, including "sign-in never turns itself off"),

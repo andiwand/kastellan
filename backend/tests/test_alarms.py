@@ -250,3 +250,30 @@ def test_a_network_long_off_the_air_raises_an_alarm() -> None:
     assert air(silent_for(2)) == []  # a radar channel listens first
     (p,) = air(silent_for(20))
     assert p.title == "ap: home isn't on the air"
+
+
+def test_an_openwrt_device_not_read_since_the_restart_keeps_its_alarms(tmp_path: Path) -> None:
+    # Its firmware is out of support and acknowledged; the hub restarts and the device takes a
+    # while to be read: the alarm stays (acknowledged) instead of ending and opening again.
+    config = Config.model_validate({"devices": {"ap": {"host": "a", "kind": "access-point", "openwrt": {}}}})
+    fw = {"supported": False, "current": "22.03.7", "series": "22.03", "stable": "25.12.6"}
+    alarms = Alarms(tmp_path)
+
+    def round(st: DeviceStatus, now: datetime, started: datetime) -> list[Message]:
+        unjudged: set[str] = set()
+        found = evaluate(config, {"ap": st}, now, {}, started, unjudged)
+        raised = {p.key for p in found}
+        return alarms.update(found + [p for p in alarms.carry(unjudged) if p.key not in raised], now)
+
+    round(DeviceStatus(router={"firmware": fw}, router_checked=NOW), NOW, STARTED)
+    alarms.acknowledge("router:ap:firmware", "admin", "can't yet", NOW)
+    restarted = NOW + timedelta(minutes=1)
+    for minutes in (2, 30):  # not read yet, then not read for a while
+        assert round(DeviceStatus(), NOW + timedelta(minutes=minutes), restarted) == []
+    assert alarms.open["router:ap:firmware"].acknowledged_by == "admin"
+    # Read again, and fixed: it ends.
+    later = NOW + timedelta(minutes=40)
+    st = DeviceStatus(router={"firmware": {**fw, "supported": True}}, router_checked=later)
+    round(st, later, restarted)
+    round(st, later + timedelta(seconds=RESOLVE_AFTER + 1), restarted)
+    assert "router:ap:firmware" not in alarms.open

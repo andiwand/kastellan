@@ -1269,10 +1269,11 @@ class Hub:
                 problems += self._dhcp_problems()
                 problems += hubbackup.problems(self, time.time())
                 problems += internet_api.problems(self)
-                problems += roaming.problems(self)
+                problems += roaming.problems(self, unjudged)
                 problems += web_setup.problems(self)
                 problems += self.alarms.carry(self._vuln_keys_unknown())
-                problems += self.alarms.carry(unjudged)
+                raised = {p.key for p in problems}  # a carried `prefix*` never stands in for these
+                problems += [p for p in self.alarms.carry(unjudged) if p.key not in raised]
                 # Muted or removed devices: their alarms end without a "back up".
                 quiet = set(self.alarms.muted_now(now))
                 # (Kastellan's own alarms have no device: "" is the hub, never a removed device.)

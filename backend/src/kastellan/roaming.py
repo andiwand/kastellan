@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .hub import Hub
 
 LOW_FREE = 8 * 2**20
+RECOVERED_FREE = 12 * 2**20  # a memory alarm ends only above this
 
 # What roaming assistance sets on each member's network (with its mobility domain). 802.11v
 # (bss_transition) only where hostapd has it (sync.survey's can_steer): the basic variants
@@ -259,13 +260,19 @@ def assistance(survey: dict[str, Any]) -> dict[str, dict[str, dict[str, str]]]:
     return out
 
 
-def problems(hub: Hub) -> list[Problem]:
+def problems(hub: Hub, unjudged: set[str] | None = None) -> list[Problem]:
     """Alarms for groups whose members roam together: usteer stopped where it ran, a member out
-    of the others' view, a small device running out of memory."""
+    of the others' view, a small device running out of memory. `unjudged` gets the keys of
+    those that can't be told now (a member not read lately, or none asked yet since the hub
+    started): their open alarms stay as they are (Alarms.carry)."""
     out: list[Problem] = []
+    unjudged = unjudged if unjudged is not None else set()
     for gid, g in hub.config.groups.items():
         members = [id for id in g.devices if (d := hub.config.devices.get(id)) and d.openwrt]
         if len(members) < 2:
+            continue
+        if all(id not in hub.roaming for id in members):
+            unjudged.add(f"roaming:{gid}:*")  # not asked yet
             continue
         ran = [id for id in members if (hub.roaming.get(id) or {}).get("nodes")]
         if not ran:
@@ -275,6 +282,7 @@ def problems(hub: Hub) -> list[Problem]:
             status = hub.monitor.status.get(id)
             checked = status.router_checked if status else None
             if not checked or (datetime.now(UTC) - checked).total_seconds() > 300 or status.router_error:
+                unjudged.add(f"roaming:{gid}:{id}:*")
                 continue
             label = hub.config.label(id)
             gone = s["usteer"] == "stopped" or "not found" in str(s["error"] or "").lower()
@@ -301,10 +309,14 @@ def problems(hub: Hub) -> list[Problem]:
                     )
                 )
             free, total = s["free"], s["memory"]
-            if isinstance(free, int) and isinstance(total, int) and total < SMALL_MEMORY and free < LOW_FREE:
+            key = f"roaming:{gid}:{id}:memory"
+            # Once low, it stays low until clearly better: free memory hovers, and an alarm that
+            # ends and opens again forgets that it was acknowledged.
+            low = RECOVERED_FREE if key in hub.alarms.open else LOW_FREE
+            if isinstance(free, int) and isinstance(total, int) and total < SMALL_MEMORY and free < low:
                 out.append(
                     Problem(
-                        f"roaming:{gid}:{id}:memory",
+                        key,
                         Severity.WARNING,
                         id,
                         "its memory",
