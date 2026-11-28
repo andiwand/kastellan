@@ -594,7 +594,7 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `/settings` (tabs: forms, `?tab=access` Kastellan's SSH key, `?tab=keys` the key rings,
     `?tab=file` config.yaml; `/config`, `/access` and `/keys` redirect there), `/devices/[id]`. Watching and setting up are split everywhere
     (`Tabs`): a device has Status / Setup / Config (`?tab=setup|config`, Config with a Form | YAML
-    switch, `&view=yaml`), the VPN Clients / Setup, Groups Status / Setup; Setup and Config are
+    switch, `&view=yaml`), the VPN Servers / Clients / Setup (`?tab=clients|setup`), Groups Status / Setup; Setup and Config are
     for admins, observers see Status only. Adding a device is an inline form on `/devices`.
 - `website/`: the project website, plain HTML/CSS/JS, published by `.github/workflows/pages.yml`.
   Screenshots in `website/img/` come from demo mode, in light and dark (`<picture>`).

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+The VPN page is one row of tabs: Servers (every VPN server Kastellan sees; the default), Clients
+and Setup, instead of the servers above and Clients / Setup below them.
+
 ## 0.17.3 (2026-11-28)
 
 A device that can't be read shows why under its readings, in a smaller line, instead of

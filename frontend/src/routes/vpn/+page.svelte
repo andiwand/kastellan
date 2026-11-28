@@ -16,8 +16,9 @@
 	import VpnKey from '#lib/components/VpnKey.svelte';
 	import VpnServers from '#lib/components/VpnServers.svelte';
 
-	/** The VPNs whose clients Kastellan manages (any number, of either kind): a card each, with
-	 * its clients, giving and taking access, its settings and its setup; and adding another. */
+	/** VPN in three tabs: Servers (every VPN server Kastellan sees, and a FRITZ!Box's WireGuard
+	 * connections; the default), Clients (the managed VPNs' clients, giving and taking access) and
+	 * Setup (admins: the managed VPNs' settings, their hosts, Kastellan's VPN key, adding one). */
 	let vpns = $state<Vpn[] | null>(null);
 	let servers = $state<VpnServer[] | null>(null);
 	let error = $state<string | null>(null);
@@ -30,15 +31,19 @@
 	let newDays = $state<Record<string, number | null>>({});
 
 	const admin = $derived(store.me?.role === 'admin' && (store.me.user || !store.me.signin));
-	// Clients: who has access, and since when (for everyone); Setup: the VPNs themselves, their
-	// hosts and Kastellan's VPN key (admins).
 	const canSetUp = $derived(store.me?.role === 'admin');
-	const tab = $derived(
-		canSetUp && page.url.searchParams.get('tab') === 'setup' ? 'setup' : 'clients'
-	);
-	function show(t: 'clients' | 'setup') {
-		goto(t === 'setup' ? '?tab=setup' : '?', { replace: true });
+	type Tab = 'servers' | 'clients' | 'setup';
+	const tab = $derived.by((): Tab => {
+		const t = page.url.searchParams.get('tab');
+		if (t === 'clients') return 'clients';
+		return t === 'setup' && canSetUp ? 'setup' : 'servers';
+	});
+	function show(t: Tab) {
+		goto(t === 'servers' ? '?' : `?tab=${t}`, { replace: true });
 	}
+	// The managed VPNs' cards belong to Clients and Setup.
+	const shown = $derived(tab === 'servers' ? [] : (vpns ?? []));
+	const fritzWg = $derived((store.devices ?? []).filter((d) => d.fritz?.wireguard));
 	const canManage = $derived(store.me?.role === 'admin' && !!store.me.user);
 	const canEdit = $derived(canManage && store.editBlocked === null);
 	const names = $derived(Object.fromEntries((vpns ?? []).map((v) => [v.id, v.name])));
@@ -129,9 +134,21 @@
 	run the VPN itself.
 </p>
 
-{#if servers}<div class="mt-6"><VpnServers {servers} {names} /></div>{/if}
+<div class="mt-5">
+	<Tabs
+		tabs={[
+			{ id: 'servers', label: 'Servers' },
+			{ id: 'clients', label: 'Clients' },
+			...(canSetUp ? [{ id: 'setup', label: 'Setup' }] : [])
+		]}
+		current={tab}
+		onselect={(t) => show(t as Tab)}
+	/>
+</div>
 
-{#each (store.devices ?? []).filter((d) => d.fritz?.wireguard) as d (d.id)}
+{#if tab === 'servers' && servers}<div class="mt-6"><VpnServers {servers} {names} /></div>{/if}
+
+{#each tab === 'servers' ? fritzWg : [] as d (d.id)}
 	<section class="card mt-5 p-4">
 		<h2 class="text-sm font-semibold">
 			WireGuard on <a class="hover:underline" href="/devices/{d.id}">{d.name}</a>
@@ -143,19 +160,6 @@
 		</p>
 	</section>
 {/each}
-
-{#if canSetUp}
-	<div class="mt-5">
-		<Tabs
-			tabs={[
-				{ id: 'clients', label: 'Clients' },
-				{ id: 'setup', label: 'Setup' }
-			]}
-			current={tab}
-			onselect={show}
-		/>
-	</div>
-{/if}
 
 {#if error}
 	<p
@@ -188,7 +192,7 @@
 	</div>
 {/snippet}
 
-{#if vpns && vpns.length === 0 && adding === null}
+{#if tab !== 'servers' && vpns && vpns.length === 0 && adding === null}
 	<div class="mt-6">
 		{#if canEdit && tab === 'setup'}
 			<p class="mb-3 text-sm text-muted">{noneYet} Which kind is yours?</p>
@@ -230,7 +234,7 @@
 	</section>
 {/if}
 
-{#each vpns ?? [] as v (v.id)}
+{#each shown as v (v.id)}
 	<section class="card mt-6 scroll-mt-4 p-5" id="vpn-{v.id}">
 		<div class="flex flex-wrap items-baseline justify-between gap-2">
 			<h2 class="text-base font-semibold">
@@ -545,6 +549,6 @@
 	<div class="mt-6"><VpnKey canChange={canManage} {names} {restricted} /></div>
 {/if}
 
-{#if admin && !canManage}
+{#if tab !== 'servers' && admin && !canManage}
 	<p class="mt-6 text-xs text-muted">Giving and taking VPN access needs sign-in to be on.</p>
 {/if}

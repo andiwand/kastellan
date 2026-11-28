@@ -51,7 +51,7 @@
 	<span class="font-medium">{s.name ?? '–'}</span>
 	<span class="text-muted">· {KIND[s.kind] ?? s.kind}</span>
 	{#if s.vpn}
-		<a class="block text-meta text-accent hover:underline" href="#vpn-{s.vpn}">
+		<a class="block text-meta text-accent hover:underline" href="?tab=clients#vpn-{s.vpn}">
 			manages: {names[s.vpn] ?? s.vpn}
 		</a>
 	{/if}
