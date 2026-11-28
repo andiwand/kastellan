@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.17.3 (2026-11-28)
+
+A device that can't be read shows why under its readings, in a smaller line, instead of
+squeezing the reason into the facts beside its address.
+
 ## 0.17.2 (2026-11-28)
 
 Acknowledged alarms stay acknowledged: a restart of the hub, or an OpenWrt device that is slow
