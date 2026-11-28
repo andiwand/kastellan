@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.17.0 (2026-11-28)
+
+Log collection from OpenWrt devices works again: a garbage entry from logd (dated thousands of
+years ahead) had stopped every new line; such entries are now skipped and removed, and
+collection picks up what the device still holds. An admin's browser opens Kastellan's key ring
+with one click after a restart, for a week after they gave their password there. The names the
+hub answers to are in config.yaml (Settings → Names); `KASTELLAN_HOSTS` only seeds them once.
+
 ## 0.16.0 (2026-11-23)
 
 Wi-Fi fixes: a change never leaves a network off the air (roaming assistance turned on 802.11v
