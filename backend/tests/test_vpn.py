@@ -297,6 +297,7 @@ def test_vpn_servers_are_listed_from_what_the_hub_has() -> None:
 
     from kastellan import vpn_servers
     from kastellan.config import Config
+    from kastellan.networks import Resolver
 
     config = Config.model_validate(
         {
@@ -329,9 +330,12 @@ def test_vpn_servers_are_listed_from_what_the_hub_has() -> None:
             containers_checked=now,
         ),
     }
+    resolver = Resolver()
+    resolver.addresses = {"wg.example": "192.168.1.10", "localhost": "127.0.0.1"}
     hub = SimpleNamespace(
         config=config,
         monitor=SimpleNamespace(status=status),
+        resolver=resolver,
         vpn_servers={
             "gw": {
                 "checked": "x",
@@ -357,8 +361,32 @@ def test_vpn_servers_are_listed_from_what_the_hub_has() -> None:
     assert by[("sv", "wg-easy")]["vpn"] == "wg" and ("sv", "web") not in by
     admin = vpn_servers.collect(hub, admin=True)  # type: ignore[arg-type]
     assert next(s for s in admin if s["name"] == "home_udp")["clients"][0]["address"] == "198.51.100.7:1"
+    # The servers whose clients Kastellan manages come first.
+    flags = [s["vpn"] is not None for s in servers]
+    assert flags == sorted(flags, reverse=True)
+    # wg-easy behind a reverse proxy on the same host, by a name of its own: the same server.
+    config.vpns["wg"].wg_easy = "https://wg.example"
+    assert vpn_servers.wg_easy_hosts(config) == {"wg.example"}
+    again = vpn_servers.collect(hub, True)  # type: ignore[arg-type]
+    assert next(s for s in again if s.get("device") == "sv")["vpn"] == "wg"
+    assert not any(s["source"] == "wg-easy" for s in again)
     config.vpns["wg"].wg_easy = "http://localhost:51821"
-    assert next(s for s in vpn_servers.collect(hub, True) if s.get("device") == "sv")["vpn"] is None
+    again = vpn_servers.collect(hub, True)  # type: ignore[arg-type]
+    assert next(s for s in again if s.get("device") == "sv")["vpn"] is None
+    managed = [s["source"] for s in again if s["vpn"]]
+    assert "wg-easy" in managed and again[: len(managed)] == [s for s in again if s["vpn"]]
+
+
+def test_wireguard_rates_from_wg_easys_totals() -> None:
+    from kastellan.vpn.wireguard import Rates
+
+    rates = Rates()
+    assert rates.update("wg/1", 1000, 5000, now=100.0) is None  # one read: no rate yet
+    assert rates.update("wg/1", 3000, 25000, now=110.0) == (200.0, 2000.0)
+    assert rates.update("wg/1", 3100, 25100, now=111.0) == (200.0, 2000.0)  # too soon: kept
+    assert rates.update("wg/1", 100, 100, now=130.0) is None  # the interface restarted
+    assert rates.update("wg/1", 100, 100, now=1000.0) is None  # too long ago to be "now"
+    assert rates.update("wg/1", None, 100, now=1010.0) is None
 
 
 def test_openwrt_helpers_tell_when_they_are_older() -> None:

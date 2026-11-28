@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { VpnServer } from '#lib/api.js';
 	import { store } from '#lib/state.svelte.js';
-	import { ago } from '#lib/format.js';
+	import { ago, bitrate } from '#lib/format.js';
 	import { vpnServerState } from '#lib/states.js';
 	import Section from './ui/Section.svelte';
 	import Table, { type Column } from './ui/Table.svelte';
@@ -37,6 +37,14 @@
 		if (s.dev) parts.push(s.dev.replace(/\d+$/, ''));
 		return parts.join(' / ');
 	}
+
+	/** Bytes per second as bits: kbit/s below a megabit, where Mbit/s would read 0.0. */
+	function speed(bytes: number) {
+		const bits = bytes * 8;
+		return bits < 1e6 ? `${Math.round(bits / 1e3)} kbit/s` : bitrate(bits);
+	}
+	// The server's view: rx is what clients send (their upload), tx what they get.
+	const TRAFFIC = 'down: to the clients, up: from them (between the last two reads)';
 
 	const columns: Column<VpnServer>[] = [
 		{ key: 'server', label: 'Server', cell: server },
@@ -81,8 +89,18 @@
 			<span class="block">
 				{c.name}{#if c.address}<span class="font-mono text-faint"> · {c.address}</span>{/if}
 				{#if c.since}<span class="text-faint"> · {ago(c.since)}</span>{/if}
+				{#if c.tx_rate != null && c.rx_rate != null}
+					<span class="text-faint tabular-nums" title={TRAFFIC}>
+						· ↓ {speed(c.tx_rate)} ↑ {speed(c.rx_rate)}
+					</span>
+				{/if}
 			</span>
 		{/each}
+	{/if}
+	{#if s.tx_rate != null && s.rx_rate != null && (s.clients?.length ?? 0) > 1}
+		<span class="block text-meta text-faint tabular-nums" title={TRAFFIC}>
+			all: ↓ {speed(s.tx_rate)} ↑ {speed(s.rx_rate)}
+		</span>
 	{/if}
 {/snippet}
 

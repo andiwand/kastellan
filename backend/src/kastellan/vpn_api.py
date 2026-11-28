@@ -26,7 +26,7 @@ from .setup_run import reason
 from .ssh import ChangedHost, Target, UnknownHost
 from .vpn.openvpn import NAME, OpenVpn, install_script
 from .vpn.rotation import VpnRotator
-from .vpn.wireguard import WgEasy
+from .vpn.wireguard import Rates, WgEasy
 
 if TYPE_CHECKING:
     from .config import Device
@@ -51,6 +51,7 @@ class NewClient(BaseModel):
 def router(hub: Hub) -> APIRouter:
     api = APIRouter(prefix="/api")
     rotator = VpnRotator(hub.keys)
+    rates = Rates()  # the managed WireGuard clients' transfer rates, from read to read
     # A rotation started before several VPNs named its hosts "pki" and "server".
     rotator.rename_hosts({"pki": "openvpn:pki", "server": "openvpn:server"})
 
@@ -128,6 +129,10 @@ def router(hub: Hub) -> APIRouter:
                     out["clients"] = [asdict(c) for c in await wireguard(vid).clients()]
                 except Exception as e:
                     out["error"] = say(e, "wg-easy")
+                now = asyncio.get_running_loop().time()
+                for c in out["clients"]:
+                    rate = rates.update(f"{vid}/{c['id']}", c["rx"], c["tx"], now)
+                    c["rx_rate"], c["tx_rate"] = rate if rate else (None, None)
                 return out
             out |= {
                 "mode": vpn.mode,
@@ -153,12 +158,28 @@ def router(hub: Hub) -> APIRouter:
         by_id = {v["id"]: v for v in vpns}
         for s in servers:
             v = by_id.get(s.get("vpn") or "")
-            if s["kind"] == "wireguard" and v is not None and s.get("clients") is None:
+            if s["kind"] != "wireguard" or v is None:
+                continue
+            if s["source"] == "wg-easy":  # no container of it seen: its API tells whether it runs
+                s["running"] = True if "error" not in v else None
+                s["error"] = v.get("error")
+            if s.get("clients") is None and "error" not in v:
                 s["clients"] = [
-                    {"name": c["name"], "since": c.get("last_handshake"), "active": c.get("enabled")}
+                    {
+                        "name": c["name"],
+                        "since": c.get("last_handshake"),
+                        "active": c.get("enabled"),
+                        "rx_rate": c.get("rx_rate"),
+                        "tx_rate": c.get("tx_rate"),
+                    }
                     for c in v["clients"]
                     if _recent(c.get("last_handshake"))
                 ]
+            # The whole server's rates: every client's, connected now or not.
+            measured = [c for c in v["clients"] if c.get("rx_rate") is not None]
+            if measured:
+                s["rx_rate"] = sum(c["rx_rate"] for c in measured)
+                s["tx_rate"] = sum(c["tx_rate"] for c in measured)
         return {"vpns": list(vpns), "servers": servers}
 
     def has_secret(name: str) -> bool:

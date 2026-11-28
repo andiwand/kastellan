@@ -614,8 +614,10 @@ export interface WgClient {
 	created: string | null;
 	expires: string | null;
 	last_handshake: string | null;
-	rx: number | null;
-	tx: number | null;
+	rx: number | null; // bytes from the client, since the interface came up
+	tx: number | null; // bytes to the client
+	rx_rate?: number | null; // bytes per second, between Kastellan's last two reads
+	tx_rate?: number | null;
 }
 
 export interface OvpnClient {
@@ -757,7 +759,18 @@ export interface VpnServer {
 	where?: string | null;
 	addresses?: string[] | null;
 	uptime?: number | null;
-	clients: { name: string; since: string | null; address?: string; active?: unknown }[] | null;
+	clients:
+		| {
+				name: string;
+				since: string | null;
+				address?: string;
+				active?: unknown;
+				rx_rate?: number | null; // bytes per second from this client (WireGuard via wg-easy)
+				tx_rate?: number | null; // and to it
+		  }[]
+		| null;
+	rx_rate?: number; // all its clients together (a managed WireGuard)
+	tx_rate?: number;
 	vpn: string | null; // the managed VPN it serves
 	error?: string | null;
 	checked: string | null;

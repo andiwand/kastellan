@@ -12,6 +12,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from .config import Config
     from .hub import Hub
 
 # Images that are VPN servers (or their web front ends), by the last part of their name.
@@ -50,6 +51,23 @@ def _host_of(url: str) -> str | None:
         return urlsplit(url).hostname
     except ValueError:
         return None
+
+
+def wg_easy_hosts(config: Config) -> frozenset[str]:
+    """The names in the managed wg-easy addresses, for the hub to resolve with the devices'."""
+    hosts = (_host_of(str(v.wg_easy)) for v in config.vpns.values() if v.kind == "wireguard")
+    return frozenset(h for h in hosts if h)
+
+
+def _same_host(hub: Hub, url_host: str | None, host: str, id: str) -> bool:
+    """Whether wg-easy's address is this device: by name, or by the address both resolve to
+    (wg-easy is often reached by a name of its own through a reverse proxy on the same host)."""
+    if not url_host:
+        return False
+    if url_host in {host, id}:
+        return True
+    address = hub.resolver.address(url_host)
+    return address is not None and address == hub.resolver.address(host)
 
 
 def collect(hub: Hub, admin: bool) -> list[dict[str, Any]]:
@@ -156,7 +174,7 @@ def collect(hub: Hub, admin: bool) -> list[dict[str, Any]]:
                     for vid, v in vpns.items()
                     if v.kind == "wireguard"
                     and "wg-easy" in image.lower()
-                    and _host_of(str(v.wg_easy)) in {device.host, id}
+                    and _same_host(hub, _host_of(str(v.wg_easy)), device.host, id)
                 ),
                 None,
             )
@@ -191,4 +209,6 @@ def collect(hub: Hub, admin: bool) -> list[dict[str, Any]]:
                     "checked": None,
                 }
             )
+    # The servers whose clients Kastellan manages come first.
+    out.sort(key=lambda s: s.get("vpn") is None)
     return out

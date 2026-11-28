@@ -40,6 +40,7 @@ from . import (
     releases,
     roaming,
     signins_api,
+    vpn_servers,
     vulns,
     web_setup,
     wifi_api,
@@ -498,7 +499,9 @@ class Hub:
         seen: frozenset[str] = frozenset()
         last = 0.0
         while True:
+            # wg-easy's names too: the VPN page finds its container by the address.
             hosts = frozenset(d.host for d in self.config.devices.values() if d.host)
+            hosts |= vpn_servers.wg_easy_hosts(self.config)
             now = asyncio.get_running_loop().time()
             if hosts != seen or now - last > RESOLVE_EVERY:
                 if self.demo:  # the made-up network has made-up addresses

@@ -53,6 +53,35 @@ def _client(item: dict[str, Any]) -> WgClient:
     )
 
 
+class Rates:
+    """Transfer rates (bytes per second) from wg-easy's running totals, between two reads of
+    them. A read soon after the last one keeps the last rate (two open pages would measure a
+    second or two); after a long gap, or a total that went back (the interface restarted),
+    there is no rate until the next read."""
+
+    MIN_GAP = 5.0
+    MAX_GAP = 600.0
+
+    def __init__(self) -> None:
+        self._last: dict[str, tuple[float, int, int]] = {}
+        self._rate: dict[str, tuple[float, float] | None] = {}
+
+    def update(self, key: str, rx: int | None, tx: int | None, now: float) -> tuple[float, float] | None:
+        """(rx, tx) per second for this client: what it sent the server and what it got."""
+        if rx is None or tx is None:
+            return None
+        last = self._last.get(key)
+        if last is not None and 0 <= now - last[0] < self.MIN_GAP:
+            return self._rate.get(key)
+        self._last[key] = (now, rx, tx)
+        rate = None
+        if last is not None and rx >= last[1] and tx >= last[2] and now - last[0] <= self.MAX_GAP:
+            gap = now - last[0]
+            rate = ((rx - last[1]) / gap, (tx - last[2]) / gap)
+        self._rate[key] = rate
+        return rate
+
+
 class WgEasy:
     def __init__(self, url: str, user: str, password: str) -> None:
         self.url = url.rstrip("/")

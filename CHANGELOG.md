@@ -5,6 +5,11 @@
 The VPN page is one row of tabs: Servers (every VPN server Kastellan sees; the default), Clients
 and Setup, instead of the servers above and Clients / Setup below them.
 
+A wg-easy reached by a name of its own (through a reverse proxy on the same host) is one server
+with its container, no longer a second row; the servers Kastellan manages are listed first, and
+one known only through wg-easy's API says whether it runs. A managed WireGuard shows each
+connected client's traffic down and up, and all of it together; the page reads again every 30 s.
+
 ## 0.17.3 (2026-11-28)
 
 A device that can't be read shows why under its readings, in a smaller line, instead of

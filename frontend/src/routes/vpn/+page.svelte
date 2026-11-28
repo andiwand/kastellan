@@ -88,7 +88,16 @@
 			busy = false;
 		}
 	}
-	onMount(load);
+	// Read again every half minute while the page is in view: who is connected, and the rates.
+	// Not while settings are open or a click awaits its second one.
+	onMount(() => {
+		load();
+		const t = setInterval(() => {
+			const quiet = !busy && tab !== 'setup' && editing === null && adding === null && !confirm;
+			if (document.visibilityState === 'visible' && quiet) load();
+		}, 30_000);
+		return () => clearInterval(t);
+	});
 
 	// config.yaml as the removal was asked for: a change made meanwhile refuses it.
 	let removeVersion = $state<string | null>(null);

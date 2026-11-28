@@ -206,8 +206,12 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     The page requires a signed-in admin (except demo); unverified syslog remains labelled and
     cannot establish a successful-login alert. Bounded reads keep the newest matching lines.
   - `vpn_servers.py`: every VPN server seen (OpenVPN instances and WireGuard interfaces on OpenWrt,
-    a FRITZ!Box's WireGuard, VPN containers by image), linked to the managed VPN it serves; the
-    openvpn-status script also prints `!port/!proto/!dev/!running/!age` per server.
+    a FRITZ!Box's WireGuard, VPN containers by image), linked to the managed VPN it serves (a
+    wg-easy container by its address's name or what it resolves to: the hub resolves wg-easy
+    names with the devices'), managed ones first; the openvpn-status script also prints
+    `!port/!proto/!dev/!running/!age` per server. A wg-easy with no container seen is running
+    when its API answers. WireGuard rates: `vpn/wireguard.Rates`, between two reads of wg-easy's
+    totals (the VPN page reads every 30 s).
   - `discovery.py`: clients the routers report (FRITZ!Box hosts, OpenWrt leases and Wi-Fi
     clients) that match no device; Devices page "Found on the network", set aside by MAC
     (`<data>/discovery-ignored.json`).

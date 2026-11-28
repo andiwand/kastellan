@@ -226,8 +226,14 @@ def test_wireguard(tmp_path: Path, wg_easy, pki) -> None:
         assert "enter it in this VPN's Settings" in by_id(c, "wireguard")["error"]
         c.app.state.hub.secrets.set("wg-easy", "wrong")
         assert by_id(c, "wireguard")["error"] == "wg-easy refused the login"
+        # No container of it seen: its server's state is whether its API answers.
+        server = next(s for s in c.get("/api/vpn").json()["servers"] if s["source"] == "wg-easy")
+        assert server["running"] is None and server["error"] == "wg-easy refused the login"
+        assert server["clients"] is None  # not "nobody": unknown
         c.app.state.hub.secrets.set("wg-easy", "wg-secret")
         assert [x["name"] for x in by_id(c, "wireguard")["clients"]] == ["phone"]
+        server = next(s for s in c.get("/api/vpn").json()["servers"] if s["source"] == "wg-easy")
+        assert server["running"] is True and server["error"] is None
 
         assert c.post(
             "/api/vpns/wireguard/wireguard", json={"name": "laptop", "days": 30}, headers=H
