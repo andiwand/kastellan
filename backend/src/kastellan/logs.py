@@ -62,6 +62,9 @@ def clean(text: str) -> str:
     return CONTROL.sub(" ", text).strip()[:MAX_MSG]
 
 
+AHEAD = 86400  # a line's time beyond the hub's clock by more than this is garbage
+
+
 class LogStore:
     """The lines in SQLite. Every method is blocking: the hub calls them in a thread."""
 
@@ -242,11 +245,25 @@ class LogStore:
                 (key, json.dumps(value)),
             )
 
+    def newest(self, device: str, sources: tuple[str, ...], now: float | None = None) -> float | None:
+        """The time of a device's newest line from these sources that isn't in the future."""
+        now = time.time() if now is None else now
+        marks = ", ".join("?" * len(sources))
+        with self._lock:
+            row = self._db.execute(
+                f"SELECT MAX(ts) FROM lines WHERE device = ? AND source IN ({marks}) AND ts <= ?",
+                (device, *sources, now + AHEAD),
+            ).fetchone()
+        return row[0] if row else None
+
     def prune(self, days: int, max_lines: int, now: float | None = None) -> int:
-        """Lines older than `days` go, then the oldest beyond `max_lines`."""
+        """Lines older than `days` go, and lines dated in the future (garbage: they would never
+        age out and would stay on top), then the oldest beyond `max_lines`."""
         now = time.time() if now is None else now
         with self._lock:
-            gone = self._db.execute("DELETE FROM lines WHERE ts < ?", (now - days * 86400,)).rowcount
+            gone = self._db.execute(
+                "DELETE FROM lines WHERE ts < ? OR ts > ?", (now - days * 86400, now + AHEAD)
+            ).rowcount
             count = self._db.execute("SELECT COUNT(*) FROM lines").fetchone()[0]
             if count > max_lines:
                 gone += self._db.execute(
@@ -260,11 +277,15 @@ class LogStore:
 
 
 def from_logd(
-    device: str, entries: list[dict[str, Any]], after: dict[str, Any] | None
+    device: str, entries: list[dict[str, Any]], after: dict[str, Any] | None, now: float | None = None
 ) -> tuple[list[Line], dict[str, Any] | None]:
     """OpenWrt's `log read` entries (msg, priority = facility*8 + level, source 0 kernel / 1
     syslog, time in ms, id) that come after the cursor; and the new cursor. The cursor is the
-    newest time and the ids seen at that time (ids start again at a reboot; times don't)."""
+    newest time and the ids seen at that time (ids start again at a reboot; times don't).
+    logd sometimes hands back garbage from its ring buffer (times near 2**63, fragments of
+    text): an entry dated more than AHEAD past the hub's clock is skipped, or it would become
+    the cursor and every real line after it would count as old."""
+    limit = ((time.time() if now is None else now) + AHEAD) * 1000
     last_t = int((after or {}).get("t", 0))
     seen = set((after or {}).get("ids", []))
     new: list[Line] = []
@@ -275,6 +296,8 @@ def from_logd(
             ident = int(e.get("id") or 0)
             priority = int(e.get("priority", 6) or 0)
         except (TypeError, ValueError):
+            continue
+        if not 0 < t <= limit:
             continue
         if t < last_t or (t == last_t and ident in seen):
             continue

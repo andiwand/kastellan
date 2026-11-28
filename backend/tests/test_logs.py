@@ -51,6 +51,34 @@ def test_logd_entries_after_the_cursor(tmp_path: Path) -> None:
     assert len(lines) == 1
 
 
+def test_logd_garbage_times_are_skipped() -> None:
+    """logd once returned entries timed near 2**63 ms; as the cursor they hid every line after."""
+    now = 1_800_000_000.0
+    entries = [
+        {"msg": "dropbear[1]: auth]", "priority": 1, "source": 1, "time": 8_910_533_468_664_195_000, "id": 7},
+        {"msg": "00", "priority": 0, "source": 0, "time": -5, "id": 8},
+        {"msg": "a: real", "priority": 6, "source": 1, "time": 1_799_999_999_000, "id": 9},
+    ]
+    lines, cursor = logs.from_logd("wifi1", entries, None, now=now)
+    assert [ln.msg for ln in lines] == ["real"] and cursor == {"t": 1_799_999_999_000, "ids": [9]}
+
+
+def test_store_newest_and_prune_skip_the_future(tmp_path: Path) -> None:
+    store = LogStore(tmp_path / "logs.db")
+    now = 1_800_000_000.0
+    store.add(
+        [
+            Line(now - 60, "wifi1", "syslog", "a", 6, "real"),
+            Line(now - 30, "wifi1", "fritzbox", "a", 6, "other source"),
+            Line(8.9e15, "wifi1", "syslog", "", 1, "auth]"),
+        ]
+    )
+    assert store.newest("wifi1", ("syslog", "kernel"), now=now) == now - 60
+    assert store.newest("gw", ("syslog",), now=now) is None
+    assert store.prune(14, 1000, now=now) == 1
+    assert [r["msg"] for r in store.query()] == ["other source", "real"]
+
+
 def test_store_filters_and_prunes(tmp_path: Path) -> None:
     store = LogStore(tmp_path / "logs.db")
     store.add(
@@ -194,3 +222,27 @@ async def test_a_caught_up_router_is_asked_for_its_newest_lines(tmp_path: Path, 
         )
     buffer[-2]["time"] = "malformed"  # does not count as overlap with the previous poll
     assert await logs_poll.openwrt(hub, "r") == 299 and asked[-2:] == [200, 1000]
+
+
+async def test_a_cursor_in_the_future_goes_on_from_the_newest_real_line(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from kastellan import logs_poll
+    from kastellan.openwrt import client as ow
+
+    t0 = 1_700_000_000_000
+    buffer = [
+        {"msg": f"daemon: line {i}", "priority": 30, "source": 1, "time": t0 + i * 1000, "id": i}
+        for i in range(5)
+    ]
+
+    async def read_log(ubus, lines: int = 1000):
+        return buffer[-lines:]
+
+    monkeypatch.setattr(ow, "read_log", read_log)
+    hub = SimpleNamespace(logs=LogStore(tmp_path / "logs.db"), ubus=lambda id: None)
+    # Stored before the fix: lines 0-2 and a garbage entry's time as the cursor.
+    hub.logs.add([Line((t0 + i * 1000) / 1000, "r", "syslog", "daemon", 6, f"line {i}") for i in range(3)])
+    hub.logs.set_state("openwrt:r", {"t": 8_910_533_468_664_195_000, "ids": [7]})
+    assert await logs_poll.openwrt(hub, "r") == 2  # lines 3 and 4, nothing twice
+    assert hub.logs.get_state("openwrt:r") == {"t": t0 + 4000, "ids": [4]}

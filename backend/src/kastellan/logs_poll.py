@@ -36,6 +36,13 @@ async def openwrt(hub: Hub, id: str) -> int:
     """New lines from an OpenWrt device's logd; how many."""
     key = f"openwrt:{id}"
     cursor = await asyncio.to_thread(hub.logs.get_state, key)
+    if cursor and int(cursor.get("t", 0)) > (time.time() + logs.AHEAD) * 1000:
+        # A garbage entry became the cursor (before entries were checked): go on from the
+        # newest real line, so what logd still holds since then comes in.
+        newest = await asyncio.to_thread(hub.logs.newest, id, ("syslog", "kernel"))
+        cursor = {"t": round(newest * 1000) + 1, "ids": []} if newest else None
+        log.warning("logs: %s's cursor was in the future; going on from %s", id, cursor)
+        await asyncio.to_thread(hub.logs.set_state, key, cursor)
     # Caught up: the newest RECENT_LINES are enough (logd builds and the router encrypts all it
     # is asked for, every minute). All of them new: there may be more, so the whole buffer.
     entries = await ow.read_log(hub.ubus(id), lines=RECENT_LINES if cursor else ALL_LINES)

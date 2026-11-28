@@ -95,7 +95,8 @@ It runs locally, reached through a VPN, as one Docker image. The name may change
     `Brake`. `Backups.problems` (warning, `backup:<id>`, on its device): failed, late, never.
   - `logs.py` + `logs_poll.py` + `logs_api.py`: central logs in SQLite (`<data>/logs.db`, opened on
     first use; `logs.days`, `logs.max_lines`). Lines come from OpenWrt's logd (`log read`, the
-    login's `logs` ability; cursor = newest time + ids at it, in the `state` table), a FRITZ!Box's
+    login's `logs` ability; cursor = newest time + ids at it, in the `state` table; logd can
+    return garbage entries, so times over `logs.AHEAD` past the hub's clock are skipped and pruned), a FRITZ!Box's
     event log (`fritzbox/client.log_lines`, its local time), Linux hosts' journals (the actor's
     `journal` ability: `act-journal <cursor|->`, JSON entries after the cursor, at most 2000 a
     call; containers logging to journald come as source `container`), containers' own logs
